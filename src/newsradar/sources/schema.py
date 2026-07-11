@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from enum import StrEnum
 from urllib.parse import urlsplit
 
@@ -12,6 +13,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from newsradar.providers.schema import Availability, CoverageMode, TargetType
 
 
 class StrictModel(BaseModel):
@@ -123,6 +126,13 @@ class RiskAssessment(StrictModel):
 class SourceDefinition(StrictModel):
     id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     name: str = Field(min_length=1, max_length=120)
+    provider_id: str = Field(default="independent", pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    target_type: TargetType = TargetType.PUBLISHER_FEED
+    availability: Availability = Availability.READY
+    coverage_mode: CoverageMode = CoverageMode.DIRECT
+    official_identity_url: HttpUrl | None = None
+    reviewed_at: date | None = None
+    unlock_requirements: list[str] = Field(default_factory=list)
     status: SourceStatus
     nature: SourceNature
     roles: list[SourceRole] = Field(min_length=1)
@@ -142,6 +152,15 @@ class SourceDefinition(StrictModel):
         if len(priorities) != len(set(priorities)):
             raise ValueError("Access method priorities must be unique")
         return sorted(value, key=lambda method: method.priority)
+
+    @model_validator(mode="after")
+    def validate_social_role(self) -> SourceDefinition:
+        if self.nature == SourceNature.SOCIAL and not {
+            SourceRole.DISCOVERY,
+            SourceRole.ENGAGEMENT,
+        }.intersection(self.roles):
+            raise ValueError("Social targets require a discovery or engagement role")
+        return self
 
     @computed_field
     @property

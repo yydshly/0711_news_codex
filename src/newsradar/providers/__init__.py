@@ -1,0 +1,1 @@
+"""Provider-level source intelligence."""
