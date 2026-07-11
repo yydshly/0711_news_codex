@@ -1,0 +1,16 @@
+id: huggingface-blog
+name: Hugging Face Blog
+status: candidate
+nature: first_party
+roles: [discovery, evidence]
+language: en
+topics: [open_source_models, developer_tools, research]
+authority_score: 5
+poll_interval_minutes: 120
+access_methods:
+  - kind: rss
+    url: https://huggingface.co/blog/feed.xml
+    priority: 1
+expected_fields: [title, canonical_url, published_at, summary]
+risk: {terms: 1, authentication: 0, stability: 1, data_quality: 1, operating_cost: 0, evidence: [https://huggingface.co/blog]}
+

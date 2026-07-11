@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import json
+import os
+from urllib.parse import quote
+
+import httpx
+
+from newsradar.sources.schema import SourceStatus
+
+from .base import ProbeOutcome, utcnow
+from .json_api import JsonApiProbe
+
+
+def synthetic_response(original: httpx.Response, payload: object) -> httpx.Response:
+    safe_request = httpx.Request("GET", str(original.request.url.copy_remove_param("key")))
+    return httpx.Response(
+        original.status_code,
+        content=json.dumps(payload).encode(),
+        headers=original.headers,
+        request=safe_request,
+    )
+
+
+class HackerNewsProbe(JsonApiProbe):
+    async def parse(self, source, method, response, started, latency_ms):
+        payload = response.json()
+        if isinstance(payload, list) and payload and all(isinstance(item, int) for item in payload):
+            base = "https://hacker-news.firebaseio.com/v0/item"
+            details = []
+            for item_id in payload[:5]:
+                detail = await self.client.get(f"{base}/{item_id}.json")
+                detail.raise_for_status()
+                if isinstance(detail.json(), dict):
+                    details.append(detail.json())
+            response = synthetic_response(response, details)
+        return await super().parse(source, method, response, started, latency_ms)
+
+
+class YouTubeProbe(JsonApiProbe):
+    async def _request(self, method):
+        params = dict(method.params)
+        params["key"] = os.environ[method.auth_env or "YOUTUBE_API_KEY"]
+        return await self.client.get(
+            str(method.url),
+            headers={"User-Agent": "NewsCodexSourceProbe/0.1 (+local audited registry)"},
+            params=params,
+            follow_redirects=True,
+        )
+
+    async def parse(self, source, method, response, started, latency_ms):
+        payload = response.json()
+        flattened = []
+        for item in payload.get("items", []):
+            snippet = item.get("snippet", {})
+            video_id = snippet.get("resourceId", {}).get("videoId")
+            flattened.append(
+                {
+                    "id": item.get("id") or video_id,
+                    "title": snippet.get("title"),
+                    "description": snippet.get("description"),
+                    "published_at": snippet.get("publishedAt"),
+                    "author": snippet.get("channelTitle"),
+                    "url": f"https://www.youtube.com/watch?v={video_id}" if video_id else None,
+                }
+            )
+        safe = synthetic_response(
+            response, {"items": flattened, "next": payload.get("nextPageToken")}
+        )
+        return await super().parse(source, method, safe, started, latency_ms)
+
+
+class BlueskyProbe(JsonApiProbe):
+    async def parse(self, source, method, response, started, latency_ms):
+        payload = response.json()
+        flattened = []
+        for row in payload.get("feed", []):
+            post = row.get("post", {})
+            record = post.get("record", {})
+            author = post.get("author", {})
+            uri = post.get("uri", "")
+            rkey = uri.rsplit("/", 1)[-1] if uri else None
+            handle = author.get("handle")
+            flattened.append(
+                {
+                    "id": uri,
+                    "title": record.get("text"),
+                    "content": record.get("text"),
+                    "published_at": record.get("createdAt"),
+                    "author": author.get("displayName") or handle,
+                    "url": f"https://bsky.app/profile/{quote(handle)}/post/{quote(rkey)}"
+                    if handle and rkey
+                    else None,
+                    "likes": post.get("likeCount"),
+                }
+            )
+        safe = synthetic_response(response, {"items": flattened, "cursor": payload.get("cursor")})
+        return await super().parse(source, method, safe, started, latency_ms)
+
+
+class RedditProbe(JsonApiProbe):
+    async def probe(self, source, method):
+        if not os.environ.get("REDDIT_CLIENT_ID") or not os.environ.get("REDDIT_CLIENT_SECRET"):
+            started = utcnow()
+            return self._result(
+                source,
+                method,
+                started,
+                ProbeOutcome.BLOCKED,
+                SourceStatus.CANDIDATE,
+                "REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are required for official OAuth access",
+                error_code="missing_oauth_credentials",
+            )
+        return await super().probe(source, method)
+
+    async def _request(self, method):
+        client_id = os.environ["REDDIT_CLIENT_ID"]
+        secret = os.environ["REDDIT_CLIENT_SECRET"]
+        token_response = await self.client.post(
+            "https://www.reddit.com/api/v1/access_token",
+            auth=(client_id, secret),
+            data={"grant_type": "client_credentials"},
+            headers={"User-Agent": "windows:news-codex:v0.1 (personal source audit)"},
+        )
+        token_response.raise_for_status()
+        token = token_response.json()["access_token"]
+        return await self.client.get(
+            str(method.url),
+            params=method.params,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "windows:news-codex:v0.1 (personal source audit)",
+            },
+            follow_redirects=True,
+        )
+
+    async def parse(self, source, method, response, started, latency_ms):
+        payload = response.json()
+        flattened = []
+        for child in payload.get("data", {}).get("children", []):
+            item = child.get("data", {})
+            flattened.append(
+                {
+                    "id": item.get("name") or item.get("id"),
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                    "time": item.get("created_utc"),
+                    "author": item.get("author"),
+                    "score": item.get("score"),
+                    "discussion_url": f"https://www.reddit.com{item.get('permalink')}"
+                    if item.get("permalink")
+                    else None,
+                    "summary": item.get("selftext"),
+                }
+            )
+        safe = synthetic_response(
+            response, {"items": flattened, "cursor": payload.get("data", {}).get("after")}
+        )
+        return await super().parse(source, method, safe, started, latency_ms)

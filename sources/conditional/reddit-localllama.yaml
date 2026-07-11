@@ -1,0 +1,17 @@
+id: reddit-localllama
+name: Reddit LocalLLaMA
+status: candidate
+nature: community
+roles: [discovery, engagement, context]
+language: en
+topics: [open_source_models, foundation_models]
+authority_score: 3
+poll_interval_minutes: 30
+access_methods:
+  - kind: rest_api
+    url: https://oauth.reddit.com/r/LocalLLaMA/new
+    priority: 1
+    params: {limit: '5'}
+expected_fields: [title, canonical_url, published_at, author, engagement]
+risk: {terms: 3, authentication: 3, stability: 2, data_quality: 3, operating_cost: 1, evidence: [https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki]}
+
