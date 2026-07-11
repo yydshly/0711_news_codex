@@ -1,6 +1,6 @@
-# Project-Local PostgreSQL Runtime Implementation Plan
+﻿# Project-Local PostgreSQL Runtime Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Create and operate a News Codex-owned PostgreSQL 18 cluster on `127.0.0.1:55432`, then migrate, sync, and persist real source probes without changing the existing Windows PostgreSQL service.
 
@@ -31,7 +31,7 @@
 - Produces: `LocalPostgresManager.initialize() -> str`, `start() -> str`, `status() -> str`, and `stop() -> str`.
 - Produces: `LocalPostgresError`, used by the CLI for safe user-facing failures.
 
-- [ ] **Step 1: Write failing unit tests for safe paths, PostgreSQL discovery, and environment updates**
+- [x] **Step 1: Write failing unit tests for safe paths, PostgreSQL discovery, and environment updates**
 
 ```python
 def test_paths_are_project_local_and_postgres_18_is_selected(tmp_path, monkeypatch):
@@ -60,13 +60,13 @@ def test_update_env_preserves_values_and_never_returns_password(tmp_path):
     assert "unsafe:/ password" not in message
 ```
 
-- [ ] **Step 2: Run tests and confirm the module is missing**
+- [x] **Step 2: Run tests and confirm the module is missing**
 
 Run: `uv run pytest tests/test_local_postgres.py -v`
 
 Expected: collection fails with `ModuleNotFoundError: newsradar.local_postgres`.
 
-- [ ] **Step 3: Implement binary discovery, guarded local paths, secret-safe `.env` editing, and subprocess abstraction**
+- [x] **Step 3: Implement binary discovery, guarded local paths, secret-safe `.env` editing, and subprocess abstraction**
 
 ```python
 @dataclass(frozen=True)
@@ -91,13 +91,13 @@ class LocalPostgresPaths:
 
 `initialize()` must create a temporary password file with restrictive access, run `initdb --auth-host=scram-sha-256 --auth-local=trust --username=newsradar --pwfile=...`, append fixed listen/port settings, delete the password file in `finally`, start the cluster, create the `newsradar` database, and write the URL. Existing `PG_VERSION` plus a valid `.env` must return an unchanged/idempotent result.
 
-- [ ] **Step 4: Run manager tests**
+- [x] **Step 4: Run manager tests**
 
 Run: `uv run pytest tests/test_local_postgres.py -v`
 
 Expected: all tests pass, including occupied-port, missing-binary, subprocess-failure, password cleanup, and repeated-initialization cases.
 
-- [ ] **Step 5: Commit manager and tests**
+- [x] **Step 5: Commit manager and tests**
 
 ```powershell
 git add .gitignore src/newsradar/local_postgres.py tests/test_local_postgres.py
@@ -116,7 +116,7 @@ git commit -m "feat: add project-local PostgreSQL manager"
 - Produces: `newsradar db init`, `newsradar db start`, `newsradar db status`, and `newsradar db stop`.
 - Produces: `scripts/postgres.ps1 -Action init|start|status|stop`.
 
-- [ ] **Step 1: Write failing CLI tests with a fake manager**
+- [x] **Step 1: Write failing CLI tests with a fake manager**
 
 ```python
 @pytest.mark.parametrize("command,method", [("init", "initialize"), ("start", "start"), ("status", "status"), ("stop", "stop")])
@@ -132,13 +132,13 @@ def test_db_command_delegates_to_manager(monkeypatch, command, method):
     getattr(fake, method).assert_called_once_with()
 ```
 
-- [ ] **Step 2: Run the focused CLI tests and confirm failure**
+- [x] **Step 2: Run the focused CLI tests and confirm failure**
 
 Run: `uv run pytest tests/test_cli.py -k db_command -v`
 
 Expected: FAIL because the `db` Typer group does not exist.
 
-- [ ] **Step 3: Add the Typer group and safe error conversion**
+- [x] **Step 3: Add the Typer group and safe error conversion**
 
 ```python
 db_app = typer.Typer(help="Manage the project-local PostgreSQL runtime")
@@ -155,13 +155,13 @@ def _run_db_action(action: str) -> None:
 
 Add four explicit Typer commands that call `_run_db_action`. The PowerShell wrapper must use a validated parameter and execute `uv run newsradar db $Action`, returning its exit code without printing environment variables.
 
-- [ ] **Step 4: Run CLI and full unit tests**
+- [x] **Step 4: Run CLI and full unit tests**
 
 Run: `uv run pytest tests/test_cli.py tests/test_local_postgres.py -v`
 
 Expected: all focused tests pass.
 
-- [ ] **Step 5: Commit lifecycle commands**
+- [x] **Step 5: Commit lifecycle commands**
 
 ```powershell
 git add src/newsradar/cli.py tests/test_cli.py scripts/postgres.ps1
@@ -178,7 +178,7 @@ git commit -m "feat: expose local PostgreSQL lifecycle commands"
 - Consumes: Task 2 CLI and the existing Alembic/source registry CLI.
 - Produces: a running PostgreSQL cluster with migrated and synchronized source tables.
 
-- [ ] **Step 1: Verify the fixed port is unused and the system service is stopped**
+- [x] **Step 1: Verify the fixed port is unused and the system service is stopped**
 
 Run:
 
@@ -189,7 +189,7 @@ Get-Service postgresql-x64-18 | Select-Object Name,Status
 
 Expected: no listener on `55432`; system service remains `Stopped`.
 
-- [ ] **Step 2: Initialize and check the project cluster**
+- [x] **Step 2: Initialize and check the project cluster**
 
 Run:
 
@@ -200,7 +200,7 @@ uv run newsradar db status
 
 Expected: initialization succeeds and status reports `127.0.0.1:55432` accepting connections, without printing the password.
 
-- [ ] **Step 3: Apply migrations and synchronize all audited sources twice**
+- [x] **Step 3: Apply migrations and synchronize all audited sources twice**
 
 Run:
 
@@ -212,7 +212,7 @@ uv run newsradar sources sync --root sources
 
 Expected: first sync creates 27 sources; second sync reports 27 unchanged and creates no versions.
 
-- [ ] **Step 4: Assert migrated data with a secret-safe Python query**
+- [x] **Step 4: Assert migrated data with a secret-safe Python query**
 
 ```powershell
 @'
@@ -229,7 +229,7 @@ print({"migration": version, "sources": sources, "versions": versions})
 
 Expected: latest migration identifier, `sources: 27`, and `versions: 27`.
 
-- [ ] **Step 5: Confirm ignored runtime files and unchanged system service**
+- [x] **Step 5: Confirm ignored runtime files and unchanged system service**
 
 Run:
 
@@ -251,7 +251,7 @@ Expected: runtime paths are ignored, no secret is staged, and the system service
 - Consumes: the live local database and existing `sources probe --all` command.
 - Produces: persisted probe runs/samples plus operator instructions.
 
-- [ ] **Step 1: Run a real persistent source probe**
+- [x] **Step 1: Run a real persistent source probe**
 
 Run:
 
@@ -261,7 +261,7 @@ uv run newsradar sources probe --all --root sources --persist --report-output re
 
 Expected: the batch completes even when optional sources are blocked or rate-limited.
 
-- [ ] **Step 2: Assert persisted history**
+- [x] **Step 2: Assert persisted history**
 
 ```powershell
 @'
@@ -279,11 +279,11 @@ assert samples > 0
 
 Expected: at least 27 probe runs and at least one stored sample.
 
-- [ ] **Step 3: Document lifecycle and recovery commands**
+- [x] **Step 3: Document lifecycle and recovery commands**
 
 Add README commands for `db init/start/status/stop`, state that port `55432` is fixed, explain `POSTGRES_HOME`, and warn that `.local/` deletion permanently removes the project database. Do not include a real database URL or password.
 
-- [ ] **Step 4: Run complete verification**
+- [x] **Step 4: Run complete verification**
 
 Run:
 
@@ -298,7 +298,7 @@ git status --short --branch
 
 Expected: formatting/lint pass, all tests pass, 27 sources validate, and only intentional tracked changes appear.
 
-- [ ] **Step 5: Commit documentation and final plan state**
+- [x] **Step 5: Commit documentation and final plan state**
 
 ```powershell
 git add README.md docs/superpowers/plans/2026-07-11-local-postgresql-runtime.md

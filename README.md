@@ -15,11 +15,39 @@ versions, and reports on sources before downstream summarization is enabled.
 ```powershell
 uv sync --extra dev
 Copy-Item .env.example .env
-# Edit DATABASE_URL in .env for your local PostgreSQL role/database.
+# If PostgreSQL is outside C:\Program Files\PostgreSQL, set POSTGRES_HOME in .env.
+uv run newsradar db init
 uv run alembic upgrade head
+uv run newsradar sources sync --root sources
 ```
 
 Never put an API key in `sources/*.yaml`. Credentials are read from environment variables only.
+
+## Project-local PostgreSQL
+
+News Codex uses an isolated PostgreSQL cluster at `127.0.0.1:55432`. It does not start,
+stop, or reconfigure an existing Windows PostgreSQL service. The generated database password
+is stored only in the Git-ignored `.env`; database files and logs are stored below the
+Git-ignored `.local/postgres/` directory.
+
+```powershell
+# Direct CLI
+uv run newsradar db init
+uv run newsradar db start
+uv run newsradar db status
+uv run newsradar db stop
+
+# Equivalent PowerShell wrapper
+.\scripts\postgres.ps1 -Action status
+```
+
+`init` is idempotent and preserves other `.env` settings. Set `POSTGRES_HOME` to the directory
+containing PostgreSQL's `bin` folder when PostgreSQL is installed in a nonstandard location,
+for example `D:\software\postsql`. Port `55432` is fixed; initialization fails instead of
+silently selecting another port when it is occupied.
+
+Deleting `.local/postgres/` permanently deletes the project database. Stop it first and back up
+anything important. The lifecycle commands never delete this directory automatically.
 
 ## Source workflow
 
