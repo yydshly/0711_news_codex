@@ -42,8 +42,11 @@ class LocalPostgresPaths:
 
     @classmethod
     def discover(cls, project_root: Path) -> LocalPostgresPaths:
+        root = project_root.resolve()
         candidates: list[Path] = []
-        postgres_home = os.getenv("POSTGRES_HOME")
+        postgres_home = os.getenv("POSTGRES_HOME") or _read_env_value(
+            root / ".env", "POSTGRES_HOME"
+        )
         if postgres_home:
             candidates.append(Path(postgres_home) / "bin")
         if cls.default_install_root.is_dir():
@@ -68,7 +71,6 @@ class LocalPostgresPaths:
                 "PostgreSQL installation directory"
             )
 
-        root = project_root.resolve()
         runtime_dir = root / ".local" / "postgres"
         return cls(
             project_root=root,
@@ -84,6 +86,17 @@ def _version_key(value: str) -> tuple[int, ...]:
         return tuple(int(part) for part in value.split("."))
     except ValueError:
         return (0,)
+
+
+def _read_env_value(env_file: Path, key: str) -> str | None:
+    if not env_file.exists():
+        return None
+    prefix = f"{key}="
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            value = line.removeprefix(prefix).strip().strip('"').strip("'")
+            return value or None
+    return None
 
 
 class LocalPostgresManager:
@@ -254,7 +267,8 @@ class LocalPostgresManager:
                 str(self.paths.log_file),
                 "--wait",
                 "start",
-            ]
+            ],
+            capture_output=False,
         )
 
     def _cluster_running(self) -> bool:
@@ -275,13 +289,14 @@ class LocalPostgresManager:
         *,
         env: dict[str, str] | None = None,
         check: bool = True,
+        capture_output: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         try:
             return self._runner(
                 [str(part) for part in command],
                 env=env,
                 check=check,
-                capture_output=True,
+                capture_output=capture_output,
                 text=True,
             )
         except subprocess.CalledProcessError as exc:

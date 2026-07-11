@@ -41,6 +41,22 @@ def test_discovery_rejects_missing_postgres_tools(tmp_path, monkeypatch):
         LocalPostgresPaths.discover(tmp_path / "repo")
 
 
+def test_discovery_reads_postgres_home_from_project_env(tmp_path, monkeypatch):
+    bin_dir = make_install(tmp_path)
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    (project_root / ".env").write_text(
+        f"POSTGRES_HOME={bin_dir.parent}\nMINIMAX_API_KEY=\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("POSTGRES_HOME", raising=False)
+    monkeypatch.setattr(LocalPostgresPaths, "default_install_root", tmp_path / "empty")
+
+    paths = LocalPostgresPaths.discover(project_root)
+
+    assert paths.bin_dir == bin_dir
+
+
 def test_write_database_url_preserves_values_and_encodes_password(tmp_path):
     paths = LocalPostgresPaths(
         project_root=tmp_path,
@@ -72,11 +88,11 @@ def test_initialize_runs_expected_commands_and_deletes_password_file(tmp_path):
         log_file=tmp_path / ".local" / "postgres" / "postgres.log",
         env_file=tmp_path / ".env",
     )
-    calls: list[tuple[list[str], dict[str, str] | None]] = []
+    calls: list[tuple[list[str], dict[str, str] | None, bool]] = []
 
     def runner(command, *, env=None, check=True, capture_output=True, text=True):
         command = [str(part) for part in command]
-        calls.append((command, env))
+        calls.append((command, env, capture_output))
         if command[0].endswith("initdb.exe"):
             paths.data_dir.mkdir(parents=True, exist_ok=True)
             (paths.data_dir / "PG_VERSION").write_text("18", encoding="utf-8")
@@ -95,6 +111,8 @@ def test_initialize_runs_expected_commands_and_deletes_password_file(tmp_path):
         for command in call[0][:1]
     )
     assert any(command.endswith("createdb.exe") for command in commands)
+    start_call = next(call for call in calls if call[0][0].endswith("pg_ctl.exe"))
+    assert start_call[2] is False
     init_command = next(call[0] for call in calls if call[0][0].endswith("initdb.exe"))
     password_argument = next(part for part in init_command if part.startswith("--pwfile="))
     assert not Path(password_argument.split("=", 1)[1]).exists()
