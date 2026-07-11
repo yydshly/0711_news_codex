@@ -8,6 +8,10 @@ import httpx
 import typer
 
 from newsradar.db.session import create_session
+from newsradar.local_postgres import (
+    LocalPostgresError,
+    build_local_postgres_manager,
+)
 from newsradar.sources.probes.factory import ProbeFactory
 from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.reporting import render_source_report
@@ -16,11 +20,42 @@ from newsradar.sources.yaml_loader import load_source_tree
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
+db_app = typer.Typer(help="Manage the project-local PostgreSQL runtime")
 app.add_typer(sources_app, name="sources")
+app.add_typer(db_app, name="db")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
 ]
+
+
+def _run_db_action(action: str) -> None:
+    try:
+        message = getattr(build_local_postgres_manager(), action)()
+    except LocalPostgresError as exc:
+        typer.echo(f"Database error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(message)
+
+
+@db_app.command("init")
+def initialize_database() -> None:
+    _run_db_action("initialize")
+
+
+@db_app.command("start")
+def start_database() -> None:
+    _run_db_action("start")
+
+
+@db_app.command("status")
+def database_status() -> None:
+    _run_db_action("status")
+
+
+@db_app.command("stop")
+def stop_database() -> None:
+    _run_db_action("stop")
 
 
 @sources_app.command("validate")
