@@ -117,6 +117,9 @@ class CandidateCluster(_Schema):
     reasons: tuple[str, ...] = ()
     state: str = "active"
     metadata: dict = Field(default_factory=dict)
+    # Source publication time is the event clock.  If a legacy item has no timestamp,
+    # clustering supplies the fixed Unix-epoch fallback rather than processing time.
+    occurred_at: datetime | None = None
 
 
 class EvidenceAssessment(_Schema):

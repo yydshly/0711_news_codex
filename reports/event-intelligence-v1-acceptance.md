@@ -65,3 +65,15 @@ screenshot was captured; status and rendered-byte checks are the textual browser
 - Real 24-hour and 7-day data did not establish category coverage.
 - Operation summaries omit duration, duplicate-root, retry, and model-fallback counters.
 - The actual migration head is `20260712_0008`; the brief expected `20260712_0007`.
+
+## Final-review reproducibility update
+
+The final regression suite uses an isolated environment: `.env` is moved aside in a `try/finally`
+block and restored immediately afterwards. The deterministic fixture suite now covers product/model,
+research, developer-tool, and company category inputs when live inputs do not supply all four.
+The real-data limitation remains transparent: the recorded live rounds did not establish all four
+categories.
+
+Operation summaries now record the bounded counters required for reruns: duration, retry count,
+duplicate-root suppression, and model-fallback count. The final run duration and retry values must
+be taken from the terminal operation records; no invented live values are included here.

@@ -43,9 +43,7 @@ class EventRepository:
                 algorithm_version=algorithm_version,
                 created_at=now,
             )
-            .on_conflict_do_nothing(
-                index_elements=["raw_item_id", "stage", "algorithm_version"]
-            )
+            .on_conflict_do_nothing(index_elements=["raw_item_id", "stage", "algorithm_version"])
         )
         record = self.session.scalar(
             select(RawItemProcessingRecord).where(
@@ -72,12 +70,14 @@ class EventRepository:
         }
         self.session.execute(
             self._insert(EventCandidateRecord)
-            .values({
-                EventCandidateRecord.candidate_key: candidate.candidate_key,
-                EventCandidateRecord.algorithm_version: algorithm_version,
-                EventCandidateRecord.created_at: now,
-                **values,
-            })
+            .values(
+                {
+                    EventCandidateRecord.candidate_key: candidate.candidate_key,
+                    EventCandidateRecord.algorithm_version: algorithm_version,
+                    EventCandidateRecord.created_at: now,
+                    **values,
+                }
+            )
             .on_conflict_do_update(
                 index_elements=["candidate_key", "algorithm_version"], set_=values
             )
@@ -170,6 +170,10 @@ class EventRepository:
                 reasons=tuple(record.metadata_json.get("_candidate_reasons", ())),
                 state=record.state,
                 metadata=record.metadata_json,
+                occurred_at=min(
+                    (item.published_at for item in items if item.published_at is not None),
+                    default=datetime(1970, 1, 1, tzinfo=UTC),
+                ),
             ),
             raw_item_ids,
         )
@@ -306,7 +310,7 @@ class EventRepository:
             from sqlalchemy.dialects.sqlite import insert
         else:
             raise ValueError(
-                "Unsupported event repository dialect: " f"{self.session.bind.dialect.name}"
+                f"Unsupported event repository dialect: {self.session.bind.dialect.name}"
             )
 
         return insert(record_type)

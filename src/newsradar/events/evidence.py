@@ -32,6 +32,16 @@ def _assess(item: ClusterItem) -> EvidenceAssessment:
         and source_allows_evidence
     )
     limitations: list[str] = []
+    # `original_url` is an audited upstream-attribution signal.  A distinct
+    # publisher URL that cites the same report is not an independent confirmation.
+    if (
+        role is EvidenceRole.PROFESSIONAL_MEDIA
+        and item.original_url
+        and item.canonical_url
+        and item.original_url != item.canonical_url
+    ):
+        independent = False
+        limitations.append("upstream_attribution_not_independent")
     if item.evidence_role is not None and item.evidence_role is not role:
         limitations.append("source_role_conflict")
     if role in {EvidenceRole.AGGREGATOR, EvidenceRole.SOCIAL, EvidenceRole.COMMUNITY}:
@@ -51,6 +61,13 @@ def _assess(item: ClusterItem) -> EvidenceAssessment:
 
 
 def _root_evidence_key(item: ClusterItem) -> str:
+    if (
+        item.source_nature == "professional_media"
+        and item.original_url
+        and item.canonical_url
+        and item.original_url != item.canonical_url
+    ):
+        return item.original_url
     if item.canonical_url:
         return item.canonical_url
     if item.original_url:

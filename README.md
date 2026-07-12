@@ -206,9 +206,8 @@ configured, rule-based enrichment continues without a model request. Never put c
 bodies, or unredacted upstream error URLs in acceptance notes; see
 `reports/event-intelligence-v1-acceptance.md` for scrubbed operational evidence.
 
-Use `operations list` to observe the fetch terminal status while the Worker is running. The current
-`fetch --wait` output path has a known post-completion status-rendering defect and is not the
-recommended operator workflow.
+`fetch --wait` and `events build --wait` retain terminal scalar state before their SQLAlchemy
+session closes, avoiding detached-instance failures while rendering terminal status.
 
 ## Quality gates
 

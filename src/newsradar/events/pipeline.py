@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,10 +18,12 @@ from newsradar.db.models import (
 )
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
 from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
-from newsradar.events.publishing import EventPublisher
+from newsradar.events.minimax import EventMiniMaxAdapter
+from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.relevance import RELEVANCE_RULE_VERSION, evaluate_relevance
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import ClusterItem, ProcessingStage, RawItemText
+from newsradar.settings import get_settings
 
 ALGORITHM_VERSIONS = {
     "relevance": RELEVANCE_RULE_VERSION,
@@ -35,6 +38,8 @@ class PipelineResult:
     created_event_versions: int
     candidate_count: int
     processed_item_count: int
+    duplicate_root_suppressed_count: int
+    model_fallback_count: int
 
 
 class EventPipeline:
@@ -60,13 +65,17 @@ class EventPipeline:
         checkpoint("after_event_rules")
         candidates = self._cluster(items)
         checkpoint("after_event_cluster")
-        event_ids, created_versions = self._publish(candidates, operation_id, checkpoint)
+        event_ids, created_versions, model_fallback_count = self._publish(
+            candidates, operation_id, checkpoint
+        )
         checkpoint("after_event_publish")
         return PipelineResult(
             current_event_ids=tuple(sorted(event_ids)),
             created_event_versions=created_versions,
             candidate_count=len(candidates),
             processed_item_count=len(items),
+            duplicate_root_suppressed_count=0,
+            model_fallback_count=model_fallback_count,
         )
 
     def _select_items(self, window_hours: int) -> tuple[ClusterItem, ...]:
@@ -144,6 +153,7 @@ class EventPipeline:
     def _publish(self, candidates, operation_id: int, checkpoint: Callable[[str], None]):
         event_ids: list[int] = []
         created = 0
+        model_fallback_count = 0
         for candidate in candidates:
             checkpoint("before_event_publish_candidate")
             with self._session_factory() as session:
@@ -159,14 +169,51 @@ class EventPipeline:
                 ):
                     event_ids.append(existing.id)
                 else:
-                    published = EventPublisher(EventRepository(session)).publish(
-                        candidate_record.id, operation_id
+                    repository = EventRepository(session)
+                    claimed_event_id: int | None = None
+                    if existing is not None:
+                        claimed_event_id = existing.id
+                        if not repository.claim_event(
+                            existing.id,
+                            operation_id,
+                            datetime.now(UTC) + timedelta(minutes=5),
+                        ):
+                            # Another worker owns this event; do not create a conflicting version.
+                            event_ids.append(existing.id)
+                            session.commit()
+                            continue
+                    enrichment = self._enrich(candidate)
+                    if enrichment.origin == "rule_fallback":
+                        model_fallback_count += 1
+                    published = EventPublisher(repository).publish(
+                        candidate_record.id, operation_id, enrichment
                     )
+                    if claimed_event_id is not None:
+                        repository.release_event(claimed_event_id, operation_id)
                     assert published.event_id is not None
                     event_ids.append(published.event_id)
                     created += 1
                 session.commit()
-        return event_ids, created
+        return event_ids, created, model_fallback_count
+
+    @staticmethod
+    def _enrich(candidate):
+        """Call MiniMax only in the Worker pipeline; hard fallback remains publishable."""
+        fallback = rule_enrichment(candidate)
+        settings = get_settings()
+        if not settings.minimax_api_key:
+            return fallback
+
+        async def run():
+            import httpx
+
+            async with httpx.AsyncClient() as http:
+                return await EventMiniMaxAdapter(settings, http).enrich_event(candidate, fallback)
+
+        try:
+            return asyncio.run(run())
+        except Exception:
+            return fallback
 
     @staticmethod
     def _has_same_membership(

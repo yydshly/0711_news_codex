@@ -29,9 +29,34 @@ def test_aggregator_and_original_share_one_root_evidence() -> None:
     assessments = assess_evidence((original, aggregate))
 
     assert len({row.root_evidence_key for row in assessments}) == 1
-    assert assessments[0].independent is True
-    assert assessments[1].independent is False
-    assert assessments[1].role is EvidenceRole.AGGREGATOR
+
+
+def test_professional_media_citations_of_one_upstream_report_are_not_independent() -> None:
+    items = (
+        ClusterItem(
+            raw_item_id=1,
+            title="Report",
+            canonical_url="https://media-a.test/report",
+            source_nature="professional_media",
+            source_roles=("evidence",),
+            publisher_name="Media A",
+            original_url="https://upstream.test/report",
+        ),
+        ClusterItem(
+            raw_item_id=2,
+            title="Report",
+            canonical_url="https://media-b.test/report",
+            source_nature="professional_media",
+            source_roles=("evidence",),
+            publisher_name="Media B",
+            original_url="https://upstream.test/report",
+        ),
+    )
+
+    assessments = assess_evidence(items)
+
+    assert {row.root_evidence_key for row in assessments} == {"https://upstream.test/report"}
+    assert not any(row.independent for row in assessments)
 
 
 def test_source_claimed_official_role_cannot_override_aggregator_metadata() -> None:

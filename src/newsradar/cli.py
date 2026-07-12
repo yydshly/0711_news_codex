@@ -169,9 +169,10 @@ def fetch_sources(
         if not wait:
             return
         terminals = [commands.wait_for_terminal(operation_id) for operation_id in operation_ids]
-    for operation in terminals:
-        typer.echo(f"Operation {operation.id}: {operation.status}")
-    if any(operation.status not in {"succeeded", "partial"} for operation in terminals):
+        terminal_states = [(operation.id, operation.status) for operation in terminals]
+    for operation_id, status in terminal_states:
+        typer.echo(f"Operation {operation_id}: {status}")
+    if any(status not in {"succeeded", "partial"} for _, status in terminal_states):
         raise typer.Exit(1)
 
 
@@ -260,12 +261,23 @@ def run_worker(
 
 
 @events_app.command("build")
-def build_events(hours: Annotated[int, typer.Option("--hours", min=1)] = 24) -> None:
+def build_events(
+    hours: Annotated[int, typer.Option("--hours", min=1)] = 24,
+    wait: Annotated[bool, typer.Option("--wait/--no-wait")] = True,
+) -> None:
     with create_session() as session:
-        operation_id = OperationCommandService(session).enqueue_event_pipeline(
+        commands = OperationCommandService(session)
+        operation_id = commands.enqueue_event_pipeline(
             window_hours=hours, trigger="cli"
         )
-    typer.echo(f"Queued event pipeline as operation {operation_id}")
+        typer.echo(f"Queued event pipeline as operation {operation_id}")
+        if not wait:
+            return
+        terminal = commands.wait_for_terminal(operation_id)
+        terminal_state = (terminal.id, terminal.status)
+    typer.echo(f"Operation {terminal_state[0]}: {terminal_state[1]}")
+    if terminal_state[1] not in {"succeeded", "partial"}:
+        raise typer.Exit(1)
 
 
 @events_app.command("list")

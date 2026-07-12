@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 
 from newsradar.events.schema import CandidateCluster, ClusterDecision, ClusterItem
@@ -59,11 +59,15 @@ def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster
         ids = tuple(member.raw_item_id for member in members)
         clusters.append(
             CandidateCluster(
-                candidate_key=_candidate_key(ids),
+                candidate_key=_candidate_key(members),
                 title=members[0].title,
                 items=members,
                 raw_item_ids=ids,
                 reasons=cluster_reasons,
+                occurred_at=min(
+                    (member.published_at for member in members if member.published_at is not None),
+                    default=datetime(1970, 1, 1, tzinfo=UTC),
+                ),
             )
         )
     return tuple(clusters)
@@ -182,9 +186,26 @@ def _action(title: str) -> str | None:
     return next((name for name, words in _ACTION_GROUPS.items() if tokens & words), None)
 
 
-def _candidate_key(raw_item_ids: tuple[int, ...]) -> str:
-    value = ",".join(str(raw_item_id) for raw_item_id in raw_item_ids)
-    return f"{CLUSTER_RULE_VERSION}:{sha256(value.encode()).hexdigest()[:16]}"
+def _candidate_key(items: tuple[ClusterItem, ...]) -> str:
+    """Durable identity: canonical/root entity + action + source-time bucket.
+
+    Member ids deliberately do not participate: later independent reporting changes a
+    version's memberships, not the identity of the underlying event.
+    """
+    primary = min(
+        (entity for item in items for entity in _non_generic_entities(item.entities)),
+        default="title:"
+        + min(
+            (item.title_fingerprint or item.title.casefold() for item in items), default=""
+        ),
+    )
+    action = next((value for value in (_action(item.title) for item in items) if value), "report")
+    occurred = min(
+        (item.published_at for item in items if item.published_at is not None),
+        default=datetime(1970, 1, 1, tzinfo=UTC),
+    )
+    value = f"{primary}|{action}|{occurred.date().isoformat()}"
+    return f"event-v2:{sha256(value.encode()).hexdigest()[:16]}"
 
 
 def _find(parents: list[int], index: int) -> int:

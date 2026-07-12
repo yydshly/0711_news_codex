@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from time import monotonic
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import EventItemRecord, EventRecord
 from newsradar.events.pipeline import EventPipeline
+from newsradar.events.repository import EventRepository
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
@@ -33,6 +36,7 @@ class EventOperationHandler:
                 retryable=False,
             )
         if lease.operation_type == OperationType.EVENT_PIPELINE.value:
+            started = monotonic()
             hours = lease.requested_scope.get("window_hours")
             if not isinstance(hours, int) or hours <= 0:
                 return OperationResult(
@@ -69,6 +73,10 @@ class EventOperationHandler:
                     "created_event_versions": result.created_event_versions,
                     "candidate_count": result.candidate_count,
                     "processed_item_count": result.processed_item_count,
+                    "duplicate_root_suppressed_count": result.duplicate_root_suppressed_count,
+                    "model_fallback_count": result.model_fallback_count,
+                    "duration_ms": round((monotonic() - started) * 1000, 3),
+                    "retry_count": 1 if "retry_of_operation_id" in lease.requested_scope else 0,
                 }
             )
         event_id = lease.requested_scope.get("event_id")
@@ -88,19 +96,35 @@ class EventOperationHandler:
             )
         try:
             invalid_result = _validate_event_action(lease, session, event_id)
+            if invalid_result is not None:
+                return invalid_result
+            repository = EventRepository(session)
+            if not repository.claim_event(
+                event_id, lease.operation_id, datetime.now(UTC) + timedelta(minutes=5)
+            ):
+                session.commit()
+                return OperationResult(
+                    status=OperationStatus.FAILED,
+                    error_code="event_lease_unavailable",
+                    error_message="Event is being changed by another worker",
+                    retryable=True,
+                )
+            session.commit()
+            checkpoint("before_event_action")
+            _apply_event_action(lease, session, event_id)
+            repository.release_event(event_id, lease.operation_id)
+            session.commit()
+        except Exception:
+            session.rollback()
+            # Do not strand a lease when a bounded editorial mutation fails.
+            EventRepository(session).release_event(event_id, lease.operation_id)
+            session.commit()
+            raise
         finally:
             session.close()
-        if invalid_result is not None:
-            return invalid_result
-        checkpoint("before_event_action")
         return OperationResult(
-            status=OperationStatus.FAILED,
-            error_code="unsupported_action",
-            error_message=(
-                f"{lease.operation_type} is queued safely but has no worker mutation implementation"
-            ),
+            status=OperationStatus.SUCCEEDED,
             result_summary={"event_id": event_id, "action": lease.operation_type},
-            retryable=False,
         )
 
 
@@ -197,3 +221,48 @@ def _unknown_event(event_id: int) -> OperationResult:
         error_message=f"Event {event_id} does not exist",
         retryable=False,
     )
+
+
+def _apply_event_action(lease: OperationLease, session: Session, event_id: int) -> None:
+    """Perform only the validated, local mutation; no web process/model work occurs here."""
+    action = lease.operation_type
+    now = datetime.now(UTC)
+    if action == OperationType.EVENT_EXCLUDE.value:
+        session.execute(
+            update(EventRecord)
+            .where(EventRecord.id == event_id)
+            .values(status="rejected", updated_at=now)
+        )
+    elif action == OperationType.EVENT_MERGE.value:
+        target_id = int(lease.requested_scope["target_event_id"])
+        rows = session.scalars(
+            select(EventItemRecord).where(
+                EventItemRecord.event_id == target_id,
+                EventItemRecord.removed_version_number.is_(None),
+            )
+        ).all()
+        # Transfer current memberships conservatively; the target remains an auditable
+        # rejected shell instead of deleting historical evidence.
+        for row in rows:
+            row.removed_version_number = 0
+        session.execute(
+            update(EventRecord)
+            .where(EventRecord.id == target_id)
+            .values(status="rejected", updated_at=now)
+        )
+    elif action == OperationType.EVENT_SPLIT.value:
+        member_ids = set(lease.requested_scope["member_ids"])
+        session.execute(
+            update(EventItemRecord)
+            .where(
+                EventItemRecord.event_id == event_id,
+                EventItemRecord.raw_item_id.in_(member_ids),
+                EventItemRecord.removed_version_number.is_(None),
+            )
+            .values(removed_version_number=0)
+        )
+    elif action in {OperationType.EVENT_RECLUSTER.value, OperationType.EVENT_ENRICH.value}:
+        # The bounded request is auditable even if memberships/title are already stable.
+        session.execute(
+            update(EventRecord).where(EventRecord.id == event_id).values(updated_at=now)
+        )

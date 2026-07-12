@@ -255,6 +255,30 @@ def test_fetch_enqueues_without_direct_network_work(monkeypatch, tmp_path: Path)
     ]
 
 
+def test_events_build_wait_prints_terminal_status_while_session_is_open(monkeypatch) -> None:
+    calls: list[int] = []
+
+    class Commands:
+        def __init__(self, session):
+            self.session = session
+
+        def enqueue_event_pipeline(self, **kwargs):
+            return 12
+
+        def wait_for_terminal(self, operation_id):
+            calls.append(operation_id)
+            return type("Terminal", (), {"id": operation_id, "status": "succeeded"})()
+
+    monkeypatch.setattr("newsradar.cli.OperationCommandService", Commands)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+
+    result = runner.invoke(app, ["events", "build", "--wait"])
+
+    assert result.exit_code == 0
+    assert calls == [12]
+    assert "Operation 12: succeeded" in result.stdout
+
+
 def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "sources"
     write_source(root)

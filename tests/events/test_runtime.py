@@ -31,7 +31,7 @@ def test_event_action_rejects_unknown_event_id() -> None:
     assert result.retryable is False
 
 
-def test_supported_web_action_is_nonretryable_until_its_mutation_is_implemented() -> None:
+def test_recluster_action_is_completed_by_the_worker() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -43,9 +43,28 @@ def test_supported_web_action_is_nonretryable_until_its_mutation_is_implemented(
         lambda _: None,
     )
 
-    assert result.status is OperationStatus.FAILED
-    assert result.error_code == "unsupported_action"
-    assert result.retryable is False
+    assert result.status is OperationStatus.SUCCEEDED
+    assert result.result_summary["action"] == "event_recluster"
+
+
+def test_exclude_action_marks_event_rejected_and_releases_lease() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(EventRecord(id=7, canonical_key="exclude", status="confirmed"))
+        db.commit()
+
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(1, 9, 1, "worker", {"event_id": 7, "actor": "web"}, "event_exclude"),
+        lambda _: None,
+    )
+
+    with Session(engine) as db:
+        event = db.get(EventRecord, 7)
+        assert event is not None
+        assert event.status == "rejected"
+        assert event.lease_operation_id is None
+    assert result.status is OperationStatus.SUCCEEDED
 
 
 def test_merge_validates_both_event_targets_before_returning_unsupported() -> None:
