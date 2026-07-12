@@ -198,6 +198,51 @@ def test_fetch_one_off_requires_confirmation(tmp_path: Path) -> None:
     assert "One-off fetch risk" in result.stdout
 
 
+def test_fetch_enqueues_without_direct_network_work(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    source = valid_source()
+    source["ingestion"] = {"enabled": True, "approved_at": "2026-07-12"}
+    root.mkdir()
+    (root / "source.yaml").write_text(yaml.safe_dump(source), encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    class FakeSourceRepository:
+        def __init__(self, session):
+            pass
+
+        def sync(self, selected):
+            assert len(selected) == 1
+
+    class FakeCommands:
+        def __init__(self, session):
+            pass
+
+        def enqueue_fetch(self, **kwargs):
+            calls.append(kwargs)
+            return 41
+
+    monkeypatch.setattr("newsradar.cli.SourceRepository", FakeSourceRepository)
+    monkeypatch.setattr("newsradar.cli.OperationCommandService", FakeCommands)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+
+    result = runner.invoke(
+        app, ["fetch", "anthropic-news", "--root", str(root), "--no-wait"]
+    )
+
+    assert result.exit_code == 0
+    assert "Queued operations: 41" in result.stdout
+    assert calls == [
+        {
+            "source_id": "anthropic-news",
+            "provider": None,
+            "dry_run": False,
+            "max_items": None,
+            "one_off": False,
+            "trigger": "cli",
+        }
+    ]
+
+
 def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "sources"
     write_source(root)
@@ -229,46 +274,7 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     assert "processed 1 operation" in result.stdout
 
 
-@pytest.mark.asyncio
-async def test_fetch_batch_isolates_one_source_processing_exception(monkeypatch) -> None:
-    from newsradar.ingestion.schema import FetchOutcome, FetchResult
-    from newsradar.ingestion.service import SourceFetchSummary
+def test_cli_has_no_direct_fetch_batch_runner() -> None:
+    from newsradar import cli as cli_module
 
-    class Policy:
-        class client:
-            @staticmethod
-            async def aclose():
-                return None
-
-    class Service:
-        def __init__(self, session, factory):
-            pass
-
-        async def fetch_source(self, source, **kwargs):
-            if source.id == "broken":
-                raise RuntimeError("write failed")
-            return SourceFetchSummary(source.id, FetchResult(outcome=FetchOutcome.SUCCEEDED))
-
-    first = valid_source()
-    first["id"] = "broken"
-    second = valid_source()
-    second["id"] = "healthy"
-    monkeypatch.setattr("newsradar.cli.HttpPolicy.default", lambda: Policy())
-    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
-    monkeypatch.setattr("newsradar.cli.IngestionService", Service)
-
-    from newsradar.cli import _fetch_sources
-    from newsradar.sources.schema import SourceDefinition
-
-    results = await _fetch_sources(
-        [SourceDefinition.model_validate(first), SourceDefinition.model_validate(second)],
-        approved=True,
-        max_items=None,
-        dry_run=False,
-        operation_id=1,
-    )
-
-    assert [result.result.outcome for result in results] == [
-        FetchOutcome.FAILED,
-        FetchOutcome.SUCCEEDED,
-    ]
+    assert not hasattr(cli_module, "_fetch_sources")

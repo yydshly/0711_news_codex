@@ -20,8 +20,7 @@ from starlette.templating import Jinja2Templates
 from newsradar.db.models import SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
-from newsradar.operations.repository import OperationRepository
-from newsradar.operations.schema import OperationType
+from newsradar.operations.commands import OperationCommandService
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.diagnostics import build_diagnostic_narrative
 from newsradar.web.i18n import zh_label
@@ -495,13 +494,14 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 )
                 if source_exists is None:
                     raise HTTPException(status_code=422, detail="unknown source_id")
-                operation = OperationRepository(session).enqueue(
-                    OperationType.FETCH,
-                    {"source_id": source_id, "provider": None, "dry_run": False},
+                operation_id = OperationCommandService(session).enqueue_fetch(
+                    source_id=source_id,
+                    provider=None,
+                    dry_run=False,
+                    max_items=None,
+                    one_off=False,
                     trigger="web",
                 )
-                session.commit()
-                operation_id = operation.id
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)

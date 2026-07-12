@@ -13,15 +13,14 @@ import typer
 from newsradar.db.models import OperationRunRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
-from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
-from newsradar.ingestion.service import IngestionService
 from newsradar.local_postgres import (
     LocalPostgresError,
     build_local_postgres_manager,
 )
+from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.fetch_runtime import FetchOperationHandler
 from newsradar.operations.repository import OperationRepository
-from newsradar.operations.schema import OperationStatus, OperationType
+from newsradar.operations.schema import OperationType
 from newsradar.operations.worker import Worker
 from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
@@ -94,45 +93,6 @@ def run_web(
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
 
 
-async def _fetch_sources(
-    selected, *, approved: bool, max_items: int | None, dry_run: bool, operation_id: int
-):
-    policy = HttpPolicy.default()
-    semaphore = asyncio.Semaphore(4)
-
-    async def fetch_one(source):
-        async with semaphore:
-            # Each source owns a Session so failures do not leak transaction state.
-            with create_session() as session:
-                service = IngestionService(session, FetcherFactory(policy))
-                try:
-                    return await service.fetch_source(
-                        source,
-                        approved_only=approved,
-                        max_items=max_items,
-                        dry_run=dry_run,
-                        operation_run_id=operation_id,
-                    )
-                except Exception as exc:
-                    from newsradar.ingestion.schema import FetchOutcome, FetchResult
-                    from newsradar.ingestion.service import SourceFetchSummary
-
-                    return SourceFetchSummary(
-                        source.id,
-                        FetchResult(
-                            outcome=FetchOutcome.FAILED,
-                            error_code="source_processing_failed",
-                            error_message=str(exc),
-                        ),
-                        error_code="source_processing_failed",
-                    )
-
-    try:
-        return await asyncio.gather(*(fetch_one(source) for source in selected))
-    finally:
-        await policy.client.aclose()
-
-
 @app.command("fetch")
 def fetch_sources(
     source_id: Annotated[str | None, typer.Argument()] = None,
@@ -142,8 +102,9 @@ def fetch_sources(
     provider: Annotated[str | None, typer.Option()] = None,
     max_items: Annotated[int | None, typer.Option(min=1)] = None,
     dry_run: Annotated[bool, typer.Option()] = False,
+    wait: Annotated[bool, typer.Option("--wait/--no-wait")] = True,
 ) -> None:
-    """Run a bounded synchronous fetch operation for audited source definitions."""
+    """Queue audited source fetches; only a Worker performs network work."""
     sources = load_source_tree(root)
     selected = [source for source in sources if source_id is None or source.id == source_id]
     if provider:
@@ -162,40 +123,36 @@ def fetch_sources(
         )
         if not typer.confirm("Proceed with this one-off fetch?"):
             raise typer.Exit(1)
-        approved = False
     else:
+        if not approved:
+            typer.echo("--no-approved requires an explicit source id with --one-off")
+            raise typer.Exit(2)
         selected = [source for source in selected if source.ingestion.enabled]
         if not selected:
             typer.echo("No approved ingestion sources; use SOURCE_ID --one-off to request one.")
             raise typer.Exit(2)
     with create_session() as session:
         SourceRepository(session).sync(selected)
-        operation = OperationRepository(session).enqueue(
-            OperationType.FETCH,
-            {"source_id": source_id, "provider": provider, "dry_run": dry_run},
-        )
-        session.commit()
-        operation_id = operation.id
-    summaries = asyncio.run(
-        _fetch_sources(
-            selected,
-            approved=approved,
-            max_items=max_items,
-            dry_run=dry_run,
-            operation_id=operation_id,
-        )
-    )
-    with create_session() as session:
-        operation = session.get(OperationRunRecord, operation_id)
-        if operation is not None:
-            operation.status = (
-                OperationStatus.PARTIAL.value
-                if any(item.result.outcome.value == "failed" for item in summaries)
-                else OperationStatus.SUCCEEDED.value
+        commands = OperationCommandService(session)
+        operation_ids = [
+            commands.enqueue_fetch(
+                source_id=source.id,
+                provider=provider,
+                dry_run=dry_run,
+                max_items=max_items,
+                one_off=one_off,
+                trigger="cli",
             )
-            session.commit()
-    for summary in summaries:
-        typer.echo(f"{summary.source_id}: {summary.result.outcome}")
+            for source in selected
+        ]
+        typer.echo(f"Queued operations: {', '.join(map(str, operation_ids))}")
+        if not wait:
+            return
+        terminals = [commands.wait_for_terminal(operation_id) for operation_id in operation_ids]
+    for operation in terminals:
+        typer.echo(f"Operation {operation.id}: {operation.status}")
+    if any(operation.status not in {"succeeded", "partial"} for operation in terminals):
+        raise typer.Exit(1)
 
 
 @operations_app.command("list")

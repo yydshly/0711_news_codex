@@ -53,9 +53,12 @@ def test_fetch_action_enqueues_once_and_never_fetches_in_request(monkeypatch, db
     assert operations[0].operation_type == "fetch"
     assert operations[0].requested_scope == {
         "dry_run": False,
+        "max_items": None,
+        "one_off": False,
         "provider": None,
         "source_id": "github-openai-python",
     }
+    assert operations[0].trigger == "web"
 
 
 def test_fetch_action_rejects_non_loopback_origin_and_unknown_source(monkeypatch, db_session):
