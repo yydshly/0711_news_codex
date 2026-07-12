@@ -83,6 +83,21 @@ def stop_database() -> None:
     _run_db_action("stop")
 
 
+@db_app.command("repair")
+def repair_database(
+    password: Annotated[
+        str | None,
+        typer.Option("--password", prompt=True, hide_input=True),
+    ] = None,
+) -> None:
+    try:
+        message = build_local_postgres_manager().repair(password=password)
+    except LocalPostgresError as exc:
+        typer.echo(f"Database error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(message)
+
+
 @app.command("web")
 def run_web(
     host: Annotated[str, typer.Option()] = "127.0.0.1",

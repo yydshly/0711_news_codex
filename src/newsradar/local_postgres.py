@@ -38,6 +38,7 @@ class LocalPostgresPaths:
         "pg_ctl.exe",
         "createdb.exe",
         "pg_isready.exe",
+        "psql.exe",
     )
 
     @classmethod
@@ -128,6 +129,7 @@ class LocalPostgresManager:
         runtime_dir = self.paths.data_dir.parent
         runtime_dir.mkdir(parents=True, exist_ok=True)
         password_path: Path | None = None
+        started = False
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -150,29 +152,78 @@ class LocalPostgresManager:
                     f"--pwfile={password_path}",
                 ]
             )
+            self._configure_cluster()
+            self._start_process()
+            started = True
+            process_env = os.environ.copy()
+            process_env["PGPASSWORD"] = generated_password
+            self._run(
+                [
+                    self._binary("createdb.exe"),
+                    "--host",
+                    POSTGRES_HOST,
+                    "--port",
+                    str(POSTGRES_PORT),
+                    "--username",
+                    POSTGRES_USER,
+                    POSTGRES_DATABASE,
+                ],
+                env=process_env,
+            )
+            self.write_database_url(generated_password)
+        except Exception:
+            if started:
+                self._stop_process_safely()
+            raise
         finally:
             if password_path is not None:
                 password_path.unlink(missing_ok=True)
-
-        self._configure_cluster()
-        self._start_process()
-        process_env = os.environ.copy()
-        process_env["PGPASSWORD"] = generated_password
-        self._run(
-            [
-                self._binary("createdb.exe"),
-                "--host",
-                POSTGRES_HOST,
-                "--port",
-                str(POSTGRES_PORT),
-                "--username",
-                POSTGRES_USER,
-                POSTGRES_DATABASE,
-            ],
-            env=process_env,
-        )
-        self.write_database_url(generated_password)
         return f"Project-local PostgreSQL initialized at {POSTGRES_HOST}:{POSTGRES_PORT}."
+
+    def repair(self, *, password: str | None = None) -> str:
+        has_cluster = self._is_initialized()
+        has_database_url = self._has_database_url()
+        if not has_cluster:
+            if has_database_url:
+                raise LocalPostgresError(
+                    "Local PostgreSQL data is missing while .env still contains the project "
+                    "DATABASE_URL; preserve .env and backups, then restore data manually"
+                )
+            raise LocalPostgresError("Project-local PostgreSQL is not initialized; run db init")
+        if has_database_url:
+            return "Project-local PostgreSQL does not require repair."
+        if not password:
+            raise LocalPostgresError("A database password is required to repair DATABASE_URL")
+
+        started = False
+        try:
+            if not self._cluster_running():
+                if self._port_in_use():
+                    raise LocalPostgresError(f"Port {POSTGRES_PORT} is already in use")
+                self._start_process()
+                started = True
+            if not self._database_exists(password):
+                process_env = os.environ.copy()
+                process_env["PGPASSWORD"] = password
+                self._run(
+                    [
+                        self._binary("createdb.exe"),
+                        "--host",
+                        POSTGRES_HOST,
+                        "--port",
+                        str(POSTGRES_PORT),
+                        "--username",
+                        POSTGRES_USER,
+                        POSTGRES_DATABASE,
+                    ],
+                    env=process_env,
+                )
+            self.write_database_url(password)
+        except Exception:
+            if started:
+                self._stop_process_safely()
+            raise
+        return "Project-local PostgreSQL repaired without deleting data or logs."
 
     def write_database_url(self, password: str) -> str:
         encoded_password = quote(password, safe="")
@@ -270,6 +321,44 @@ class LocalPostgresManager:
             ],
             capture_output=False,
         )
+
+    def _stop_process_safely(self) -> None:
+        try:
+            self._run(
+                [
+                    self._binary("pg_ctl.exe"),
+                    "--pgdata",
+                    str(self.paths.data_dir),
+                    "--wait",
+                    "stop",
+                ],
+                check=False,
+            )
+        except LocalPostgresError:
+            pass
+
+    def _database_exists(self, password: str) -> bool:
+        process_env = os.environ.copy()
+        process_env["PGPASSWORD"] = password
+        result = self._run(
+            [
+                self._binary("psql.exe"),
+                "--host",
+                POSTGRES_HOST,
+                "--port",
+                str(POSTGRES_PORT),
+                "--username",
+                POSTGRES_USER,
+                "--dbname",
+                "postgres",
+                "--tuples-only",
+                "--no-align",
+                "--command",
+                f"SELECT 1 FROM pg_database WHERE datname = '{POSTGRES_DATABASE}'",
+            ],
+            env=process_env,
+        )
+        return result.stdout.strip() == "1"
 
     def _cluster_running(self) -> bool:
         result = self._run(

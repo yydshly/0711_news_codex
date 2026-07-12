@@ -15,9 +15,13 @@ from newsradar.local_postgres import (
 def make_install(root: Path) -> Path:
     bin_dir = root / "PostgreSQL" / "18" / "bin"
     bin_dir.mkdir(parents=True)
-    for name in ("initdb.exe", "pg_ctl.exe", "createdb.exe", "pg_isready.exe"):
+    for name in ("initdb.exe", "pg_ctl.exe", "createdb.exe", "pg_isready.exe", "psql.exe"):
         (bin_dir / name).touch()
     return bin_dir
+
+
+def test_repair_dependency_is_part_of_postgres_discovery() -> None:
+    assert "psql.exe" in LocalPostgresPaths.required_binaries
 
 
 def test_paths_are_project_local_and_postgres_home_is_selected(tmp_path, monkeypatch):
@@ -188,3 +192,58 @@ def test_subprocess_failure_is_redacted(tmp_path):
 
     with pytest.raises(LocalPostgresError, match="database command failed"):
         manager.start()
+
+
+def test_initialize_failure_stops_started_cluster_and_preserves_data(tmp_path):
+    paths = LocalPostgresPaths(
+        project_root=tmp_path,
+        bin_dir=make_install(tmp_path),
+        data_dir=tmp_path / ".local" / "postgres" / "data",
+        log_file=tmp_path / ".local" / "postgres" / "postgres.log",
+        env_file=tmp_path / ".env",
+    )
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        command = [str(part) for part in command]
+        calls.append(command)
+        if command[0].endswith("initdb.exe"):
+            paths.data_dir.mkdir(parents=True, exist_ok=True)
+            (paths.data_dir / "PG_VERSION").write_text("18", encoding="utf-8")
+            (paths.data_dir / "postgresql.conf").write_text("", encoding="utf-8")
+        if command[0].endswith("createdb.exe"):
+            raise subprocess.CalledProcessError(1, command, stderr="create failed")
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    manager = LocalPostgresManager(paths, runner=runner, port_in_use=lambda: False)
+
+    with pytest.raises(LocalPostgresError, match="create failed"):
+        manager.initialize(password="fixed")
+
+    assert any(command[0].endswith("pg_ctl.exe") and "stop" in command for command in calls)
+    assert (paths.data_dir / "PG_VERSION").is_file()
+    assert not paths.env_file.exists()
+
+
+def test_repair_restores_missing_env_for_valid_cluster(tmp_path):
+    paths = LocalPostgresPaths(
+        project_root=tmp_path,
+        bin_dir=make_install(tmp_path),
+        data_dir=tmp_path / ".local" / "postgres" / "data",
+        log_file=tmp_path / ".local" / "postgres" / "postgres.log",
+        env_file=tmp_path / ".env",
+    )
+    paths.data_dir.mkdir(parents=True)
+    (paths.data_dir / "PG_VERSION").write_text("18", encoding="utf-8")
+
+    def runner(command, **kwargs):
+        command = [str(part) for part in command]
+        stdout = "1\n" if command[0].endswith("psql.exe") else "ok"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    manager = LocalPostgresManager(paths, runner=runner, port_in_use=lambda: True)
+
+    message = manager.repair(password="fixed")
+
+    assert "repaired" in message.lower()
+    assert "DATABASE_URL=" in paths.env_file.read_text(encoding="utf-8")

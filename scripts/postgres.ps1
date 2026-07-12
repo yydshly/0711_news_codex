@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("init", "start", "status", "stop")]
+    [ValidateSet("init", "start", "status", "stop", "repair")]
     [string]$Action = "status"
 )
 

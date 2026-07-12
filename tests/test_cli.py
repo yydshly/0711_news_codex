@@ -105,10 +105,23 @@ def test_db_command_turns_manager_error_into_safe_cli_failure(monkeypatch) -> No
     assert "Database error: Port 55432 is already in use" in result.output
 
 
+def test_db_repair_passes_hidden_password_without_printing_it(monkeypatch) -> None:
+    fake = Mock()
+    fake.repair.return_value = "Database repaired."
+    monkeypatch.setattr("newsradar.cli.build_local_postgres_manager", lambda: fake)
+
+    result = runner.invoke(app, ["db", "repair", "--password", "private-value"])
+
+    assert result.exit_code == 0
+    assert "Database repaired." in result.stdout
+    assert "private-value" not in result.output
+    fake.repair.assert_called_once_with(password="private-value")
+
+
 def test_powershell_wrapper_limits_actions_and_delegates_to_cli() -> None:
     wrapper = Path("scripts/postgres.ps1").read_text(encoding="utf-8")
 
-    assert 'ValidateSet("init", "start", "status", "stop")' in wrapper
+    assert 'ValidateSet("init", "start", "status", "stop", "repair")' in wrapper
     assert "uv run newsradar db $Action" in wrapper
     assert "Get-ChildItem Env:" not in wrapper
 

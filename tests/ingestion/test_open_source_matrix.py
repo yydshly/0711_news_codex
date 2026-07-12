@@ -21,9 +21,12 @@ MATRIX_IDS = {
 def test_enabled_open_source_matrix_has_direct_identity_endpoint_and_approval() -> None:
     sources = {source.id: source for source in load_source_tree(Path("sources"))}
     matrix = {source_id: sources[source_id] for source_id in MATRIX_IDS}
+    enabled_matrix = {
+        source_id: source for source_id, source in matrix.items() if source_id != "gdelt-ai"
+    }
 
-    assert all(source.ingestion.enabled for source in matrix.values())
-    assert all(source.ingestion.approved_at is not None for source in matrix.values())
+    assert all(source.ingestion.enabled for source in enabled_matrix.values())
+    assert all(source.ingestion.approved_at is not None for source in enabled_matrix.values())
     assert all(source.official_identity_url is not None for source in matrix.values())
     assert all(source.access_methods and source.risk.evidence for source in matrix.values())
     assert sum(s.nature is SourceNature.PROFESSIONAL_MEDIA for s in matrix.values()) >= 5
@@ -35,3 +38,5 @@ def test_enabled_open_source_matrix_has_direct_identity_endpoint_and_approval() 
     for source in matrix.values():
         assert source.roles
         assert source.risk.total >= 0
+    assert matrix["gdelt-ai"].status.value == "degraded"
+    assert matrix["gdelt-ai"].ingestion.enabled is False
