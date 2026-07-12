@@ -50,13 +50,31 @@ def evaluate_fetch_eligibility(
     if approved_only and not source.ingestion.enabled:
         return _blocked("not_approved", "禁止抓取：来源未列入已批准抓取清单。")
 
-    eligible_methods = [
-        method for method in source.access_methods if method.kind != AccessKind.HTML
+    automatic_methods = [
+        method
+        for method in source.access_methods
+        if method.kind != AccessKind.HTML and not method.requires_manual_approval
     ]
-    if not eligible_methods:
+    if not automatic_methods:
+        if any(method.requires_manual_approval for method in source.access_methods):
+            return _blocked(
+                "manual_approval_required",
+                "禁止抓取：仅提供需要人工审批的访问方式。",
+            )
         return _blocked("html_only", "禁止抓取：仅提供 HTML 访问方式。")
 
-    for method in eligible_methods:
+    if source.availability == Availability.REQUIRES_CREDENTIALS:
+        credential_methods = [method for method in automatic_methods if method.auth_env]
+        for method in credential_methods:
+            if method.auth_env in configured_env:
+                return EligibilityDecision(
+                    allowed=True,
+                    reason=f"允许抓取：已选择已审核的 {method.kind.value} 访问方式。",
+                    access_method=method,
+                )
+        return _blocked("missing_credentials", "禁止抓取：缺少所选访问方式需要的凭据。")
+
+    for method in automatic_methods:
         if method.auth_env is None or method.auth_env in configured_env:
             return EligibilityDecision(
                 allowed=True,

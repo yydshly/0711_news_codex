@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 from html import unescape
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -63,7 +63,11 @@ def content_hash(item: NormalizedRawItem) -> str:
 
 
 def _timestamp_value(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
+    if value is None:
+        return None
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        return value.astimezone(UTC).isoformat()
+    return value.isoformat()
 
 
 def _title_tokens(value: str) -> set[str]:

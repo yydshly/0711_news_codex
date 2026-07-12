@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 from newsradar.ingestion.normalization import (
     content_hash,
@@ -52,6 +52,19 @@ def test_content_hash_is_stable_and_excludes_engagement_and_raw_payload() -> Non
     assert content_hash(original) == content_hash(observation_update)
     expected = "8056597a71c701609e9d589f6538ae163f75d3da2a4ce4370d29c1ed7a3465e9"
     assert content_hash(original) == expected
+
+
+def test_content_hash_normalizes_aware_timestamps_to_utc() -> None:
+    utc_item = item(
+        published_at=datetime(2026, 7, 11, 12, tzinfo=UTC),
+        source_updated_at=datetime(2026, 7, 11, 13, tzinfo=UTC),
+    )
+    offset_item = item(
+        published_at=datetime(2026, 7, 11, 5, tzinfo=timezone(timedelta(hours=-7))),
+        source_updated_at=datetime(2026, 7, 11, 6, tzinfo=timezone(timedelta(hours=-7))),
+    )
+
+    assert content_hash(utc_item) == content_hash(offset_item)
 
 
 def test_title_similarity_uses_normalized_tokens_and_seven_day_boundary() -> None:

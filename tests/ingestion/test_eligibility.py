@@ -38,7 +38,7 @@ def make_source(**changes: object) -> SourceDefinition:
             set(),
             None,
             False,
-            "html_only",
+            "manual_approval_required",
         ),
         (
             {
@@ -115,3 +115,68 @@ def test_evaluate_fetch_eligibility_skips_unconfigured_method_for_configured_fal
     assert decision.allowed is True
     assert decision.access_method is not None
     assert decision.access_method.kind.value == "rss"
+
+
+@pytest.mark.parametrize("kind", ["rest_api", "public_api"])
+def test_evaluate_fetch_eligibility_blocks_manual_approval_methods(kind: str) -> None:
+    source = make_source(
+        access_methods=[
+            {
+                "kind": kind,
+                "url": "https://www.anthropic.com/api/news",
+                "priority": 1,
+                "requires_manual_approval": True,
+            }
+        ]
+    )
+
+    decision = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env=set(),
+        hard_block_reason=None,
+    )
+
+    assert decision.allowed is False
+    assert decision.error_code == "manual_approval_required"
+    assert decision.reason == "禁止抓取：仅提供需要人工审批的访问方式。"
+    assert decision.access_method is None
+
+
+def test_requires_credentials_rejects_method_without_declared_credential() -> None:
+    source = make_source(availability="requires_credentials")
+
+    decision = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env={"UNRELATED_TOKEN"},
+        hard_block_reason=None,
+    )
+
+    assert decision.allowed is False
+    assert decision.error_code == "missing_credentials"
+
+
+def test_requires_credentials_allows_configured_declared_credential_method() -> None:
+    source = make_source(
+        availability="requires_credentials",
+        access_methods=[
+            {
+                "kind": "rest_api",
+                "url": "https://www.anthropic.com/api/news",
+                "priority": 1,
+                "auth_env": "NEWS_API_TOKEN",
+            }
+        ],
+    )
+
+    decision = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env={"NEWS_API_TOKEN"},
+        hard_block_reason=None,
+    )
+
+    assert decision.allowed is True
+    assert decision.access_method is not None
+    assert decision.access_method.auth_env == "NEWS_API_TOKEN"
