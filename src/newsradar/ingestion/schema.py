@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
+from newsradar.ingestion.attribution import OriginResolutionStatus
 from newsradar.operations.schema import ErrorCategory
 
 
@@ -33,6 +34,14 @@ class NormalizedRawItem(BaseModel):
     source_updated_at: datetime | None = None
     discussion_url: AnyHttpUrl | None = None
     engagement: dict[str, int | float] = Field(default_factory=dict)
+    item_kind: str = "article"
+    publisher_name: str | None = None
+    publisher_url: AnyHttpUrl | None = None
+    discovery_url: AnyHttpUrl | None = None
+    origin_resolution_status: OriginResolutionStatus = OriginResolutionStatus.UNRESOLVED
+    author_account_id: str | None = None
+    author_handle: str | None = None
+    thread_root_id: str | None = None
     raw_payload: dict[str, Any]
 
 

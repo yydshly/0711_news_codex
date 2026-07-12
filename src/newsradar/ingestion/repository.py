@@ -125,6 +125,7 @@ class RawItemRepository:
             else:
                 current.engagement = dict(item.engagement)
                 current.raw_payload = item.raw_payload
+                self._apply_attribution(current, item)
             current.last_seen_run_id = fetch_run_id
             current.last_seen_at = _now()
             current.fetched_at = _now()
@@ -170,8 +171,19 @@ class RawItemRepository:
         record.source_updated_at = item.source_updated_at
         record.discussion_url = str(item.discussion_url) if item.discussion_url else None
         record.engagement = dict(item.engagement)
+        self._apply_attribution(record, item)
         record.raw_payload = item.raw_payload
         record.payload = item.model_dump(mode="json")
+
+    def _apply_attribution(self, record: RawItemRecord, item: NormalizedRawItem) -> None:
+        record.item_kind = item.item_kind
+        record.publisher_name = item.publisher_name
+        record.publisher_url = str(item.publisher_url) if item.publisher_url else None
+        record.discovery_url = str(item.discovery_url) if item.discovery_url else None
+        record.origin_resolution_status = item.origin_resolution_status.value
+        record.author_account_id = item.author_account_id
+        record.author_handle = item.author_handle
+        record.thread_root_id = item.thread_root_id
 
     def _add_snapshot(
         self, record: RawItemRecord, fetch_run_id: int, item: NormalizedRawItem
