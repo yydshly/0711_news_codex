@@ -83,13 +83,28 @@ class ExtractedEntity(_Schema):
 class ClusterItem(_Schema):
     raw_item_id: int
     evidence_role: EvidenceRole | None = None
-    similarity: float = Field(ge=0, le=1)
+    similarity: float = Field(default=0, ge=0, le=1)
+    title: str = ""
+    canonical_url: str | None = None
+    canonical_url_hash: str | None = None
+    original_url: str | None = None
+    title_fingerprint: str | None = None
+    entities: tuple[str, ...] = ()
+    repository_id: str | None = None
+    paper_id: str | None = None
+    published_at: datetime | None = None
+    source_nature: str | None = None
+    source_roles: tuple[str, ...] = ()
+    provider_category: str | None = None
+    publisher_name: str | None = None
 
 
 class ClusterDecision(_Schema):
-    candidate_key: str
-    should_merge: bool
-    confidence: float = Field(ge=0, le=1)
+    candidate_key: str = ""
+    should_merge: bool = False
+    confidence: float = Field(default=0, ge=0, le=1)
+    matched: bool = False
+    score: float = Field(default=0, ge=0, le=1)
     reasons: tuple[str, ...] = ()
 
 
@@ -98,15 +113,20 @@ class CandidateCluster(_Schema):
     title: str = ""
     category: EventCategory | None = None
     items: tuple[ClusterItem, ...] = ()
+    raw_item_ids: tuple[int, ...] = ()
+    reasons: tuple[str, ...] = ()
     state: str = "active"
     metadata: dict = Field(default_factory=dict)
 
 
 class EvidenceAssessment(_Schema):
-    raw_item_id: int
+    raw_item_id: int | None = None
     role: EvidenceRole
-    credibility: float = Field(ge=0, le=100)
+    credibility: float = Field(default=0, ge=0, le=100)
     rationale: tuple[str, ...] = ()
+    root_evidence_key: str = ""
+    independent: bool = False
+    limitations: tuple[str, ...] = ()
 
 
 class EventScoreInput(_Schema):

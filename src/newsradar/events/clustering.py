@@ -1,0 +1,192 @@
+"""Bounded, deterministic candidate clustering rules."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from hashlib import sha256
+
+from newsradar.events.schema import CandidateCluster, ClusterDecision, ClusterItem
+
+CLUSTER_RULE_VERSION = "cluster-v1"
+_CANDIDATE_WINDOW_SECONDS = 48 * 60 * 60
+_GENERIC_ENTITIES = frozenset({"ai", "agent", "api", "benchmark", "llm", "model"})
+_ACTION_GROUPS = {
+    "launch": frozenset(
+        {"announce", "announced", "launch", "launches", "launched", "release", "released"}
+    ),
+    "acquire": frozenset({"acquire", "acquires", "acquired", "acquisition"}),
+    "partner": frozenset({"partner", "partners", "partnership"}),
+    "fund": frozenset({"funding", "raises", "raised", "investment"}),
+}
+
+
+def compare_items(left: ClusterItem, right: ClusterItem) -> ClusterDecision:
+    """Compare a pre-blocked pair using local, explainable evidence only."""
+    reasons: list[str] = []
+    left_action, right_action = _action(left.title), _action(right.title)
+    if left_action and right_action and left_action != right_action:
+        return _decision(False, 0.0, ("conflicting_action",))
+
+    score = 0.0
+    if left.canonical_url_hash and left.canonical_url_hash == right.canonical_url_hash:
+        reasons.append("same_canonical_url")
+        score += 1.0
+    if left.original_url and left.original_url == right.original_url:
+        reasons.append("same_original_url")
+        score += 1.0
+    if left.repository_id and left.repository_id == right.repository_id:
+        reasons.append("same_repository_id")
+        score += 1.0
+    if left.paper_id and left.paper_id == right.paper_id:
+        reasons.append("same_paper_id")
+        score += 1.0
+    if left.title_fingerprint and left.title_fingerprint == right.title_fingerprint:
+        reasons.append("same_title_fingerprint")
+        score += 0.8
+    score += _entity_action_similarity(left, right, left_action, right_action, reasons)
+    score += _time_similarity(left.published_at, right.published_at, reasons)
+    return _decision(score >= 1.0, score, tuple(reasons))
+
+
+def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster, ...]:
+    """Union matching pairs only when a blocking key and 48-hour window permit it."""
+    ordered = tuple(sorted(items, key=lambda item: item.raw_item_id))
+    parents = list(range(len(ordered)))
+    reasons_by_index: list[set[str]] = [set() for _ in ordered]
+    for left_index, left in enumerate(ordered):
+        for right_index in range(left_index + 1, len(ordered)):
+            right = ordered[right_index]
+            if not _within_candidate_window(left, right) or not _shares_blocking_key(left, right):
+                continue
+            decision = compare_items(left, right)
+            if decision.matched and _can_union_within_window(
+                parents, ordered, left_index, right_index
+            ):
+                _union(parents, left_index, right_index)
+                reasons_by_index[left_index].update(decision.reasons)
+                reasons_by_index[right_index].update(decision.reasons)
+
+    grouped: dict[int, list[int]] = {}
+    for index in range(len(ordered)):
+        grouped.setdefault(_find(parents, index), []).append(index)
+    clusters = []
+    for indexes in grouped.values():
+        members = tuple(ordered[index] for index in indexes)
+        cluster_reasons = tuple(
+            sorted({reason for index in indexes for reason in reasons_by_index[index]})
+        )
+        ids = tuple(member.raw_item_id for member in members)
+        clusters.append(
+            CandidateCluster(
+                candidate_key=_candidate_key(ids),
+                title=members[0].title,
+                items=members,
+                raw_item_ids=ids,
+                reasons=cluster_reasons,
+            )
+        )
+    return tuple(clusters)
+
+
+def _decision(matched: bool, score: float, reasons: tuple[str, ...]) -> ClusterDecision:
+    bounded_score = min(score, 1.0)
+    return ClusterDecision(
+        matched=matched,
+        score=bounded_score,
+        should_merge=matched,
+        confidence=bounded_score,
+        reasons=reasons,
+    )
+
+
+def _entity_action_similarity(
+    left: ClusterItem,
+    right: ClusterItem,
+    left_action: str | None,
+    right_action: str | None,
+    reasons: list[str],
+) -> float:
+    shared_entities = _non_generic_entities(left.entities) & _non_generic_entities(right.entities)
+    if not shared_entities:
+        return 0.0
+    reasons.append("shared_entity")
+    if left_action and left_action == right_action:
+        reasons.append("same_action")
+        return 0.8
+    return 0.4
+
+
+def _time_similarity(left: datetime | None, right: datetime | None, reasons: list[str]) -> float:
+    if left is None or right is None:
+        return 0.0
+    if abs((left - right).total_seconds()) <= _CANDIDATE_WINDOW_SECONDS:
+        reasons.append("within_48_hours")
+        return 0.2
+    return 0.0
+
+
+def _shares_blocking_key(left: ClusterItem, right: ClusterItem) -> bool:
+    return any(
+        (
+            bool(left.canonical_url_hash and left.canonical_url_hash == right.canonical_url_hash),
+            bool(left.title_fingerprint and left.title_fingerprint == right.title_fingerprint),
+            bool(_non_generic_entities(left.entities) & _non_generic_entities(right.entities)),
+            bool(left.repository_id and left.repository_id == right.repository_id),
+            bool(left.paper_id and left.paper_id == right.paper_id),
+            bool(left.original_url and left.original_url == right.original_url),
+        )
+    )
+
+
+def _within_candidate_window(left: ClusterItem, right: ClusterItem) -> bool:
+    return (
+        left.published_at is not None
+        and right.published_at is not None
+        and abs((left.published_at - right.published_at).total_seconds())
+        <= _CANDIDATE_WINDOW_SECONDS
+    )
+
+
+def _non_generic_entities(entities: tuple[str, ...]) -> set[str]:
+    return {
+        entity
+        for entity in entities
+        if entity.rsplit(":", 1)[-1].casefold().replace("-", "") not in _GENERIC_ENTITIES
+    }
+
+
+def _action(title: str) -> str | None:
+    tokens = set(title.casefold().replace("-", " ").split())
+    return next((name for name, words in _ACTION_GROUPS.items() if tokens & words), None)
+
+
+def _candidate_key(raw_item_ids: tuple[int, ...]) -> str:
+    value = ",".join(str(raw_item_id) for raw_item_id in raw_item_ids)
+    return f"{CLUSTER_RULE_VERSION}:{sha256(value.encode()).hexdigest()[:16]}"
+
+
+def _find(parents: list[int], index: int) -> int:
+    if parents[index] != index:
+        parents[index] = _find(parents, parents[index])
+    return parents[index]
+
+
+def _union(parents: list[int], left: int, right: int) -> None:
+    left_root, right_root = _find(parents, left), _find(parents, right)
+    if left_root != right_root:
+        parents[right_root] = left_root
+
+
+def _can_union_within_window(
+    parents: list[int], items: tuple[ClusterItem, ...], left: int, right: int
+) -> bool:
+    left_root, right_root = _find(parents, left), _find(parents, right)
+    left_members = tuple(index for index in range(len(items)) if _find(parents, index) == left_root)
+    right_members = tuple(
+        index for index in range(len(items)) if _find(parents, index) == right_root
+    )
+    return all(
+        _within_candidate_window(items[left_index], items[right_index])
+        for left_index in left_members
+        for right_index in right_members
+    )
