@@ -33,6 +33,13 @@ class GdeltFetcher:
             headers=public_headers({"User-Agent": "NewsRadarIngestion/0.1", **method.headers}),
             params={**method.params, "mode": "artlist", "format": "json", "maxrecords": str(limit)},
         )
+        if response.status_code == 429:
+            return response_result(
+                response,
+                outcome=FetchOutcome.FAILED,
+                error_code="rate_limited",
+                retry_after_seconds=float(response.headers.get("retry-after", "0") or 0),
+            )
         response.raise_for_status()
         payload = response.json()
         articles = payload.get("articles", []) if isinstance(payload, dict) else []

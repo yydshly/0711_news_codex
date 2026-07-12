@@ -42,6 +42,22 @@ def test_factory_selects_gdelt_fetcher_for_gdelt_api() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_gdelt_reports_rate_limit_without_raising() -> None:
+    respx.get("https://api.gdeltproject.org/api/v2/doc/doc").mock(
+        return_value=httpx.Response(429, headers={"retry-after": "30"})
+    )
+    item_source = source()
+    async with httpx.AsyncClient() as client:
+        result = await GdeltFetcher(HttpPolicy(client, retries=0)).fetch(
+            item_source, item_source.access_methods[0], FetchState(), 5
+        )
+    assert result.outcome is FetchOutcome.FAILED
+    assert result.error_code == "rate_limited"
+    assert result.retry_after_seconds == 30
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_gdelt_uses_url_derived_stable_identity_across_queries() -> None:
     route = respx.get("https://api.gdeltproject.org/api/v2/doc/doc").mock(
         return_value=httpx.Response(
