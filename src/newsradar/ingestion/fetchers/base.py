@@ -142,18 +142,22 @@ def response_result(response: httpx.Response, **values: object) -> FetchResult:
 
 
 class FetcherFactory:
-    def __init__(self, policy: HttpPolicy):
+    def __init__(self, policy: HttpPolicy, credentials: object | None = None):
         self.policy = policy
+        self.credentials = credentials
 
     def for_method(self, method: AccessMethod) -> Fetcher:
         from .arxiv import ArxivFetcher
         from .bluesky import BlueskyFetcher
+        from .credentials import EnvironmentCredentials
         from .gdelt import GdeltFetcher
         from .github import GitHubFetcher
         from .google_news import GoogleNewsFetcher
         from .hackernews import HackerNewsFetcher
         from .mastodon import MastodonFetcher
+        from .reddit import RedditFetcher
         from .rss import RssFetcher
+        from .youtube import YouTubeFetcher
 
         host = (httpx.URL(str(method.url)).host or "").lower()
         path = httpx.URL(str(method.url)).path
@@ -167,6 +171,10 @@ class FetcherFactory:
             return BlueskyFetcher(self.policy)
         if host == "api.gdeltproject.org":
             return GdeltFetcher(self.policy)
+        if host == "oauth.reddit.com":
+            return RedditFetcher(self.policy, self.credentials or EnvironmentCredentials())
+        if host == "www.googleapis.com" and path == "/youtube/v3/search":
+            return YouTubeFetcher(self.policy, self.credentials or EnvironmentCredentials())
         if host == "news.google.com" and method.kind is AccessKind.RSS:
             return GoogleNewsFetcher(self.policy)
         if method.kind is AccessKind.PUBLIC_API and (
