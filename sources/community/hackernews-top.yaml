@@ -37,5 +37,9 @@ availability: ready
 coverage_mode: direct
 official_identity_url: https://news.ycombinator.com/
 reviewed_at: '2026-07-11'
+ingestion:
+  enabled: true
+  approved_at: '2026-07-11'
+  max_items_per_run: 5
 unlock_requirements: []
 notes: 'Fallback: no additional audited method.'

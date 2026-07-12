@@ -39,3 +39,7 @@ official_identity_url: https://news.ycombinator.com/
 reviewed_at: '2026-07-11'
 unlock_requirements: []
 notes: 'Fallback: no additional audited method.'
+ingestion:
+  enabled: true
+  approved_at: '2026-07-12'
+  max_items_per_run: 5

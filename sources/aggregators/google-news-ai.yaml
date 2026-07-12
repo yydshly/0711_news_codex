@@ -1,0 +1,39 @@
+id: google-news-ai
+name: Google News AI discovery
+status: candidate
+nature: aggregator
+roles: [discovery]
+language: en
+topics: [foundation_models, agents, developer_tools]
+authority_score: 2
+poll_interval_minutes: 30
+access_methods:
+  - kind: rss
+    url: https://news.google.com/rss/search
+    priority: 1
+    params:
+      q: artificial intelligence
+      hl: en-US
+      gl: US
+      ceid: US:en
+expected_fields: [title, canonical_url, published_at, summary]
+risk:
+  terms: 2
+  authentication: 0
+  stability: 3
+  data_quality: 4
+  operating_cost: 1
+  evidence:
+    - https://news.google.com/rss
+notes: 'Discovery only; keep the Google News URL and resolve the original publisher before evidence use. Fallback: no additional audited method.'
+provider_id: google-news
+target_type: search_query
+availability: ready
+coverage_mode: direct
+official_identity_url: https://news.google.com/
+reviewed_at: '2026-07-11'
+ingestion:
+  enabled: true
+  approved_at: '2026-07-11'
+  max_items_per_run: 5
+unlock_requirements: []

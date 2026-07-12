@@ -46,6 +46,30 @@ def test_source_definition_accepts_audited_https_source() -> None:
     assert source.coverage_mode.value == "direct"
 
 
+def test_ingestion_defaults_disabled_for_legacy_source_definition() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+
+    assert source.ingestion.enabled is False
+    assert source.ingestion.approved_at is None
+    assert source.ingestion.max_items_per_run == 100
+
+
+def test_enabled_source_requires_recorded_approval_date() -> None:
+    data = valid_source()
+    data["ingestion"] = {"enabled": True}
+
+    with pytest.raises(ValidationError, match="approved_at"):
+        SourceDefinition.model_validate(data)
+
+
+def test_ingestion_rejects_unknown_and_secret_fields() -> None:
+    data = valid_source()
+    data["ingestion"] = {"enabled": True, "api_key": "secret"}
+
+    with pytest.raises(ValidationError):
+        SourceDefinition.model_validate(data)
+
+
 @pytest.mark.parametrize(
     "url",
     ["http://example.com/feed", "https://example.invalid/feed", "", "not-a-url"],

@@ -40,4 +40,8 @@ availability: ready
 coverage_mode: direct
 official_identity_url: https://www.gdeltproject.org/
 reviewed_at: '2026-07-11'
+ingestion:
+  enabled: true
+  approved_at: '2026-07-11'
+  max_items_per_run: 5
 unlock_requirements: []

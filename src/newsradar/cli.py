@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
+import time
 from pathlib import Path
 from typing import Annotated
 
 import httpx
 import typer
 
+from newsradar.db.models import OperationRunRecord
 from newsradar.db.session import create_session
+from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
+from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
+from newsradar.ingestion.service import IngestionService
 from newsradar.local_postgres import (
     LocalPostgresError,
     build_local_postgres_manager,
 )
+from newsradar.operations.fetch_runtime import FetchOperationHandler
+from newsradar.operations.repository import OperationRepository
+from newsradar.operations.schema import OperationStatus, OperationType
+from newsradar.operations.worker import Worker
 from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
@@ -29,6 +40,10 @@ db_app = typer.Typer(help="Manage the project-local PostgreSQL runtime")
 app.add_typer(sources_app, name="sources")
 app.add_typer(providers_app, name="providers")
 app.add_typer(db_app, name="db")
+operations_app = typer.Typer(help="Inspect and retry durable operations")
+app.add_typer(operations_app, name="operations")
+diagnostics_app = typer.Typer(help="Create scrubbed local runtime diagnostics")
+app.add_typer(diagnostics_app, name="diagnostics")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
@@ -77,6 +92,199 @@ def run_web(
     from newsradar.web import create_app
 
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
+
+
+async def _fetch_sources(
+    selected, *, approved: bool, max_items: int | None, dry_run: bool, operation_id: int
+):
+    policy = HttpPolicy.default()
+    semaphore = asyncio.Semaphore(4)
+
+    async def fetch_one(source):
+        async with semaphore:
+            # Each source owns a Session so failures do not leak transaction state.
+            with create_session() as session:
+                service = IngestionService(session, FetcherFactory(policy))
+                try:
+                    return await service.fetch_source(
+                        source,
+                        approved_only=approved,
+                        max_items=max_items,
+                        dry_run=dry_run,
+                        operation_run_id=operation_id,
+                    )
+                except Exception as exc:
+                    from newsradar.ingestion.schema import FetchOutcome, FetchResult
+                    from newsradar.ingestion.service import SourceFetchSummary
+
+                    return SourceFetchSummary(
+                        source.id,
+                        FetchResult(
+                            outcome=FetchOutcome.FAILED,
+                            error_code="source_processing_failed",
+                            error_message=str(exc),
+                        ),
+                        error_code="source_processing_failed",
+                    )
+
+    try:
+        return await asyncio.gather(*(fetch_one(source) for source in selected))
+    finally:
+        await policy.client.aclose()
+
+
+@app.command("fetch")
+def fetch_sources(
+    source_id: Annotated[str | None, typer.Argument()] = None,
+    root: RootOption = Path("sources"),
+    approved: Annotated[bool, typer.Option("--approved")] = True,
+    one_off: Annotated[bool, typer.Option("--one-off")] = False,
+    provider: Annotated[str | None, typer.Option()] = None,
+    max_items: Annotated[int | None, typer.Option(min=1)] = None,
+    dry_run: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Run a bounded synchronous fetch operation for audited source definitions."""
+    sources = load_source_tree(root)
+    selected = [source for source in sources if source_id is None or source.id == source_id]
+    if provider:
+        selected = [source for source in selected if source.provider_id == provider]
+    if not selected:
+        typer.echo("No matching sources")
+        raise typer.Exit(2)
+    if one_off and source_id is None:
+        typer.echo("--one-off requires an explicit source id")
+        raise typer.Exit(2)
+    if one_off:
+        source = selected[0]
+        typer.echo(
+            f"One-off fetch risk: source={source.id} risk={source.total_risk}/25 "
+            f"impact=network request and RawItem persistence"
+        )
+        if not typer.confirm("Proceed with this one-off fetch?"):
+            raise typer.Exit(1)
+        approved = False
+    else:
+        selected = [source for source in selected if source.ingestion.enabled]
+        if not selected:
+            typer.echo("No approved ingestion sources; use SOURCE_ID --one-off to request one.")
+            raise typer.Exit(2)
+    with create_session() as session:
+        SourceRepository(session).sync(selected)
+        operation = OperationRepository(session).enqueue(
+            OperationType.FETCH,
+            {"source_id": source_id, "provider": provider, "dry_run": dry_run},
+        )
+        session.commit()
+        operation_id = operation.id
+    summaries = asyncio.run(
+        _fetch_sources(
+            selected,
+            approved=approved,
+            max_items=max_items,
+            dry_run=dry_run,
+            operation_id=operation_id,
+        )
+    )
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is not None:
+            operation.status = (
+                OperationStatus.PARTIAL.value
+                if any(item.result.outcome.value == "failed" for item in summaries)
+                else OperationStatus.SUCCEEDED.value
+            )
+            session.commit()
+    for summary in summaries:
+        typer.echo(f"{summary.source_id}: {summary.result.outcome}")
+
+
+@operations_app.command("list")
+def list_operations() -> None:
+    from sqlalchemy import select
+
+    with create_session() as session:
+        for operation in session.scalars(
+            select(OperationRunRecord).order_by(OperationRunRecord.id.desc())
+        ):
+            typer.echo(f"{operation.id} {operation.operation_type} {operation.status}")
+
+
+@operations_app.command("show")
+def show_operation(operation_id: int) -> None:
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is None:
+            raise typer.Exit(2)
+        typer.echo(f"{operation.id} {operation.operation_type} {operation.status}")
+        typer.echo(str(operation.requested_scope))
+
+
+@operations_app.command("retry")
+def retry_operation(operation_id: int) -> None:
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is None:
+            raise typer.Exit(2)
+        OperationRepository(session).enqueue(
+            OperationType(operation.operation_type), operation.requested_scope
+        )
+        session.commit()
+    typer.echo(f"Queued retry for {operation_id}")
+
+
+@app.command("worker")
+def run_worker(
+    root: RootOption = Path("sources"),
+    worker_id: Annotated[str | None, typer.Option()] = None,
+    once: Annotated[bool, typer.Option("--once/--forever")] = True,
+    poll_seconds: Annotated[float, typer.Option(min=0.1, max=60.0)] = 1.0,
+) -> None:
+    """Consume durable operations; network work only occurs in this process."""
+    sources = load_source_tree(root)
+    handler = FetchOperationHandler.production(sources)
+    identifier = worker_id or f"{socket.gethostname()}-{os.getpid()}"
+    processed_count = 0
+    while True:
+        with create_session() as session:
+            def guard(lease):
+                # This separate session is deliberate: the production handler owns its
+                # own DB session while doing network I/O, so the lease can be renewed
+                # without sharing a SQLAlchemy Session across threads.
+                with create_session() as monitor_session:
+                    monitor = OperationRepository(monitor_session)
+                    renewed = monitor.renew_lease(lease)
+                    return renewed and not monitor.is_cancel_requested(lease)
+
+            processed = Worker(
+                OperationRepository(session),
+                identifier,
+                lease_guard=guard,
+                monitor_interval_seconds=15,
+            ).run_once(handler)
+        if processed:
+            processed_count += 1
+        if once:
+            break
+        if not processed:
+            time.sleep(poll_seconds)
+    typer.echo(f"Worker {identifier} processed {processed_count} operation(s)")
+
+
+@app.command("serve")
+def serve_help() -> None:
+    """Serve the web UI (use `web` to run it)."""
+    typer.echo("Use `newsradar web` to start the UI server.")
+
+
+@diagnostics_app.command("create")
+def create_diagnostics(
+    destination: Annotated[Path, typer.Option()] = Path(".local/diagnostics"),
+) -> None:
+    """Create a bounded ZIP with scrubbed operational evidence."""
+    with create_session() as session:
+        snapshot = collect_diagnostic_snapshot(session)
+    archive = create_diagnostic_bundle(destination, snapshot)
+    typer.echo(f"Created scrubbed diagnostic bundle: {archive}")
 
 
 @providers_app.command("validate")

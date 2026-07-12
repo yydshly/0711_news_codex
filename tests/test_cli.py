@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -111,6 +112,23 @@ def test_powershell_wrapper_limits_actions_and_delegates_to_cli() -> None:
     assert "Get-ChildItem Env:" not in wrapper
 
 
+def test_diagnostics_create_reports_archive_path(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(
+        "newsradar.cli.collect_diagnostic_snapshot",
+        lambda session: object(),
+    )
+    archive = tmp_path / "diagnostics.zip"
+    monkeypatch.setattr(
+        "newsradar.cli.create_diagnostic_bundle", lambda destination, snapshot: archive
+    )
+
+    result = runner.invoke(app, ["diagnostics", "create", "--destination", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert str(archive) in result.stdout
+
+
 def test_provider_validate_command_reports_count(tmp_path: Path) -> None:
     root = tmp_path / "providers"
     root.mkdir()
@@ -156,3 +174,101 @@ def test_coverage_command_filters_provider_and_writes_report(tmp_path: Path) -> 
 
     assert result.exit_code == 0
     assert "Catalog targets | 1" in output.read_text(encoding="utf-8")
+
+
+def test_fetch_rejects_unapproved_sources_without_one_off(tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+
+    result = runner.invoke(app, ["fetch", "anthropic-news", "--root", str(root)])
+
+    assert result.exit_code == 2
+    assert "No approved ingestion sources" in result.stdout
+
+
+def test_fetch_one_off_requires_confirmation(tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+
+    result = runner.invoke(
+        app, ["fetch", "anthropic-news", "--root", str(root), "--one-off"], input="n\n"
+    )
+
+    assert result.exit_code == 1
+    assert "One-off fetch risk" in result.stdout
+
+
+def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+    handler = object()
+    calls: list[object] = []
+
+    class FakeWorker:
+        def __init__(self, repository, worker_id, *, lease_guard, monitor_interval_seconds):
+            assert worker_id == "worker-test"
+            assert callable(lease_guard)
+            assert monitor_interval_seconds == 15
+
+        def run_once(self, received_handler):
+            calls.append(received_handler)
+            return True
+
+    monkeypatch.setattr(
+        "newsradar.cli.FetchOperationHandler.production", lambda sources: handler
+    )
+    monkeypatch.setattr("newsradar.cli.Worker", FakeWorker)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+
+    result = runner.invoke(
+        app, ["worker", "--root", str(root), "--worker-id", "worker-test", "--once"]
+    )
+
+    assert result.exit_code == 0
+    assert calls == [handler]
+    assert "processed 1 operation" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_isolates_one_source_processing_exception(monkeypatch) -> None:
+    from newsradar.ingestion.schema import FetchOutcome, FetchResult
+    from newsradar.ingestion.service import SourceFetchSummary
+
+    class Policy:
+        class client:
+            @staticmethod
+            async def aclose():
+                return None
+
+    class Service:
+        def __init__(self, session, factory):
+            pass
+
+        async def fetch_source(self, source, **kwargs):
+            if source.id == "broken":
+                raise RuntimeError("write failed")
+            return SourceFetchSummary(source.id, FetchResult(outcome=FetchOutcome.SUCCEEDED))
+
+    first = valid_source()
+    first["id"] = "broken"
+    second = valid_source()
+    second["id"] = "healthy"
+    monkeypatch.setattr("newsradar.cli.HttpPolicy.default", lambda: Policy())
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr("newsradar.cli.IngestionService", Service)
+
+    from newsradar.cli import _fetch_sources
+    from newsradar.sources.schema import SourceDefinition
+
+    results = await _fetch_sources(
+        [SourceDefinition.model_validate(first), SourceDefinition.model_validate(second)],
+        approved=True,
+        max_items=None,
+        dry_run=False,
+        operation_id=1,
+    )
+
+    assert [result.result.outcome for result in results] == [
+        FetchOutcome.FAILED,
+        FetchOutcome.SUCCEEDED,
+    ]

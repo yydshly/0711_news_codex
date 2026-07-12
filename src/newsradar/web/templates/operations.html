@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}运行任务 · News Codex{% endblock %}
+{% block header %}<h1>运行任务</h1>{% endblock %}
+{% block content %}
+<section class="panel">
+  <p class="eyebrow">任务只会由 Worker 执行；此页不会触发网络抓取。</p>
+  <h2>最近任务</h2>
+  {% if operations %}
+  <div class="table-wrap"><table><thead><tr><th>编号</th><th>类型</th><th>状态</th><th>来源</th><th>进度</th><th>错误</th></tr></thead>
+  <tbody>{% for operation in operations %}<tr><td>{{ operation.operation_id }}</td><td>{{ operation.operation_type }}</td><td>{{ operation.status }}</td><td>{{ operation.source_id or '全部' }}</td><td>{{ operation.progress_current }}{% if operation.progress_total is not none %}/{{ operation.progress_total }}{% endif %}</td><td>{{ operation.error_code or '—' }}{% if operation.error_message %}: {{ operation.error_message }}{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+  {% else %}<p>暂无运行任务。</p>{% endif %}
+</section>
+<section class="panel">
+  <p class="eyebrow">安全入队</p>
+  <h2>请求一次来源抓取</h2>
+  <p>此操作仅创建队列任务，不会在网页请求中访问外部网络。请确保本机 Worker 正在运行。</p>
+  <form method="post" action="/operations/fetch">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <label>来源 ID <input name="source_id" required maxlength="120" pattern="[a-z0-9-]+" autocomplete="off"></label>
+    <button type="submit">创建抓取任务</button>
+  </form>
+</section>
+{% endblock %}

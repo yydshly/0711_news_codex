@@ -123,6 +123,20 @@ class RiskAssessment(StrictModel):
         )
 
 
+class IngestionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    approved_at: date | None = None
+    max_items_per_run: int = Field(default=100, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def require_approval_for_enabled_ingestion(self) -> IngestionConfig:
+        if self.enabled and self.approved_at is None:
+            raise ValueError("enabled ingestion requires approved_at")
+        return self
+
+
 class SourceDefinition(StrictModel):
     id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     name: str = Field(min_length=1, max_length=120)
@@ -143,6 +157,7 @@ class SourceDefinition(StrictModel):
     access_methods: list[AccessMethod] = Field(min_length=1)
     expected_fields: list[ExpectedField] = Field(min_length=1)
     risk: RiskAssessment
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     notes: str | None = None
 
     @field_validator("access_methods")

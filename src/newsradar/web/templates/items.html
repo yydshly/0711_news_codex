@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block title %}原始条目 · News Codex{% endblock %}
+{% block header %}<h1>原始条目</h1>{% endblock %}
+{% block content %}<section class="panel"><p class="eyebrow">列表不加载原始 Payload</p><h2>已入库内容</h2>{% if item_page.rows %}<div class="table-wrap"><table><thead><tr><th>标题</th><th>来源</th><th>语言</th><th>发布时间</th><th>重复候选</th></tr></thead><tbody>{% for row in item_page.rows %}<tr><td><a href="/items/{{ row.raw_item_id }}">{{ row.title }}</a></td><td>{{ row.source_name }}</td><td>{{ row.language or '—' }}</td><td>{{ row.published_at or '—' }}</td><td>{{ row.duplicate_count }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p>暂无已入库内容。</p>{% endif %}</section>{% endblock %}
