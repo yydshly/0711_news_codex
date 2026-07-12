@@ -13,4 +13,8 @@ access_methods:
     priority: 1
 expected_fields: [title, canonical_url, published_at, summary]
 risk: {terms: 1, authentication: 0, stability: 1, data_quality: 1, operating_cost: 0, evidence: [https://huggingface.co/blog]}
+ingestion:
+  enabled: true
+  approved_at: '2026-07-12'
+  max_items_per_run: 5
 

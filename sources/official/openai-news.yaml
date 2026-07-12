@@ -38,3 +38,7 @@ coverage_mode: direct
 official_identity_url: https://openai.com/
 reviewed_at: '2026-07-11'
 unlock_requirements: []
+ingestion:
+  enabled: true
+  approved_at: '2026-07-12'
+  max_items_per_run: 5

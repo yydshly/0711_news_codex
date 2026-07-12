@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import feedparser
 
@@ -24,9 +25,14 @@ class ArxivFetcher:
         if self._last_request and wait > 0:
             await asyncio.sleep(wait)
         self._last_request = loop.time()
-        response = await self.policy.get(
-            str(method.url), headers=method.headers, params={**method.params, "max_results": limit}
+        parsed_url = urlsplit(str(method.url))
+        query = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
+        query.update(method.params)
+        query["max_results"] = str(limit)
+        request_url = urlunsplit(
+            (parsed_url.scheme, parsed_url.netloc, parsed_url.path, urlencode(query), "")
         )
+        response = await self.policy.get(request_url, headers=method.headers)
         response.raise_for_status()
         parsed = feedparser.parse(response.content)
         items = []
