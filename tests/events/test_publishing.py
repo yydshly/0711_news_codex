@@ -14,7 +14,7 @@ from newsradar.db.models import (
 )
 from newsradar.events.publishing import EventPublisher
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import CandidateCluster
+from newsradar.events.schema import CandidateCluster, EventStatus
 
 
 @pytest.fixture
@@ -72,6 +72,58 @@ def test_reader_sees_only_complete_version(db_session: Session, candidate) -> No
     assert score is not None
 
 
+def test_publisher_reconstructs_official_evidence_for_persisted_candidate(
+    db_session: Session
+) -> None:
+    candidate = persisted_candidate(
+        db_session,
+        (("official", "first_party", "https://official.test/release"),),
+    )
+
+    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+
+    assert published.status is EventStatus.CONFIRMED
+    assert published.score is not None
+    assert published.score.credibility == 90
+
+
+def test_publisher_confirms_two_independent_professional_roots(
+    db_session: Session,
+) -> None:
+    candidate = persisted_candidate(
+        db_session,
+        (
+            ("news-a", "professional_media", "https://news-a.test/release"),
+            ("news-b", "professional_media", "https://news-b.test/release"),
+        ),
+    )
+
+    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+
+    assert published.status is EventStatus.CONFIRMED
+    assert published.score is not None
+    assert published.score.credibility == 80
+
+
+def test_publisher_persists_evidence_limitations_in_score_reasons(db_session: Session) -> None:
+    candidate = persisted_candidate(
+        db_session,
+        (("research", "research", "https://arxiv.org/abs/1234.5678"),),
+    )
+
+    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+
+    score = db_session.scalar(
+        select(EventScoreRecord).where(EventScoreRecord.event_id == published.event_id)
+    )
+    assert score is not None
+    assert "evidence_limitation:not_peer_reviewed" in score.breakdown["reasons"]
+
+
+def test_repository_has_no_incomplete_public_version_publish_path() -> None:
+    assert not hasattr(EventRepository, "publish_version")
+
+
 def test_failure_before_version_switch_preserves_previous_readable_version(
     db_session: Session, candidate, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -94,3 +146,41 @@ def test_failure_before_version_switch_preserves_previous_readable_version(
     assert current.version_number == 1
     assert db_session.scalars(select(EventVersionRecord)).all()[0].version_number == 1
     assert db_session.get(EventRecord, first.event_id).current_version_number == 1
+
+
+def persisted_candidate(
+    db_session: Session, sources: tuple[tuple[str, str, str], ...]
+):
+    raw_item_ids: list[int] = []
+    for source_id, nature, canonical_url in sources:
+        db_session.add(
+            SourceDefinitionRecord(
+                id=source_id,
+                name=source_id,
+                nature=nature,
+                language="en",
+                roles=["evidence"],
+                topics=[],
+                authority_score=90,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash=f"hash-{source_id}",
+            )
+        )
+        item = RawItemRecord(
+            source_id=source_id,
+            external_id="release",
+            canonical_url=canonical_url,
+            payload={},
+        )
+        db_session.add(item)
+        db_session.flush()
+        raw_item_ids.append(item.id)
+    repository = EventRepository(db_session)
+    record = repository.upsert_candidate(
+        CandidateCluster(candidate_key=f"release:{sources[0][0]}", title="Release"),
+        "cluster-v1",
+    )
+    repository.replace_candidate_items(record.id, tuple(raw_item_ids))
+    db_session.commit()
+    return record

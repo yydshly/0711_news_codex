@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from newsradar.events.evidence import assess_evidence
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import EventScoreInput, PublishedEvent
+from newsradar.events.schema import EventScoreInput, EvidenceAssessment, PublishedEvent
 from newsradar.events.scoring import decide_publication, score_event
 
 
@@ -15,8 +16,9 @@ class EventPublisher:
 
     def publish(self, candidate_id: int, operation_id: int) -> PublishedEvent:
         candidate, source_item_ids = self.repository.get_candidate_for_publication(candidate_id)
-        decision = decide_publication(candidate)
-        score = score_event(_score_input(candidate.metadata))
+        evidence = assess_evidence(candidate.items)
+        decision = decide_publication(candidate, evidence)
+        score = score_event(_score_input(candidate.metadata, evidence))
         published = PublishedEvent(
             canonical_key=candidate.candidate_key,
             status=decision.status,
@@ -28,7 +30,7 @@ class EventPublisher:
         return published.model_copy(update={"event_id": event.id})
 
 
-def _score_input(metadata: dict) -> EventScoreInput:
+def _score_input(metadata: dict, evidence: tuple[EvidenceAssessment, ...]) -> EventScoreInput:
     values = metadata.get("score_input", {})
     return EventScoreInput(
         ai_relevance=values.get("ai_relevance", 0),
@@ -37,4 +39,5 @@ def _score_input(metadata: dict) -> EventScoreInput:
         recency=values.get("recency", 0),
         engagement_velocity=values.get("engagement_velocity", 0),
         novelty=values.get("novelty", 0),
+        evidence=evidence,
     )

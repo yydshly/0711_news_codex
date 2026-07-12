@@ -53,6 +53,7 @@ def score_event(input: EventScoreInput) -> ScoreBreakdown:
         reasons=(
             "importance:versioned_weights",
             *credibility_reasons,
+            *_limitation_reasons(input.evidence),
             "heat:60_importance_40_credibility",
         ),
     )
@@ -107,6 +108,13 @@ def _credibility(evidence: Iterable[EvidenceAssessment]) -> tuple[int, tuple[str
     if any(role is EvidenceRole.RESEARCH for role in roots.values()):
         return 65, ("credibility:independent_research",)
     return 35, ("credibility:social_or_community_only_cap",)
+
+
+def _limitation_reasons(evidence: Iterable[EvidenceAssessment]) -> tuple[str, ...]:
+    return tuple(
+        f"evidence_limitation:{limitation}"
+        for limitation in sorted({limitation for row in evidence for limitation in row.limitations})
+    )
 
 
 def _independent_roots(evidence: Iterable[EvidenceAssessment]) -> dict[str, EvidenceRole]:

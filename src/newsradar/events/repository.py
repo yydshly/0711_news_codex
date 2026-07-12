@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -14,8 +13,16 @@ from newsradar.db.models import (
     EventScoreRecord,
     EventVersionRecord,
     RawItemProcessingRecord,
+    RawItemRecord,
+    SourceDefinitionRecord,
 )
-from newsradar.events.schema import CandidateCluster, EventCategory, ProcessingStage, PublishedEvent
+from newsradar.events.schema import (
+    CandidateCluster,
+    ClusterItem,
+    EventCategory,
+    ProcessingStage,
+    PublishedEvent,
+)
 
 
 class EventRepository:
@@ -120,78 +127,43 @@ class EventRepository:
         assert record is not None
         return record
 
-    def publish_version(self, event_id: int, version: PublishedEvent) -> EventVersionRecord:
-        self.session.scalar(select(EventRecord).where(EventRecord.id == event_id).with_for_update())
-        for _ in range(3):
-            next_version = (
-                self.session.scalar(
-                    select(func.max(EventVersionRecord.version_number)).where(
-                        EventVersionRecord.event_id == event_id
-                    )
-                )
-                or 0
-            ) + 1
-            try:
-                with self.session.begin_nested():
-                    record = EventVersionRecord(
-                        event_id=event_id,
-                        version_number=next_version,
-                        payload=version.model_dump(mode="json"),
-                        zh_title=version.enrichment.zh_title if version.enrichment else None,
-                        zh_summary=version.enrichment.zh_summary if version.enrichment else None,
-                    )
-                    self.session.add(record)
-                    active_items = self.session.scalars(
-                        select(EventItemRecord).where(
-                            EventItemRecord.event_id == event_id,
-                            EventItemRecord.removed_version_number.is_(None),
-                        )
-                    ).all()
-                    source_item_ids = set(version.source_item_ids)
-                    active_ids = {item.raw_item_id for item in active_items}
-                    for item in active_items:
-                        if item.raw_item_id not in source_item_ids:
-                            item.removed_version_number = next_version
-                    for raw_item_id in source_item_ids - active_ids:
-                        self.session.add(
-                            EventItemRecord(
-                                event_id=event_id,
-                                raw_item_id=raw_item_id,
-                                added_version_number=next_version,
-                            )
-                        )
-                    self.session.flush()
-                self.session.execute(
-                    update(EventRecord)
-                    .where(EventRecord.id == event_id)
-                    .values(
-                        current_version_number=next_version,
-                        updated_at=datetime.now(UTC),
-                    )
-                )
-                return record
-            except IntegrityError:
-                continue
-        raise RuntimeError("could not allocate an event version after three attempts")
-
     def get_candidate_for_publication(
         self, candidate_id: int
     ) -> tuple[CandidateCluster, tuple[int, ...]]:
         record = self.session.get(EventCandidateRecord, candidate_id)
         if record is None:
             raise LookupError(f"event candidate {candidate_id} does not exist")
-        raw_item_ids = tuple(
-            self.session.scalars(
-                select(EventCandidateItemRecord.raw_item_id)
-                .where(EventCandidateItemRecord.candidate_id == candidate_id)
-                .order_by(EventCandidateItemRecord.raw_item_id)
+        rows = self.session.execute(
+            select(RawItemRecord, SourceDefinitionRecord)
+            .join(SourceDefinitionRecord, SourceDefinitionRecord.id == RawItemRecord.source_id)
+            .join(
+                EventCandidateItemRecord,
+                EventCandidateItemRecord.raw_item_id == RawItemRecord.id,
             )
+            .where(EventCandidateItemRecord.candidate_id == candidate_id)
+            .order_by(RawItemRecord.id)
+        ).all()
+        items = tuple(
+            ClusterItem(
+                raw_item_id=item.id,
+                title=item.title or "",
+                canonical_url=item.canonical_url,
+                original_url=item.original_url,
+                title_fingerprint=item.title_fingerprint,
+                published_at=item.published_at,
+                source_nature=source.nature,
+                source_roles=tuple(source.roles),
+                publisher_name=item.publisher_name or source.name,
+            )
+            for item, source in rows
         )
+        raw_item_ids = tuple(item.raw_item_id for item in items)
         return (
             CandidateCluster(
                 candidate_key=record.candidate_key,
                 title=record.title,
                 category=EventCategory(record.category) if record.category else None,
+                items=items,
                 raw_item_ids=raw_item_ids,
                 state=record.state,
                 metadata=record.metadata_json,

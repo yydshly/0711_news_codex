@@ -21,6 +21,7 @@ from newsradar.events.schema import (
     EventStatus,
     ProcessingStage,
     PublishedEvent,
+    ScoreBreakdown,
 )
 
 
@@ -54,6 +55,28 @@ def raw_item(db: Session) -> RawItemRecord:
     db.add(item)
     db.commit()
     return item
+
+
+def published_event(**changes: object) -> PublishedEvent:
+    data: dict[str, object] = {
+        "canonical_key": "release",
+        "status": EventStatus.EMERGING,
+        "score": ScoreBreakdown(
+            ai_relevance=0,
+            source_coverage=0,
+            source_authority=0,
+            recency=0,
+            engagement_velocity=0,
+            novelty=0,
+            importance=0,
+            credibility=0,
+            heat=0,
+            rule_version="score-v1",
+            reasons=(),
+        ),
+    }
+    data.update(changes)
+    return PublishedEvent(**data)
 
 
 def test_stage_record_is_idempotent() -> None:
@@ -130,19 +153,17 @@ def test_event_update_publishing_claim_and_release_are_durable() -> None:
                 source_item_ids=(item.id,),
             )
         )
-        first_version = repository.publish_version(updated.id, initial)
-        second_version = repository.publish_version(
-            updated.id,
-            PublishedEvent(
-                canonical_key="release", status=EventStatus.CONFIRMED, source_item_ids=(item.id,)
-            ),
+        repository.publish_complete_event(published_event(), operation_id=1)
+        repository.publish_complete_event(
+            published_event(status=EventStatus.CONFIRMED, source_item_ids=(item.id,)),
+            operation_id=1,
         )
         db.commit()
 
         assert updated.updated_at > datetime(2000, 1, 1)
         versions = db.scalars(select(EventVersionRecord)).all()
         assert [version.version_number for version in versions] == [1, 2]
-        assert first_version.id != second_version.id
+        assert db.get(EventRecord, updated.id).current_version_number == 2  # type: ignore[union-attr]
         assert db.scalars(select(EventItemRecord)).all()[0].removed_version_number is None
         assert repository.claim_event(updated.id, 1, datetime.now(UTC) + timedelta(minutes=1))
         assert not repository.claim_event(updated.id, 2, datetime.now(UTC) + timedelta(minutes=1))
@@ -177,23 +198,15 @@ def test_publishing_closes_removed_memberships_and_readds_as_new_rows() -> None:
         db.add(second)
         db.commit()
         repository = EventRepository(db)
-        event = repository.create_or_update_event(
+        repository.create_or_update_event(
             PublishedEvent(canonical_key="release", status=EventStatus.EMERGING)
         )
 
-        repository.publish_version(
-            event.id,
-            PublishedEvent(
-                canonical_key="release",
-                status=EventStatus.EMERGING,
-                source_item_ids=(first.id, second.id),
-            ),
+        repository.publish_complete_event(
+            published_event(source_item_ids=(first.id, second.id)), operation_id=1
         )
-        repository.publish_version(
-            event.id,
-            PublishedEvent(
-                canonical_key="release", status=EventStatus.EMERGING, source_item_ids=(first.id,)
-            ),
+        repository.publish_complete_event(
+            published_event(source_item_ids=(first.id,)), operation_id=1
         )
         memberships = db.scalars(select(EventItemRecord).order_by(EventItemRecord.id)).all()
         assert [(item.raw_item_id, item.removed_version_number) for item in memberships] == [
@@ -201,15 +214,9 @@ def test_publishing_closes_removed_memberships_and_readds_as_new_rows() -> None:
             (second.id, 2),
         ]
 
-        repository.publish_version(
-            event.id,
-            PublishedEvent(canonical_key="release", status=EventStatus.EMERGING),
-        )
-        repository.publish_version(
-            event.id,
-            PublishedEvent(
-                canonical_key="release", status=EventStatus.EMERGING, source_item_ids=(first.id,)
-            ),
+        repository.publish_complete_event(published_event(), operation_id=1)
+        repository.publish_complete_event(
+            published_event(source_item_ids=(first.id,)), operation_id=1
         )
         active = db.scalars(
             select(EventItemRecord).where(EventItemRecord.removed_version_number.is_(None))
