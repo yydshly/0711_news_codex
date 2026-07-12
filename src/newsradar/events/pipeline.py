@@ -18,7 +18,7 @@ from newsradar.db.models import (
 )
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
 from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
-from newsradar.events.minimax import EventMiniMaxAdapter
+from newsradar.events.minimax import EventMiniMaxAdapter, EventModelRun
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.relevance import RELEVANCE_RULE_VERSION, evaluate_relevance
 from newsradar.events.repository import EventRepository
@@ -181,7 +181,7 @@ class EventPipeline:
                 candidate_id = candidate_record.id
 
             # Network/model work is deliberately between short DB sessions.
-            enrichment = self._enrich(candidate)
+            enrichment, model_runs = self._enrich(candidate)
             if enrichment.origin == "rule_fallback":
                 model_fallback_count += 1
             with self._session_factory() as session:
@@ -204,6 +204,13 @@ class EventPipeline:
                 if claimed_event_id is not None:
                     repository.release_event(claimed_event_id, operation_id)
                 assert published.event_id is not None
+                for model_run in model_runs:
+                    try:
+                        with session.begin_nested():
+                            repository.record_model_run(published.event_id, model_run.usage)
+                    except Exception:
+                        # Provenance is best effort; never roll back a published event.
+                        continue
                 event_ids.append(published.event_id)
                 created += 1
                 session.commit()
@@ -215,18 +222,22 @@ class EventPipeline:
         fallback = rule_enrichment(candidate)
         settings = get_settings()
         if not settings.minimax_api_key:
-            return fallback
+            return fallback, ()
+
+        runs: list[EventModelRun] = []
 
         async def run():
             import httpx
 
             async with httpx.AsyncClient() as http:
-                return await EventMiniMaxAdapter(settings, http).enrich_event(candidate, fallback)
+                return await EventMiniMaxAdapter(settings, http, runs.append).enrich_event(
+                    candidate, fallback
+                )
 
         try:
-            return asyncio.run(run())
+            return asyncio.run(run()), tuple(runs)
         except Exception:
-            return fallback
+            return fallback, tuple(runs)
 
     @staticmethod
     def _has_same_membership(

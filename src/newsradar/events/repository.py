@@ -5,13 +5,16 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     EventCandidateItemRecord,
     EventCandidateRecord,
     EventItemRecord,
+    EventModelRunRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
+    ModelUsageRecord,
     RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
@@ -240,6 +243,28 @@ class EventRepository:
             record.updated_at = now
             self.session.flush()
         return record
+
+    def record_model_run(self, event_id: int, usage: ModelUsage) -> None:
+        """Best-effort caller boundary: this short write never affects publication."""
+        model_usage = ModelUsageRecord(
+            purpose=usage.purpose,
+            model=usage.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            latency_ms=usage.latency_ms,
+            outcome=usage.outcome,
+            error=usage.error[:1000] if usage.error else None,
+        )
+        self.session.add(model_usage)
+        self.session.flush()
+        self.session.add(
+            EventModelRunRecord(
+                event_id=event_id,
+                model_usage_id=model_usage.id,
+                stage=usage.purpose,
+                algorithm_version=usage.model,
+            )
+        )
 
     def before_current_version_switch(
         self, event: EventRecord, version: EventVersionRecord
