@@ -89,12 +89,27 @@ def test_fetch_action_rejects_non_loopback_origin_and_unknown_source(monkeypatch
     assert db_session.scalars(select(OperationRunRecord)).all() == []
 
 
+def test_fetch_action_accepts_in_app_browser_opaque_same_origin(monkeypatch, db_session):
+    with _client_with_database(monkeypatch, db_session) as client:
+        page = client.get("/operations")
+        token = _action_token(page.text)
+        response = client.post(
+            "/operations/fetch",
+            data={"source_id": "github-openai-python", "action_token": token},
+            headers={"Origin": "null", "Sec-Fetch-Site": "same-origin"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+
+
 def test_ingestion_pages_project_runs_items_versions_and_duplicates(monkeypatch, db_session):
     run = FetchRunRecord(
         source_id="github-openai-python",
         started_at=datetime(2026, 7, 12, tzinfo=UTC),
         outcome="succeeded",
         item_count=2,
+        items_received=5,
     )
     db_session.add(run)
     db_session.flush()
@@ -142,6 +157,7 @@ def test_ingestion_pages_project_runs_items_versions_and_duplicates(monkeypatch,
 
     assert runs.status_code == items.status_code == detail.status_code == duplicates.status_code
     assert duplicates.status_code == 200
+    assert "<td>5</td>" in runs.text
     assert "First record" in items.text
     assert "must-not-appear-in-list" not in items.text
     assert "https://example.test/one" in detail.text
@@ -183,6 +199,7 @@ def test_operation_actions_cancel_and_retry_with_independent_tokens(monkeypatch,
             headers={"Origin": "http://127.0.0.1"},
             follow_redirects=False,
         )
+        retry_detail = client.get(retried.headers["location"])
 
     assert cancelled.status_code == 303
     assert retried.status_code == 303
@@ -192,6 +209,10 @@ def test_operation_actions_cancel_and_retry_with_independent_tokens(monkeypatch,
     )
     assert retried_record is not None
     assert retried_record.requested_scope["retry_of_operation_id"] == finished.id
+    assert "由任务" in retry_detail.text
+    assert f'href="/operations/{finished.id}"' in retry_detail.text
+    assert f"#{finished.id}" in retry_detail.text
+    assert "重试创建" in retry_detail.text
 
 
 def test_duplicate_action_dismisses_pending_candidate(monkeypatch, db_session):

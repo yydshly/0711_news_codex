@@ -1,4 +1,4 @@
 {% extends "base.html" %}
 {% block title %}抓取批次 · News Codex{% endblock %}
 {% block header %}<h1>抓取批次</h1>{% endblock %}
-{% block content %}<section class="panel"><p class="eyebrow">只读运行历史</p><h2>最近抓取</h2>{% if fetch_runs %}<div class="table-wrap"><table><thead><tr><th>来源</th><th>状态</th><th>开始</th><th>条目</th><th>错误</th></tr></thead><tbody>{% for run in fetch_runs %}<tr><td>{{ run.source_name }}</td><td>{{ run.outcome }}</td><td>{{ run.started_at }}</td><td>{{ run.item_count }}</td><td>{{ run.error_code or '—' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p>暂无抓取批次。</p>{% endif %}</section>{% endblock %}
+{% block content %}<section class="panel"><p class="eyebrow">只读运行历史</p><h2>最近抓取</h2>{% if fetch_runs %}<div class="table-wrap"><table><thead><tr><th>来源</th><th>状态</th><th>开始</th><th>条目</th><th>错误</th></tr></thead><tbody>{% for run in fetch_runs %}<tr><td>{{ run.source_name }}</td><td>{{ run.outcome }}</td><td>{{ run.started_at }}</td><td>{{ run.items_received if run.items_received is not none else run.item_count }}</td><td>{{ run.error_code or '—' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p>暂无抓取批次。</p>{% endif %}</section>{% endblock %}

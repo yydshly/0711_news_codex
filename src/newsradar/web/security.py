@@ -15,8 +15,18 @@ def require_loopback_host(host: str | None) -> None:
         raise UnsafeWrite("loopback host is required")
 
 
-def require_same_origin(origin: str | None, host: str | None) -> None:
+def require_same_origin(
+    origin: str | None,
+    host: str | None,
+    *,
+    fetch_site: str | None = None,
+) -> None:
     if not origin or not host:
+        raise UnsafeWrite("same origin is required")
+    if origin == "null":
+        require_loopback_host(host)
+        if fetch_site == "same-origin":
+            return
         raise UnsafeWrite("same origin is required")
     parsed = urlsplit(origin)
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != host.lower():

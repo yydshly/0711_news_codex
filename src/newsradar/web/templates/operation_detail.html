@@ -5,6 +5,7 @@
 <section class="panel"><h2>#{{ operation_detail.operation.operation_id }} {{ operation_detail.operation.operation_type }}</h2>
   <p>状态：{{ operation_detail.operation.status }}；进度：{{ operation_detail.operation.progress_current }}{% if operation_detail.operation.progress_total is not none %}/{{ operation_detail.operation.progress_total }}{% endif %}</p>
   <p>来源：{{ operation_detail.operation.source_id or '全部' }}。网页只负责入队；Worker 才会执行网络操作。</p>
+  {% if operation_detail.requested_scope.get('retry_of_operation_id') %}<p>由任务 <a href="/operations/{{ operation_detail.requested_scope.get('retry_of_operation_id') }}">#{{ operation_detail.requested_scope.get('retry_of_operation_id') }}</a> 重试创建。</p>{% endif %}
   {% if operation_detail.operation.error_message %}<p>错误：{{ operation_detail.operation.error_code or 'unknown' }}：{{ operation_detail.operation.error_message }}</p>{% endif %}
   {% if operation_detail.operation.status in ('queued', 'running') %}<form method="post" action="/operations/{{ operation_detail.operation.operation_id }}/cancel"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">请求取消</button></form>{% elif operation_detail.operation.status in ('succeeded', 'partial', 'failed', 'interrupted', 'cancelled') %}<form method="post" action="/operations/{{ operation_detail.operation.operation_id }}/retry"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">重新入队</button></form>{% endif %}
 </section>

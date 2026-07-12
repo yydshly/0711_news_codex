@@ -219,7 +219,11 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
     async def require_safe_action(request: Request) -> dict[str, str]:
         try:
             require_loopback_host(request.headers.get("host"))
-            require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            require_same_origin(
+                request.headers.get("origin"),
+                request.headers.get("host"),
+                fetch_site=request.headers.get("sec-fetch-site"),
+            )
             body = (await request.body()).decode("utf-8", errors="replace")
             values = {
                 name: entries[-1]
