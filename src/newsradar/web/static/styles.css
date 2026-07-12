@@ -161,7 +161,7 @@ main { padding: 2rem; }
 .category-row progress::-webkit-progress-bar { border-radius: 999px; background: var(--bg); }
 .category-row progress::-webkit-progress-value { border-radius: 999px; background: var(--info); }
 .category-row progress::-moz-progress-bar { border-radius: 999px; background: var(--info); }
-.table-scroll { overflow-x: auto; }
+.table-scroll { width: 100%; max-width: 100%; min-width: 0; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 0.75rem; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 tbody th { font-weight: 600; }
@@ -178,6 +178,7 @@ tbody th { font-weight: 600; }
   max-width: 1600px;
   margin: 0 auto;
 }
+.catalog-page > * { min-width: 0; }
 .catalog-page .panel,
 .detail-page .panel { max-width: none; }
 .filter-form {
@@ -201,6 +202,7 @@ tbody th { font-weight: 600; }
 }
 .filter-form button { border-color: var(--info); cursor: pointer; }
 .filter-actions { display: flex; gap: 0.75rem; align-items: center; }
+.catalog-table { min-width: 0; max-width: 100%; }
 .catalog-table th small { display: block; color: var(--muted); font-weight: 400; }
 .catalog-table table { min-width: 1100px; }
 .breadcrumbs { display: flex; gap: 0.5rem; color: var(--muted); }

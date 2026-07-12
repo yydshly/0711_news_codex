@@ -593,9 +593,22 @@ def test_catalog_tables_are_keyboard_scroll_regions(client):
     for path, label in (("/providers", "Provider 列表"), ("/targets", "Target 列表")):
         response = client.get(path)
         assert response.status_code == 200
+        assert 'class="panel table-panel catalog-table"' in response.text
         assert 'class="table-scroll"' in response.text
         assert 'tabindex="0"' in response.text
         assert f'aria-label="{label}"' in response.text
+
+
+def test_catalog_tables_contain_wide_tables_inside_their_scroll_region(client):
+    css = client.get("/static/styles.css")
+
+    assert css.status_code == 200
+    assert ".catalog-page > * { min-width: 0; }" in css.text
+    assert ".catalog-table { min-width: 0; max-width: 100%; }" in css.text
+    assert (
+        ".table-scroll { width: 100%; max-width: 100%; min-width: 0; "
+        "overflow-x: auto; }"
+    ) in css.text
 
 
 def test_probe_page_visibly_distinguishes_probe_types(client, fake_service):
