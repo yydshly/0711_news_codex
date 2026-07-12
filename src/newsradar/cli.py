@@ -67,6 +67,18 @@ def stop_database() -> None:
     _run_db_action("stop")
 
 
+@app.command("web")
+def run_web(
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8765,
+) -> None:
+    import uvicorn
+
+    from newsradar.web import create_app
+
+    uvicorn.run(create_app(), host=host, port=port, log_level="info")
+
+
 @providers_app.command("validate")
 def validate_providers(root: ProviderRootOption = Path("providers")) -> None:
     providers = load_provider_tree(root)

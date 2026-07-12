@@ -50,6 +50,35 @@ silently selecting another port when it is occupied.
 Deleting `.local/postgres/` permanently deletes the project database. Stop it first and back up
 anything important. The lifecycle commands never delete this directory automatically.
 
+## Chinese source dashboard
+
+Start the local database, apply migrations, sync the audited catalogs, and launch the dashboard:
+
+```powershell
+uv run newsradar db start
+uv run alembic upgrade head
+uv run newsradar providers sync --root providers
+uv run newsradar sources sync --root sources
+uv run newsradar web
+```
+
+Open `http://127.0.0.1:8765`. The dashboard is a local, read-only view of PostgreSQL: browsing it
+does not sync definitions, run probes, change source status, or write probe history. Launching and
+browsing the dashboard does not call MiniMax or any other model API.
+
+The dashboard uses these terms deliberately:
+
+- **Registered** means an audited provider or target is present in the catalog. Registration does
+  not claim that News Codex can read its content.
+- **Directly readable** means an approved access method reads the target itself when its access
+  requirements are met.
+- **Indirectly discoverable** means an aggregator or search path can surface a reference to the
+  target; it does not claim direct access to the target's content.
+- **Capability-probed** means a provider-level check tested whether an access capability was
+  available. It does not mean target content was fetched.
+- **Content-probed** means a target-level check inspected content availability and structure at a
+  recorded point in time. It does not imply continuous ingestion or current coverage.
+
 ## Source workflow
 
 ```powershell
