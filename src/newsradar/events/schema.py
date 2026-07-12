@@ -173,6 +173,32 @@ class EventEnrichment(_Schema):
     confidence: float = Field(ge=0, le=1)
 
 
+class PairSemanticDecision(_Schema):
+    """Advisory semantic comparison; deterministic clustering remains authoritative."""
+
+    same_event: bool
+    confidence: float = Field(ge=0, le=1)
+    rationale: str
+    origin: Literal["model", "rule_fallback"] = "rule_fallback"
+
+
+class EntitySuggestions(_Schema):
+    """Advisory entity candidates; deterministic entity validation remains authoritative."""
+
+    entities: tuple[ExtractedEntity, ...] = ()
+    confidence: float = Field(default=0, ge=0, le=1)
+    origin: Literal["model", "rule_fallback"] = "rule_fallback"
+
+
+class ConflictExplanation(_Schema):
+    """Explanatory output only; it cannot alter evidence or publication decisions."""
+
+    summary: str
+    possible_causes: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    origin: Literal["model", "rule_fallback"] = "rule_fallback"
+
+
 class PublishedEvent(_Schema):
     event_id: int | None = None
     canonical_key: str

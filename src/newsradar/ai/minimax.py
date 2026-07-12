@@ -10,6 +10,7 @@ from typing import TypeVar
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from newsradar.operations.logging import redact
 from newsradar.settings import Settings
 from newsradar.sources.schema import SourceNature, SourceRole
 
@@ -105,7 +106,7 @@ class MiniMaxClient:
             f"Source: {source_name}\nTitle: {title}\nSummary: {summary}\n"
             f"JSON schema: {json.dumps(SourceClassification.model_json_schema())}"
         )
-        return await self._structured(
+        return await self.structured(
             "classify_source_sample",
             self.settings.minimax_fast_model,
             prompt,
@@ -119,7 +120,7 @@ class MiniMaxClient:
             f"{UNTRUSTED_PREAMBLE}\nInfer zero or more source topics from this text:\n{text}\n"
             f"JSON schema: {json.dumps(TopicInference.model_json_schema())}"
         )
-        return await self._structured(
+        return await self.structured(
             "infer_source_topics",
             self.settings.minimax_fast_model,
             prompt,
@@ -139,7 +140,7 @@ class MiniMaxClient:
             f"Source: {source_name}\nDiagnostic: {diagnostic}\n"
             f"JSON schema: {json.dumps(FailureExplanation.model_json_schema())}"
         )
-        return await self._structured(
+        return await self.structured(
             "explain_probe_failure",
             self.settings.minimax_deep_model,
             prompt,
@@ -147,15 +148,18 @@ class MiniMaxClient:
             fallback,
         )
 
-    async def _structured(
+    async def structured(
         self,
         purpose: str,
         model: str,
         prompt: str,
         response_type: type[T],
         fallback: T,
+        timeout_seconds: float | None = None,
     ) -> T:
+        started = time.perf_counter()
         if not self.settings.minimax_api_key:
+            self._record_usage(purpose, model, {}, started, "fallback", "no_api_key")
             return fallback
         first_content = ""
         for attempt in range(2):
@@ -184,6 +188,7 @@ class MiniMaxClient:
                         "tool_choice": "none",
                         "temperature": 0.1,
                     },
+                    timeout=timeout_seconds,
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -193,9 +198,33 @@ class MiniMaxClient:
                 self._record_usage(purpose, model, payload, started, "success")
                 return result
             except (httpx.HTTPError, KeyError, IndexError, ValueError, ValidationError) as exc:
-                if attempt == 1:
-                    self._record_usage(purpose, model, {}, started, "fallback", type(exc).__name__)
+                repairable = isinstance(exc, (KeyError, IndexError, ValueError, ValidationError))
+                if not repairable or attempt == 1:
+                    self._record_usage(
+                        purpose,
+                        model,
+                        {},
+                        started,
+                        "fallback",
+                        self._bounded_error_code(exc),
+                    )
+                    break
         return fallback
+
+    @staticmethod
+    def _bounded_error_code(exc: Exception) -> str:
+        if isinstance(exc, httpx.TimeoutException):
+            return "timeout"
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+            status = exc.response.status_code
+            if status == 429:
+                return "http_429"
+            if 500 <= status <= 599:
+                return "http_5xx"
+            return "http_4xx"
+        if isinstance(exc, (ValidationError, ValueError, KeyError, IndexError)):
+            return "invalid_response"
+        return "transport_error"
 
     def _record_usage(
         self,
@@ -217,6 +246,6 @@ class MiniMaxClient:
                 output_tokens=int(usage.get("completion_tokens", 0)),
                 latency_ms=(time.perf_counter() - started) * 1000,
                 outcome=outcome,
-                error=error,
+                error=redact(error) if error else None,
             )
         )

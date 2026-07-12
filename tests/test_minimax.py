@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from newsradar.ai.minimax import MiniMaxClient
+from newsradar.ai.minimax import MiniMaxClient, ModelUsage
 from newsradar.ingestion.fetchers.credentials import SettingsCredentials
 from newsradar.settings import Settings
 
@@ -78,11 +78,39 @@ def test_settings_repr_never_contains_api_key() -> None:
     assert "secret-value" not in repr(settings)
 
 
+def test_event_model_settings_have_safe_operational_defaults() -> None:
+    settings = Settings()
+
+    assert settings.event_window_hours == 24
+    assert settings.event_candidate_window_hours == 48
+    assert settings.event_model_timeout_seconds == 45
+    assert settings.event_model_max_concurrency == 2
+    assert settings.event_top_limit == 20
+
+
+def test_model_usage_redacts_error_before_persistence() -> None:
+    captured: list[ModelUsage] = []
+    settings = Settings(minimax_api_key="secret-value")
+
+    client = MiniMaxClient(settings, httpx.AsyncClient(), usage_sink=captured.append)
+    client._record_usage(
+        "event_enrichment",
+        settings.minimax_fast_model,
+        {},
+        0.0,
+        "fallback",
+        "Authorization: Bearer secret-value",
+    )
+
+    assert captured[0].error == "Authorization: [REDACTED]"
+
+
 def test_settings_credentials_only_unwraps_requested_secret() -> None:
     settings = Settings(
         reddit_client_id="reddit-id",
         reddit_client_secret="reddit-secret",
         youtube_api_key="youtube-secret",
+        github_token=None,
     )
 
     credentials = SettingsCredentials(settings)
