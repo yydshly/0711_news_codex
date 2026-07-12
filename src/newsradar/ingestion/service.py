@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import FetchRunRecord, SourceAccessMethodRecord, SourceFetchStateRecord
@@ -55,6 +55,13 @@ class IngestionService:
             )
             return SourceFetchSummary(source.id, result, error_code=decision.error_code)
         method = decision.access_method
+        if not self._acquire_advisory_lock(source.id):
+            result = FetchResult(
+                outcome=FetchOutcome.BLOCKED,
+                error_code="source_fetch_locked",
+                error_message="A fetch for this source is already running",
+            )
+            return SourceFetchSummary(source.id, result, error_code=result.error_code)
         limit = min(
             max_items or source.ingestion.max_items_per_run, source.ingestion.max_items_per_run
         )
@@ -67,6 +74,7 @@ class IngestionService:
                 outcome=FetchOutcome.FAILED, error_code="fetch_failed", error_message=str(exc)
             )
         if dry_run:
+            self._release_advisory_lock(source.id)
             return SourceFetchSummary(source.id, result, error_code=result.error_code)
         fetch_run = self._start_run(source.id, method_id, operation_run_id)
         if result.outcome in {FetchOutcome.SUCCEEDED, FetchOutcome.PARTIAL}:
@@ -89,25 +97,52 @@ class IngestionService:
             self._commit_success(fetch_run, source.id, method_id, result)
         else:
             self._finish_run(fetch_run, result)
+        self._release_advisory_lock(source.id)
         return SourceFetchSummary(source.id, result, fetch_run.id, result.error_code)
 
+    def _acquire_advisory_lock(self, source_id: str) -> bool:
+        if self.session.bind is None or self.session.bind.dialect.name != "postgresql":
+            return True
+        try:
+            return bool(
+                self.session.scalar(select(func.pg_try_advisory_lock(func.hashtext(source_id))))
+            )
+        finally:
+            if self.session.in_transaction():
+                self.session.rollback()
+
+    def _release_advisory_lock(self, source_id: str) -> None:
+        if self.session.bind is None or self.session.bind.dialect.name != "postgresql":
+            return
+        try:
+            self.session.scalar(select(func.pg_advisory_unlock(func.hashtext(source_id))))
+        finally:
+            if self.session.in_transaction():
+                self.session.rollback()
+
     def _state(self, source_id: str, url: str) -> tuple[int | None, FetchState]:
-        method = self.session.scalar(
-            select(SourceAccessMethodRecord).where(
-                SourceAccessMethodRecord.source_id == source_id, SourceAccessMethodRecord.url == url
+        try:
+            method = self.session.scalar(
+                select(SourceAccessMethodRecord).where(
+                    SourceAccessMethodRecord.source_id == source_id,
+                    SourceAccessMethodRecord.url == url,
+                )
             )
-        )
-        if method is None:
-            return None, FetchState()
-        state = self.session.scalar(
-            select(SourceFetchStateRecord).where(
-                SourceFetchStateRecord.source_id == source_id,
-                SourceFetchStateRecord.access_method_id == method.id,
+            if method is None:
+                return None, FetchState()
+            state = self.session.scalar(
+                select(SourceFetchStateRecord).where(
+                    SourceFetchStateRecord.source_id == source_id,
+                    SourceFetchStateRecord.access_method_id == method.id,
+                )
             )
-        )
-        return method.id, FetchState(
-            state.etag, state.last_modified, state.cursor
-        ) if state else FetchState()
+            return method.id, (
+                FetchState(state.etag, state.last_modified, state.cursor) if state else FetchState()
+            )
+        finally:
+            # A SELECT autostarts a SQLAlchemy transaction; no network may run inside it.
+            if self.session.in_transaction():
+                self.session.rollback()
 
     def _start_run(
         self, source_id: str, method_id: int | None, operation_run_id: int | None

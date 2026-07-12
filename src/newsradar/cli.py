@@ -90,19 +90,23 @@ async def _fetch_sources(
     selected, *, approved: bool, max_items: int | None, dry_run: bool, operation_id: int
 ):
     policy = HttpPolicy.default()
-    try:
-        with create_session() as session:
-            service = IngestionService(session, FetcherFactory(policy))
-            return [
-                await service.fetch_source(
+    semaphore = asyncio.Semaphore(4)
+
+    async def fetch_one(source):
+        async with semaphore:
+            # Each source owns a Session so failures do not leak transaction state.
+            with create_session() as session:
+                service = IngestionService(session, FetcherFactory(policy))
+                return await service.fetch_source(
                     source,
                     approved_only=approved,
                     max_items=max_items,
                     dry_run=dry_run,
                     operation_run_id=operation_id,
                 )
-                for source in selected
-            ]
+
+    try:
+        return await asyncio.gather(*(fetch_one(source) for source in selected))
     finally:
         await policy.client.aclose()
 
@@ -111,7 +115,8 @@ async def _fetch_sources(
 def fetch_sources(
     source_id: Annotated[str | None, typer.Argument()] = None,
     root: RootOption = Path("sources"),
-    approved: Annotated[bool, typer.Option("--approved")] = False,
+    approved: Annotated[bool, typer.Option("--approved")] = True,
+    one_off: Annotated[bool, typer.Option("--one-off")] = False,
     provider: Annotated[str | None, typer.Option()] = None,
     max_items: Annotated[int | None, typer.Option(min=1)] = None,
     dry_run: Annotated[bool, typer.Option()] = False,
@@ -124,6 +129,23 @@ def fetch_sources(
     if not selected:
         typer.echo("No matching sources")
         raise typer.Exit(2)
+    if one_off and source_id is None:
+        typer.echo("--one-off requires an explicit source id")
+        raise typer.Exit(2)
+    if one_off:
+        source = selected[0]
+        typer.echo(
+            f"One-off fetch risk: source={source.id} risk={source.total_risk}/25 "
+            f"impact=network request and RawItem persistence"
+        )
+        if not typer.confirm("Proceed with this one-off fetch?"):
+            raise typer.Exit(1)
+        approved = False
+    else:
+        selected = [source for source in selected if source.ingestion.enabled]
+        if not selected:
+            typer.echo("No approved ingestion sources; use SOURCE_ID --one-off to request one.")
+            raise typer.Exit(2)
     with create_session() as session:
         SourceRepository(session).sync(selected)
         operation = OperationRepository(session).enqueue(

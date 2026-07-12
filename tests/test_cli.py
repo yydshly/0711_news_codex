@@ -156,3 +156,25 @@ def test_coverage_command_filters_provider_and_writes_report(tmp_path: Path) -> 
 
     assert result.exit_code == 0
     assert "Catalog targets | 1" in output.read_text(encoding="utf-8")
+
+
+def test_fetch_rejects_unapproved_sources_without_one_off(tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+
+    result = runner.invoke(app, ["fetch", "anthropic-news", "--root", str(root)])
+
+    assert result.exit_code == 2
+    assert "No approved ingestion sources" in result.stdout
+
+
+def test_fetch_one_off_requires_confirmation(tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+
+    result = runner.invoke(
+        app, ["fetch", "anthropic-news", "--root", str(root), "--one-off"], input="n\n"
+    )
+
+    assert result.exit_code == 1
+    assert "One-off fetch risk" in result.stdout

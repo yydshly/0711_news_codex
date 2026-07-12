@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -36,7 +35,6 @@ class HttpPolicy:
         max_response_bytes: int = 2_000_000,
         per_host: int = 2,
         retries: int = 2,
-        sleep: Awaitable[None] | None = None,
     ):
         self.client = client
         self.max_response_bytes = max_response_bytes
@@ -45,7 +43,6 @@ class HttpPolicy:
         self._semaphores: dict[str, asyncio.Semaphore] = defaultdict(
             lambda: asyncio.Semaphore(per_host)
         )
-        self._sleep = sleep
 
     @classmethod
     def default(cls) -> HttpPolicy:
@@ -58,9 +55,7 @@ class HttpPolicy:
         async with self._semaphores[host]:
             for attempt in range(self.retries + 1):
                 try:
-                    response = await self.client.get(url, **kwargs)
-                    if len(response.content) > self.max_response_bytes:
-                        raise ValueError("response_too_large")
+                    response = await self._stream_get(url, **kwargs)
                     if response.status_code not in {502, 503, 504, 429} or attempt == self.retries:
                         return response
                     delay = min(float(response.headers.get("retry-after", "0") or 0), 30.0)
@@ -70,6 +65,31 @@ class HttpPolicy:
                     delay = 0.1 * (attempt + 1)
                 await asyncio.sleep(delay)
         raise RuntimeError("unreachable")
+
+    async def _stream_get(self, url: str, **kwargs: object) -> httpx.Response:
+        request = self.client.build_request("GET", url, **kwargs)
+        response = await self.client.send(request, stream=True)
+        length = response.headers.get("content-length")
+        if length and int(length) > self.max_response_bytes:
+            await response.aclose()
+            raise ValueError("response_too_large")
+        chunks: list[bytes] = []
+        size = 0
+        try:
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > self.max_response_bytes:
+                    raise ValueError("response_too_large")
+                chunks.append(chunk)
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=b"".join(chunks),
+                request=request,
+                extensions=response.extensions,
+            )
+        finally:
+            await response.aclose()
 
 
 def response_result(response: httpx.Response, **values: object) -> FetchResult:

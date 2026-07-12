@@ -16,7 +16,8 @@ class GitHubFetcher:
     async def fetch(
         self, source: SourceDefinition, method: AccessMethod, state: FetchState, limit: int
     ):
-        parsed = urlsplit(str(method.url))
+        request_url = state.cursor or str(method.url)
+        parsed = urlsplit(request_url)
         if (
             parsed.hostname != "api.github.com"
             or not parsed.path.startswith("/repos/")
@@ -26,9 +27,8 @@ class GitHubFetcher:
         headers = {"Accept": "application/vnd.github+json", **method.headers}
         if state.etag:
             headers["If-None-Match"] = state.etag
-        response = await self.policy.get(
-            str(method.url), headers=headers, params={**method.params, "per_page": min(limit, 100)}
-        )
+        params = None if state.cursor else {**method.params, "per_page": min(limit, 100)}
+        response = await self.policy.get(request_url, headers=headers, params=params)
         if response.status_code == 304:
             return response_result(response, outcome=FetchOutcome.NO_CHANGE)
         if (
@@ -46,7 +46,7 @@ class GitHubFetcher:
         releases = response.json()
         items = []
         for release in releases[:limit]:
-            if release.get("draft") or release.get("prerelease"):
+            if release.get("draft"):
                 continue
             url = release.get("html_url")
             if not url:
@@ -71,7 +71,10 @@ class GitHubFetcher:
                     ).astimezone(UTC)
                     if release.get("updated_at")
                     else None,
-                    raw_payload=release,
+                    raw_payload={
+                        **release,
+                        "release_state": "prerelease" if release.get("prerelease") else "release",
+                    },
                 )
             )
         next_cursor = response.links.get("next", {}).get("url")
