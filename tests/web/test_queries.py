@@ -71,6 +71,8 @@ def test_details_contain_audited_fields_but_no_secret_values(query_service):
 def test_only_priority_one_and_latest_related_records_are_loaded(query_service, db_session):
     from datetime import UTC, datetime
 
+    from sqlalchemy import event
+
     from newsradar.db.models import SourceAccessMethodRecord, SourceRiskAssessmentRecord
 
     db_session.add(
@@ -101,9 +103,29 @@ def test_only_priority_one_and_latest_related_records_are_loaded(query_service, 
     )
     db_session.commit()
 
-    row = next(item for item in query_service.targets() if item.source_id == "github-openai-python")
+    statements: list[str] = []
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.lower().split()))
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", capture_statement)
+    try:
+        row = next(
+            item for item in query_service.targets() if item.source_id == "github-openai-python"
+        )
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", capture_statement)
+
     assert row.access_kind == "rss"
     assert row.risk_total == 45
+    assert row.latest_content_at is not None
+    assert row.latest_content_at.replace(tzinfo=UTC) == datetime(2026, 7, 11, 12, 0, tzinfo=UTC)
+    probe_query = next(sql for sql in statements if "source_probe_runs" in sql)
+    risk_query = next(sql for sql in statements if "source_risk_assessments" in sql)
+    for history_query in (probe_query, risk_query):
+        assert "row_number() over" in history_query
+        assert "partition by" in history_query
+        assert "history_rank =" in history_query
 
 
 def test_probe_filters_order_and_failure_explanation(query_service):

@@ -373,13 +373,7 @@ class DashboardQueryService:
             )
         }
         risks = self._latest_risks(source_ids)
-        latest_runs: dict[str, SourceProbeRunRecord] = {}
-        for run in self._session.scalars(
-            select(SourceProbeRunRecord)
-            .where(SourceProbeRunRecord.source_id.in_(source_ids))
-            .order_by(SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc())
-        ):
-            latest_runs.setdefault(run.source_id, run)
+        latest_runs = self._latest_content_runs(source_ids)
         rows = []
         for source in records:
             method = methods.get(source.id)
@@ -431,17 +425,56 @@ class DashboardQueryService:
     def _latest_risks(self, source_ids: Sequence[str]) -> dict[str, SourceRiskAssessmentRecord]:
         if not source_ids:
             return {}
-        latest: dict[str, SourceRiskAssessmentRecord] = {}
-        for risk in self._session.scalars(
-            select(SourceRiskAssessmentRecord)
-            .where(SourceRiskAssessmentRecord.source_id.in_(source_ids))
-            .order_by(
-                SourceRiskAssessmentRecord.assessed_at.desc(),
-                SourceRiskAssessmentRecord.id.desc(),
+        ranked = (
+            select(
+                SourceRiskAssessmentRecord.id.label("record_id"),
+                func.row_number()
+                .over(
+                    partition_by=SourceRiskAssessmentRecord.source_id,
+                    order_by=(
+                        SourceRiskAssessmentRecord.assessed_at.desc(),
+                        SourceRiskAssessmentRecord.id.desc(),
+                    ),
+                )
+                .label("history_rank"),
             )
-        ):
-            latest.setdefault(risk.source_id, risk)
-        return latest
+            .where(SourceRiskAssessmentRecord.source_id.in_(source_ids))
+            .subquery()
+        )
+        records = self._session.scalars(
+            select(SourceRiskAssessmentRecord)
+            .join(ranked, SourceRiskAssessmentRecord.id == ranked.c.record_id)
+            .where(ranked.c.history_rank == 1)
+        )
+        return {record.source_id: record for record in records}
+
+    def _latest_content_runs(
+        self, source_ids: Sequence[str]
+    ) -> dict[str, SourceProbeRunRecord]:
+        if not source_ids:
+            return {}
+        ranked = (
+            select(
+                SourceProbeRunRecord.id.label("record_id"),
+                func.row_number()
+                .over(
+                    partition_by=SourceProbeRunRecord.source_id,
+                    order_by=(
+                        SourceProbeRunRecord.finished_at.desc(),
+                        SourceProbeRunRecord.id.desc(),
+                    ),
+                )
+                .label("history_rank"),
+            )
+            .where(SourceProbeRunRecord.source_id.in_(source_ids))
+            .subquery()
+        )
+        records = self._session.scalars(
+            select(SourceProbeRunRecord)
+            .join(ranked, SourceProbeRunRecord.id == ranked.c.record_id)
+            .where(ranked.c.history_rank == 1)
+        )
+        return {record.source_id: record for record in records}
 
     @staticmethod
     def _source_probe_row(run: SourceProbeRunRecord, object_name: str) -> ProbeRow:
