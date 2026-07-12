@@ -6,12 +6,18 @@ RawItem Ingestion v1 在现有 Source Intelligence Registry、Source Universe v2
 
 本阶段不重建已有 Provider、Target、Probe、Coverage 或 A 风格中文页面。现有 YAML、探测器、查询层、诊断层、CLI 与 Web 基础设施继续复用。新增能力围绕正式抓取、幂等入库、内容版本、疑似重复、网页操作、后台任务、日志和故障恢复展开。
 
-第一版支持：
+第一版不以“官网抓取器”为目标，而要验证五层新闻信号：官方证据、专业媒体、聚合发现、社交社区、研究开发。支持的接入类型包括：
 
-- RSS/Atom
+- 官方与专业媒体 RSS/Atom
 - Hacker News 官方 API
 - GitHub Releases 官方 API
 - arXiv Atom API
+- Bluesky 公共 AppView API
+- Mastodon 公共 API
+- GDELT API
+- Google News RSS 与原始发布者解析
+- Reddit OAuth Data API
+- YouTube Data API
 
 所有正文只保存官方 RSS/API 直接返回的内容，不继续访问文章 HTML 抓取正文。
 
@@ -27,6 +33,7 @@ RawItem Ingestion v1 在现有 Source Intelligence Registry、Source Universe v2
 - Web 与 CLI 调用同一服务层。
 - 执行使用 PostgreSQL 持久化队列和独立本地 Worker，不使用 Redis、Celery 或 Docker。
 - 不建设后台定时调度、事件聚类、MiniMax 新闻摘要、推荐、日报或推送。
+- X、Facebook、Instagram、Threads、TikTok 和 LinkedIn 继续登记并展示覆盖缺口；在没有官方权限或预算时不伪装成已覆盖，也不使用 Cookie、浏览器登录态或非官方绕过。
 
 ## 3. 总体架构
 
@@ -108,6 +115,10 @@ RawItem 保存当前最新规范化状态：
 - `language`、`content_type`
 - `published_at`、`source_updated_at`
 - `discussion_url`、`engagement`
+- `item_kind`
+- `publisher_name`、`publisher_url`
+- `discovery_url`、`origin_resolution_status`
+- 社交账号 ID、Handle 与线程根 ID
 - `raw_payload`
 - `content_hash`、`title_fingerprint`、`canonical_url_hash`
 - `first_seen_run_id`、`last_seen_run_id`
@@ -161,7 +172,7 @@ ingestion:
 
 显式单次抓取允许非白名单的合规 `ready + direct` 来源，但必须展示风险和影响范围并二次确认。一次性操作不修改 YAML。付费、审批、人工、目录型、暂停、禁用或硬阻塞来源不得通过确认框绕过。
 
-AccessMethod 按优先级选择。失败后只允许尝试另一个已审核 RSS/API 备用方式，绝不自动降级到 HTML。
+AccessMethod 按优先级选择。失败后只允许尝试另一个已审核 RSS/API 备用方式，绝不自动降级到 HTML。专业媒体 RSS 与聚合发现源必须保留来源归属；无法确认原始发布者时，只能作为发现信号，不能标记为已确认事实。
 
 ## 6. 规范化、幂等与重复候选
 
@@ -176,6 +187,8 @@ Fetcher 输出严格 Pydantic `NormalizedRawItem`。未知字段只能进入 `ra
 - Host 小写，移除 Fragment、默认端口和已知跟踪参数，保留业务参数。
 - URL 规范化不发起额外网络请求。
 - 保存 `original_url` 供排查。
+- 聚合源的 Feed/结果链接保存为 `discovery_url`；只有受控重定向解析确认原始发布者后，原始报道 URL 才进入 `canonical_url`。
+- 受控重定向解析只读取跳转链与响应头，不下载或解析文章正文；跨域、循环、超长跳转或归属不明时保留聚合 URL 并标记解析状态。
 
 同源写入顺序：
 
@@ -233,7 +246,51 @@ Fetcher 不写数据库。FetchResult 返回规范化条目、请求元数据、
 - 支持分页、版本更新和请求频率限制。
 - 页面标记预印本未经同行评审。
 
-所有来源均受最大 Item、最大分页、响应体大小、单来源时限和 Operation 总时限约束。
+### Bluesky
+
+- 使用公共 AppView API，只操作已审核账号、Feed 或查询目标。
+- AT URI 或 CID 组成稳定 External ID。
+- 保存作者 DID、Handle、正文、发布时间、回复/转发/点赞数和线程根。
+- 删除、屏蔽或不可用内容更新为观测状态，不把缺失自动解释为事实撤回。
+- 固定账号 Feed 优先于全局搜索；搜索能力变化时准确降级或阻塞，不回退网页抓取。
+
+### Mastodon
+
+- 使用已审核实例的公共 API，只抓取已登记账号或明确允许的公共时间线目标。
+- Status ID 与实例域名组成 External ID。
+- 保存账号、正文、发布时间、回复/转发/收藏和线程关系。
+- 尊重实例级速率限制与本地政策；某实例失败不影响其他实例。
+- 不对所有 Mastodon 实例进行自动发现或无界抓取。
+
+### GDELT
+
+- 作为聚合发现源，不作为唯一事实证据。
+- 保存 GDELT 结果 ID、报道标题、原始发布者、报道 URL、语言、时间及可用元数据。
+- 对实体歧义、重复 URL 和来源归属缺失产生明确警告。
+- 同一报道被多次发现时幂等更新，不因查询批次不同制造新 RawItem。
+
+### Google News RSS
+
+- 支持已审核主题、关键词和媒体聚合 Feed。
+- 聚合链接保存为 `discovery_url`，受控解析原始发布者和原始 URL。
+- 不抓取目标文章正文，不将 Google News 视为原始发布者。
+- 无法解析原始 URL 时仍可保存发现记录，但 `origin_resolution_status` 必须标记为未解析。
+
+### Reddit
+
+- 只使用官方 OAuth Data API，支持已审核 Subreddit 的 Hot/New 目标。
+- Post ID 为 External ID，保存作者、正文、外链、发布时间、Score 和评论数。
+- 缺少 OAuth 凭据、应用未批准或权限不足时准确标记 `blocked`，不得回退到网页或 Cookie。
+- 删除内容、匿名作者和社区偏差在页面中明确提示。
+
+### YouTube
+
+- 只使用官方 YouTube Data API，优先固定频道与已审核查询。
+- Video ID 为 External ID，保存频道、标题、描述、发布时间和可用互动指标。
+- v1 不承诺字幕；没有官方字幕能力时不抓取或推断完整视频正文。
+- 缺少 API Key、配额耗尽或权限不足时准确阻塞，不回退网页抓取。
+
+所有来源均受最大 Item、最大分页、响应体大小、单来源时限和 Operation 总时限约束。社交与聚合内容默认承担 `discovery` 或 `engagement` 角色，不能单独升级为已确认新闻事实。
 
 ## 8. 服务层与持久化任务队列
 
@@ -336,17 +393,21 @@ newsradar operations retry <operation-id>
 
 `--max-items` 只能降低 YAML 上限。`--dry-run` 执行资格、请求与规范化但不写 RawItem、快照或游标。正常 Fetch 必须持久化，不提供 `--no-persist`。CLI 默认同步等待，并创建与网页相同的 OperationRun。
 
-## 13. 首批来源
+## 13. 首批来源矩阵
 
-先完成三轮探测，再人工批准至少 8 个，覆盖四类协议。候选包括：
+先完成官方身份、端点、字段、新鲜度、条款与三轮探测审核，再登记至少 20 个 Ingestion 目标。首批矩阵必须覆盖五层信号，不能只由官网和论文组成：
 
-- Hacker News Top/New
-- arXiv cs.AI、cs.CL
-- OpenAI Python Releases
-- Anthropic Python SDK Releases
-- Techmeme Feed
-- NVIDIA Developer Blog
-- Google AI、DeepMind、Hugging Face 或 Microsoft Research 中至少一个
+| 信息层 | 最低目标数 | 候选范围 | 主要作用 |
+|---|---:|---|---|
+| 官方/开发 | 4 | NVIDIA、Google AI/DeepMind、OpenAI/Anthropic GitHub Releases、Hugging Face | 事实确认与产品变化 |
+| 专业媒体 | 5 | TechCrunch、The Verge、BBC、Guardian、WIRED、MIT Technology Review 等官方 RSS | 独立报道与背景 |
+| 聚合发现 | 3 | Google News RSS、Techmeme、GDELT | 扩大召回并定位原始报道 |
+| 社交/社区 | 4 | Hacker News、Bluesky、Mastodon，以及凭据可用时的 Reddit/YouTube | 早期动态、讨论和热度 |
+| 研究/开发 | 4 | arXiv、GitHub Releases、OpenReview 或其他已有开放目标 | 论文与开发活动 |
+
+至少 15 个免费可用目标必须完成连续三轮正式 Fetch。其余目标可以是 Reddit、YouTube 等凭据阻塞目标，但必须完成适配器能力验证并在网页准确说明解锁条件，不能冒充内容已覆盖。
+
+X、Facebook、Instagram、Threads、TikTok、LinkedIn 即使无法免费读取，也继续出现在 Provider/Target/Gap/System 页面中。它们不计入成功抓取数量，只计入覆盖缺口与未来解锁路线。
 
 实际端点、字段完整度、新鲜度和风险未通过时不得写入 `ingestion.enabled: true`。
 
@@ -357,7 +418,10 @@ newsradar operations retry <operation-id>
 - `0002` 到新迁移的无损升级、回填、索引与约束。
 - 白名单、显式操作和所有禁止绕过规则。
 - URL、时间、External ID、内容哈希、快照和重复候选。
-- RSS/Atom、HN、GitHub、arXiv 固定样本及协议边界。
+- RSS/Atom、HN、GitHub、arXiv、Bluesky、Mastodon、GDELT、Google News、Reddit、YouTube 固定样本及协议边界。
+- 聚合链接解析、原始发布者归属、无法解析和跨域跳转限制。
+- 社交账号身份、删除状态、互动字段、线程关系和社区内容风险标记。
+- Reddit/YouTube 缺少凭据、权限不足和配额耗尽时的阻塞语义。
 - DNS、TLS、超时、响应过大、401/403/404/410/429/5xx、非法 XML/JSON、Schema 漂移和数据库锁。
 - Worker 租约、双 Worker 竞争、心跳丢失、崩溃重领、最大尝试、停止和短事务。
 - 日志关联、敏感信息清洗、轮转和诊断包。
@@ -366,14 +430,17 @@ newsradar operations retry <operation-id>
 
 浏览器验收覆盖桌面、移动端、键盘焦点、长内容、Worker 离线、任务刷新和后台抓取时的页面响应。
 
-真实网络验收要求：至少 8 个来源完成三轮 Probe 和三轮 Fetch；验证一次条件请求、一次 Worker 重启恢复、一次来源失败隔离，并检查 RawItem、快照、FetchRun、操作事件和日志。
+真实网络验收要求：至少 20 个目标完成审核，其中至少 15 个免费可用目标完成三轮 Probe 和三轮 Fetch，并覆盖五层信息信号与至少 8 种接入方式；验证一次条件请求、一次聚合原始 URL 解析、一次 Worker 重启恢复、一次来源失败隔离和一次凭据阻塞，并检查 RawItem、快照、FetchRun、操作事件和日志。
 
 ## 15. 完成标准
 
 - 现有 147 项基线测试和中文来源感知台无回归。
 - PostgreSQL 队列与独立 Worker 可运行且不会永久卡住任务。
 - 网页具有流程指导和真实操作入口。
-- 四类 Fetcher 可用，至少 8 个来源连续三轮正式抓取成功。
+- RSS/Atom、HN、GitHub、arXiv、Bluesky、Mastodon、GDELT、Google News、Reddit、YouTube 适配器具有明确可用或阻塞结果。
+- 至少 20 个目标完成审核，至少 15 个免费可用目标连续三轮正式抓取成功。
+- 官方、专业媒体、聚合发现、社交社区、研究开发五层均有真实内容或准确阻塞证据。
+- 聚合和社交内容不会被错误标记为独立事实证据。
 - RawItem 幂等、快照和疑似重复有效。
 - 错误可在网页、数据库和本地日志中关联定位。
 - Worker 崩溃不会造成重复内容或永久 `running`。
@@ -384,11 +451,35 @@ newsradar operations retry <operation-id>
 
 ## 16. 实施顺序
 
+扩展后的 v1 涉及运行时、开放来源、凭据来源和 Web 四个边界，实施计划必须按里程碑拆分，不能作为一次大改提交：
+
+### 里程碑 A：可靠 Ingestion 内核
+
 1. 数据模型、迁移、日志与错误契约。
 2. Operation Queue、Worker 租约、心跳和并发保护。
 3. Eligibility、规范化、幂等、快照和重复候选。
 4. RSS、HN、GitHub、arXiv Fetcher。
 5. CLI Fetch/Operations/Worker/Serve。
-6. Web 流程、操作、批次、内容、重复和系统状态。
-7. 首批来源审核、真实网络三轮探测与抓取。
-8. 完整测试、浏览器验收、诊断与可靠性演练。
+
+完成后只能说明 Ingestion 内核可用，不能宣称全域来源覆盖完成。
+
+### 里程碑 B：开放新闻与社交发现
+
+1. 专业媒体 RSS 目标审核。
+2. Bluesky、Mastodon、GDELT、Google News Fetcher。
+3. 聚合原始发布者与受控重定向解析。
+4. 五层来源角色和证据边界展示。
+
+### 里程碑 C：凭据型来源与 Web 操作
+
+1. Reddit、YouTube 凭据型 Fetcher 与阻塞语义。
+2. Web 流程、操作、批次、内容、重复和系统状态。
+3. Worker 离线、排队、重试、停止和诊断体验。
+
+### 里程碑 D：覆盖与可靠性验收
+
+1. 至少 20 个五层来源目标审核。
+2. 至少 15 个免费目标完成真实网络三轮探测与抓取。
+3. 完整 pytest、Ruff、浏览器验收、日志脱敏、Worker 恢复和可靠性演练。
+
+只有 A 至 D 全部通过，RawItem Ingestion v1 才算完成。
