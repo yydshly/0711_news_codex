@@ -9,6 +9,7 @@ from newsradar.db.models import (
     ProviderDefinitionVersion,
     ProviderProbeRunRecord,
 )
+from newsradar.providers.probes import ProviderProbeResult
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.schema import ProviderDefinition
 
@@ -70,3 +71,21 @@ def test_provider_probe_history_contains_capability_not_content() -> None:
         assert stored.probe_type == "capability"
         assert stored.provider_id == "bluesky"
         assert not hasattr(stored, "samples")
+
+
+def test_provider_probe_result_can_be_persisted_without_shape_conversion() -> None:
+    with session_for_test() as session:
+        repository = ProviderRepository(session)
+        repository.sync([provider()])
+        result = ProviderProbeResult(
+            provider_id="bluesky",
+            outcome="success",
+            availability="ready",
+            reason="reachable",
+            checked_at=datetime.now(UTC),
+            evidence_url="https://docs.bsky.app/",
+        )
+
+        record = repository.save_probe(**result.model_dump())
+
+        assert record.probe_type == "capability"

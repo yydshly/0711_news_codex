@@ -76,10 +76,11 @@ class ProviderRepository:
         latency_ms: float | None,
         http_status: int | None,
         evidence_url: str,
+        probe_type: str = "capability",
     ) -> ProviderProbeRunRecord:
         record = ProviderProbeRunRecord(
             provider_id=provider_id,
-            probe_type="capability",
+            probe_type=probe_type,
             outcome=outcome,
             availability=availability,
             reason=reason,
