@@ -210,7 +210,9 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
 
     def issue_action_token(request: Request) -> str:
         token = token_urlsafe(32)
-        request.session["tokens"] = [token]
+        tokens = list(request.session.get("tokens", []))[-15:]
+        tokens.append(token)
+        request.session["tokens"] = tokens
         return token
 
     async def require_safe_action(request: Request) -> dict[str, str]:
@@ -523,8 +525,33 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
+                "action_token": issue_action_token(request),
             },
         )
+
+    @app.post("/operations/{operation_id}/cancel")
+    async def cancel_operation(request: Request, operation_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                if not OperationCommandService(session).cancel(operation_id):
+                    raise HTTPException(status_code=409, detail="operation cannot be cancelled")
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+
+    @app.post("/operations/{operation_id}/retry")
+    async def retry_operation(request: Request, operation_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                try:
+                    retry_id = OperationCommandService(session).retry(operation_id, trigger="web")
+                except ValueError as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from error
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/operations/{retry_id}", status_code=303)
 
     @app.get("/fetch-runs", response_class=HTMLResponse)
     def fetch_runs(request: Request, source_id: str | None = None) -> HTMLResponse:
@@ -601,8 +628,23 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
+                "action_token": issue_action_token(request),
             },
         )
+
+    @app.post("/duplicates/{duplicate_id}/{decision}")
+    async def review_duplicate(
+        request: Request, duplicate_id: int, decision: Literal["confirm", "dismiss"]
+    ) -> RedirectResponse:
+        await require_safe_action(request)
+        status = "confirmed" if decision == "confirm" else "dismissed"
+        try:
+            with create_session() as session:
+                if not ItemQueryService(session).review_duplicate(duplicate_id, status):
+                    raise HTTPException(status_code=409, detail="duplicate cannot be reviewed")
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url="/duplicates", status_code=303)
 
     @app.get("/system", response_class=HTMLResponse)
     def system_health(request: Request) -> HTMLResponse:

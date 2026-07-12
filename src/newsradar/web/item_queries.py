@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from types import MappingProxyType
+from typing import Literal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
@@ -305,6 +306,17 @@ class ItemQueryService:
             )
             for record in records
         )
+
+    def review_duplicate(
+        self, duplicate_id: int, status: Literal["confirmed", "dismissed"]
+    ) -> bool:
+        record = self.session.get(DuplicateCandidateRecord, duplicate_id, with_for_update=True)
+        if record is None or record.status != "pending":
+            return False
+        record.status = status
+        record.reviewed_at = datetime.now(UTC)
+        self.session.commit()
+        return True
 
 
 def _item_filters(

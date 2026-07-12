@@ -28,6 +28,10 @@ def _client_with_database(monkeypatch, db_session):
     return TestClient(create_app(), base_url="http://127.0.0.1")
 
 
+def _action_token(page: str) -> str:
+    return page.split('name="action_token" value="', 1)[1].split('"', 1)[0]
+
+
 def test_fetch_action_enqueues_once_and_never_fetches_in_request(monkeypatch, db_session):
     with _client_with_database(monkeypatch, db_session) as client:
         page = client.get("/operations")
@@ -140,3 +144,111 @@ def test_ingestion_pages_project_runs_items_versions_and_duplicates(monkeypatch,
     assert "must-not-appear-in-list" not in items.text
     assert "https://example.test/one" in detail.text
     assert "canonical_url" in duplicates.text
+
+
+def test_operation_actions_cancel_and_retry_with_independent_tokens(monkeypatch, db_session):
+    queued = OperationRunRecord(
+        operation_type="fetch",
+        trigger="web",
+        status="queued",
+        requested_scope={"source_id": "github-openai-python"},
+        result_summary={},
+        attempt_count=0,
+    )
+    finished = OperationRunRecord(
+        operation_type="fetch",
+        trigger="web",
+        status="succeeded",
+        requested_scope={"source_id": "github-openai-python"},
+        result_summary={},
+        attempt_count=1,
+    )
+    db_session.add_all((queued, finished))
+    db_session.commit()
+
+    with _client_with_database(monkeypatch, db_session) as client:
+        first_token = _action_token(client.get("/operations").text)
+        second_token = _action_token(client.get("/operations").text)
+        cancelled = client.post(
+            f"/operations/{queued.id}/cancel",
+            data={"action_token": first_token},
+            headers={"Origin": "http://127.0.0.1"},
+            follow_redirects=False,
+        )
+        retried = client.post(
+            f"/operations/{finished.id}/retry",
+            data={"action_token": second_token},
+            headers={"Origin": "http://127.0.0.1"},
+            follow_redirects=False,
+        )
+
+    assert cancelled.status_code == 303
+    assert retried.status_code == 303
+    assert db_session.get(OperationRunRecord, queued.id).status == "cancelled"  # type: ignore[union-attr]
+    retried_record = db_session.get(
+        OperationRunRecord, int(retried.headers["location"].rsplit("/", 1)[1])
+    )
+    assert retried_record is not None
+    assert retried_record.requested_scope["retry_of_operation_id"] == finished.id
+
+
+def test_duplicate_action_dismisses_pending_candidate(monkeypatch, db_session):
+    first = RawItemRecord(
+        source_id="github-openai-python",
+        external_id="one",
+        canonical_url="https://example.test/one",
+        title="First record",
+        payload={},
+        content_hash="one",
+    )
+    second = RawItemRecord(
+        source_id="search-ai",
+        external_id="two",
+        canonical_url="https://example.test/two",
+        title="Second record",
+        payload={},
+        content_hash="two",
+    )
+    db_session.add_all((first, second))
+    db_session.flush()
+    candidate = DuplicateCandidateRecord(
+        raw_item_id=first.id,
+        candidate_raw_item_id=second.id,
+        match_type="title",
+        score=0.95,
+        status="pending",
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    with _client_with_database(monkeypatch, db_session) as client:
+        token = _action_token(client.get("/operations").text)
+        response = client.post(
+            f"/duplicates/{candidate.id}/dismiss",
+            data={"action_token": token},
+            headers={"Origin": "http://127.0.0.1"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert db_session.get(DuplicateCandidateRecord, candidate.id).status == "dismissed"  # type: ignore[union-attr]
+
+
+def test_operation_and_duplicate_pages_explain_available_safe_actions(monkeypatch, db_session):
+    operation = OperationRunRecord(
+        operation_type="fetch",
+        trigger="web",
+        status="queued",
+        requested_scope={"source_id": "github-openai-python"},
+        result_summary={},
+        attempt_count=0,
+    )
+    db_session.add(operation)
+    db_session.commit()
+
+    with _client_with_database(monkeypatch, db_session) as client:
+        detail = client.get(f"/operations/{operation.id}")
+        duplicates = client.get("/duplicates")
+
+    assert f"/operations/{operation.id}/cancel" in detail.text
+    assert "重复候选需要人工裁决" in duplicates.text
