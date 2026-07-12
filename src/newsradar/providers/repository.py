@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -92,3 +93,12 @@ class ProviderRepository:
         self.session.add(record)
         self.session.flush()
         return record
+
+    def latest_probes(self) -> dict[str, ProviderProbeRunRecord]:
+        records = self.session.scalars(
+            select(ProviderProbeRunRecord).order_by(ProviderProbeRunRecord.checked_at.desc())
+        ).all()
+        latest: dict[str, ProviderProbeRunRecord] = {}
+        for record in records:
+            latest.setdefault(record.provider_id, record)
+        return latest

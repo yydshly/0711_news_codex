@@ -18,8 +18,7 @@ def test_source_universe_meets_coverage_floor() -> None:
     direct_free = [
         source
         for source in sources
-        if source.coverage_mode == CoverageMode.DIRECT
-        and source.availability == Availability.READY
+        if source.coverage_mode == CoverageMode.DIRECT and source.availability == Availability.READY
     ]
     assert len(direct_free) >= 25
 

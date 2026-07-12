@@ -89,3 +89,28 @@ def test_provider_probe_result_can_be_persisted_without_shape_conversion() -> No
         record = repository.save_probe(**result.model_dump())
 
         assert record.probe_type == "capability"
+
+
+def test_latest_probes_returns_newest_record_per_provider() -> None:
+    with session_for_test() as session:
+        repository = ProviderRepository(session)
+        repository.sync([provider()])
+        older = datetime(2026, 7, 10, tzinfo=UTC)
+        newer = datetime(2026, 7, 11, tzinfo=UTC)
+        for checked_at, outcome in ((older, "failed"), (newer, "success")):
+            repository.save_probe(
+                provider_id="bluesky",
+                outcome=outcome,
+                availability="ready",
+                reason=outcome,
+                checked_at=checked_at,
+                latency_ms=1,
+                http_status=200,
+                evidence_url="https://docs.bsky.app/",
+            )
+        session.commit()
+
+        latest = repository.latest_probes()
+
+        assert latest["bluesky"].outcome == "success"
+        assert latest["bluesky"].checked_at.replace(tzinfo=UTC) == newer

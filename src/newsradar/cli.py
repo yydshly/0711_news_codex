@@ -127,11 +127,16 @@ def report_providers(
         Path, typer.Option("--source-root", exists=True, file_okay=False, resolve_path=True)
     ] = Path("sources"),
     output: Annotated[Path, typer.Option("--output")] = Path("reports/source-coverage.md"),
+    history: Annotated[bool, typer.Option("--history/--no-history")] = False,
 ) -> None:
     providers = load_provider_tree(root)
     sources = load_source_tree(source_root)
+    results = None
+    if history:
+        with create_session() as session:
+            results = ProviderRepository(session).latest_probes()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render_coverage_report(providers, sources), encoding="utf-8")
+    output.write_text(render_coverage_report(providers, sources, results), encoding="utf-8")
     typer.echo(f"Wrote provider coverage report to {output}")
 
 
@@ -218,6 +223,7 @@ def source_coverage(
         Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
     ] = Path("providers"),
     output: Annotated[Path, typer.Option("--output")] = Path("reports/source-coverage.md"),
+    history: Annotated[bool, typer.Option("--history/--no-history")] = False,
 ) -> None:
     providers = load_provider_tree(provider_root)
     sources = load_source_tree(root)
@@ -227,6 +233,10 @@ def source_coverage(
         if not providers:
             typer.echo(f"Unknown provider id: {provider}")
             raise typer.Exit(2)
+    results = None
+    if history:
+        with create_session() as session:
+            results = ProviderRepository(session).latest_probes()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render_coverage_report(providers, sources), encoding="utf-8")
+    output.write_text(render_coverage_report(providers, sources, results), encoding="utf-8")
     typer.echo(f"Wrote source coverage report to {output}")
