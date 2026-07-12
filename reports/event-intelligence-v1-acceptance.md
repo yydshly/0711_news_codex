@@ -77,3 +77,13 @@ categories.
 Operation summaries now record the bounded counters required for reruns: duration, retry count,
 duplicate-root suppression, and model-fallback count. The final run duration and retry values must
 be taken from the terminal operation records; no invented live values are included here.
+
+### Fixed-head live rerun
+
+On the final-code verification run, three 24-hour Worker builds completed as operations 112, 113,
+and 114. Each processed two relevant items/candidates and returned event IDs 10 and 11. Operation
+112 created two versions with duration 625 ms, retry count 0, duplicate-root suppression 0, and
+model fallback 2. Operations 113 and 114 replayed without versions (375 ms and 562 ms respectively;
+retry 0, duplicate-root 0, model fallback 0). All three succeeded. The existing MiniMax-off operation
+108 remains the no-key evidence. Live inputs still do not prove all four categories; deterministic
+fixtures cover product/model, research, developer-tool, and company classification.

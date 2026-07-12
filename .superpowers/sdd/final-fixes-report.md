@@ -59,3 +59,10 @@ No schema migration changed, so a migration roundtrip was not required.
 
 Fresh isolated verification after the follow-up: `uv run pytest -q` reported `459 passed, 3 skipped`;
 `uv run ruff check .` reported `All checks passed!`.
+
+## Provenance and migration follow-up
+
+Production MiniMax calls now capture bounded `ModelUsageRecord` plus linked `EventModelRunRecord`
+rows after the model call and alongside the short publication session. Persistence uses savepoints and
+is best-effort, so an audit sink error cannot block publishing. `uv run alembic current` reported
+`20260712_0008 (head)` and `uv run alembic check` reported no new upgrade operations.
