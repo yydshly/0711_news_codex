@@ -85,7 +85,7 @@ class OperationRepository:
             operation = self.session.scalar(self._next_ready_statement())
             if operation is None:
                 return None
-            self._ensure_worker(worker_id)
+            worker = self._ensure_worker(worker_id)
             if operation.status == OperationStatus.RUNNING.value:
                 prior = self.session.scalar(
                     select(OperationAttemptRecord)
@@ -96,6 +96,10 @@ class OperationRepository:
                 if prior is not None:
                     prior.status = OperationStatus.INTERRUPTED.value
                     prior.finished_at = self._now()
+                previous_worker = self.session.get(WorkerRecord, operation.worker_id)
+                if previous_worker is not None:
+                    previous_worker.status = "stale"
+                    previous_worker.current_operation_run_id = None
             operation.attempt_count += 1
             operation.status = OperationStatus.RUNNING.value
             operation.worker_id = worker_id
@@ -103,6 +107,9 @@ class OperationRepository:
             operation.lease_expires_at = self._lease_expiry(lease_seconds)
             operation.started_at = operation.started_at or func.now()
             operation.updated_at = func.now()
+            worker.last_heartbeat_at = self._now()
+            worker.status = "running"
+            worker.current_operation_run_id = operation.id
             attempt = OperationAttemptRecord(
                 operation_run_id=operation.id,
                 worker_id=worker_id,
@@ -143,6 +150,11 @@ class OperationRepository:
             operation.updated_at = func.now()
             attempt.heartbeat_at = func.now()
             attempt.lease_expires_at = self._lease_expiry(lease_seconds)
+            worker = self.session.get(WorkerRecord, lease.worker_id)
+            if worker is not None:
+                worker.last_heartbeat_at = self._now()
+                worker.status = "running"
+                worker.current_operation_run_id = operation.id
             return True
 
     def finish_attempt(
@@ -189,6 +201,12 @@ class OperationRepository:
             operation.lease_expires_at = None
             operation.worker_id = None
             operation.updated_at = func.now()
+            worker = self.session.get(WorkerRecord, lease.worker_id)
+            if worker is not None:
+                worker.last_heartbeat_at = self._now()
+                if worker.current_operation_run_id == operation.id:
+                    worker.current_operation_run_id = None
+                worker.status = "running"
             if final == OperationStatus.QUEUED:
                 operation.next_attempt_at = func.now()
             else:
@@ -231,17 +249,19 @@ class OperationRepository:
             self.session.commit()
         return self.session.begin()
 
-    def _ensure_worker(self, worker_id: str) -> None:
-        if self.session.get(WorkerRecord, worker_id) is None:
-            self.session.add(
-                WorkerRecord(
-                    worker_id=worker_id,
-                    hostname=worker_id,
-                    started_at=self._now(),
-                    status="running",
-                )
+    def _ensure_worker(self, worker_id: str) -> WorkerRecord:
+        worker = self.session.get(WorkerRecord, worker_id)
+        if worker is None:
+            worker = WorkerRecord(
+                worker_id=worker_id,
+                hostname=worker_id,
+                started_at=self._now(),
+                last_heartbeat_at=self._now(),
+                status="running",
             )
+            self.session.add(worker)
             self.session.flush()
+        return worker
 
     def _lease_expiry(self, seconds: int):
         if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
