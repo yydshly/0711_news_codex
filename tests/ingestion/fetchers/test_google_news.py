@@ -6,11 +6,21 @@ import httpx
 import pytest
 import respx
 
+import newsradar.ingestion.origin_resolver as origin_resolver
 from newsradar.ingestion.fetchers.base import FetcherFactory, FetchState, HttpPolicy
 from newsradar.ingestion.fetchers.google_news import GoogleNewsFetcher
 from newsradar.sources.schema import SourceDefinition
 
 from ...test_source_schema import valid_source
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        origin_resolver.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
 
 
 def source(url: str = "https://news.google.com/rss/search?q=ai") -> SourceDefinition:
@@ -80,3 +90,20 @@ async def test_google_news_query_feed_keeps_unresolved_discovery_fallback() -> N
     assert str(item.discovery_url) == "https://news.google.com/read/one"
     assert item.publisher_name is None
     assert item.origin_resolution_status.value == "unresolved"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_google_news_strips_sensitive_configured_headers() -> None:
+    route = respx.get("https://news.google.com/rss/search?q=ai").mock(
+        return_value=httpx.Response(200, content=b"<rss><channel /></rss>")
+    )
+    item_source = source()
+    item_source.access_methods[0].headers.update({"Cookie": "session", "Authorization": "secret"})
+    async with httpx.AsyncClient() as client:
+        await GoogleNewsFetcher(HttpPolicy(client), client).fetch(
+            item_source, item_source.access_methods[0], FetchState(), 5
+        )
+
+    assert "cookie" not in route.calls[0].request.headers
+    assert "authorization" not in route.calls[0].request.headers

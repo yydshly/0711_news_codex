@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -90,6 +91,14 @@ class HttpPolicy:
             )
         finally:
             await response.aclose()
+
+    @asynccontextmanager
+    async def stream(self, url: str, **kwargs: object):
+        """Open a bounded request while sharing the ingestion host limit."""
+        host = httpx.URL(url).host or ""
+        async with self._semaphores[host]:
+            async with self.client.stream("GET", url, **kwargs) as response:
+                yield response
 
 
 def public_headers(headers: dict[str, str]) -> dict[str, str]:

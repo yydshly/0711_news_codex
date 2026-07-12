@@ -16,7 +16,14 @@ def make_source(**changes: object) -> SourceDefinition:
 @pytest.mark.parametrize(
     ("changes", "approved_only", "configured_env", "hard_block_reason", "allowed", "code"),
     [
-        ({"ingestion": {"enabled": True}}, True, set(), None, True, None),
+        (
+            {"ingestion": {"enabled": True, "approved_at": "2026-07-11"}},
+            True,
+            set(),
+            None,
+            True,
+            None,
+        ),
         ({}, False, set(), None, True, None),
         ({"status": "paused"}, False, set(), None, False, "source_paused"),
         ({"status": "disabled"}, False, set(), None, False, "source_disabled"),

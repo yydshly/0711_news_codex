@@ -5,12 +5,11 @@ import hashlib
 import feedparser
 import httpx
 
-from newsradar.ingestion.origin_resolver import OriginResolver
 from newsradar.ingestion.schema import FetchOutcome, NormalizedRawItem
 from newsradar.sources.probes.rss import feed_datetime
 from newsradar.sources.schema import AccessMethod, SourceDefinition
 
-from .base import FetchState, HttpPolicy, response_result
+from .base import FetchState, HttpPolicy, public_headers, response_result
 
 
 class GoogleNewsFetcher:
@@ -18,13 +17,16 @@ class GoogleNewsFetcher:
 
     def __init__(self, policy: HttpPolicy, client: httpx.AsyncClient | None = None):
         self.policy = policy
-        self.resolver = OriginResolver(client or policy.client)
+        del client
+        from newsradar.ingestion.origin_resolver import OriginResolver
+
+        self.resolver = OriginResolver(policy)
 
     async def fetch(
         self, source: SourceDefinition, method: AccessMethod, state: FetchState, limit: int
     ):
         del source
-        headers = {"User-Agent": "NewsRadarIngestion/0.1", **method.headers}
+        headers = public_headers({"User-Agent": "NewsRadarIngestion/0.1", **method.headers})
         if state.etag:
             headers["If-None-Match"] = state.etag
         if state.last_modified:

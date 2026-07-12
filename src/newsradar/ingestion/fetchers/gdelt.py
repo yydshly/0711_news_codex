@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
+from typing import TYPE_CHECKING
 
-from newsradar.ingestion.attribution import OriginResolutionStatus
 from newsradar.ingestion.schema import NormalizedRawItem
 from newsradar.sources.schema import AccessMethod, SourceDefinition
 
-from .base import FetchState, HttpPolicy, response_result
+from .base import FetchState, HttpPolicy, public_headers, response_result
+
+if TYPE_CHECKING:
+    from newsradar.ingestion.origin_resolver import OriginResolver
 
 
 class GdeltFetcher:
     """Fetch GDELT search results as discovery records, never article content."""
 
-    def __init__(self, policy: HttpPolicy):
+    def __init__(self, policy: HttpPolicy, *, resolver: OriginResolver | None = None):
         self.policy = policy
+        if resolver is None:
+            from newsradar.ingestion.origin_resolver import OriginResolver
+
+            resolver = OriginResolver(policy)
+        self.resolver = resolver
 
     async def fetch(
         self, source: SourceDefinition, method: AccessMethod, state: FetchState, limit: int
@@ -23,7 +30,7 @@ class GdeltFetcher:
         del source, state
         response = await self.policy.get(
             str(method.url),
-            headers={"User-Agent": "NewsRadarIngestion/0.1", **method.headers},
+            headers=public_headers({"User-Agent": "NewsRadarIngestion/0.1", **method.headers}),
             params={**method.params, "mode": "artlist", "format": "json", "maxrecords": str(limit)},
         )
         response.raise_for_status()
@@ -37,8 +44,7 @@ class GdeltFetcher:
                 url, title = article.get("url"), article.get("title")
                 if not isinstance(url, str) or not isinstance(title, str) or not title.strip():
                     raise ValueError("missing_url_or_title")
-                domain = article.get("domain")
-                publisher_name = _publisher_name(domain) if isinstance(domain, str) else None
+                attribution = await self.resolver.resolve(url)
                 items.append(
                     NormalizedRawItem(
                         external_id=hashlib.sha256(url.encode()).hexdigest(),
@@ -51,14 +57,10 @@ class GdeltFetcher:
                         language=_language_code(article.get("language")),
                         published_at=_gdelt_datetime(article.get("seendate")),
                         source_updated_at=_gdelt_datetime(article.get("seendate")),
-                        publisher_name=publisher_name,
-                        publisher_url=url if publisher_name else None,
+                        publisher_name=attribution.publisher_name,
+                        publisher_url=attribution.publisher_url,
                         discovery_url=url,
-                        origin_resolution_status=(
-                            OriginResolutionStatus.RESOLVED
-                            if publisher_name
-                            else OriginResolutionStatus.UNRESOLVED
-                        ),
+                        origin_resolution_status=attribution.resolution_status,
                         raw_payload=article,
                     )
                 )
@@ -67,18 +69,6 @@ class GdeltFetcher:
         return response_result(
             response, items=tuple(items), items_received=len(items), warnings=tuple(warnings)
         )
-
-
-def _publisher_name(domain: str) -> str | None:
-    if any(separator in domain for separator in (",", ";", " ")):
-        return None
-    host = urlsplit(f"https://{domain}").hostname
-    if not host:
-        return None
-    label = host.lower().removeprefix("www.").split(".")[0]
-    return label.replace("-", " ").title() if label else None
-
-
 def _language_code(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None

@@ -59,7 +59,7 @@ async def test_service_closes_state_read_transaction_before_network_fetch() -> N
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         data = valid_source()
-        data["ingestion"] = {"enabled": True}
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
         source = SourceDefinition.model_validate(data)
         SourceRepository(session).sync([source])
         session.commit()
@@ -75,7 +75,7 @@ async def test_service_dry_run_writes_neither_raw_items_nor_cursor_state() -> No
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         data = valid_source()
-        data["ingestion"] = {"enabled": True}
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
         source = SourceDefinition.model_validate(data)
         SourceRepository(session).sync([source])
         session.commit()
@@ -125,7 +125,7 @@ async def test_lock_is_released_when_persistence_raises(monkeypatch: pytest.Monk
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         data = valid_source()
-        data["ingestion"] = {"enabled": True}
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
         source = SourceDefinition.model_validate(data)
         SourceRepository(session).sync([source])
         session.commit()

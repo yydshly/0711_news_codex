@@ -54,6 +54,14 @@ def test_ingestion_defaults_disabled_for_legacy_source_definition() -> None:
     assert source.ingestion.max_items_per_run == 100
 
 
+def test_enabled_source_requires_recorded_approval_date() -> None:
+    data = valid_source()
+    data["ingestion"] = {"enabled": True}
+
+    with pytest.raises(ValidationError, match="approved_at"):
+        SourceDefinition.model_validate(data)
+
+
 def test_ingestion_rejects_unknown_and_secret_fields() -> None:
     data = valid_source()
     data["ingestion"] = {"enabled": True, "api_key": "secret"}

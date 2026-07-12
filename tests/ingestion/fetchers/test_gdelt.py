@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+from newsradar.ingestion.attribution import Attribution, OriginResolutionStatus
 from newsradar.ingestion.fetchers.base import FetcherFactory, FetchState, HttpPolicy
 from newsradar.ingestion.fetchers.gdelt import GdeltFetcher
 from newsradar.ingestion.schema import FetchOutcome
@@ -101,9 +102,40 @@ async def test_gdelt_keeps_discovery_only_attribution_and_isolates_ambiguous_rec
         )
 
     first, second = result.items
-    assert first.publisher_name == "Publisher"
+    assert first.publisher_name is None
     assert first.language == "fr"
     assert first.published_at is not None
     assert str(first.discovery_url) == "https://publisher.test/story"
     assert second.publisher_name is None
     assert second.origin_resolution_status.value == "unresolved"
+
+
+class ConfirmingResolver:
+    async def resolve(self, url: str) -> Attribution:
+        return Attribution("Confirmed", url, url, OriginResolutionStatus.RESOLVED)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gdelt_requires_origin_resolver_confirmation_and_strips_sensitive_headers() -> None:
+    route = respx.get("https://api.gdeltproject.org/api/v2/doc/doc").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "articles": [
+                    {"url": "https://publisher.test/story", "title": "Story", "domain": "evil.test"}
+                ]
+            },
+        )
+    )
+    item_source = source()
+    item_source.access_methods[0].headers.update({"Cookie": "session", "X-Api-Key": "secret"})
+    async with httpx.AsyncClient() as client:
+        result = await GdeltFetcher(HttpPolicy(client), resolver=ConfirmingResolver()).fetch(
+            item_source, item_source.access_methods[0], FetchState(), 5
+        )
+
+    assert result.items[0].publisher_name == "Confirmed"
+    assert result.items[0].origin_resolution_status is OriginResolutionStatus.RESOLVED
+    assert "cookie" not in route.calls[0].request.headers
+    assert "x-api-key" not in route.calls[0].request.headers
