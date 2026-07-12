@@ -134,7 +134,9 @@ class FetcherFactory:
     def for_method(self, method: AccessMethod) -> Fetcher:
         from .arxiv import ArxivFetcher
         from .bluesky import BlueskyFetcher
+        from .gdelt import GdeltFetcher
         from .github import GitHubFetcher
+        from .google_news import GoogleNewsFetcher
         from .hackernews import HackerNewsFetcher
         from .mastodon import MastodonFetcher
         from .rss import RssFetcher
@@ -149,6 +151,10 @@ class FetcherFactory:
             return ArxivFetcher(self.policy)
         if host == "public.api.bsky.app":
             return BlueskyFetcher(self.policy)
+        if host == "api.gdeltproject.org":
+            return GdeltFetcher(self.policy)
+        if host == "news.google.com" and method.kind is AccessKind.RSS:
+            return GoogleNewsFetcher(self.policy)
         if method.kind is AccessKind.PUBLIC_API and (
             path.startswith("/api/v1/accounts/") or path == "/api/v1/timelines/public"
         ):
