@@ -503,6 +503,12 @@ class DashboardQueryService:
                 else explain_failure(run.reason, run.http_status, run.error_code)
             ),
             reason_raw=run.reason,
+            suggested_status=run.suggested_status,
+            suggested_status_label=(
+                zh_label("status", run.suggested_status)
+                if run.suggested_status
+                else "未记录"
+            ),
         )
 
     @staticmethod
@@ -525,6 +531,8 @@ class DashboardQueryService:
                 else explain_failure(run.reason, run.http_status, None)
             ),
             reason_raw=run.reason,
+            suggested_status=run.availability,
+            suggested_status_label=zh_label("availability", run.availability),
         )
 
     @staticmethod

@@ -8,6 +8,65 @@ import pytest
 from newsradar.web.viewmodels import DashboardSummary
 
 
+@pytest.fixture
+def restricted_gap_query_service(db_session):
+    from newsradar.db.models import ProviderDefinitionRecord, SourceDefinitionRecord
+    from newsradar.web.queries import DashboardQueryService
+
+    platform_specs = (
+        ("facebook", "Facebook", "requires_credentials"),
+        ("instagram", "Instagram", "requires_approval"),
+        ("tiktok", "TikTok", "manual_only"),
+        ("linkedin", "LinkedIn", "unavailable"),
+    )
+    for provider_id, name, availability in platform_specs:
+        db_session.add(
+            ProviderDefinitionRecord(
+                id=provider_id,
+                name=name,
+                category="social_community",
+                homepage=f"https://{provider_id}.example/",
+                docs_url=f"https://{provider_id}.example/docs",
+                terms_url=f"https://{provider_id}.example/terms",
+                auth_mode="api_key",
+                cost_tier="unknown",
+                availability=availability,
+                capabilities=["catalog"],
+                required_env=[f"{provider_id.upper()}_API_KEY"],
+                reviewed_at=date(2026, 7, 10),
+                evidence=[f"https://{provider_id}.example/evidence"],
+                unlock_requirements=["完成官方审批"],
+                notes=f"{name} restricted provider",
+                definition_hash=f"{provider_id}-restricted-hash",
+            )
+        )
+        db_session.add(
+            SourceDefinitionRecord(
+                id=f"{provider_id}-official",
+                name=f"{name} Official",
+                provider_id=provider_id,
+                target_type="account",
+                availability=availability,
+                coverage_mode="catalog_only",
+                official_identity_url=f"https://{provider_id}.example/official",
+                reviewed_at=date(2026, 7, 10),
+                unlock_requirements=["完成官方审批"],
+                status="candidate",
+                nature="social",
+                language="en",
+                roles=["discovery"],
+                topics=["ai"],
+                authority_score=80,
+                poll_interval_minutes=60,
+                expected_fields=["title", "canonical_url"],
+                notes=f"{name} restricted target",
+                definition_hash=f"{provider_id}-target-hash",
+            )
+        )
+    db_session.commit()
+    return DashboardQueryService(db_session)
+
+
 def test_summary_uses_strict_coverage_definitions(query_service):
     result = query_service.summary()
     assert result.provider_count == 2
@@ -26,8 +85,12 @@ def test_probes_keep_capability_and_content_distinct(query_service):
     assert capability.completeness is None
     assert capability.object_id == "x"
     assert capability.probe_type_label == "能力探测"
+    assert capability.suggested_status == "requires_payment"
+    assert capability.suggested_status_label == "需要付费"
     content = next(row for row in rows if row.probe_type == "content")
     assert content.probe_type_label == "内容探测"
+    assert content.suggested_status == "active"
+    assert content.suggested_status_label == "启用"
 
 
 def test_missing_probe_history_is_not_success(query_service):
@@ -198,3 +261,22 @@ def test_gap_groups_use_fixed_order_and_keep_blocked_targets_visible(query_servi
     assert groups[0].target_count == 1
     assert groups[0].targets[0].provider_name == "X"
     assert groups[0].targets[0].alternative == "无已审核替代路径"
+
+
+def test_gap_groups_keep_all_restricted_platform_records_visible(
+    restricted_gap_query_service,
+):
+    groups = restricted_gap_query_service.gap_groups()
+    platform_group = {
+        target.provider_name: group.availability
+        for group in groups
+        for target in group.targets
+    }
+
+    assert {
+        "X": "requires_payment",
+        "Facebook": "requires_credentials",
+        "Instagram": "requires_approval",
+        "TikTok": "manual_only",
+        "LinkedIn": "unavailable",
+    }.items() <= platform_group.items()

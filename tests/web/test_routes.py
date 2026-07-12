@@ -204,6 +204,8 @@ class FakeDashboardService:
                 completeness=None,
                 reason_zh="当前权限未获批准",
                 reason_raw="<payment required>",
+                suggested_status="requires_payment",
+                suggested_status_label="需要付费",
             ),
             ProbeRow(
                 probe_id="content-1",
@@ -219,6 +221,8 @@ class FakeDashboardService:
                 completeness=self.content_completeness,
                 reason_zh="成功",
                 reason_raw="ok",
+                suggested_status="active",
+                suggested_status_label="启用",
             )
         ]
         if filters and filters.get("probe_type"):
@@ -598,6 +602,10 @@ def test_probe_page_visibly_distinguishes_probe_types(client, fake_service):
         "只确认平台能力，不代表获取到内容",
     ):
         assert text in response.text
+    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[
+        1
+    ].split("</tr>", 1)[0]
+    assert "只确认平台能力，不代表获取到内容" in capability_row
     assert "&lt;payment required&gt;" in response.text
     assert '<th scope="col">完整度</th>' not in response.text
 
@@ -615,6 +623,21 @@ def test_gap_page_keeps_restricted_platforms_visible(client):
         "审核 API 权限",
     ):
         assert text in response.text
+
+
+def test_probe_page_shows_suggested_status_for_both_probe_types(client):
+    response = client.get("/probes")
+
+    assert response.status_code == 200
+    assert '<th scope="col">建议状态</th>' in response.text
+    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[
+        1
+    ].split("</tr>", 1)[0]
+    content_row = response.text.split('class="probe-badge probe-content"', 1)[1].split(
+        "</tr>", 1
+    )[0]
+    assert "需要付费" in capability_row
+    assert "启用" in content_row
 
 
 def test_probe_and_gap_pages_use_safe_database_error_boundary():

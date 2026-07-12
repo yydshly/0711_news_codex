@@ -28,11 +28,12 @@
     {% if probes %}
     <div class="table-scroll" role="region" aria-label="探测历史" tabindex="0">
       <table>
-        <thead><tr><th scope="col">类型</th><th scope="col">对象</th><th scope="col">结果</th><th scope="col">时间</th><th scope="col">HTTP</th><th scope="col">延迟</th>{% if has_content_probe %}<th scope="col">完整度</th>{% endif %}<th scope="col">中文说明</th><th scope="col">审计</th></tr></thead>
+        <thead><tr><th scope="col">类型</th><th scope="col">对象</th><th scope="col">结果</th><th scope="col">建议状态</th><th scope="col">时间</th><th scope="col">HTTP</th><th scope="col">延迟</th>{% if has_content_probe %}<th scope="col">完整度</th>{% endif %}<th scope="col">中文说明</th><th scope="col">审计</th></tr></thead>
         <tbody>{% for probe in probes %}<tr>
-          <td><span class="probe-badge probe-{{ probe.probe_type }}">{{ probe.probe_type_label }}</span>{% if probe.probe_type == 'capability' %}<small>只确认能力</small>{% endif %}</td>
+          <td><span class="probe-badge probe-{{ probe.probe_type }}">{{ probe.probe_type_label }}</span>{% if probe.probe_type == 'capability' %}<small>只确认平台能力，不代表获取到内容</small>{% endif %}</td>
           <th scope="row">{{ probe.object_name }}<small>{{ probe.object_id }}</small></th>
           <td><span class="status status-{{ 'healthy' if probe.outcome == 'success' else 'blocked' if probe.outcome == 'blocked' else 'failed' }}">{{ probe.outcome_label }}</span></td>
+          <td>{{ probe.suggested_status_label }}</td>
           <td><time datetime="{{ probe.checked_at.isoformat() }}">{{ probe.checked_at.strftime('%Y-%m-%d %H:%M') }}</time></td>
           <td>{{ probe.http_status if probe.http_status is not none else '未记录' }}</td>
           <td>{{ ('%.0f ms' | format(probe.latency_ms)) if probe.latency_ms is not none else '未记录' }}</td>

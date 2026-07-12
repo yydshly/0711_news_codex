@@ -74,6 +74,8 @@ class ProbeRow:
     completeness: float | None
     reason_zh: str
     reason_raw: str
+    suggested_status: str | None = None
+    suggested_status_label: str = "未记录"
 
 
 @dataclass(frozen=True, slots=True)
