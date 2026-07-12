@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from newsradar.ingestion.schema import FetchOutcome, NormalizedRawItem
 from newsradar.sources.schema import AccessMethod, SourceDefinition
 
-from .base import FetchState, HttpPolicy, response_result
+from .base import FetchState, HttpPolicy, public_headers, response_result
 
 
 class MastodonFetcher:
@@ -24,7 +24,7 @@ class MastodonFetcher:
         self._validate_cursor(request_url, configured_url)
         response = await self.policy.get(
             request_url,
-            headers={"Accept": "application/json", **method.headers},
+            headers={"Accept": "application/json", **public_headers(method.headers)},
             params=None if state.cursor else {**method.params, "limit": str(min(limit, 40))},
         )
         if response.status_code == 429:
@@ -62,11 +62,7 @@ class MastodonFetcher:
     @staticmethod
     def _validate_cursor(cursor: str, configured_url: str) -> None:
         candidate, configured = urlsplit(cursor), urlsplit(configured_url)
-        if (
-            candidate.scheme != "https"
-            or candidate.hostname != configured.hostname
-            or candidate.path != configured.path
-        ):
+        if _origin(candidate) != _origin(configured) or candidate.path != configured.path:
             raise ValueError("unregistered_mastodon_instance")
 
     @staticmethod
@@ -114,3 +110,10 @@ def _timestamp(value: object) -> datetime | None:
         if isinstance(value, str)
         else None
     )
+
+
+def _origin(parts: object) -> tuple[str, str, int]:
+    parsed = parts if hasattr(parts, "hostname") else urlsplit(str(parts))
+    scheme = parsed.scheme.lower()
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return scheme, (parsed.hostname or "").lower(), port

@@ -92,6 +92,21 @@ class HttpPolicy:
             await response.aclose()
 
 
+def public_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Keep public API requests free of configured credentials and cookies."""
+    blocked = {"authorization", "authentication", "cookie", "set-cookie", "proxy-authorization"}
+    sensitive_parts = ("api-key", "api_key", "token", "secret", "credential")
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in blocked
+        and "authorization" not in name.lower()
+        and "authentication" not in name.lower()
+        and not name.lower().startswith("x-auth")
+        and not any(part in name.lower() for part in sensitive_parts)
+    }
+
+
 def response_result(response: httpx.Response, **values: object) -> FetchResult:
     headers = {
         k: v

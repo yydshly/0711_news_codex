@@ -6,7 +6,7 @@ from urllib.parse import quote, urlsplit
 from newsradar.ingestion.schema import FetchOutcome, NormalizedRawItem
 from newsradar.sources.schema import AccessMethod, SourceDefinition
 
-from .base import FetchState, HttpPolicy, response_result
+from .base import FetchState, HttpPolicy, public_headers, response_result
 
 
 class BlueskyFetcher:
@@ -25,12 +25,16 @@ class BlueskyFetcher:
     ):
         base_url = str(method.url)
         self._validate_target(base_url, method.params)
-        request_url = state.cursor or base_url
-        self._validate_cursor(request_url, base_url)
+        if state.cursor and "://" in state.cursor:
+            raise ValueError("unregistered_bluesky_cursor")
         response = await self.policy.get(
-            request_url,
-            headers={"Accept": "application/json", **method.headers},
-            params=None if state.cursor else {**method.params, "limit": str(min(limit, 100))},
+            base_url,
+            headers={"Accept": "application/json", **public_headers(method.headers)},
+            params={
+                **method.params,
+                "limit": str(min(limit, 100)),
+                **({"cursor": state.cursor} if state.cursor else {}),
+            },
         )
         if response.status_code in {429, 502, 503, 504} and self._is_search(base_url):
             return response_result(
@@ -63,16 +67,6 @@ class BlueskyFetcher:
         required = cls._ENDPOINTS.get(parsed.path)
         if parsed.hostname != cls._HOST or required is None or not params.get(required):
             raise ValueError("unregistered_bluesky_target")
-
-    @classmethod
-    def _validate_cursor(cls, cursor: str, configured_url: str) -> None:
-        cursor_parts, configured = urlsplit(cursor), urlsplit(configured_url)
-        if (
-            cursor_parts.scheme != "https"
-            or cursor_parts.hostname != configured.hostname
-            or cursor_parts.path != configured.path
-        ):
-            raise ValueError("unregistered_bluesky_cursor")
 
     @classmethod
     def _is_search(cls, url: str) -> bool:

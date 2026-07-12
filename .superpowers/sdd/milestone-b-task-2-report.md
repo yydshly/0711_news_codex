@@ -18,3 +18,10 @@ Implemented bounded public social fetchers without persistence, cookies, arbitra
 ## Scope preservation
 
 The pre-existing unstaged formatting change in `tests/ingestion/test_normalization.py` was not staged or modified.
+
+## Review follow-up
+
+- Bluesky pagination treats `FetchState.cursor` as the opaque AppView token it is: requests always return to the configured endpoint and add it as the `cursor` query parameter.
+- Both public social adapters remove Cookie, Authorization, Proxy-Authorization, API-key, token, secret, credential, and `X-Auth-*` configured headers before making a request.
+- Mastodon pagination URLs must retain the configured scheme, host, effective port, and timeline path. Alternate ports are rejected.
+- Follow-up verification: 13 focused social-fetcher tests passed; full pytest, Ruff, and `git diff --check` passed (only existing dependency deprecation warnings).

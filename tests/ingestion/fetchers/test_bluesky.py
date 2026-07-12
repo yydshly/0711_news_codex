@@ -73,13 +73,15 @@ async def test_bluesky_author_feed_preserves_identity_metrics_and_thread_root() 
 @respx.mock
 async def test_bluesky_uses_registered_query_and_same_endpoint_cursor() -> None:
     source = bluesky_source("app.bsky.feed.searchPosts", q="from:alice AI")
-    cursor = f"{source.access_methods[0].url}?cursor=opaque"
-    route = respx.get(cursor).mock(return_value=httpx.Response(200, json={"posts": []}))
+    route = respx.get(str(source.access_methods[0].url)).mock(
+        return_value=httpx.Response(200, json={"posts": []})
+    )
     async with httpx.AsyncClient() as client:
         result = await BlueskyFetcher(HttpPolicy(client)).fetch(
-            source, source.access_methods[0], FetchState(cursor=cursor), 5
+            source, source.access_methods[0], FetchState(cursor="opaque-token"), 5
         )
     assert route.called
+    assert route.calls[0].request.url.params["cursor"] == "opaque-token"
     assert result.outcome is FetchOutcome.SUCCEEDED
 
 
@@ -106,6 +108,48 @@ async def test_bluesky_rejects_unregistered_target_or_cursor() -> None:
                 source,
                 source.access_methods[0],
                 FetchState(cursor="https://public.api.bsky.app/xrpc/other"),
+                5,
+            )
+
+
+@pytest.mark.asyncio
+async def test_bluesky_drops_sensitive_configured_headers() -> None:
+    source = bluesky_source()
+    data = source.model_dump(mode="json", exclude_computed_fields=True)
+    data["access_methods"][0]["headers"] = {
+        "Authorization": "Bearer secret",
+        "Cookie": "session=secret",
+        "Proxy-Authorization": "Basic secret",
+        "X-Api-Key": "secret",
+        "X-Trace": "allowed",
+    }
+    source = SourceDefinition.model_validate(data)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert "authorization" not in request.headers
+        assert "cookie" not in request.headers
+        assert "proxy-authorization" not in request.headers
+        assert "x-api-key" not in request.headers
+        assert request.headers["x-trace"] == "allowed"
+        return httpx.Response(200, json={"feed": []}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await BlueskyFetcher(HttpPolicy(client)).fetch(
+            source, source.access_methods[0], FetchState(), 5
+        )
+
+
+@pytest.mark.asyncio
+async def test_bluesky_rejects_same_host_alternate_port_cursor() -> None:
+    source = bluesky_source()
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ValueError, match="unregistered_bluesky_cursor"):
+            await BlueskyFetcher(HttpPolicy(client)).fetch(
+                source,
+                source.access_methods[0],
+                FetchState(
+                    cursor="https://public.api.bsky.app:444/xrpc/app.bsky.feed.getAuthorFeed"
+                ),
                 5,
             )
     data = valid_source()

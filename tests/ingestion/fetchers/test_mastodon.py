@@ -111,6 +111,42 @@ async def test_mastodon_allows_only_local_configured_public_timeline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mastodon_drops_sensitive_configured_headers() -> None:
+    source = mastodon_source()
+    data = source.model_dump(mode="json", exclude_computed_fields=True)
+    data["access_methods"][0]["headers"] = {
+        "Authorization": "Bearer secret",
+        "Cookie": "session=secret",
+        "Proxy-Authorization": "Basic secret",
+        "X-Api-Key": "secret",
+    }
+    source = SourceDefinition.model_validate(data)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        for header in ("authorization", "cookie", "proxy-authorization", "x-api-key"):
+            assert header not in request.headers
+        return httpx.Response(200, json=[], request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await MastodonFetcher(HttpPolicy(client)).fetch(
+            source, source.access_methods[0], FetchState(), 5
+        )
+
+
+@pytest.mark.asyncio
+async def test_mastodon_rejects_same_host_alternate_port_cursor() -> None:
+    source = mastodon_source()
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ValueError, match="unregistered_mastodon_instance"):
+            await MastodonFetcher(HttpPolicy(client)).fetch(
+                source,
+                source.access_methods[0],
+                FetchState(cursor="https://social.example:444/api/v1/accounts/42/statuses"),
+                5,
+            )
+
+
+@pytest.mark.asyncio
 async def test_mastodon_requests_share_the_http_policy_host_limit() -> None:
     source = mastodon_source()
     in_flight = 0
