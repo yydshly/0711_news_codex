@@ -120,6 +120,29 @@ Restricted platforms remain visible as `requires_credentials`, `requires_approva
 sessions, CAPTCHA bypass, or unaudited scraping. Social content is a discovery/engagement signal;
 it is not treated as verified evidence by itself.
 
+## Public social and discovery ingestion
+
+Only source targets with `ingestion.enabled: true` and a recorded `approved_at` date may be run
+through ingestion. Use the explicit dry-run path for an operational check; it performs the bounded
+network fetch but does not persist raw items or cursor state:
+
+```powershell
+uv run newsradar fetch bluesky-bsky --root sources --dry-run --max-items 1
+uv run newsradar fetch mastodon-mastodon --root sources --dry-run --max-items 1
+uv run newsradar fetch google-news-ai --root sources --dry-run --max-items 1
+uv run newsradar fetch gdelt-ai --root sources --dry-run --max-items 1
+```
+
+Public social accounts provide discovery, engagement, and context only. Google News, GDELT, and
+other aggregators preserve their discovery URL and require original-publisher attribution before an
+item can support evidence. Do not treat snippets, reposts, engagement counts, or an unresolved
+aggregator link as independent verification. Operators must not use cookies, logins, browser
+sessions, or HTML/article scraping to work around a failed public endpoint.
+
+Operational logs bind a correlation ID to each operation and redact credentials and response
+payloads. Record endpoint status, item counts, and error codes—not feed bodies or API responses—in
+run reports.
+
 ## MiniMax
 
 The constrained adapter supports:
