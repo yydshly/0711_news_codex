@@ -97,7 +97,7 @@ class RawItemRepository:
                     )
 
         assert current is not None
-        return self._observe(fetch_run_id, item, current)
+        return self._observe(fetch_run_id, source_id, item, current)
 
     def record_failure(
         self, fetch_run_id: int, source_id: str, item: NormalizedRawItem, error_code: str
@@ -108,7 +108,7 @@ class RawItemRepository:
         )
 
     def _observe(
-        self, fetch_run_id: int, item: NormalizedRawItem, current: RawItemRecord
+        self, fetch_run_id: int, source_id: str, item: NormalizedRawItem, current: RawItemRecord
     ) -> ItemWriteResult:
         next_hash = content_hash(item)
         action = ItemAction.UPDATED if current.content_hash != next_hash else ItemAction.UNCHANGED
@@ -116,7 +116,12 @@ class RawItemRepository:
             if action is ItemAction.UPDATED:
                 self._apply_item(current, item)
                 current.content_hash = next_hash
+                current.canonical_url = normalize_url(str(item.canonical_url))
+                current.canonical_url_hash = _hash(current.canonical_url)
+                current.title_fingerprint = _title_fingerprint(item.title)
                 self._add_snapshot(current, fetch_run_id, item)
+                self.session.flush()
+                self._add_candidates(current, item)
             else:
                 current.engagement = dict(item.engagement)
                 current.raw_payload = item.raw_payload
@@ -193,6 +198,7 @@ class RawItemRepository:
             select(RawItemRecord).where(
                 RawItemRecord.canonical_url_hash == record.canonical_url_hash,
                 RawItemRecord.id != record.id,
+                RawItemRecord.source_id != record.source_id,
             )
         ).all()
         for candidate in canonical_matches:
@@ -200,8 +206,8 @@ class RawItemRepository:
 
         title_matches = self.session.scalars(
             select(RawItemRecord).where(
-                RawItemRecord.title_fingerprint == record.title_fingerprint,
                 RawItemRecord.id != record.id,
+                RawItemRecord.source_id != record.source_id,
             )
         ).all()
         for candidate in title_matches:

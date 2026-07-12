@@ -37,3 +37,24 @@ and idempotent duplicate-candidate creation.
   items to continue.
 - Duplicate candidates are stored with deterministic pair ordering and checked before
   insert, making repeated canonical and title matches idempotent.
+
+## Review-fix follow-up
+
+- Added regression coverage for meaningful identity changes, including later canonical
+  fallback lookup against the refreshed URL and title identity fields.
+- Candidate detection is now cross-source only, examines exact and near titles through
+  `title_similarity()` at the 0.9 threshold, and runs after inserts and meaningful
+  updates. Same-source duplicate-like records are explicitly rejected as candidates.
+- Replaced the synthetic failure check with a SQLite trigger that raises a real
+  `IntegrityError` inside the upsert savepoint; the failure is audited, an earlier
+  committed item remains, and a later item persists.
+
+### Review RED / GREEN evidence
+
+- RED: focused repository tests failed in the new regressions before the fix (5
+  failures): stale canonical identity, same-source candidate creation, missing
+  near-title/updated-title candidates, and the forced-failure row being matched by the
+  original canonical URL.
+- GREEN: `uv run pytest tests/ingestion/test_repository.py -q` passed: **12 passed**.
+- Full verification: `uv run pytest` passed: **190 passed, 4 warnings**; `uv run ruff
+  check .` passed: **All checks passed**.
