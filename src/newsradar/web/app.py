@@ -619,14 +619,14 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
+                "action_token": issue_action_token(request),
             },
         )
 
     @app.post("/system/diagnostics")
-    def create_system_diagnostic(request: Request):  # type: ignore[no-untyped-def]
+    async def create_system_diagnostic(request: Request):  # type: ignore[no-untyped-def]
         try:
-            require_loopback_host(request.headers.get("host"))
-            require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            await require_safe_action(request)
         except UnsafeWrite as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         try:
