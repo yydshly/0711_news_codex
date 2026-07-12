@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.db.models import (
     Base,
@@ -12,6 +12,8 @@ from newsradar.db.models import (
     SourceDefinitionRecord,
 )
 from newsradar.events.pipeline import EventPipeline
+from newsradar.events.repository import EventRepository
+from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
 
 
@@ -174,3 +176,114 @@ def test_pipeline_keeps_event_identity_and_source_publication_time_when_new_sour
                 )
             )
         ) == {1, 2}
+
+
+def test_minimax_invocation_has_no_open_session_or_event_lease_before_publication(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(
+            SourceDefinitionRecord(
+                id="official",
+                name="Official",
+                status="active",
+                nature="first_party",
+                language="en",
+                roles=["evidence"],
+                topics=["ai"],
+                authority_score=90,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash="official",
+            )
+        )
+        db.add(
+            RawItemRecord(
+                source_id="official",
+                external_id="first",
+                canonical_url="https://official.test/first",
+                payload={},
+                title="OpenAI launches Orion model",
+                published_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+
+    open_sessions: set[Session] = set()
+
+    class TrackingSession(Session):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            open_sessions.add(self)
+
+        def close(self) -> None:
+            try:
+                super().close()
+            finally:
+                open_sessions.discard(self)
+
+    factory = sessionmaker(bind=engine, class_=TrackingSession, expire_on_commit=False)
+    settings = {"value": Settings(minimax_api_key=None)}
+    monkeypatch.setattr("newsradar.events.pipeline.get_settings", lambda: settings["value"])
+    pipeline = EventPipeline(factory)
+    first = pipeline.run(window_hours=24, operation_id=1, checkpoint=lambda _: None)
+    event_id = first.current_event_ids[0]
+
+    with Session(engine) as db:
+        db.add(
+            RawItemRecord(
+                source_id="official",
+                external_id="second",
+                canonical_url="https://official.test/second",
+                payload={},
+                title="OpenAI launches Orion model",
+                published_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+
+    order: list[str] = []
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            del exc_type, exc, traceback
+
+    async def observe_adapter(self, candidate, fallback):
+        del self, candidate
+        assert open_sessions == set()
+        with engine.connect() as connection:
+            lease_operation_id = connection.scalar(
+                text("select lease_operation_id from events where id = :event_id"),
+                {"event_id": event_id},
+            )
+        assert lease_operation_id is None
+        order.append("adapter")
+        return fallback
+
+    original_claim = EventRepository.claim_event
+
+    def observe_claim(self, claimed_event_id, operation_id, lease_until):
+        assert order == ["adapter"]
+        order.append("publication_lease")
+        return original_claim(self, claimed_event_id, operation_id, lease_until)
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(
+        "newsradar.events.pipeline.EventMiniMaxAdapter.enrich_event", observe_adapter
+    )
+    monkeypatch.setattr(EventRepository, "claim_event", observe_claim)
+    settings["value"] = Settings(minimax_api_key="secret")
+
+    pipeline.run(window_hours=24, operation_id=2, checkpoint=lambda _: None)
+
+    assert order == ["adapter", "publication_lease"]
+    assert open_sessions == set()
+    with Session(engine) as db:
+        event = db.get(EventRecord, event_id)
+        assert event is not None
+        assert event.lease_operation_id is None

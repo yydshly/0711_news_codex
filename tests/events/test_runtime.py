@@ -4,7 +4,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import Base, EventRecord, RawItemRecord, SourceDefinitionRecord
+from newsradar.events.repository import EventRepository
 from newsradar.events.runtime import EventOperationHandler
+from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
 
@@ -38,10 +40,6 @@ def test_recluster_action_is_completed_by_the_worker() -> None:
         db.add(EventRecord(id=1, canonical_key="one", status="confirmed"))
         db.commit()
 
-    scope = {
-        "event_id": 8, "actor": "web",
-        "deadline_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
-    }
     result = EventOperationHandler(lambda: Session(engine))(
         OperationLease(1, 1, 1, "worker", {"event_id": 1, "actor": "web"}, "event_recluster"),
         lambda _: None,
@@ -156,10 +154,155 @@ def test_expired_event_action_mutates_nothing() -> None:
     result = EventOperationHandler(lambda: Session(engine))(
         OperationLease(
             1, 1, 1, "worker",
-            scope,
+            {
+                "event_id": 8,
+                "actor": "web",
+                "deadline_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            },
             "event_exclude",
         ), lambda _: None,
     )
     with Session(engine) as db:
         assert db.get(EventRecord, 8).status == "confirmed"
     assert result.error_code == "operation_timeout"
+
+
+def test_merge_claims_both_events_in_sorted_order_and_releases_in_reverse(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all(
+            [
+                EventRecord(id=1, canonical_key="target", status="confirmed"),
+                EventRecord(id=2, canonical_key="survivor", status="confirmed"),
+            ]
+        )
+        db.commit()
+
+    order: list[tuple[str, int]] = []
+    original_claim = EventRepository.claim_event
+    original_release = EventRepository.release_event
+
+    def observe_claim(self, event_id, operation_id, lease_until):
+        order.append(("claim", event_id))
+        return original_claim(self, event_id, operation_id, lease_until)
+
+    def observe_release(self, event_id, operation_id):
+        order.append(("release", event_id))
+        return original_release(self, event_id, operation_id)
+
+    monkeypatch.setattr(EventRepository, "claim_event", observe_claim)
+    monkeypatch.setattr(EventRepository, "release_event", observe_release)
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1,
+            51,
+            1,
+            "worker",
+            {"event_id": 2, "target_event_id": 1, "actor": "web"},
+            "event_merge",
+        ),
+        lambda _: None,
+    )
+
+    assert result.status is OperationStatus.SUCCEEDED
+    assert order == [("claim", 1), ("claim", 2), ("release", 2), ("release", 1)]
+    with Session(engine) as db:
+        assert db.get(EventRecord, 1).lease_operation_id is None
+        assert db.get(EventRecord, 2).lease_operation_id is None
+
+
+def test_merge_releases_first_lease_when_second_claim_fails(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all(
+            [
+                EventRecord(id=1, canonical_key="survivor", status="confirmed"),
+                EventRecord(id=2, canonical_key="busy", status="confirmed"),
+            ]
+        )
+        db.commit()
+
+    order: list[tuple[str, int]] = []
+    original_claim = EventRepository.claim_event
+    original_release = EventRepository.release_event
+
+    def fail_second_claim(self, event_id, operation_id, lease_until):
+        order.append(("claim", event_id))
+        if event_id == 2:
+            return False
+        return original_claim(self, event_id, operation_id, lease_until)
+
+    def observe_release(self, event_id, operation_id):
+        order.append(("release", event_id))
+        return original_release(self, event_id, operation_id)
+
+    monkeypatch.setattr(EventRepository, "claim_event", fail_second_claim)
+    monkeypatch.setattr(EventRepository, "release_event", observe_release)
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1,
+            52,
+            1,
+            "worker",
+            {"event_id": 1, "target_event_id": 2, "actor": "web"},
+            "event_merge",
+        ),
+        lambda _: None,
+    )
+
+    assert result.error_code == "event_lease_unavailable"
+    assert order == [("claim", 1), ("claim", 2), ("release", 1)]
+    with Session(engine) as db:
+        assert db.get(EventRecord, 1).lease_operation_id is None
+
+
+def test_deadline_after_merge_claim_releases_both_leases_and_returns_timeout(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all(
+            [
+                EventRecord(id=1, canonical_key="survivor", status="confirmed"),
+                EventRecord(id=2, canonical_key="target", status="confirmed"),
+            ]
+        )
+        db.commit()
+
+    class DeadlineAfterClaims:
+        def check(self, boundary: str) -> None:
+            if boundary == "before_event_mutation":
+                raise OperationTimedOut("operation deadline exceeded at before_event_mutation")
+
+    monkeypatch.setattr(
+        OperationDeadline,
+        "from_scope",
+        classmethod(lambda cls, scope: DeadlineAfterClaims()),
+    )
+
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1,
+            53,
+            1,
+            "worker",
+            {
+                "event_id": 1,
+                "target_event_id": 2,
+                "actor": "web",
+                "deadline_at": datetime.now(UTC).isoformat(),
+            },
+            "event_merge",
+        ),
+        lambda _: None,
+    )
+
+    assert result.error_code == "operation_timeout"
+    assert result.retryable is False
+    with Session(engine) as db:
+        for event_id in (1, 2):
+            event = db.get(EventRecord, event_id)
+            assert event is not None
+            assert event.lease_operation_id is None
+            assert event.current_version_number == 0

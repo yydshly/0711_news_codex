@@ -88,6 +88,7 @@ class EventOperationHandler:
                 error_message="Event actions require an event_id",
                 retryable=False,
             )
+        claimed: list[int] = []
         try:
             deadline = (
                 OperationDeadline.from_scope(lease.requested_scope)
@@ -112,7 +113,6 @@ class EventOperationHandler:
             lease_ids = [event_id]
             if lease.operation_type == OperationType.EVENT_MERGE.value:
                 lease_ids.append(int(lease.requested_scope["target_event_id"]))
-            claimed: list[int] = []
             for claimed_id in sorted(lease_ids):
                 deadline.check("before_event_lease")
                 if not repository.claim_event(
@@ -136,10 +136,16 @@ class EventOperationHandler:
             for release_id in reversed(claimed):
                 repository.release_event(release_id, lease.operation_id)
             session.commit()
+        except OperationTimedOut as error:
+            session.rollback()
+            for release_id in reversed(claimed):
+                EventRepository(session).release_event(release_id, lease.operation_id)
+            session.commit()
+            return _timeout_result(error)
         except Exception:
             session.rollback()
             # Do not strand a lease when a bounded editorial mutation fails.
-            for release_id in reversed(locals().get("claimed", [event_id])):
+            for release_id in reversed(claimed):
                 EventRepository(session).release_event(release_id, lease.operation_id)
             session.commit()
             raise
