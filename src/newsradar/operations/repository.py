@@ -26,6 +26,7 @@ class OperationLease:
     attempt_number: int
     worker_id: str
     requested_scope: dict[str, Any]
+    operation_type: str = "fetch"
 
 
 class OperationRepository:
@@ -127,6 +128,7 @@ class OperationRepository:
                 attempt.attempt_number,
                 worker_id,
                 operation.requested_scope,
+                operation.operation_type,
             )
 
     def renew_lease(self, lease: OperationLease, lease_seconds: int = 60) -> bool:
@@ -165,6 +167,7 @@ class OperationRepository:
         error_code: str | None = None,
         error_message: str | None = None,
         result_summary: dict[str, Any] | None = None,
+        retryable: bool = True,
     ) -> bool:
         with self._transaction():
             operation = self.session.get(
@@ -187,7 +190,11 @@ class OperationRepository:
             final = status
             if operation.cancel_requested_at is not None:
                 final = OperationStatus.CANCELLED
-            elif status == OperationStatus.FAILED and operation.attempt_count < MAX_ATTEMPTS:
+            elif (
+                status == OperationStatus.FAILED
+                and retryable
+                and operation.attempt_count < MAX_ATTEMPTS
+            ):
                 final = OperationStatus.QUEUED
             now = self._now()
             attempt.status = status.value if final == OperationStatus.QUEUED else final.value

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -16,8 +19,10 @@ from newsradar.local_postgres import (
     LocalPostgresError,
     build_local_postgres_manager,
 )
+from newsradar.operations.fetch_runtime import FetchOperationHandler
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.schema import OperationStatus, OperationType
+from newsradar.operations.worker import Worker
 from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
@@ -228,9 +233,27 @@ def retry_operation(operation_id: int) -> None:
 
 
 @app.command("worker")
-def worker_help() -> None:
-    """Worker execution is available to the durable operation runtime."""
-    typer.echo("Use the operation worker runtime to process queued operations.")
+def run_worker(
+    root: RootOption = Path("sources"),
+    worker_id: Annotated[str | None, typer.Option()] = None,
+    once: Annotated[bool, typer.Option("--once/--forever")] = True,
+    poll_seconds: Annotated[float, typer.Option(min=0.1, max=60.0)] = 1.0,
+) -> None:
+    """Consume durable operations; network work only occurs in this process."""
+    sources = load_source_tree(root)
+    handler = FetchOperationHandler.production(sources)
+    identifier = worker_id or f"{socket.gethostname()}-{os.getpid()}"
+    processed_count = 0
+    while True:
+        with create_session() as session:
+            processed = Worker(OperationRepository(session), identifier).run_once(handler)
+        if processed:
+            processed_count += 1
+        if once:
+            break
+        if not processed:
+            time.sleep(poll_seconds)
+    typer.echo(f"Worker {identifier} processed {processed_count} operation(s)")
 
 
 @app.command("serve")

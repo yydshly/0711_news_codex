@@ -198,6 +198,35 @@ def test_fetch_one_off_requires_confirmation(tmp_path: Path) -> None:
     assert "One-off fetch risk" in result.stdout
 
 
+def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+    handler = object()
+    calls: list[object] = []
+
+    class FakeWorker:
+        def __init__(self, repository, worker_id):
+            assert worker_id == "worker-test"
+
+        def run_once(self, received_handler):
+            calls.append(received_handler)
+            return True
+
+    monkeypatch.setattr(
+        "newsradar.cli.FetchOperationHandler.production", lambda sources: handler
+    )
+    monkeypatch.setattr("newsradar.cli.Worker", FakeWorker)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+
+    result = runner.invoke(
+        app, ["worker", "--root", str(root), "--worker-id", "worker-test", "--once"]
+    )
+
+    assert result.exit_code == 0
+    assert calls == [handler]
+    assert "processed 1 operation" in result.stdout
+
+
 @pytest.mark.asyncio
 async def test_fetch_batch_isolates_one_source_processing_exception(monkeypatch) -> None:
     from newsradar.ingestion.schema import FetchOutcome, FetchResult

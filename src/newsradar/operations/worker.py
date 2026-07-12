@@ -2,12 +2,26 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from time import monotonic
+from typing import Any
 
 from newsradar.operations.repository import OperationLease, OperationRepository
 from newsradar.operations.schema import OperationStatus
 
-Handler = Callable[[OperationLease, Callable[[str], None]], None]
+
+@dataclass(frozen=True)
+class OperationResult:
+    """A handler outcome that maps domain work to a durable operation state."""
+
+    status: OperationStatus = OperationStatus.SUCCEEDED
+    error_code: str | None = None
+    error_message: str | None = None
+    result_summary: dict[str, Any] = field(default_factory=dict)
+    retryable: bool = True
+
+
+Handler = Callable[[OperationLease, Callable[[str], None]], OperationResult | None]
 
 
 class _Cancelled(Exception):
@@ -65,7 +79,7 @@ class Worker:
 
         try:
             log("operation_started")
-            handler(lease, checkpoint)  # deliberately outside the lease transaction
+            result = handler(lease, checkpoint)  # deliberately outside the lease transaction
         except _Cancelled:
             self.repository.finish_attempt(lease, OperationStatus.CANCELLED)
             log("operation_cancelled")
@@ -76,6 +90,16 @@ class Worker:
             )
             log("operation_failed")
             return False
-        self.repository.finish_attempt(lease, OperationStatus.SUCCEEDED)
-        log("operation_succeeded")
-        return True
+        # Older handlers are side-effect only.  Treat their return value as success
+        # until they opt into the structured domain outcome contract.
+        result = result if isinstance(result, OperationResult) else OperationResult()
+        self.repository.finish_attempt(
+            lease,
+            result.status,
+            error_code=result.error_code,
+            error_message=result.error_message,
+            result_summary=result.result_summary,
+            retryable=result.retryable,
+        )
+        log(f"operation_{result.status.value}")
+        return result.status in {OperationStatus.SUCCEEDED, OperationStatus.PARTIAL}
