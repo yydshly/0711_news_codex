@@ -6,12 +6,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import EventItemRecord, EventRecord
 from newsradar.events.pipeline import EventPipeline
 from newsradar.events.repository import EventRepository
+from newsradar.events.schema import EventEnrichment, EventStatus, PublishedEvent, ScoreBreakdown
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
@@ -226,43 +227,111 @@ def _unknown_event(event_id: int) -> OperationResult:
 def _apply_event_action(lease: OperationLease, session: Session, event_id: int) -> None:
     """Perform only the validated, local mutation; no web process/model work occurs here."""
     action = lease.operation_type
-    now = datetime.now(UTC)
+    repository = EventRepository(session)
     if action == OperationType.EVENT_EXCLUDE.value:
-        session.execute(
-            update(EventRecord)
-            .where(EventRecord.id == event_id)
-            .values(status="rejected", updated_at=now)
+        event = session.get(EventRecord, event_id)
+        assert event is not None
+        repository.publish_complete_event(
+            _snapshot(repository, event, status=EventStatus.REJECTED), lease.operation_id
         )
     elif action == OperationType.EVENT_MERGE.value:
         target_id = int(lease.requested_scope["target_event_id"])
+        survivor = session.get(EventRecord, event_id)
+        target = session.get(EventRecord, target_id)
+        assert survivor is not None and target is not None
         rows = session.scalars(
             select(EventItemRecord).where(
                 EventItemRecord.event_id == target_id,
                 EventItemRecord.removed_version_number.is_(None),
             )
         ).all()
-        # Transfer current memberships conservatively; the target remains an auditable
-        # rejected shell instead of deleting historical evidence.
-        for row in rows:
-            row.removed_version_number = 0
-        session.execute(
-            update(EventRecord)
-            .where(EventRecord.id == target_id)
-            .values(status="rejected", updated_at=now)
+        survivor_ids = _active_ids(session, event_id)
+        member_ids = tuple(sorted(survivor_ids | {row.raw_item_id for row in rows}))
+        repository.publish_complete_event(
+            _snapshot(repository, survivor, source_item_ids=member_ids), lease.operation_id
+        )
+        repository.publish_complete_event(
+            _snapshot(repository, target, status=EventStatus.REJECTED, source_item_ids=()),
+            lease.operation_id,
         )
     elif action == OperationType.EVENT_SPLIT.value:
         member_ids = set(lease.requested_scope["member_ids"])
-        session.execute(
-            update(EventItemRecord)
-            .where(
-                EventItemRecord.event_id == event_id,
-                EventItemRecord.raw_item_id.in_(member_ids),
-                EventItemRecord.removed_version_number.is_(None),
-            )
-            .values(removed_version_number=0)
+        event = session.get(EventRecord, event_id)
+        assert event is not None
+        active = _active_ids(session, event_id)
+        repository.publish_complete_event(
+            _snapshot(repository, event, source_item_ids=tuple(sorted(active - member_ids))),
+            lease.operation_id,
         )
+        split = PublishedEvent(
+            canonical_key=f"{event.canonical_key}:split:{'-'.join(map(str, sorted(member_ids)))}",
+            status=EventStatus.DEVELOPING,
+            occurred_at=event.occurred_at,
+            enrichment=_enrichment(repository, event),
+            score=_score(repository, event),
+            source_item_ids=tuple(sorted(member_ids)),
+        )
+        repository.publish_complete_event(split, lease.operation_id)
     elif action in {OperationType.EVENT_RECLUSTER.value, OperationType.EVENT_ENRICH.value}:
-        # The bounded request is auditable even if memberships/title are already stable.
-        session.execute(
-            update(EventRecord).where(EventRecord.id == event_id).values(updated_at=now)
+        event = session.get(EventRecord, event_id)
+        assert event is not None
+        enrichment = _enrichment(repository, event)
+        if action == OperationType.EVENT_ENRICH.value:
+            enrichment = enrichment.model_copy(update={"origin": "rule_fallback", "confidence": 0})
+        repository.publish_complete_event(
+            _snapshot(repository, event, enrichment=enrichment), lease.operation_id
         )
+
+
+def _active_ids(session: Session, event_id: int) -> set[int]:
+    statement = select(EventItemRecord.raw_item_id).where(
+        EventItemRecord.event_id == event_id,
+        EventItemRecord.removed_version_number.is_(None),
+    )
+    return set(session.scalars(statement))
+
+
+def _score(repository: EventRepository, event: EventRecord) -> ScoreBreakdown:
+    current = repository.get_current_event(event.id)
+    if current and current.payload.get("score"):
+        return ScoreBreakdown.model_validate(current.payload["score"])
+    return ScoreBreakdown(
+        ai_relevance=0, source_coverage=0, source_authority=0, recency=0,
+        engagement_velocity=0, novelty=0, importance=0, credibility=0, heat=0,
+        rule_version="manual-v1", reasons=("manual_event_action",),
+    )
+
+
+def _enrichment(repository: EventRepository, event: EventRecord) -> EventEnrichment:
+    current = repository.get_current_event(event.id)
+    if current and current.payload.get("enrichment"):
+        return EventEnrichment.model_validate(current.payload["enrichment"])
+    return EventEnrichment(
+        zh_title=event.canonical_key, zh_summary=event.canonical_key,
+        why_it_matters="人工操作保留可追溯事件版本。", origin="rule_fallback", confidence=0,
+    )
+
+
+def _snapshot(
+    repository: EventRepository, event: EventRecord, *, status: EventStatus | None = None,
+    source_item_ids: tuple[int, ...] | None = None, enrichment: EventEnrichment | None = None,
+) -> PublishedEvent:
+    current = repository.get_current_event(event.id)
+    evidence = ()
+    category = None
+    occurred_at = event.occurred_at
+    if current:
+        payload = current.payload
+        evidence = tuple(payload.get("evidence", ()))
+        category = payload.get("category")
+        occurred_at = payload.get("occurred_at") or occurred_at
+    members = source_item_ids
+    if members is None:
+        members = tuple(sorted(_active_ids(repository.session, event.id)))
+    return PublishedEvent(
+        event_id=event.id, canonical_key=event.canonical_key,
+        status=status or EventStatus(event.status), category=category, occurred_at=occurred_at,
+        enrichment=enrichment or _enrichment(repository, event), score=_score(repository, event),
+        evidence=evidence,
+        source_item_ids=members,
+    )

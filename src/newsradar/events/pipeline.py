@@ -22,7 +22,7 @@ from newsradar.events.minimax import EventMiniMaxAdapter
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.relevance import RELEVANCE_RULE_VERSION, evaluate_relevance
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import ClusterItem, ProcessingStage, RawItemText
+from newsradar.events.schema import ClusterItem, EventCategory, ProcessingStage, RawItemText
 from newsradar.settings import get_settings
 
 ALGORITHM_VERSIONS = {
@@ -137,7 +137,10 @@ class EventPipeline:
             session.commit()
 
     def _cluster(self, items: tuple[ClusterItem, ...]):
-        candidates = cluster_candidates(items)
+        candidates = tuple(
+            candidate.model_copy(update={"category": _category(candidate.items)})
+            for candidate in cluster_candidates(items)
+        )
         with self._session_factory() as session:
             repository = EventRepository(session)
             for candidate in candidates:
@@ -156,6 +159,8 @@ class EventPipeline:
         model_fallback_count = 0
         for candidate in candidates:
             checkpoint("before_event_publish_candidate")
+            # Persist/read the bounded candidate context first, then close the DB
+            # transaction before optional HTTP work.  No event lease exists here.
             with self._session_factory() as session:
                 candidate_record = EventRepository(session).upsert_candidate(
                     candidate, CLUSTER_RULE_VERSION
@@ -168,31 +173,39 @@ class EventPipeline:
                     session, existing.id, candidate.raw_item_ids
                 ):
                     event_ids.append(existing.id)
-                else:
-                    repository = EventRepository(session)
-                    claimed_event_id: int | None = None
-                    if existing is not None:
-                        claimed_event_id = existing.id
-                        if not repository.claim_event(
-                            existing.id,
-                            operation_id,
-                            datetime.now(UTC) + timedelta(minutes=5),
-                        ):
-                            # Another worker owns this event; do not create a conflicting version.
-                            event_ids.append(existing.id)
-                            session.commit()
-                            continue
-                    enrichment = self._enrich(candidate)
-                    if enrichment.origin == "rule_fallback":
-                        model_fallback_count += 1
-                    published = EventPublisher(repository).publish(
-                        candidate_record.id, operation_id, enrichment
-                    )
-                    if claimed_event_id is not None:
-                        repository.release_event(claimed_event_id, operation_id)
-                    assert published.event_id is not None
-                    event_ids.append(published.event_id)
-                    created += 1
+                session.commit()
+                if existing is not None and self._has_same_membership(
+                    session, existing.id, candidate.raw_item_ids
+                ):
+                    continue
+                candidate_id = candidate_record.id
+
+            # Network/model work is deliberately between short DB sessions.
+            enrichment = self._enrich(candidate)
+            if enrichment.origin == "rule_fallback":
+                model_fallback_count += 1
+            with self._session_factory() as session:
+                repository = EventRepository(session)
+                existing = session.scalar(
+                    select(EventRecord).where(EventRecord.canonical_key == candidate.candidate_key)
+                )
+                claimed_event_id: int | None = None
+                if existing is not None:
+                    claimed_event_id = existing.id
+                    if not repository.claim_event(
+                        existing.id, operation_id, datetime.now(UTC) + timedelta(minutes=5)
+                    ):
+                        event_ids.append(existing.id)
+                        session.commit()
+                        continue
+                published = EventPublisher(repository).publish(
+                    candidate_id, operation_id, enrichment
+                )
+                if claimed_event_id is not None:
+                    repository.release_event(claimed_event_id, operation_id)
+                assert published.event_id is not None
+                event_ids.append(published.event_id)
+                created += 1
                 session.commit()
         return event_ids, created, model_fallback_count
 
@@ -226,3 +239,16 @@ class EventPipeline:
             )
         ).all()
         return set(active) == set(raw_item_ids)
+
+
+def _category(items: tuple[ClusterItem, ...]) -> EventCategory:
+    text = " ".join(
+        f"{item.title} {' '.join(item.entities)}".casefold() for item in items
+    )
+    if any(word in text for word in ("paper", "research", "benchmark", "arxiv")):
+        return EventCategory.RESEARCH
+    if any(word in text for word in ("sdk", "api", "developer", "tool", "github")):
+        return EventCategory.DEVELOPER_TOOL
+    if any(word in text for word in ("acquire", "funding", "raises", "partnership", "company")):
+        return EventCategory.COMPANY
+    return EventCategory.PRODUCT_MODEL

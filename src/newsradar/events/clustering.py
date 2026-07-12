@@ -204,7 +204,12 @@ def _candidate_key(items: tuple[ClusterItem, ...]) -> str:
         (item.published_at for item in items if item.published_at is not None),
         default=datetime(1970, 1, 1, tzinfo=UTC),
     )
-    value = f"{primary}|{action}|{occurred.date().isoformat()}"
+    # The object/title fingerprint prevents two same-company, same-day launches
+    # from collapsing solely because their organization/action/time agree.
+    object_key = min(
+        (item.title_fingerprint or item.title.casefold() for item in items), default=""
+    )
+    value = f"{primary}|{object_key}|{action}|{occurred.date().isoformat()}"
     return f"event-v2:{sha256(value.encode()).hexdigest()[:16]}"
 
 

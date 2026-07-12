@@ -47,3 +47,15 @@ No schema migration changed, so a migration roundtrip was not required.
   and membership constraints remain validated before mutation.
 - Pipeline results expose duration, retry, duplicate-root, and model-fallback counters; the
   acceptance note retains the live-data category limitation while documenting deterministic coverage.
+
+## Re-review follow-up
+
+- The pipeline now commits the candidate read/write phase before invoking optional MiniMax HTTP,
+  then opens a new short publication session for the event lease and atomic version switch.
+- Manual exclude, merge, split, recluster, and enrich routes publish immutable event snapshots
+  through `EventRepository.publish_complete_event`; membership removals use the new version number,
+  never a sentinel value.
+- Deterministic category assignment is applied before candidate persistence.
+
+Fresh isolated verification after the follow-up: `uv run pytest -q` reported `459 passed, 3 skipped`;
+`uv run ruff check .` reported `All checks passed!`.
