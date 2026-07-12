@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import datetime
 
 import pytest
 
@@ -79,6 +80,34 @@ def test_details_contain_audited_fields_but_no_secret_values(query_service):
     assert "headers" not in target.access_methods[0].__dataclass_fields__
     assert "secret-token-value" not in repr(target)
     assert target.risk is not None
+
+
+def test_provider_detail_loads_only_latest_three_capability_probes(
+    query_service, db_session
+):
+    from newsradar.db.models import ProviderProbeRunRecord
+
+    for hour in range(13, 17):
+        db_session.add(
+            ProviderProbeRunRecord(
+                provider_id="x",
+                probe_type="capability",
+                outcome="success",
+                availability="ready",
+                reason=f"ok-{hour}",
+                checked_at=datetime(2026, 7, 11, hour),
+                latency_ms=10.0,
+                http_status=200,
+                evidence_url=f"https://x.example/evidence/{hour}",
+            )
+        )
+    db_session.commit()
+
+    detail = query_service.provider_detail("x")
+
+    assert detail is not None
+    assert len(detail.probes) == 3
+    assert [probe.checked_at.hour for probe in detail.probes] == [16, 15, 14]
 
 
 def test_only_priority_one_and_latest_related_records_are_loaded(query_service, db_session):

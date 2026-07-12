@@ -27,6 +27,8 @@ class FakeDashboardService:
         self.calls: list[str] = []
         self.provider_filters: dict[str, str] | None = None
         self.target_filters: dict[str, str] | None = None
+        self.content_completeness: float | None = 1.0
+        self.has_content_probes = True
 
     def summary(self) -> DashboardSummary:
         self.calls.append("summary")
@@ -179,7 +181,7 @@ class FakeDashboardService:
                 hard_block_reason=None,
                 assessed_at=datetime(2026, 7, 10, 9, 30),
             ),
-            recent_probes=tuple(self.probes()),
+            recent_probes=tuple(self.probes()) if self.has_content_probes else (),
         )
 
     def probes(self):
@@ -196,7 +198,7 @@ class FakeDashboardService:
                 checked_at=datetime(2026, 7, 11, 9, 30),
                 http_status=200,
                 latency_ms=25.0,
-                completeness=1.0,
+                completeness=self.content_completeness,
                 reason_zh="成功",
                 reason_raw="ok",
             )
@@ -333,14 +335,14 @@ def test_unknown_route_is_chinese_404(client: TestClient):
     assert "页面不存在" in response.text
 
 
-def _response_for_database_error(error: Exception):
+def _response_for_database_error(error: Exception, path: str = "/"):
     @contextmanager
     def failing_context() -> Iterator[FakeDashboardService]:
         raise error
         yield FakeDashboardService()
 
     with TestClient(create_app(lambda: failing_context())) as test_client:
-        return test_client.get("/")
+        return test_client.get(path)
 
 
 def test_unavailable_database_renders_safe_command_and_failed_status():
@@ -390,6 +392,35 @@ def test_other_programming_error_renders_generic_safe_failure():
     assert "uv run alembic upgrade head" not in response.text
     assert "do-not-leak" not in response.text
     assert "syntax secret" not in response.text
+
+
+def test_provider_list_uses_safe_database_error_boundary():
+    error = OperationalError(
+        "connection has password=do-not-leak", {}, Exception("secret")
+    )
+
+    response = _response_for_database_error(error, "/providers")
+
+    assert response.status_code == 503
+    assert "uv run newsradar db start" in response.text
+    assert "数据库连接失败" in response.text
+    assert "do-not-leak" not in response.text
+
+
+def test_target_detail_uses_safe_migration_error_boundary():
+    error = ProgrammingError(
+        "missing table api_key=do-not-leak",
+        {},
+        FakePostgresError("undefined table secret", "42P01"),
+    )
+
+    response = _response_for_database_error(error, "/targets/github-openai-python")
+
+    assert response.status_code == 503
+    assert "uv run alembic upgrade head" in response.text
+    assert "数据库等待迁移" in response.text
+    assert "do-not-leak" not in response.text
+    assert "undefined table secret" not in response.text
 
 
 def test_static_shell_assets_preserve_accessible_navigation(client: TestClient):
@@ -482,6 +513,24 @@ def test_target_detail_explains_access_and_risk_without_secrets(client):
     assert "secret-token-value" not in response.text
     assert "Authorization" not in response.text
     assert "Cookie" not in response.text
+
+
+def test_target_detail_marks_missing_sample_completeness(client, fake_service):
+    fake_service.content_completeness = None
+
+    response = client.get("/targets/github-openai-python")
+
+    assert response.status_code == 200
+    assert "最新样本完整度：未记录" in response.text
+
+
+def test_target_detail_keeps_never_probed_semantics(client, fake_service):
+    fake_service.has_content_probes = False
+
+    response = client.get("/targets/github-openai-python")
+
+    assert response.status_code == 200
+    assert "尚未探测" in response.text
 
 
 def test_catalog_tables_are_keyboard_scroll_regions(client):

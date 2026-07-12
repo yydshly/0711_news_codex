@@ -129,6 +129,7 @@ class DashboardQueryService:
             select(ProviderProbeRunRecord)
             .where(ProviderProbeRunRecord.provider_id == provider_id)
             .order_by(ProviderProbeRunRecord.checked_at.desc(), ProviderProbeRunRecord.id.desc())
+            .limit(3)
         ).all()
         probes = tuple(
             self._provider_probe_row(record, provider.name) for record in capability_records

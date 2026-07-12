@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -50,6 +50,7 @@ TargetType = Literal[
     "market",
 ]
 CoverageMode = Literal["direct", "indirect", "catalog_only"]
+QueryResult = TypeVar("QueryResult")
 
 _PROVIDER_CATEGORIES = (
     ("social_community", "社交与社区"),
@@ -125,6 +126,49 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
     templates.env.autoescape = select_autoescape(("html", "xml"), default_for_string=True)
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
+    def database_error_response(
+        request: Request, error: OperationalError | ProgrammingError
+    ) -> HTMLResponse:
+        if isinstance(error, OperationalError):
+            context = {
+                "error_title": "数据库暂时不可用",
+                "error_message": "请先启动 News Codex 的本地数据库，然后刷新页面。",
+                "recovery_command": "uv run newsradar db start",
+                "database_status": "数据库连接失败",
+                "database_status_tone": "failed",
+            }
+        elif _is_undefined_table(error):
+            context = {
+                "error_title": "数据库尚未完成迁移",
+                "error_message": "请先创建所需的数据表，然后刷新页面。",
+                "recovery_command": "uv run alembic upgrade head",
+                "database_status": "数据库等待迁移",
+                "database_status_tone": "blocked",
+            }
+        else:
+            context = {
+                "error_title": "数据库查询失败",
+                "error_message": "本地数据库未能完成只读查询，请检查状态后重试。",
+                "database_status": "数据库查询失败",
+                "database_status_tone": "failed",
+            }
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context=context,
+            status_code=503,
+        )
+
+    def query_service_safely(
+        request: Request,
+        query: Callable[[DashboardQueryService], QueryResult],
+    ) -> tuple[QueryResult | None, HTMLResponse | None]:
+        try:
+            with resolved_service_factory() as service:
+                return query(service), None
+        except (OperationalError, ProgrammingError) as error:
+            return None, database_error_response(request, error)
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         response = await call_next(request)
@@ -146,51 +190,19 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard_shell(request: Request) -> HTMLResponse:
-        try:
-            with resolved_service_factory() as service:
-                summary = service.summary()
-                providers = service.providers()
-                probes = service.probes()
-                gaps = service.gap_groups()
-                diagnostic = build_diagnostic_narrative(summary, providers, gaps)
-        except OperationalError:
-            return templates.TemplateResponse(
-                request=request,
-                name="error.html",
-                context={
-                    "error_title": "数据库暂时不可用",
-                    "error_message": "请先启动 News Codex 的本地数据库，然后刷新页面。",
-                    "recovery_command": "uv run newsradar db start",
-                    "database_status": "数据库连接失败",
-                    "database_status_tone": "failed",
-                },
-                status_code=503,
-            )
-        except ProgrammingError as error:
-            if not _is_undefined_table(error):
-                return templates.TemplateResponse(
-                    request=request,
-                    name="error.html",
-                    context={
-                        "error_title": "数据库查询失败",
-                        "error_message": "本地数据库未能完成只读查询，请检查状态后重试。",
-                        "database_status": "数据库查询失败",
-                        "database_status_tone": "failed",
-                    },
-                    status_code=503,
-                )
-            return templates.TemplateResponse(
-                request=request,
-                name="error.html",
-                context={
-                    "error_title": "数据库尚未完成迁移",
-                    "error_message": "请先创建所需的数据表，然后刷新页面。",
-                    "recovery_command": "uv run alembic upgrade head",
-                    "database_status": "数据库等待迁移",
-                    "database_status_tone": "blocked",
-                },
-                status_code=503,
-            )
+        def load_dashboard(service: DashboardQueryService):
+            summary = service.summary()
+            providers = service.providers()
+            probes = service.probes()
+            gaps = service.gap_groups()
+            diagnostic = build_diagnostic_narrative(summary, providers, gaps)
+            return summary, diagnostic, probes, gaps
+
+        dashboard, error_response = query_service_safely(request, load_dashboard)
+        if error_response is not None:
+            return error_response
+        assert dashboard is not None
+        summary, diagnostic, probes, gaps = dashboard
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
@@ -218,8 +230,12 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             cost_tier=cost_tier,
             q=_normalized_query(q),
         )
-        with resolved_service_factory() as service:
-            rows = service.providers(filters)
+        rows, error_response = query_service_safely(
+            request, lambda service: service.providers(filters)
+        )
+        if error_response is not None:
+            return error_response
+        assert rows is not None
         return templates.TemplateResponse(
             request=request,
             name="providers.html",
@@ -236,8 +252,11 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
 
     @app.get("/providers/{provider_id}", response_class=HTMLResponse)
     def provider_details(request: Request, provider_id: str) -> HTMLResponse:
-        with resolved_service_factory() as service:
-            detail = service.provider_detail(provider_id)
+        detail, error_response = query_service_safely(
+            request, lambda service: service.provider_detail(provider_id)
+        )
+        if error_response is not None:
+            return error_response
         if detail is None:
             raise HTTPException(status_code=404)
         return templates.TemplateResponse(
@@ -266,8 +285,12 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             availability=availability,
             q=_normalized_query(q),
         )
-        with resolved_service_factory() as service:
-            rows = service.targets(filters)
+        rows, error_response = query_service_safely(
+            request, lambda service: service.targets(filters)
+        )
+        if error_response is not None:
+            return error_response
+        assert rows is not None
         return templates.TemplateResponse(
             request=request,
             name="targets.html",
@@ -284,8 +307,11 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
 
     @app.get("/targets/{source_id}", response_class=HTMLResponse)
     def target_details(request: Request, source_id: str) -> HTMLResponse:
-        with resolved_service_factory() as service:
-            detail = service.target_detail(source_id)
+        detail, error_response = query_service_safely(
+            request, lambda service: service.target_detail(source_id)
+        )
+        if error_response is not None:
+            return error_response
         if detail is None:
             raise HTTPException(status_code=404)
         return templates.TemplateResponse(

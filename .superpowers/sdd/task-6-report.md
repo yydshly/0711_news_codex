@@ -66,3 +66,45 @@ uv run pytest tests/web/test_routes.py tests/web/test_queries.py -v
 ## 关注点
 
 - 测试环境仍报告 Starlette `TestClient` 使用 `httpx` 的弃用警告；与本任务无关，不影响通过结果。
+
+## 审查修复
+
+审查提出的 1 项 Important 与 2 项 Minor 已按 TDD 处理。
+
+### RED
+
+新增以下回归覆盖：
+
+- Provider 列表遇到 `OperationalError` 时必须返回脱敏中文 503 与数据库启动命令。
+- Target 详情遇到 SQLSTATE `42P01` 时必须返回脱敏中文 503 与迁移命令。
+- 最近探测存在但 completeness 为空时显示“最新样本完整度：未记录”。
+- 没有内容探测时保持“尚未探测”语义。
+- Provider 详情最多返回按 `checked_at desc, id desc` 排序的最近 3 条能力探测。
+
+首次运行：
+
+```text
+uv run pytest tests/web/test_routes.py tests/web/test_queries.py -v
+5 failed, 27 passed, 1 warning
+```
+
+失败原因分别为新路由绕过首页错误边界、模板缺少完整度空值/无历史文案、Provider 查询未限制记录数。
+
+### GREEN 与重构
+
+- 在 `create_app()` 内抽取 `database_error_response()` 与 `query_service_safely()`；首页及 Provider/Target 的列表和详情四条路由全部通过同一服务查询边界。
+- 共享边界统一处理：`OperationalError` → 数据库启动提示；`42P01` → 迁移提示；其他 `ProgrammingError` → 通用查询失败提示。模板上下文不含异常文本。
+- Target 详情将完整度明确区分为百分比、未记录、尚未探测三态。
+- `provider_detail()` 查询在 SQLAlchemy statement 上使用 `.limit(3)`，不再加载全部历史后由模板切片。
+
+修复后验证：
+
+```text
+uv run pytest tests/web/test_routes.py tests/web/test_queries.py -v
+32 passed, 1 warning
+
+uv run ruff check src/newsradar/web tests/web
+All checks passed!
+```
+
+唯一警告仍为既存 Starlette/httpx 弃用警告。两份 reports 工作区改动继续保持未暂存。
