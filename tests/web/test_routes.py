@@ -13,6 +13,7 @@ from newsradar.web.viewmodels import (
     AccessMethodView,
     DashboardSummary,
     GapGroup,
+    GapTarget,
     ProbeRow,
     ProviderDetail,
     ProviderRow,
@@ -27,6 +28,7 @@ class FakeDashboardService:
         self.calls: list[str] = []
         self.provider_filters: dict[str, str] | None = None
         self.target_filters: dict[str, str] | None = None
+        self.probe_filters: dict[str, object] | None = None
         self.content_completeness: float | None = 1.0
         self.has_content_probes = True
 
@@ -184,9 +186,25 @@ class FakeDashboardService:
             recent_probes=tuple(self.probes()) if self.has_content_probes else (),
         )
 
-    def probes(self):
+    def probes(self, filters=None):
         self.calls.append("probes")
-        return [
+        self.probe_filters = filters
+        rows = [
+            ProbeRow(
+                probe_id="capability-1",
+                object_id="x",
+                object_name="X",
+                probe_type="capability",
+                probe_type_label="能力探测",
+                outcome="blocked",
+                outcome_label="阻塞",
+                checked_at=datetime(2026, 7, 11, 9, 45),
+                http_status=403,
+                latency_ms=20.0,
+                completeness=None,
+                reason_zh="当前权限未获批准",
+                reason_raw="<payment required>",
+            ),
             ProbeRow(
                 probe_id="content-1",
                 object_id="source-1",
@@ -203,15 +221,32 @@ class FakeDashboardService:
                 reason_raw="ok",
             )
         ]
+        if filters and filters.get("probe_type"):
+            return [row for row in rows if row.probe_type == filters["probe_type"]]
+        return rows
 
     def gap_groups(self):
         self.calls.append("gap_groups")
+        platforms = ("X", "Facebook", "Instagram", "TikTok", "LinkedIn")
         return (
             GapGroup(
                 availability="requires_payment",
                 label="需要付费",
-                target_count=1,
-                targets=(),
+                target_count=len(platforms),
+                targets=tuple(
+                    GapTarget(
+                        source_id=platform.lower(),
+                        name=f"{platform} 目标",
+                        provider_id=platform.lower(),
+                        provider_name=platform,
+                        impact=f"{platform} 内容当前不可直接读取",
+                        alternative="无已审核替代路径",
+                        cost_label="付费",
+                        unlock_requirements=("审核 API 权限",),
+                        evidence=(f"https://{platform.lower()}.example/evidence",),
+                    )
+                    for platform in platforms
+                ),
             ),
         )
 
@@ -540,6 +575,58 @@ def test_catalog_tables_are_keyboard_scroll_regions(client):
         assert 'class="table-scroll"' in response.text
         assert 'tabindex="0"' in response.text
         assert f'aria-label="{label}"' in response.text
+
+
+def test_probe_page_visibly_distinguishes_probe_types(client, fake_service):
+    response = client.get(
+        "/probes?probe_type=capability&outcome=blocked&provider_id=x"
+        "&from_date=2026-07-01&to_date=2026-07-11"
+    )
+
+    assert response.status_code == 200
+    assert fake_service.probe_filters == {
+        "probe_type": "capability",
+        "outcome": "blocked",
+        "provider_id": "x",
+        "from_date": date(2026, 7, 1),
+        "to_date": date(2026, 7, 11),
+    }
+    for text in (
+        "能力探测",
+        "内容探测",
+        "原始原因",
+        "只确认平台能力，不代表获取到内容",
+    ):
+        assert text in response.text
+    assert "&lt;payment required&gt;" in response.text
+    assert '<th scope="col">完整度</th>' not in response.text
+
+
+def test_gap_page_keeps_restricted_platforms_visible(client):
+    response = client.get("/gaps")
+
+    assert response.status_code == 200
+    for platform in ("X", "Facebook", "Instagram", "TikTok", "LinkedIn"):
+        assert platform in response.text
+    for text in (
+        "不等于实时内容覆盖",
+        "不会使用 Cookie",
+        "无已审核替代路径",
+        "审核 API 权限",
+    ):
+        assert text in response.text
+
+
+def test_probe_and_gap_pages_use_safe_database_error_boundary():
+    error = OperationalError(
+        "connection has password=do-not-leak", {}, Exception("secret")
+    )
+
+    for path in ("/probes", "/gaps"):
+        response = _response_for_database_error(error, path)
+        assert response.status_code == 503
+        assert "uv run newsradar db start" in response.text
+        assert "do-not-leak" not in response.text
 
 
 def test_unknown_provider_and_target_return_404(client):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -178,6 +178,18 @@ def test_probe_filters_order_and_failure_explanation(query_service):
     assert [row.checked_at for row in all_rows] == sorted(
         (row.checked_at for row in all_rows), reverse=True
     )
+
+
+def test_probe_date_and_outcome_filters_are_inclusive(query_service):
+    rows = query_service.probes(
+        {
+            "outcome": "blocked",
+            "from_date": date(2026, 7, 11),
+            "to_date": date(2026, 7, 11),
+        }
+    )
+
+    assert [row.probe_id for row in rows] == ["capability-1"]
 
 
 def test_gap_groups_use_fixed_order_and_keep_blocked_targets_visible(query_service):

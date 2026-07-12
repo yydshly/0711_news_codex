@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal, TypeVar
 
@@ -50,6 +51,8 @@ TargetType = Literal[
     "market",
 ]
 CoverageMode = Literal["direct", "indirect", "catalog_only"]
+ProbeType = Literal["capability", "content"]
+ProbeOutcome = Literal["success", "partial", "blocked", "failed"]
 QueryResult = TypeVar("QueryResult")
 
 _PROVIDER_CATEGORIES = (
@@ -92,6 +95,13 @@ _COVERAGE_MODES = (
     ("direct", "直接覆盖"),
     ("indirect", "间接发现"),
     ("catalog_only", "仅目录收录"),
+)
+_PROBE_TYPES = (("capability", "能力探测"), ("content", "内容探测"))
+_PROBE_OUTCOMES = (
+    ("success", "成功"),
+    ("partial", "部分成功"),
+    ("blocked", "阻塞"),
+    ("failed", "失败"),
 )
 
 
@@ -319,6 +329,60 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             name="target_detail.html",
             context={
                 "target": detail,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+            },
+        )
+
+    @app.get("/probes", response_class=HTMLResponse)
+    def probe_history(
+        request: Request,
+        probe_type: Annotated[ProbeType | None, Query()] = None,
+        outcome: Annotated[ProbeOutcome | None, Query()] = None,
+        provider_id: str | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> HTMLResponse:
+        filters = _active_filters(
+            probe_type=probe_type,
+            outcome=outcome,
+            provider_id=_normalized_query(provider_id),
+            from_date=from_date,
+            to_date=to_date,
+        )
+        rows, error_response = query_service_safely(
+            request, lambda service: service.probes(filters)
+        )
+        if error_response is not None:
+            return error_response
+        assert rows is not None
+        return templates.TemplateResponse(
+            request=request,
+            name="probes.html",
+            context={
+                "probes": rows,
+                "filters": filters,
+                "probe_type_options": _PROBE_TYPES,
+                "outcome_options": _PROBE_OUTCOMES,
+                "has_content_probe": any(row.probe_type == "content" for row in rows),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+            },
+        )
+
+    @app.get("/gaps", response_class=HTMLResponse)
+    def coverage_gaps(request: Request) -> HTMLResponse:
+        groups, error_response = query_service_safely(
+            request, lambda service: service.gap_groups()
+        )
+        if error_response is not None:
+            return error_response
+        assert groups is not None
+        return templates.TemplateResponse(
+            request=request,
+            name="gaps.html",
+            context={
+                "gap_groups": groups,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
             },
