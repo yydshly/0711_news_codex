@@ -140,7 +140,18 @@ class EventRepository:
                         zh_summary=version.enrichment.zh_summary if version.enrichment else None,
                     )
                     self.session.add(record)
-                    for raw_item_id in version.source_item_ids:
+                    active_items = self.session.scalars(
+                        select(EventItemRecord).where(
+                            EventItemRecord.event_id == event_id,
+                            EventItemRecord.removed_version_number.is_(None),
+                        )
+                    ).all()
+                    source_item_ids = set(version.source_item_ids)
+                    active_ids = {item.raw_item_id for item in active_items}
+                    for item in active_items:
+                        if item.raw_item_id not in source_item_ids:
+                            item.removed_version_number = next_version
+                    for raw_item_id in source_item_ids - active_ids:
                         self.session.add(
                             EventItemRecord(
                                 event_id=event_id,
@@ -196,7 +207,11 @@ class EventRepository:
         assert self.session.bind is not None
         if self.session.bind.dialect.name == "postgresql":
             from sqlalchemy.dialects.postgresql import insert
-        else:
+        elif self.session.bind.dialect.name == "sqlite":
             from sqlalchemy.dialects.sqlite import insert
+        else:
+            raise ValueError(
+                "Unsupported event repository dialect: " f"{self.session.bind.dialect.name}"
+            )
 
         return insert(record_type)

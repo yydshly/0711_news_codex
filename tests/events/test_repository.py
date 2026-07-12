@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
@@ -161,3 +163,68 @@ def test_repeated_stage_and_candidate_upserts_use_unique_keys() -> None:
 
         assert first_stage.id == second_stage.id
         assert first_candidate.id == second_candidate.id
+
+
+def test_publishing_closes_removed_memberships_and_readds_as_new_rows() -> None:
+    with session() as db:
+        first = raw_item(db)
+        second = RawItemRecord(
+            source_id="source",
+            external_id="item-2",
+            canonical_url="https://example.test/item-2",
+            payload={},
+        )
+        db.add(second)
+        db.commit()
+        repository = EventRepository(db)
+        event = repository.create_or_update_event(
+            PublishedEvent(canonical_key="release", status=EventStatus.EMERGING)
+        )
+
+        repository.publish_version(
+            event.id,
+            PublishedEvent(
+                canonical_key="release",
+                status=EventStatus.EMERGING,
+                source_item_ids=(first.id, second.id),
+            ),
+        )
+        repository.publish_version(
+            event.id,
+            PublishedEvent(
+                canonical_key="release", status=EventStatus.EMERGING, source_item_ids=(first.id,)
+            ),
+        )
+        memberships = db.scalars(select(EventItemRecord).order_by(EventItemRecord.id)).all()
+        assert [(item.raw_item_id, item.removed_version_number) for item in memberships] == [
+            (first.id, None),
+            (second.id, 2),
+        ]
+
+        repository.publish_version(
+            event.id,
+            PublishedEvent(canonical_key="release", status=EventStatus.EMERGING),
+        )
+        repository.publish_version(
+            event.id,
+            PublishedEvent(
+                canonical_key="release", status=EventStatus.EMERGING, source_item_ids=(first.id,)
+            ),
+        )
+        active = db.scalars(
+            select(EventItemRecord).where(EventItemRecord.removed_version_number.is_(None))
+        ).all()
+        assert len(active) == 1
+        assert active[0].raw_item_id == first.id
+        first_memberships = db.scalars(
+            select(EventItemRecord).where(EventItemRecord.raw_item_id == first.id)
+        ).all()
+        assert len(first_memberships) == 2
+
+
+def test_insert_rejects_unsupported_database_dialect() -> None:
+    session_stub = SimpleNamespace(bind=SimpleNamespace(dialect=SimpleNamespace(name="mysql")))
+    repository = EventRepository(session_stub)
+
+    with pytest.raises(ValueError, match="Unsupported event repository dialect: mysql"):
+        repository._insert(EventRecord)
