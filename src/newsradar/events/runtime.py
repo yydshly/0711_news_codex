@@ -88,6 +88,15 @@ class EventOperationHandler:
                 error_message="Event actions require an event_id",
                 retryable=False,
             )
+        try:
+            deadline = (
+                OperationDeadline.from_scope(lease.requested_scope)
+                if "deadline_at" in lease.requested_scope
+                else _NoDeadline()
+            )
+            deadline.check("before_event_action")
+        except (OperationTimedOut, ValueError) as error:
+            return _timeout_result(error)
         session = self._session_factory()
         if session is None:
             return OperationResult(
@@ -100,25 +109,38 @@ class EventOperationHandler:
             if invalid_result is not None:
                 return invalid_result
             repository = EventRepository(session)
-            if not repository.claim_event(
-                event_id, lease.operation_id, datetime.now(UTC) + timedelta(minutes=5)
-            ):
-                session.commit()
-                return OperationResult(
-                    status=OperationStatus.FAILED,
-                    error_code="event_lease_unavailable",
-                    error_message="Event is being changed by another worker",
-                    retryable=True,
-                )
+            lease_ids = [event_id]
+            if lease.operation_type == OperationType.EVENT_MERGE.value:
+                lease_ids.append(int(lease.requested_scope["target_event_id"]))
+            claimed: list[int] = []
+            for claimed_id in sorted(lease_ids):
+                deadline.check("before_event_lease")
+                if not repository.claim_event(
+                    claimed_id, lease.operation_id, datetime.now(UTC) + timedelta(minutes=5)
+                ):
+                    for release_id in reversed(claimed):
+                        repository.release_event(release_id, lease.operation_id)
+                    session.commit()
+                    return OperationResult(
+                        status=OperationStatus.FAILED,
+                        error_code="event_lease_unavailable",
+                        error_message="Event is being changed by another worker",
+                        retryable=True,
+                    )
+                claimed.append(claimed_id)
             session.commit()
             checkpoint("before_event_action")
+            deadline.check("before_event_mutation")
             _apply_event_action(lease, session, event_id)
-            repository.release_event(event_id, lease.operation_id)
+            deadline.check("after_event_mutation")
+            for release_id in reversed(claimed):
+                repository.release_event(release_id, lease.operation_id)
             session.commit()
         except Exception:
             session.rollback()
             # Do not strand a lease when a bounded editorial mutation fails.
-            EventRepository(session).release_event(event_id, lease.operation_id)
+            for release_id in reversed(locals().get("claimed", [event_id])):
+                EventRepository(session).release_event(release_id, lease.operation_id)
             session.commit()
             raise
         finally:
@@ -149,6 +171,11 @@ def _deadline_checkpoint(
         deadline.check(boundary)
 
     return check
+
+
+class _NoDeadline:
+    def check(self, boundary: str) -> None:
+        del boundary
 
 
 def _timeout_result(error: Exception) -> OperationResult:

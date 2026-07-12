@@ -38,6 +38,10 @@ def test_recluster_action_is_completed_by_the_worker() -> None:
         db.add(EventRecord(id=1, canonical_key="one", status="confirmed"))
         db.commit()
 
+    scope = {
+        "event_id": 8, "actor": "web",
+        "deadline_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+    }
     result = EventOperationHandler(lambda: Session(engine))(
         OperationLease(1, 1, 1, "worker", {"event_id": 1, "actor": "web"}, "event_recluster"),
         lambda _: None,
@@ -141,3 +145,21 @@ def test_expired_event_pipeline_returns_timeout_without_publishing() -> None:
     assert result.status is OperationStatus.FAILED
     assert result.error_code == "operation_timeout"
     assert result.retryable is False
+
+
+def test_expired_event_action_mutates_nothing() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(EventRecord(id=8, canonical_key="deadline", status="confirmed"))
+        db.commit()
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1, 1, 1, "worker",
+            scope,
+            "event_exclude",
+        ), lambda _: None,
+    )
+    with Session(engine) as db:
+        assert db.get(EventRecord, 8).status == "confirmed"
+    assert result.error_code == "operation_timeout"
