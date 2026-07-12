@@ -24,6 +24,7 @@ from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic
 from newsradar.operations.commands import OperationCommandService
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.diagnostics import build_diagnostic_narrative
+from newsradar.web.event_queries import EventQueryService
 from newsradar.web.i18n import zh_label
 from newsradar.web.item_queries import ItemQueryService
 from newsradar.web.operation_queries import OperationQueryService
@@ -116,9 +117,7 @@ _COVERAGE_MODES = (
     ("catalog_only", "仅目录收录"),
 )
 _PROBE_TYPES = (("capability", "能力探测"), ("content", "内容探测"))
-_PROBE_OUTCOMES = tuple(
-    (outcome, zh_label("outcome", outcome)) for outcome in PROBE_OUTCOME_VALUES
-)
+_PROBE_OUTCOMES = tuple((outcome, zh_label("outcome", outcome)) for outcome in PROBE_OUTCOME_VALUES)
 
 
 def _active_filters(**values: object) -> dict[str, object]:
@@ -254,8 +253,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             status_code=404,
         )
 
-    @app.get("/", response_class=HTMLResponse)
-    def dashboard_shell(request: Request) -> HTMLResponse:
+    def source_dashboard(request: Request) -> HTMLResponse:
         def load_dashboard(service: DashboardQueryService):
             summary = service.summary()
             providers = service.providers()
@@ -282,6 +280,169 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "latest_probe_at": summary.latest_probe_at,
             },
         )
+
+    @app.get("/", response_class=HTMLResponse)
+    def events_home(request: Request) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                event_home = EventQueryService(session).home()
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="events_home.html",
+            context={
+                "event_home": event_home,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/sources", response_class=HTMLResponse)
+    def sources(request: Request) -> HTMLResponse:
+        return source_dashboard(request)
+
+    @app.get("/events", response_class=HTMLResponse)
+    def events(request: Request, status: str | None = None) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                event_page = EventQueryService(session).list_events(_active_filters(status=status))
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="events.html",
+            context={
+                "event_page": event_page,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/emerging", response_class=HTMLResponse)
+    def emerging(request: Request) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                event_page = EventQueryService(session).list_emerging()
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="emerging.html",
+            context={
+                "event_page": event_page,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/events/{event_id}", response_class=HTMLResponse)
+    def event_detail(request: Request, event_id: int) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                event_detail = EventQueryService(session).get_event(event_id)
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        if event_detail is None:
+            raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="event_detail.html",
+            context={
+                "event_detail": event_detail,
+                "action_token": issue_action_token(request),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    async def enqueue_event_action(
+        request: Request, event_id: int, action: str, payload: dict[str, object] | None = None
+    ) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                if EventQueryService(session).get_event(event_id) is None:
+                    raise HTTPException(status_code=404)
+                operation_id = OperationCommandService(session).enqueue_event_action(
+                    action, event_id, {"actor": "web", **(payload or {})}, "web"
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+
+    @app.post("/events/build")
+    async def build_events(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            window_hours = int(values.get("window_hours", "24"))
+            with create_session() as session:
+                operation_id = OperationCommandService(session).enqueue_event_pipeline(
+                    window_hours=window_hours, trigger="web"
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+
+    @app.post("/events/{event_id}/recluster")
+    async def recluster_event(request: Request, event_id: int) -> RedirectResponse:
+        return await enqueue_event_action(request, event_id, "recluster")
+
+    @app.post("/events/{event_id}/enrich")
+    async def enrich_event(request: Request, event_id: int) -> RedirectResponse:
+        return await enqueue_event_action(request, event_id, "enrich")
+
+    @app.post("/events/{event_id}/exclude")
+    async def exclude_event(request: Request, event_id: int) -> RedirectResponse:
+        return await enqueue_event_action(request, event_id, "exclude")
+
+    @app.post("/events/merge")
+    async def merge_events(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            event_id, target_id = (
+                int(values.get("event_id", "")),
+                int(values.get("target_event_id", "")),
+            )
+            if event_id <= 0 or target_id <= 0 or event_id == target_id:
+                raise ValueError("merge requires two distinct positive event ids")
+            try:
+                with create_session() as session:
+                    operation_id = OperationCommandService(session).enqueue_event_action(
+                        "merge", event_id, {"target_event_id": target_id, "actor": "web"}, "web"
+                    )
+            except (OperationalError, ProgrammingError) as db_error:
+                return database_error_response(request, db_error)
+            return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/events/{event_id}/split")
+    async def split_event(request: Request, event_id: int) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            member_ids = [
+                int(value) for value in values.get("member_ids", "").split(",") if value.strip()
+            ]
+            if event_id <= 0 or not member_ids or any(value <= 0 for value in member_ids):
+                raise ValueError("split requires non-empty positive member ids")
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        # Reuse the durable action boundary; scope remains auditable and worker-owned.
+        try:
+            with create_session() as session:
+                operation_id = OperationCommandService(session).enqueue_event_action(
+                    "split", event_id, {"member_ids": member_ids, "actor": "web"}, "web"
+                )
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
 
     @app.get("/providers", response_class=HTMLResponse)
     def provider_catalog(

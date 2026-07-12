@@ -284,7 +284,7 @@ def client(fake_service: FakeDashboardService) -> Iterator[TestClient]:
 
 
 def test_root_renders_chinese_operational_shell(client: TestClient):
-    response = client.get("/")
+    response = client.get("/sources")
 
     assert response.status_code == 200
     assert "总览指挥台" in response.text
@@ -302,7 +302,7 @@ def test_root_renders_chinese_operational_shell(client: TestClient):
 
 
 def test_dashboard_shows_strict_metrics_and_diagnostic(client: TestClient):
-    response = client.get("/")
+    response = client.get("/sources")
 
     assert response.status_code == 200
     for text in (
@@ -340,7 +340,7 @@ def test_dashboard_metric_counts_equal_real_target_drilldowns(db_session):
         yield DashboardQueryService(db_session)
 
     with TestClient(create_app(lambda: real_service_context())) as real_client:
-        dashboard = real_client.get("/")
+        dashboard = real_client.get("/sources")
         free_direct = real_client.get("/targets?free_direct=true")
         three_success = real_client.get("/targets?three_success=true")
 
@@ -375,14 +375,14 @@ def test_dashboard_calls_out_missing_probe_history():
         yield NoProbeHistoryService()
 
     with TestClient(create_app(lambda: no_history_context())) as test_client:
-        response = test_client.get("/")
+        response = test_client.get("/sources")
 
     assert response.status_code == 200
     assert "暂无探测历史" in response.text
 
 
 def test_security_headers_are_present(client: TestClient):
-    response = client.get("/")
+    response = client.get("/sources")
 
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
@@ -403,7 +403,7 @@ def test_unknown_route_is_chinese_404(client: TestClient):
     assert "页面不存在" in response.text
 
 
-def _response_for_database_error(error: Exception, path: str = "/"):
+def _response_for_database_error(error: Exception, path: str = "/sources"):
     @contextmanager
     def failing_context() -> Iterator[FakeDashboardService]:
         raise error
@@ -492,7 +492,7 @@ def test_target_detail_uses_safe_migration_error_boundary():
 
 
 def test_static_shell_assets_preserve_accessible_navigation(client: TestClient):
-    shell = client.get("/")
+    shell = client.get("/sources")
     css = client.get("/static/styles.css")
     javascript = client.get("/static/app.js")
 
@@ -739,7 +739,7 @@ def test_degraded_probe_route_filters_real_query_service(db_session):
 @pytest.mark.parametrize(
     ("path", "active_href"),
     [
-        ("/", "/"),
+        ("/sources", "/sources"),
         ("/providers", "/providers"),
         ("/providers/github", "/providers"),
         ("/probes", "/probes"),
