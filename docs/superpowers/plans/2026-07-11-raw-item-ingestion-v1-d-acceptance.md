@@ -26,7 +26,7 @@
 
 ---
 
-### Task D1: Final Five-Layer Target Audit
+### Task 1: Final Five-Layer Target Audit
 
 **Files:**
 - Modify: audited `providers/*.yaml`
@@ -53,7 +53,7 @@ git add providers sources reports/raw-item-ingestion-target-matrix.md tests/inge
 git commit -m "docs: approve ingestion target matrix"
 ```
 
-### Task D2: Three-Round Live Probe and Fetch Acceptance
+### Task 2: Three-Round Live Probe and Fetch Acceptance
 
 **Files:**
 - Create: `reports/raw-item-ingestion-live-acceptance.md`
@@ -72,7 +72,7 @@ git add reports/raw-item-ingestion-live-acceptance.md
 git commit -m "test: record live ingestion acceptance"
 ```
 
-### Task D3: Reliability, Concurrency, and Security Drills
+### Task 3: Reliability, Concurrency, and Security Drills
 
 **Files:**
 - Create: `tests/acceptance/test_worker_recovery.py`
@@ -108,7 +108,7 @@ git add tests/acceptance reports/raw-item-ingestion-reliability.md
 git commit -m "test: prove ingestion runtime reliability"
 ```
 
-### Task D4: Final Quality Gate and Handoff
+### Task 4: Final Quality Gate and Handoff
 
 **Files:**
 - Modify: `README.md`

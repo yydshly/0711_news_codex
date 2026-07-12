@@ -31,7 +31,7 @@
 
 ---
 
-### Task A1: Domain Contracts, ORM Models, and Additive Migration
+### Task 1: Domain Contracts, ORM Models, and Additive Migration
 
 **Files:**
 - Create: `src/newsradar/operations/__init__.py`
@@ -120,7 +120,7 @@ git add src/newsradar/db/models.py src/newsradar/operations src/newsradar/ingest
 git commit -m "feat: add ingestion runtime data model"
 ```
 
-### Task A2: YAML Eligibility and Deterministic Normalization
+### Task 2: YAML Eligibility and Deterministic Normalization
 
 **Files:**
 - Modify: `src/newsradar/sources/schema.py`
@@ -199,7 +199,7 @@ git add src/newsradar/sources/schema.py src/newsradar/ingestion/eligibility.py s
 git commit -m "feat: validate ingestion eligibility and identity"
 ```
 
-### Task A3: Idempotent RawItem Persistence
+### Task 3: Idempotent RawItem Persistence
 
 **Files:**
 - Create: `src/newsradar/ingestion/repository.py`
@@ -253,7 +253,7 @@ git add src/newsradar/ingestion/repository.py tests/ingestion/test_repository.py
 git commit -m "feat: persist raw items idempotently"
 ```
 
-### Task A4: PostgreSQL Queue, Worker Leases, Logging, and Recovery
+### Task 4: PostgreSQL Queue, Worker Leases, Logging, and Recovery
 
 **Files:**
 - Create: `src/newsradar/operations/repository.py`
@@ -309,7 +309,7 @@ git add src/newsradar/operations tests/operations
 git commit -m "feat: run durable leased operations"
 ```
 
-### Task A5: Baseline Fetchers, Ingestion Service, and CLI
+### Task 5: Baseline Fetchers, Ingestion Service, and CLI
 
 **Files:**
 - Create: `src/newsradar/ingestion/fetchers/__init__.py`
@@ -385,4 +385,3 @@ git commit -m "feat: ingest baseline open sources"
 ```
 
 Milestone A exit report must include migration compatibility, queue/worker recovery evidence, four fetcher fixture results, full test count, Ruff result and known limitations. Do not claim full source-universe coverage.
-

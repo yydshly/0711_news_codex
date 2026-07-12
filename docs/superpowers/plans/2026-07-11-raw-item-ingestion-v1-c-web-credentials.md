@@ -29,7 +29,7 @@
 
 ---
 
-### Task C1: Reddit OAuth and YouTube Data API Fetchers
+### Task 1: Reddit OAuth and YouTube Data API Fetchers
 
 **Files:**
 - Create: `src/newsradar/ingestion/fetchers/reddit.py`
@@ -68,7 +68,7 @@ git add src/newsradar/ingestion/fetchers tests/ingestion/fetchers
 git commit -m "feat: ingest credential gated community sources"
 ```
 
-### Task C2: Safe Web Operation API and Guided Workflow
+### Task 2: Safe Web Operation API and Guided Workflow
 
 **Files:**
 - Create: `src/newsradar/web/security.py`
@@ -107,7 +107,7 @@ git add src/newsradar/web tests/web
 git commit -m "feat: guide and enqueue web operations"
 ```
 
-### Task C3: Fetch Runs, Raw Items, Versions, and Duplicate Review UI
+### Task 3: Fetch Runs, Raw Items, Versions, and Duplicate Review UI
 
 **Files:**
 - Create: `src/newsradar/web/routes/items.py`
@@ -156,7 +156,7 @@ git add src/newsradar/web tests/web
 git commit -m "feat: browse ingested source content"
 ```
 
-### Task C4: System Health, Structured Diagnostics, and Operator CLI
+### Task 4: System Health, Structured Diagnostics, and Operator CLI
 
 **Files:**
 - Create: `src/newsradar/diagnostics.py`
@@ -195,7 +195,7 @@ git add src/newsradar/diagnostics.py src/newsradar/web src/newsradar/cli.py test
 git commit -m "feat: diagnose ingestion runtime health"
 ```
 
-### Task C5: Browser and Full-Gate Verification
+### Task 5: Browser and Full-Gate Verification
 
 **Files:**
 - Modify: `README.md`

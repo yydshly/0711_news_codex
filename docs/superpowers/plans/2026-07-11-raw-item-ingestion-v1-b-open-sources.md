@@ -29,7 +29,7 @@
 
 ---
 
-### Task B1: Attribution and Evidence-Role Contracts
+### Task 1: Attribution and Evidence-Role Contracts
 
 **Files:**
 - Modify: `src/newsradar/ingestion/schema.py`
@@ -69,7 +69,7 @@ git add src/newsradar/ingestion/schema.py src/newsradar/ingestion/attribution.py
 git commit -m "feat: preserve source attribution and evidence roles"
 ```
 
-### Task B2: Bluesky and Mastodon Public Fetchers
+### Task 2: Bluesky and Mastodon Public Fetchers
 
 **Files:**
 - Create: `src/newsradar/ingestion/fetchers/bluesky.py`
@@ -108,7 +108,7 @@ git add src/newsradar/ingestion/fetchers tests/ingestion/fetchers/test_bluesky.p
 git commit -m "feat: ingest public social signals"
 ```
 
-### Task B3: GDELT and Google News Discovery Fetchers
+### Task 3: GDELT and Google News Discovery Fetchers
 
 **Files:**
 - Create: `src/newsradar/ingestion/fetchers/gdelt.py`
@@ -152,7 +152,7 @@ git add src/newsradar/ingestion/fetchers src/newsradar/ingestion/origin_resolver
 git commit -m "feat: ingest attributed news discovery"
 ```
 
-### Task B4: Audit Professional-Media and Open-Social Targets
+### Task 4: Audit Professional-Media and Open-Social Targets
 
 **Files:**
 - Modify: selected audited files under `providers/`
@@ -180,7 +180,7 @@ git add providers sources reports/ingestion-open-source-review.md tests/test_sou
 git commit -m "docs: audit open ingestion source matrix"
 ```
 
-### Task B5: Open-Source Milestone Verification
+### Task 5: Open-Source Milestone Verification
 
 **Files:**
 - Modify: `README.md`
