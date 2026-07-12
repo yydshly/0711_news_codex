@@ -11,10 +11,11 @@ from newsradar.db.models import (
     EventCandidateRecord,
     EventItemRecord,
     EventRecord,
+    EventScoreRecord,
     EventVersionRecord,
     RawItemProcessingRecord,
 )
-from newsradar.events.schema import CandidateCluster, ProcessingStage, PublishedEvent
+from newsradar.events.schema import CandidateCluster, EventCategory, ProcessingStage, PublishedEvent
 
 
 class EventRepository:
@@ -163,12 +164,131 @@ class EventRepository:
                 self.session.execute(
                     update(EventRecord)
                     .where(EventRecord.id == event_id)
-                    .values(updated_at=datetime.now(UTC))
+                    .values(
+                        current_version_number=next_version,
+                        updated_at=datetime.now(UTC),
+                    )
                 )
                 return record
             except IntegrityError:
                 continue
         raise RuntimeError("could not allocate an event version after three attempts")
+
+    def get_candidate_for_publication(
+        self, candidate_id: int
+    ) -> tuple[CandidateCluster, tuple[int, ...]]:
+        record = self.session.get(EventCandidateRecord, candidate_id)
+        if record is None:
+            raise LookupError(f"event candidate {candidate_id} does not exist")
+        raw_item_ids = tuple(
+            self.session.scalars(
+                select(EventCandidateItemRecord.raw_item_id)
+                .where(EventCandidateItemRecord.candidate_id == candidate_id)
+                .order_by(EventCandidateItemRecord.raw_item_id)
+            )
+        )
+        return (
+            CandidateCluster(
+                candidate_key=record.candidate_key,
+                title=record.title,
+                category=EventCategory(record.category) if record.category else None,
+                raw_item_ids=raw_item_ids,
+                state=record.state,
+                metadata=record.metadata_json,
+            ),
+            raw_item_ids,
+        )
+
+    def get_current_event(self, event_id: int) -> EventVersionRecord | None:
+        return self.session.scalar(
+            select(EventVersionRecord)
+            .join(EventRecord, EventRecord.id == EventVersionRecord.event_id)
+            .where(
+                EventRecord.id == event_id,
+                EventVersionRecord.version_number == EventRecord.current_version_number,
+            )
+        )
+
+    def publish_complete_event(self, event: PublishedEvent, operation_id: int) -> EventRecord:
+        """Write a complete version before exposing it through the current-version pointer."""
+        # Reservation is handled by the worker; this is the short write transaction.
+        del operation_id
+        now = datetime.now(UTC)
+        with self.session.begin_nested():
+            record = self.session.scalar(
+                select(EventRecord)
+                .where(EventRecord.canonical_key == event.canonical_key)
+                .with_for_update()
+            )
+            if record is None:
+                record = EventRecord(
+                    canonical_key=event.canonical_key,
+                    status=event.status.value,
+                    category=event.category.value if event.category else None,
+                    occurred_at=event.occurred_at,
+                    current_version_number=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self.session.add(record)
+                self.session.flush()
+
+            next_version = record.current_version_number + 1
+            version = EventVersionRecord(
+                event_id=record.id,
+                version_number=next_version,
+                payload=event.model_dump(mode="json"),
+                zh_title=event.enrichment.zh_title if event.enrichment else None,
+                zh_summary=event.enrichment.zh_summary if event.enrichment else None,
+            )
+            self.session.add(version)
+            self._replace_active_memberships(record.id, event.source_item_ids, next_version)
+            assert event.score is not None
+            self.session.add(
+                EventScoreRecord(
+                    event_id=record.id,
+                    version_number=next_version,
+                    heat=event.score.heat,
+                    breakdown=event.score.model_dump(mode="json"),
+                )
+            )
+            self.session.flush()
+            self.before_current_version_switch(record, version)
+            record.status = event.status.value
+            record.category = event.category.value if event.category else None
+            record.occurred_at = event.occurred_at
+            record.current_version_number = next_version
+            record.updated_at = now
+            self.session.flush()
+        return record
+
+    def before_current_version_switch(
+        self, event: EventRecord, version: EventVersionRecord
+    ) -> None:
+        """Injection point for failure testing immediately before the visibility switch."""
+
+    def _replace_active_memberships(
+        self, event_id: int, source_item_ids: tuple[int, ...], version_number: int
+    ) -> None:
+        active_items = self.session.scalars(
+            select(EventItemRecord).where(
+                EventItemRecord.event_id == event_id,
+                EventItemRecord.removed_version_number.is_(None),
+            )
+        ).all()
+        source_ids = set(source_item_ids)
+        active_ids = {item.raw_item_id for item in active_items}
+        for item in active_items:
+            if item.raw_item_id not in source_ids:
+                item.removed_version_number = version_number
+        self.session.add_all(
+            EventItemRecord(
+                event_id=event_id,
+                raw_item_id=raw_item_id,
+                added_version_number=version_number,
+            )
+            for raw_item_id in sorted(source_ids - active_ids)
+        )
 
     def _claim_statement(self, event_id: int, operation_id: int, lease_until: datetime):
         return (

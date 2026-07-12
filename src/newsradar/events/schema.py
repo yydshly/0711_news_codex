@@ -136,19 +136,32 @@ class EventScoreInput(_Schema):
     recency: float = Field(ge=0, le=100)
     engagement_velocity: float = Field(ge=0, le=100)
     novelty: float = Field(ge=0, le=100)
+    evidence: tuple[EvidenceAssessment, ...] = ()
+
+
+class ScoreBreakdown(_Schema):
+    ai_relevance: float = Field(ge=0, le=100)
+    source_coverage: float = Field(ge=0, le=100)
+    source_authority: float = Field(ge=0, le=100)
+    recency: float = Field(ge=0, le=100)
+    engagement_velocity: float = Field(ge=0, le=100)
+    novelty: float = Field(ge=0, le=100)
     importance: float = Field(ge=0, le=100)
     credibility: float = Field(ge=0, le=100)
-
-
-class ScoreBreakdown(EventScoreInput):
     heat: float = Field(ge=0, le=100)
+    rule_version: str
     reasons: tuple[str, ...]
 
 
 class PublicationDecision(_Schema):
-    should_publish: bool
     status: EventStatus
+    publish_to_top: bool
     reasons: tuple[str, ...] = ()
+
+    @property
+    def should_publish(self) -> bool:
+        """Compatibility alias for callers that only need a publish gate."""
+        return self.publish_to_top
 
 
 class EventEnrichment(_Schema):
