@@ -64,9 +64,9 @@ def evaluate_fetch_eligibility(
         return _blocked("html_only", "禁止抓取：仅提供 HTML 访问方式。")
 
     if source.availability == Availability.REQUIRES_CREDENTIALS:
-        credential_methods = [method for method in automatic_methods if method.auth_env]
+        credential_methods = [method for method in automatic_methods if method.auth_envs]
         for method in credential_methods:
-            if method.auth_env in configured_env:
+            if set(method.auth_envs).issubset(configured_env):
                 return EligibilityDecision(
                     allowed=True,
                     reason=f"允许抓取：已选择已审核的 {method.kind.value} 访问方式。",
@@ -75,7 +75,7 @@ def evaluate_fetch_eligibility(
         return _blocked("missing_credentials", "禁止抓取：缺少所选访问方式需要的凭据。")
 
     for method in automatic_methods:
-        if method.auth_env is None or method.auth_env in configured_env:
+        if set(method.auth_envs).issubset(configured_env):
             return EligibilityDecision(
                 allowed=True,
                 reason=f"允许抓取：已选择已审核的 {method.kind.value} 访问方式。",

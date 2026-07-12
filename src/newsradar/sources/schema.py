@@ -71,9 +71,22 @@ class AccessMethod(StrictModel):
     url: HttpUrl
     priority: int = Field(ge=1)
     requires_manual_approval: bool = False
-    auth_env: str | None = None
+    auth_envs: tuple[str, ...] = Field(default_factory=tuple)
     headers: dict[str, str] = Field(default_factory=dict)
     params: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_auth_env(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        legacy = data.pop("auth_env", None)
+        if "auth_envs" not in data and legacy is not None:
+            data["auth_envs"] = [legacy]
+        if isinstance(data.get("auth_envs"), str):
+            data["auth_envs"] = [data["auth_envs"]]
+        return data
 
     @field_validator("url")
     @classmethod
@@ -88,12 +101,20 @@ class AccessMethod(StrictModel):
             raise ValueError("Placeholder and .invalid URLs are not audited sources")
         return value
 
-    @field_validator("auth_env")
+    @field_validator("auth_envs")
     @classmethod
-    def validate_auth_env(cls, value: str | None) -> str | None:
-        if value is not None and (not value.isupper() or not value.replace("_", "").isalnum()):
-            raise ValueError("auth_env must be an uppercase environment variable name")
+    def validate_auth_envs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("auth_envs must not contain duplicates")
+        for name in value:
+            if not name.isupper() or not name.replace("_", "").isalnum():
+                raise ValueError("auth_envs must contain uppercase environment variable names")
         return value
+
+    @property
+    def auth_env(self) -> str | None:
+        """Compatibility view for one-credential callers during the v1.1 migration."""
+        return self.auth_envs[0] if len(self.auth_envs) == 1 else None
 
     @model_validator(mode="after")
     def require_manual_approval_for_html(self) -> AccessMethod:

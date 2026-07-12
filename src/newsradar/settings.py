@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     minimax_base_url: str = "https://api.minimax.io"
     minimax_deep_model: str = "MiniMax-M3"
     minimax_fast_model: str = "MiniMax-M2.7-highspeed"
+    github_token: SecretStr | None = None
+    reddit_client_id: SecretStr | None = None
+    reddit_client_secret: SecretStr | None = None
+    youtube_api_key: SecretStr | None = None
 
 
 @lru_cache

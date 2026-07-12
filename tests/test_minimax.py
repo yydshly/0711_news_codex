@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from newsradar.ai.minimax import MiniMaxClient
+from newsradar.ingestion.fetchers.credentials import SettingsCredentials
 from newsradar.settings import Settings
 
 
@@ -75,3 +76,21 @@ async def test_missing_api_key_returns_rule_fallback_without_network() -> None:
 def test_settings_repr_never_contains_api_key() -> None:
     settings = Settings(minimax_api_key="secret-value")
     assert "secret-value" not in repr(settings)
+
+
+def test_settings_credentials_only_unwraps_requested_secret() -> None:
+    settings = Settings(
+        reddit_client_id="reddit-id",
+        reddit_client_secret="reddit-secret",
+        youtube_api_key="youtube-secret",
+    )
+
+    credentials = SettingsCredentials(settings)
+
+    assert credentials.require("REDDIT_CLIENT_SECRET") == "reddit-secret"
+    assert credentials.configured_names() == {
+        "REDDIT_CLIENT_ID",
+        "REDDIT_CLIENT_SECRET",
+        "YOUTUBE_API_KEY",
+    }
+    assert "reddit-secret" not in repr(settings)

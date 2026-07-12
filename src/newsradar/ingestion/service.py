@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -11,6 +10,7 @@ from sqlalchemy.orm import Session
 from newsradar.db.models import FetchRunRecord, SourceAccessMethodRecord, SourceFetchStateRecord
 from newsradar.ingestion.eligibility import evaluate_fetch_eligibility
 from newsradar.ingestion.fetchers.base import FetcherFactory, FetchState
+from newsradar.ingestion.fetchers.credentials import SettingsCredentials
 from newsradar.ingestion.repository import ItemAction, RawItemRepository
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.sources.schema import SourceDefinition
@@ -35,7 +35,11 @@ class IngestionService:
         self, session: Session, factory: FetcherFactory, *, configured_env: set[str] | None = None
     ):
         self.session, self.factory = session, factory
-        self.configured_env = configured_env if configured_env is not None else set(os.environ)
+        self.configured_env = (
+            configured_env
+            if configured_env is not None
+            else SettingsCredentials().configured_names()
+        )
 
     async def fetch_source(
         self,

@@ -187,3 +187,35 @@ def test_requires_credentials_allows_configured_declared_credential_method() -> 
     assert decision.allowed is True
     assert decision.access_method is not None
     assert decision.access_method.auth_env == "NEWS_API_TOKEN"
+
+
+def test_requires_credentials_requires_every_declared_credential() -> None:
+    source = make_source(
+        availability="requires_credentials",
+        access_methods=[
+            {
+                "kind": "rest_api",
+                "url": "https://oauth.reddit.com/r/LocalLLaMA/new",
+                "priority": 1,
+                "auth_envs": ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"],
+            }
+        ],
+    )
+
+    partial = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env={"REDDIT_CLIENT_ID"},
+        hard_block_reason=None,
+    )
+    complete = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env={"REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"},
+        hard_block_reason=None,
+    )
+
+    assert partial.allowed is False
+    assert partial.error_code == "missing_credentials"
+    assert complete.allowed is True
+    assert complete.access_method is not None

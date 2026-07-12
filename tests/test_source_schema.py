@@ -46,6 +46,41 @@ def test_source_definition_accepts_audited_https_source() -> None:
     assert source.coverage_mode.value == "direct"
 
 
+def test_access_method_accepts_legacy_auth_env_as_one_required_credential() -> None:
+    data = valid_source()
+    data["access_methods"][0]["auth_env"] = "GITHUB_TOKEN"
+
+    source = SourceDefinition.model_validate(data)
+
+    assert source.access_methods[0].auth_envs == ("GITHUB_TOKEN",)
+    assert source.access_methods[0].auth_env == "GITHUB_TOKEN"
+
+
+def test_access_method_accepts_multiple_required_credentials() -> None:
+    data = valid_source()
+    data["access_methods"][0]["auth_envs"] = [
+        "REDDIT_CLIENT_ID",
+        "REDDIT_CLIENT_SECRET",
+    ]
+
+    source = SourceDefinition.model_validate(data)
+
+    assert source.access_methods[0].auth_envs == (
+        "REDDIT_CLIENT_ID",
+        "REDDIT_CLIENT_SECRET",
+    )
+    assert source.access_methods[0].auth_env is None
+
+
+def test_access_method_accepts_scalar_auth_envs_for_yaml_compatibility() -> None:
+    data = valid_source()
+    data["access_methods"][0]["auth_envs"] = "GITHUB_TOKEN"
+
+    source = SourceDefinition.model_validate(data)
+
+    assert source.access_methods[0].auth_envs == ("GITHUB_TOKEN",)
+
+
 def test_ingestion_defaults_disabled_for_legacy_source_definition() -> None:
     source = SourceDefinition.model_validate(valid_source())
 
