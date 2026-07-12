@@ -166,7 +166,7 @@ class FakeDashboardService:
                     url="https://feeds.example/openai-python",
                     priority=1,
                     requires_manual_approval=False,
-                    auth_env="GITHUB_TOKEN",
+                    auth_envs=("GITHUB_TOKEN",),
                 ),
                 AccessMethodView(
                     kind="html",
@@ -174,7 +174,7 @@ class FakeDashboardService:
                     url="https://github.example/openai-python",
                     priority=2,
                     requires_manual_approval=False,
-                    auth_env=None,
+                    auth_envs=(),
                 ),
             ),
             risk=RiskView(

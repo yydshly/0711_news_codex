@@ -134,6 +134,7 @@ class SourceAccessMethodRecord(Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
     requires_manual_approval: Mapped[bool] = mapped_column(default=False)
     auth_env: Mapped[str | None] = mapped_column(String(120))
+    auth_envs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     headers: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     params: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
 

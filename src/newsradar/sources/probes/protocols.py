@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from urllib.parse import quote
 
 import httpx
@@ -40,7 +39,7 @@ class HackerNewsProbe(JsonApiProbe):
 class YouTubeProbe(JsonApiProbe):
     async def _request(self, method):
         params = dict(method.params)
-        params["key"] = os.environ[method.auth_env or "YOUTUBE_API_KEY"]
+        params["key"] = self.credentials.require("YOUTUBE_API_KEY")
         return await self.client.get(
             str(method.url),
             headers={"User-Agent": "NewsCodexSourceProbe/0.1 (+local audited registry)"},
@@ -100,7 +99,10 @@ class BlueskyProbe(JsonApiProbe):
 
 class RedditProbe(JsonApiProbe):
     async def probe(self, source, method):
-        if not os.environ.get("REDDIT_CLIENT_ID") or not os.environ.get("REDDIT_CLIENT_SECRET"):
+        try:
+            self.credentials.require("REDDIT_CLIENT_ID")
+            self.credentials.require("REDDIT_CLIENT_SECRET")
+        except (KeyError, ValueError):
             started = utcnow()
             return self._result(
                 source,
@@ -114,8 +116,8 @@ class RedditProbe(JsonApiProbe):
         return await super().probe(source, method)
 
     async def _request(self, method):
-        client_id = os.environ["REDDIT_CLIENT_ID"]
-        secret = os.environ["REDDIT_CLIENT_SECRET"]
+        client_id = self.credentials.require("REDDIT_CLIENT_ID")
+        secret = self.credentials.require("REDDIT_CLIENT_SECRET")
         token_response = await self.client.post(
             "https://www.reddit.com/api/v1/access_token",
             auth=(client_id, secret),

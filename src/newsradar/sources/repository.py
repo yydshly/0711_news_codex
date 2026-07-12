@@ -90,6 +90,7 @@ class SourceRepository:
                         priority=method.priority,
                         requires_manual_approval=method.requires_manual_approval,
                         auth_env=method.auth_env,
+                        auth_envs=list(method.auth_envs),
                         headers=method.headers,
                         params=method.params,
                     )

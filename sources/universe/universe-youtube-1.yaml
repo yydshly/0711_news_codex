@@ -1,10 +1,10 @@
-id: universe-youtube-1
-name: YouTube primary
+id: openai-youtube
+name: OpenAI YouTube
 provider_id: youtube
 target_type: account
 availability: requires_credentials
-coverage_mode: catalog_only
-official_identity_url: https://www.youtube.com/
+coverage_mode: direct
+official_identity_url: https://www.youtube.com/@OpenAI
 reviewed_at: '2026-07-11'
 unlock_requirements:
 - Unlock official YouTube access
@@ -21,10 +21,17 @@ topics:
 authority_score: 2
 poll_interval_minutes: 60
 access_methods:
-- kind: html
-  url: https://www.youtube.com/
+- kind: rest_api
+  url: https://www.googleapis.com/youtube/v3/search
   priority: 1
-  requires_manual_approval: true
+  auth_envs:
+  - YOUTUBE_API_KEY
+  params:
+    part: snippet
+    channelId: UCXZCJLdBC09xxGZ6gcdrc6A
+    order: date
+    type: video
+    maxResults: '5'
 expected_fields:
 - title
 - canonical_url
@@ -39,5 +46,4 @@ risk:
   evidence:
   - https://developers.google.com/youtube/v3
   - https://www.youtube.com/static?template=terms
-  hard_block_reason: requires_credentials
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
+notes: 'Official YouTube Data API for the verified OpenAI channel. Fallback: no additional audited method.'

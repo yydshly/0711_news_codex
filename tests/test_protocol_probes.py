@@ -9,6 +9,14 @@ from newsradar.sources.probes.factory import ProbeFactory
 from .test_probes import source_with
 
 
+class Credentials:
+    def __init__(self, values: dict[str, str]):
+        self.values = values
+
+    def require(self, name: str) -> str:
+        return self.values[name]
+
+
 @pytest.mark.asyncio
 async def test_hackernews_probe_fetches_story_details() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -46,8 +54,7 @@ async def test_hackernews_probe_fetches_story_details() -> None:
 
 
 @pytest.mark.asyncio
-async def test_youtube_probe_normalizes_playlist_items(monkeypatch) -> None:
-    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
+async def test_youtube_probe_normalizes_playlist_items() -> None:
 
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["key"] == "test-key"
@@ -81,7 +88,7 @@ async def test_youtube_probe_normalizes_playlist_items(monkeypatch) -> None:
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = (
-            await ProbeFactory(client)
+            await ProbeFactory(client, credentials=Credentials({"YOUTUBE_API_KEY": "test-key"}))
             .create(source.access_methods[0])
             .probe(source, source.access_methods[0])
         )

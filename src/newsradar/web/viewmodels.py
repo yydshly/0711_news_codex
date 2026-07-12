@@ -85,7 +85,7 @@ class AccessMethodView:
     url: str
     priority: int
     requires_manual_approval: bool
-    auth_env: str | None
+    auth_envs: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

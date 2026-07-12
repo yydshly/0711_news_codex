@@ -141,3 +141,18 @@ def test_raw_item_ingestion_upgrade_preserves_0002_history(tmp_path: Path) -> No
         assert connection.execute(
             text("SELECT payload FROM raw_items WHERE external_id = '42'")
         ).scalar_one() == '{"legacy": true}'
+
+
+def test_v1_1_closure_migration_adds_multi_credential_storage(tmp_path: Path) -> None:
+    database_path = tmp_path / "closure.db"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path.as_posix()}")
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(config.get_main_option("sqlalchemy.url"))
+    with engine.connect() as connection:
+        access_methods = inspect(connection).get_columns("source_access_methods")
+        columns = {column["name"] for column in access_methods}
+
+    assert "auth_envs" in columns

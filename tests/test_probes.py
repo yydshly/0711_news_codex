@@ -13,6 +13,14 @@ from newsradar.sources.schema import AccessMethod, SourceDefinition
 from .test_source_schema import valid_source
 
 
+class Credentials:
+    def __init__(self, values: dict[str, str]):
+        self.values = values
+
+    def require(self, name: str) -> str:
+        return self.values[name]
+
+
 def source_with(method: dict, expected_fields: list[str] | None = None) -> SourceDefinition:
     data = valid_source()
     data["access_methods"] = [method]
@@ -55,8 +63,7 @@ async def test_rss_probe_reports_freshness_completeness_and_cache_headers() -> N
 
 
 @pytest.mark.asyncio
-async def test_probe_returns_blocked_when_required_credential_is_missing(monkeypatch) -> None:
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+async def test_probe_returns_blocked_when_required_credential_is_missing() -> None:
     source = source_with(
         {
             "kind": "rest_api",
@@ -67,7 +74,7 @@ async def test_probe_returns_blocked_when_required_credential_is_missing(monkeyp
     )
     async with httpx.AsyncClient() as client:
         result = (
-            await ProbeFactory(client)
+            await ProbeFactory(client, credentials=Credentials({}))
             .create(source.access_methods[0])
             .probe(source, source.access_methods[0])
         )

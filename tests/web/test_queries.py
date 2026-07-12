@@ -151,7 +151,7 @@ def test_details_contain_audited_fields_but_no_secret_values(query_service):
 
     target = query_service.target_detail("x-openai")
     assert target is not None
-    assert target.access_methods[0].auth_env == "X_API_KEY"
+    assert target.access_methods[0].auth_envs == ("X_API_KEY",)
     assert "headers" not in target.access_methods[0].__dataclass_fields__
     assert "secret-token-value" not in repr(target)
     assert target.risk is not None

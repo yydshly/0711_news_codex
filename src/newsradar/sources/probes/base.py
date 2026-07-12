@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -11,6 +10,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from newsradar.credentials import CredentialProvider, SettingsCredentials
 from newsradar.sources.schema import AccessMethod, SourceDefinition, SourceStatus
 
 
@@ -120,19 +120,23 @@ def parse_datetime(value: Any) -> datetime | None:
 
 
 class BaseProbe:
-    def __init__(self, client: httpx.AsyncClient):
+    def __init__(
+        self, client: httpx.AsyncClient, credentials: CredentialProvider | None = None
+    ) -> None:
         self.client = client
+        self.credentials = credentials or SettingsCredentials()
 
     async def probe(self, source: SourceDefinition, method: AccessMethod) -> ProbeResult:
         started = utcnow()
-        if method.auth_env and not os.environ.get(method.auth_env):
+        missing = self._missing_credentials(method)
+        if missing:
             return self._result(
                 source,
                 method,
                 started,
                 ProbeOutcome.BLOCKED,
                 SourceStatus.CANDIDATE,
-                f"Required credential {method.auth_env} is not configured",
+                f"Required credential {missing} is not configured",
                 error_code="missing_credential",
             )
         try:
@@ -188,12 +192,20 @@ class BaseProbe:
     async def _request(self, method: AccessMethod) -> httpx.Response:
         headers = {"User-Agent": "NewsCodexSourceProbe/0.1 (+local audited registry)"}
         headers.update(method.headers)
-        if method.auth_env:
-            headers["Authorization"] = f"Bearer {os.environ[method.auth_env]}"
+        if len(method.auth_envs) == 1:
+            headers["Authorization"] = f"Bearer {self.credentials.require(method.auth_envs[0])}"
         request_kwargs: dict[str, Any] = {"headers": headers, "follow_redirects": True}
         if method.params:
             request_kwargs["params"] = method.params
         return await self.client.get(str(method.url), **request_kwargs)
+
+    def _missing_credentials(self, method: AccessMethod) -> str | None:
+        for name in method.auth_envs:
+            try:
+                self.credentials.require(name)
+            except (KeyError, ValueError):
+                return name
+        return None
 
     async def parse(
         self,

@@ -16,6 +16,9 @@ access_methods:
 - kind: rest_api
   url: https://oauth.reddit.com/r/MachineLearning/new
   priority: 1
+  auth_envs:
+  - REDDIT_CLIENT_ID
+  - REDDIT_CLIENT_SECRET
   params:
     limit: '5'
 expected_fields:

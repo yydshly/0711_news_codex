@@ -669,7 +669,7 @@ class DashboardQueryService:
             url=record.url,
             priority=record.priority,
             requires_manual_approval=record.requires_manual_approval,
-            auth_env=record.auth_env,
+            auth_envs=tuple(record.auth_envs or ([record.auth_env] if record.auth_env else [])),
         )
 
     @staticmethod
