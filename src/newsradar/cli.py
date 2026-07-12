@@ -246,7 +246,21 @@ def run_worker(
     processed_count = 0
     while True:
         with create_session() as session:
-            processed = Worker(OperationRepository(session), identifier).run_once(handler)
+            def guard(lease):
+                # This separate session is deliberate: the production handler owns its
+                # own DB session while doing network I/O, so the lease can be renewed
+                # without sharing a SQLAlchemy Session across threads.
+                with create_session() as monitor_session:
+                    monitor = OperationRepository(monitor_session)
+                    renewed = monitor.renew_lease(lease)
+                    return renewed and not monitor.is_cancel_requested(lease)
+
+            processed = Worker(
+                OperationRepository(session),
+                identifier,
+                lease_guard=guard,
+                monitor_interval_seconds=15,
+            ).run_once(handler)
         if processed:
             processed_count += 1
         if once:

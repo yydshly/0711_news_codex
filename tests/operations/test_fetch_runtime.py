@@ -125,3 +125,57 @@ def test_worker_marks_unknown_fetch_source_failed_without_retry() -> None:
         assert record.status == OperationStatus.FAILED
         assert record.attempt_count == 1
         assert record.error_code == "unknown_source"
+
+
+def test_fetch_worker_does_not_retry_credential_or_client_errors() -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+
+    with _session() as db:
+        operation = OperationRepository(db).enqueue(OperationType.FETCH, {"source_id": "source-a"})
+
+        def execute(source, operation_id, checkpoint):
+            return SourceFetchSummary(
+                source.id,
+                FetchResult(
+                    outcome=FetchOutcome.FAILED,
+                    http_status=403,
+                    error_code="missing_credential",
+                    error_message="credential is absent",
+                ),
+            )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler([_source()], execute)
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert record is not None
+        assert record.status == OperationStatus.FAILED
+        assert record.attempt_count == 1
+
+
+def test_fetch_worker_retries_transport_and_rate_limit_failures() -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+
+    with _session() as db:
+        operation = OperationRepository(db).enqueue(OperationType.FETCH, {"source_id": "source-a"})
+
+        def execute(source, operation_id, checkpoint):
+            return SourceFetchSummary(
+                source.id,
+                FetchResult(
+                    outcome=FetchOutcome.FAILED,
+                    http_status=429,
+                    error_code="rate_limited",
+                    retry_after_seconds=15,
+                ),
+            )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler([_source()], execute)
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert record is not None
+        assert record.status == OperationStatus.QUEUED
+        assert record.attempt_count == 1

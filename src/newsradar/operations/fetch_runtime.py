@@ -9,7 +9,7 @@ from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
 from newsradar.ingestion.schema import FetchOutcome
 from newsradar.ingestion.service import IngestionService, SourceFetchSummary
 from newsradar.operations.repository import OperationLease
-from newsradar.operations.schema import OperationStatus, OperationType
+from newsradar.operations.schema import ErrorCategory, OperationStatus, OperationType
 from newsradar.operations.worker import OperationResult
 from newsradar.sources.schema import SourceDefinition
 
@@ -92,8 +92,41 @@ def _result_from_summary(summary: SourceFetchSummary) -> OperationResult:
         error_code=result.error_code or summary.error_code or "fetch_failed",
         error_message=result.error_message,
         result_summary=summary_data,
-        retryable=True,
+        retryable=_is_retryable_fetch_failure(result),
+        retry_after_seconds=result.retry_after_seconds,
     )
+
+
+def _is_retryable_fetch_failure(result) -> bool:
+    """Retry only temporary transport/server pressure, never policy or bad-input failures."""
+    if result.http_status is not None:
+        if result.http_status in {408, 425, 429} or result.http_status >= 500:
+            return True
+        if 400 <= result.http_status < 500:
+            return False
+    if result.error_category in {
+        ErrorCategory.VALIDATION,
+        ErrorCategory.ELIGIBILITY,
+        ErrorCategory.AUTHENTICATION,
+        ErrorCategory.PARSING,
+        ErrorCategory.PERSISTENCE,
+        ErrorCategory.CONFLICT,
+    }:
+        return False
+    code = (result.error_code or "").lower()
+    nonretryable_markers = (
+        "credential",
+        "permission",
+        "auth",
+        "invalid",
+        "unknown",
+        "unsupported",
+        "unaudited",
+        "schema",
+        "parse",
+        "malformed",
+    )
+    return not any(marker in code for marker in nonretryable_markers)
 
 
 def _execute_production_fetch(

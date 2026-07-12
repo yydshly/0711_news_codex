@@ -69,8 +69,47 @@ def test_failure_requeues_only_until_third_attempt_then_is_terminal() -> None:
             repository.finish_attempt(lease, OperationStatus.FAILED, error_message="Bearer secret")
             if number < 3:
                 assert db.get(OperationRunRecord, operation.id).status == OperationStatus.QUEUED  # type: ignore[union-attr]
+                record = db.get(OperationRunRecord, operation.id)
+                assert record is not None
+                record.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+                db.commit()
             else:
                 assert db.get(OperationRunRecord, operation.id).status == OperationStatus.FAILED  # type: ignore[union-attr]
+
+
+def test_retryable_failure_uses_bounded_backoff_and_jitter() -> None:
+    with session() as db:
+        repository = OperationRepository(db, retry_jitter=lambda bound: bound)
+        operation = repository.enqueue(OperationType.FETCH, {})
+        lease = repository.lease_next("worker")
+        assert lease is not None
+        before = datetime.now(UTC)
+
+        assert repository.finish_attempt(lease, OperationStatus.FAILED, retryable=True)
+
+        queued = db.get(OperationRunRecord, operation.id)
+        assert queued is not None
+        assert queued.status == OperationStatus.QUEUED
+        assert queued.next_attempt_at is not None
+        # First retry has a one-second exponential base plus one second of jitter.
+        scheduled = queued.next_attempt_at.replace(tzinfo=UTC)
+        assert scheduled >= before + timedelta(seconds=1.8)
+        assert scheduled <= before + timedelta(seconds=2.2)
+
+
+def test_nonretryable_failure_is_terminal_without_backoff() -> None:
+    with session() as db:
+        repository = OperationRepository(db)
+        operation = repository.enqueue(OperationType.FETCH, {})
+        lease = repository.lease_next("worker")
+        assert lease is not None
+
+        assert repository.finish_attempt(lease, OperationStatus.FAILED, retryable=False)
+
+        failed = db.get(OperationRunRecord, operation.id)
+        assert failed is not None
+        assert failed.status == OperationStatus.FAILED
+        assert failed.next_attempt_at is not None
 
 
 def test_cancel_and_terminal_operations_are_immutable() -> None:

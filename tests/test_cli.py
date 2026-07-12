@@ -205,8 +205,10 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     calls: list[object] = []
 
     class FakeWorker:
-        def __init__(self, repository, worker_id):
+        def __init__(self, repository, worker_id, *, lease_guard, monitor_interval_seconds):
             assert worker_id == "worker-test"
+            assert callable(lease_guard)
+            assert monitor_interval_seconds == 15
 
         def run_once(self, received_handler):
             calls.append(received_handler)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -32,8 +34,11 @@ class OperationLease:
 class OperationRepository:
     """Durable operation queue operations in short, independently committed transactions."""
 
-    def __init__(self, session: Session):
+    def __init__(
+        self, session: Session, *, retry_jitter: Callable[[float], float] | None = None
+    ):
         self.session = session
+        self._retry_jitter = retry_jitter or (lambda bound: random.uniform(0, bound))
 
     def enqueue(
         self,
@@ -80,7 +85,7 @@ class OperationRepository:
             .with_for_update(skip_locked=True)
         )
 
-    def lease_next(self, worker_id: str, lease_seconds: int = 60) -> OperationLease | None:
+    def lease_next(self, worker_id: str, lease_seconds: float = 60) -> OperationLease | None:
         """Atomically claim the oldest ready row and bind one immutable attempt."""
         with self._transaction():
             operation = self.session.scalar(self._next_ready_statement())
@@ -131,7 +136,7 @@ class OperationRepository:
                 operation.operation_type,
             )
 
-    def renew_lease(self, lease: OperationLease, lease_seconds: int = 60) -> bool:
+    def renew_lease(self, lease: OperationLease, lease_seconds: float = 60) -> bool:
         with self._transaction():
             operation = self.session.get(
                 OperationRunRecord, lease.operation_id, with_for_update=True
@@ -144,7 +149,6 @@ class OperationRepository:
                 or attempt is None
                 or operation.status != OperationStatus.RUNNING.value
                 or operation.worker_id != lease.worker_id
-                or operation.cancel_requested_at is not None
             ):
                 return False
             operation.heartbeat_at = func.now()
@@ -168,6 +172,7 @@ class OperationRepository:
         error_message: str | None = None,
         result_summary: dict[str, Any] | None = None,
         retryable: bool = True,
+        retry_after_seconds: float | None = None,
     ) -> bool:
         with self._transaction():
             operation = self.session.get(
@@ -215,7 +220,9 @@ class OperationRepository:
                     worker.current_operation_run_id = None
                 worker.status = "running"
             if final == OperationStatus.QUEUED:
-                operation.next_attempt_at = func.now()
+                operation.next_attempt_at = self._now() + timedelta(
+                    seconds=self._retry_delay_seconds(operation.attempt_count, retry_after_seconds)
+                )
             else:
                 operation.finished_at = now
             self.session.add(
@@ -270,10 +277,18 @@ class OperationRepository:
             self.session.flush()
         return worker
 
-    def _lease_expiry(self, seconds: int):
+    def _lease_expiry(self, seconds: float):
         if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
             return func.now() + timedelta(seconds=seconds)
         return self._now() + timedelta(seconds=seconds)
+
+    def _retry_delay_seconds(self, attempt_number: int, retry_after_seconds: float | None) -> float:
+        """Bound retry pressure while respecting an upstream retry-after hint."""
+        exponential = min(2 ** max(attempt_number - 1, 0), 60.0)
+        retry_after = min(max(retry_after_seconds or 0.0, 0.0), 300.0)
+        base = max(exponential, retry_after)
+        jitter = min(max(self._retry_jitter(base), 0.0), base)
+        return base + jitter
 
     @staticmethod
     def _now() -> datetime:
