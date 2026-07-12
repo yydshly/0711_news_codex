@@ -90,3 +90,20 @@ PostgreSQL ownership drill: acceptance operations 20 and 21 were consumed
 concurrently by workers `pg-acceptance-a` and `pg-acceptance-b`. Both ended
 `succeeded` with `attempt_count=1`, providing live `SKIP LOCKED` ownership
 evidence rather than SQLite-only coverage.
+
+## Same-operation PostgreSQL contention proof
+
+`tests/acceptance/test_postgres_operation_contention.py::test_postgres_competing_workers_claim_one_operation_once_and_write_one_fetch_run`
+uses the configured project-local PostgreSQL. It skips only when that database is
+not configured or unavailable; it never substitutes SQLite. Each execution creates
+a unique source and **one** queued `OperationRun`. The first independent Session is
+paused after it has taken the `FOR UPDATE` row lock. A second independent Worker
+Session then calls the production `OperationRepository.lease_next` for that same
+operation and is skipped by `SKIP LOCKED`. After the first worker is released, the
+test asserts exactly one successful lease/attempt (`attempt_count = 1`) and exactly
+one `fetch_runs` row associated with that same `operation_run_id`. Cleanup removes
+the unique source, operation, attempt, event, fetch run, and worker records.
+
+Operations 20/21 above prove two different operations can run concurrently. This
+controlled test is the separate proof that two workers cannot execute one queued
+operation/source twice.

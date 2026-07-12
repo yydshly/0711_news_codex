@@ -31,3 +31,12 @@ uv run ruff check tests/acceptance src/newsradar/operations
 - 本地验收使用 SQLite 验证状态机和所有权边界；生产 PostgreSQL 的 `FOR UPDATE SKIP LOCKED` 语义另由迁移与真实运行轮次验证。
 - 本报告不虚构网络时延、第三方限流或真实来源成功率；这些指标应写入 `reports/raw-item-ingestion-live-acceptance.md`。
 - 诊断 ZIP 的脱敏逻辑由既有 `tests/test_diagnostics_bundle.py` 覆盖。生成真实诊断包前，应在本地扫描压缩包和轮转日志，确认不存在测试或运行凭据。
+
+## PostgreSQL 同一任务竞争证据
+
+`tests/acceptance/test_postgres_operation_contention.py` 是真实 PostgreSQL 的双
+Session 集成测试。它让第一个 Worker 在 `FOR UPDATE` 锁定一个 queued
+`operation_runs` 行后暂停，再让第二个 Worker 对同一个 operation/source 调用生产
+`lease_next`。第二个 Worker 必须被 `SKIP LOCKED` 跳过；释放第一个 Worker 后，数据库
+只能保留一次 attempt 和一条关联的 fetch run。仅当项目本地 PostgreSQL 未配置或不可用时
+测试会跳过；断言失败不会被当作跳过处理。
