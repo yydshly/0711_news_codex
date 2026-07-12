@@ -252,7 +252,9 @@ class RawItemRepository:
                         )
                     )
                     self.session.flush()
-            except IntegrityError:
+            except IntegrityError as error:
+                if not _is_duplicate_candidate_collision(error):
+                    raise
                 # A concurrent writer may have inserted this immutable candidate
                 # after the existence check. Its unique key makes that equivalent
                 # to the candidate already being present.
@@ -306,3 +308,14 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
+
+
+def _is_duplicate_candidate_collision(error: IntegrityError) -> bool:
+    diagnostic = getattr(error.orig, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    if constraint_name == "duplicate_candidates_raw_item_id_candidate_raw_item_id_match_type_key":
+        return True
+    return (
+        str(error.orig) == "UNIQUE constraint failed: duplicate_candidates.raw_item_id, "
+        "duplicate_candidates.candidate_raw_item_id, duplicate_candidates.match_type"
+    )

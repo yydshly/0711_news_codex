@@ -69,3 +69,14 @@ and idempotent duplicate-candidate creation.
 - GREEN: `uv run pytest tests/ingestion/test_repository.py -q` passed: **13 passed**.
 - Full verification: `uv run pytest` passed: **191 passed, 4 warnings**; `uv run ruff
   check .` passed: **All checks passed**.
+
+## Candidate-error classification follow-up
+
+- Candidate savepoint recovery now accepts only the PostgreSQL unique-constraint name
+  for the duplicate-candidate key, or SQLite's exact message for that same key. Other
+  candidate persistence failures propagate to the configured item-failure path.
+- RED: a trigger-generated non-unique candidate persistence error was silently
+  swallowed and returned an inserted raw item before this change.
+- GREEN: `uv run pytest tests/ingestion/test_repository.py -q` passed: **14 passed**.
+- Full verification: `uv run pytest` passed: **192 passed, 4 warnings**; `uv run ruff
+  check .` passed: **All checks passed**.

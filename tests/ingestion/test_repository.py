@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session
 
@@ -284,7 +285,51 @@ def test_cross_source_near_titles_create_an_idempotent_candidate() -> None:
         assert candidate.score == 0.9
 
 
-def test_candidate_uniqueness_race_does_not_fail_raw_item_upsert() -> None:
+def test_candidate_unique_collision_keeps_one_candidate_and_allows_later_upsert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with make_session() as session:
+        fetch_run_id = prepare(session)
+        repository = RawItemRepository(session)
+        first = repository.upsert(fetch_run_id, "source", item())
+        other_run_id = prepare_other_source(session)
+        second = repository.upsert(other_run_id, "other", item(external_id="other-42"))
+        candidate = session.scalar(
+            select(DuplicateCandidateRecord).where(
+                DuplicateCandidateRecord.match_type == "canonical_url"
+            )
+        )
+        assert candidate is not None
+        original_scalar = session.scalar
+        skipped_existence_check = False
+
+        def scalar_without_existing_candidate(*args: object, **kwargs: object) -> object:
+            nonlocal skipped_existence_check
+            if not skipped_existence_check and "duplicate_candidates" in str(args[0]):
+                skipped_existence_check = True
+                return None
+            return original_scalar(*args, **kwargs)
+
+        monkeypatch.setattr(session, "scalar", scalar_without_existing_candidate)
+        repository._add_candidate(first.raw_item_id, second.raw_item_id, "canonical_url", 1.0)
+        result = repository.upsert(
+            fetch_run_id,
+            "source",
+            item(external_id="later", canonical_url="https://example.com/later"),
+        )
+
+        assert result.action is ItemAction.INSERTED
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(DuplicateCandidateRecord)
+                .where(DuplicateCandidateRecord.match_type == "canonical_url")
+            )
+            == 1
+        )
+
+
+def test_non_unique_candidate_integrity_error_is_not_silently_swallowed() -> None:
     with make_session() as session:
         fetch_run_id = prepare(session)
         repository = RawItemRepository(session)
@@ -292,28 +337,22 @@ def test_candidate_uniqueness_race_does_not_fail_raw_item_upsert() -> None:
         other_run_id = prepare_other_source(session)
         session.execute(
             text(
-                "CREATE TRIGGER duplicate_candidate_race BEFORE INSERT ON duplicate_candidates "
-                "BEGIN "
-                "INSERT INTO duplicate_candidates "
-                "(raw_item_id, candidate_raw_item_id, match_type, score, status) "
-                "VALUES (NEW.raw_item_id, NEW.candidate_raw_item_id, NEW.match_type, "
-                "NEW.score, NEW.status); "
-                "END"
+                "CREATE TRIGGER reject_candidate_write BEFORE INSERT ON duplicate_candidates "
+                "BEGIN SELECT RAISE(ABORT, 'forced candidate write failure'); END"
             )
         )
 
         result = repository.upsert(other_run_id, "other", item(external_id="other-42"))
 
-        assert result.action is ItemAction.INSERTED
-        assert session.scalar(select(func.count()).select_from(RawItemRecord)) == 2
-        assert session.scalar(select(func.count()).select_from(DuplicateCandidateRecord)) == 0
+        assert result == result.__class__(None, ItemAction.FAILED, "write_conflict")
+        assert session.scalar(select(func.count()).select_from(RawItemRecord)) == 1
         assert (
             session.scalar(
                 select(func.count())
                 .select_from(FetchRunItemRecord)
                 .where(FetchRunItemRecord.action == ItemAction.FAILED.value)
             )
-            == 0
+            == 1
         )
 
 
