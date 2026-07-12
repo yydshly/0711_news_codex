@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}系统健康 · News Codex{% endblock %}
+{% block header %}<h1>系统健康</h1>{% endblock %}
+{% block content %}
+<section class="panel">
+  <p class="eyebrow">本机运行诊断</p>
+  <h2>抓取运行状态</h2>
+  <div class="metric-grid">
+    <article class="metric-card"><span>数据库</span><strong>{{ health.database_status }}</strong></article>
+    <article class="metric-card"><span>迁移</span><strong>{{ health.migration_status }}</strong></article>
+    <article class="metric-card"><span>Worker</span><strong>{{ health.worker_status }}</strong></article>
+    <article class="metric-card"><span>排队任务</span><strong>{{ health.queue_depth }}</strong></article>
+  </div>
+  <p>运行中任务：{{ health.current_operation_count }}。诊断包仅记录脱敏后的运行事实和环境变量是否已配置。</p>
+  <form method="post" action="/system/diagnostics"><button type="submit">创建脱敏诊断包</button></form>
+</section>
+<section class="panel"><h2>近期错误类别</h2>
+  {% if health.error_categories %}<ul>{% for code, count in health.error_categories %}<li>{{ code }}：{{ count }}</li>{% endfor %}</ul>{% else %}<p>暂无已归类的失败任务。</p>{% endif %}
+</section>
+{% endblock %}

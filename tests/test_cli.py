@@ -112,6 +112,23 @@ def test_powershell_wrapper_limits_actions_and_delegates_to_cli() -> None:
     assert "Get-ChildItem Env:" not in wrapper
 
 
+def test_diagnostics_create_reports_archive_path(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(
+        "newsradar.cli.collect_diagnostic_snapshot",
+        lambda session: object(),
+    )
+    archive = tmp_path / "diagnostics.zip"
+    monkeypatch.setattr(
+        "newsradar.cli.create_diagnostic_bundle", lambda destination, snapshot: archive
+    )
+
+    result = runner.invoke(app, ["diagnostics", "create", "--destination", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert str(archive) in result.stdout
+
+
 def test_provider_validate_command_reports_count(tmp_path: Path) -> None:
     root = tmp_path / "providers"
     root.mkdir()

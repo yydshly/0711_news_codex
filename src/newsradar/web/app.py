@@ -14,11 +14,14 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from starlette.templating import Jinja2Templates
 
 from newsradar.db.session import create_session
+from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.diagnostics import build_diagnostic_narrative
 from newsradar.web.i18n import zh_label
 from newsradar.web.operation_queries import OperationQueryService
 from newsradar.web.queries import DashboardQueryService
+from newsradar.web.routes.system import build_system_health
+from newsradar.web.security import UnsafeWrite, require_loopback_host, require_same_origin
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
 _WEB_ROOT = Path(__file__).resolve().parent
@@ -438,5 +441,38 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "latest_probe_at": None,
             },
         )
+
+    @app.get("/system", response_class=HTMLResponse)
+    def system_health(request: Request) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                health = build_system_health(session)
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="system.html",
+            context={
+                "health": health,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.post("/system/diagnostics")
+    def create_system_diagnostic(request: Request):  # type: ignore[no-untyped-def]
+        try:
+            require_loopback_host(request.headers.get("host"))
+            require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+        except UnsafeWrite as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        try:
+            with create_session() as session:
+                snapshot = collect_diagnostic_snapshot(session)
+            archive = create_diagnostic_bundle(Path(".local/diagnostics"), snapshot)
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return {"archive": str(archive), "scrubbed": True}
 
     return app

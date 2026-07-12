@@ -9,6 +9,7 @@ import typer
 
 from newsradar.db.models import OperationRunRecord
 from newsradar.db.session import create_session
+from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
 from newsradar.ingestion.service import IngestionService
 from newsradar.local_postgres import (
@@ -36,6 +37,8 @@ app.add_typer(providers_app, name="providers")
 app.add_typer(db_app, name="db")
 operations_app = typer.Typer(help="Inspect and retry durable operations")
 app.add_typer(operations_app, name="operations")
+diagnostics_app = typer.Typer(help="Create scrubbed local runtime diagnostics")
+app.add_typer(diagnostics_app, name="diagnostics")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
@@ -234,6 +237,17 @@ def worker_help() -> None:
 def serve_help() -> None:
     """Serve the web UI (use `web` to run it)."""
     typer.echo("Use `newsradar web` to start the UI server.")
+
+
+@diagnostics_app.command("create")
+def create_diagnostics(
+    destination: Annotated[Path, typer.Option()] = Path(".local/diagnostics"),
+) -> None:
+    """Create a bounded ZIP with scrubbed operational evidence."""
+    with create_session() as session:
+        snapshot = collect_diagnostic_snapshot(session)
+    archive = create_diagnostic_bundle(destination, snapshot)
+    typer.echo(f"Created scrubbed diagnostic bundle: {archive}")
 
 
 @providers_app.command("validate")
