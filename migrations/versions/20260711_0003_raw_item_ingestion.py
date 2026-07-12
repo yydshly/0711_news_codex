@@ -98,6 +98,25 @@ def upgrade() -> None:
         ("error_message", sa.Text()),
     ):
         op.add_column("fetch_runs", sa.Column(name, type_))
+    with op.batch_alter_table("fetch_runs") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_fetch_runs_operation_run_id_operation_runs",
+            "operation_runs",
+            ["operation_run_id"],
+            ["id"],
+        )
+        batch_op.create_foreign_key(
+            "fk_fetch_runs_operation_attempt_id_operation_attempts",
+            "operation_attempts",
+            ["operation_attempt_id"],
+            ["id"],
+        )
+        batch_op.create_foreign_key(
+            "fk_fetch_runs_access_method_id_source_access_methods",
+            "source_access_methods",
+            ["access_method_id"],
+            ["id"],
+        )
 
     for name, type_ in (
         ("original_url", sa.Text()), ("title", sa.Text()), ("authors", sa.JSON()),
@@ -114,6 +133,19 @@ def upgrade() -> None:
         ("last_seen_at", sa.DateTime(timezone=True)),
     ):
         op.add_column("raw_items", sa.Column(name, type_))
+    with op.batch_alter_table("raw_items") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_raw_items_first_seen_run_id_fetch_runs",
+            "fetch_runs",
+            ["first_seen_run_id"],
+            ["id"],
+        )
+        batch_op.create_foreign_key(
+            "fk_raw_items_last_seen_run_id_fetch_runs",
+            "fetch_runs",
+            ["last_seen_run_id"],
+            ["id"],
+        )
     op.create_index("ix_raw_items_source_published_at", "raw_items", ["source_id", "published_at"])
     op.create_index("ix_raw_items_canonical_url_hash", "raw_items", ["canonical_url_hash"])
     op.create_index("ix_raw_items_title_fingerprint", "raw_items", ["title_fingerprint"])

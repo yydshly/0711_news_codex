@@ -34,10 +34,26 @@ def test_fetch_result_is_immutable_and_retains_response_metadata() -> None:
         next_cursor="next",
         items_received=1,
         warnings=("partial metadata",),
+        rate_limit_remaining=9,
+        rate_limit_reset=datetime(2026, 7, 11, 1, tzinfo=UTC),
+        retry_after_seconds=30.0,
         completed_at=datetime(2026, 7, 11, tzinfo=UTC),
     )
 
     assert result.items == (item,)
     assert result.next_cursor == "next"
+    assert result.rate_limit_remaining == 9
+    assert result.rate_limit_reset == datetime(2026, 7, 11, 1, tzinfo=UTC)
+    assert result.retry_after_seconds == 30.0
     with pytest.raises(ValidationError):
         result.outcome = FetchOutcome.FAILED
+
+
+def test_fetch_result_rejects_unknown_error_category() -> None:
+    with pytest.raises(ValidationError):
+        FetchResult(outcome=FetchOutcome.FAILED, error_category="not-a-category")
+
+
+def test_fetch_result_rejects_negative_retry_metadata() -> None:
+    with pytest.raises(ValidationError):
+        FetchResult(outcome=FetchOutcome.FAILED, retry_after_seconds=-1)

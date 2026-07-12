@@ -90,11 +90,35 @@ def test_raw_item_ingestion_upgrade_preserves_0002_history(tmp_path: Path) -> No
     command.upgrade(config, "head")
 
     with engine.connect() as connection:
-        assert "operation_runs" in inspect(connection).get_table_names()
+        inspector = inspect(connection)
+        assert "operation_runs" in inspector.get_table_names()
+        fetch_run_foreign_keys = inspector.get_foreign_keys("fetch_runs")
+        assert {
+            (tuple(foreign_key["constrained_columns"]), foreign_key["referred_table"])
+            for foreign_key in fetch_run_foreign_keys
+        } >= {
+            (("operation_run_id",), "operation_runs"),
+            (("operation_attempt_id",), "operation_attempts"),
+            (("access_method_id",), "source_access_methods"),
+        }
+        raw_item_foreign_keys = inspector.get_foreign_keys("raw_items")
+        assert {
+            (tuple(foreign_key["constrained_columns"]), foreign_key["referred_table"])
+            for foreign_key in raw_item_foreign_keys
+        } >= {
+            (("first_seen_run_id",), "fetch_runs"),
+            (("last_seen_run_id",), "fetch_runs"),
+        }
         payload = connection.execute(
             text("SELECT payload FROM raw_items WHERE external_id = '42'")
         ).scalar_one()
         assert payload == '{"legacy": true}'
-        assert connection.execute(text("SELECT COUNT(*) FROM source_providers")).scalar_one() == 1
-        assert connection.execute(text("SELECT COUNT(*) FROM source_definitions")).scalar_one() == 1
-        assert connection.execute(text("SELECT COUNT(*) FROM source_probe_runs")).scalar_one() == 1
+        assert connection.execute(
+            text("SELECT name FROM source_providers WHERE id = 'independent'")
+        ).scalar_one() == "Independent"
+        assert connection.execute(
+            text("SELECT name FROM source_definitions WHERE id = 'legacy-source'")
+        ).scalar_one() == "Legacy"
+        assert connection.execute(
+            text("SELECT reason FROM source_probe_runs WHERE source_id = 'legacy-source'")
+        ).scalar_one() == "legacy probe"

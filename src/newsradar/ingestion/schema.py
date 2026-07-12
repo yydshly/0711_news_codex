@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
+from newsradar.operations.schema import ErrorCategory
+
 
 class FetchOutcome(StrEnum):
     SUCCEEDED = "succeeded"
@@ -52,7 +54,10 @@ class FetchResult(BaseModel):
     items_skipped: int = 0
     items_failed: int = 0
     warnings: tuple[str, ...] = ()
-    error_category: str | None = None
+    error_category: ErrorCategory | None = None
     error_code: str | None = None
     error_message: str | None = None
+    rate_limit_remaining: int | None = Field(default=None, ge=0)
+    rate_limit_reset: datetime | None = None
+    retry_after_seconds: float | None = Field(default=None, ge=0)
     completed_at: datetime | None = None
