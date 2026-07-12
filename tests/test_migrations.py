@@ -122,3 +122,14 @@ def test_raw_item_ingestion_upgrade_preserves_0002_history(tmp_path: Path) -> No
         assert connection.execute(
             text("SELECT reason FROM source_probe_runs WHERE source_id = 'legacy-source'")
         ).scalar_one() == "legacy probe"
+
+    command.downgrade(config, "20260711_0002")
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+            "20260711_0002"
+        )
+        assert "operation_runs" not in inspect(connection).get_table_names()
+        assert connection.execute(
+            text("SELECT payload FROM raw_items WHERE external_id = '42'")
+        ).scalar_one() == '{"legacy": true}'

@@ -215,22 +215,67 @@ def downgrade() -> None:
     op.drop_index("ix_raw_items_title_fingerprint", table_name="raw_items")
     op.drop_index("ix_raw_items_canonical_url_hash", table_name="raw_items")
     op.drop_index("ix_raw_items_source_published_at", table_name="raw_items")
-    for column in (
-        "last_seen_at", "first_seen_at", "last_seen_run_id", "first_seen_run_id",
-        "canonical_url_hash", "title_fingerprint", "content_hash", "raw_payload",
-        "thread_root_id", "author_handle", "author_account_id", "origin_resolution_status",
-        "discovery_url", "publisher_url", "publisher_name", "item_kind", "engagement",
-        "discussion_url", "source_updated_at", "content_type", "language", "content",
-        "summary", "authors", "title", "original_url",
-    ):
-        op.drop_column("raw_items", column)
-    for column in (
-        "error_message", "error_code", "next_cursor", "items_failed", "items_skipped",
-        "items_unchanged", "items_updated", "items_inserted", "items_received",
-        "last_modified", "etag", "final_url", "http_status", "access_method_id",
-        "operation_attempt_id", "operation_run_id",
-    ):
-        op.drop_column("fetch_runs", column)
+    with op.batch_alter_table("raw_items") as batch_op:
+        batch_op.drop_constraint("fk_raw_items_last_seen_run_id_fetch_runs", type_="foreignkey")
+        batch_op.drop_constraint("fk_raw_items_first_seen_run_id_fetch_runs", type_="foreignkey")
+        for column in (
+            "last_seen_at",
+            "first_seen_at",
+            "last_seen_run_id",
+            "first_seen_run_id",
+            "canonical_url_hash",
+            "title_fingerprint",
+            "content_hash",
+            "raw_payload",
+            "thread_root_id",
+            "author_handle",
+            "author_account_id",
+            "origin_resolution_status",
+            "discovery_url",
+            "publisher_url",
+            "publisher_name",
+            "item_kind",
+            "engagement",
+            "discussion_url",
+            "source_updated_at",
+            "content_type",
+            "language",
+            "content",
+            "summary",
+            "authors",
+            "title",
+            "original_url",
+        ):
+            batch_op.drop_column(column)
+    with op.batch_alter_table("fetch_runs") as batch_op:
+        batch_op.drop_constraint(
+            "fk_fetch_runs_access_method_id_source_access_methods", type_="foreignkey"
+        )
+        batch_op.drop_constraint(
+            "fk_fetch_runs_operation_attempt_id_operation_attempts", type_="foreignkey"
+        )
+        batch_op.drop_constraint(
+            "fk_fetch_runs_operation_run_id_operation_runs", type_="foreignkey"
+        )
+        for column in (
+            "error_message",
+            "error_code",
+            "next_cursor",
+            "items_failed",
+            "items_skipped",
+            "items_unchanged",
+            "items_updated",
+            "items_inserted",
+            "items_received",
+            "last_modified",
+            "etag",
+            "final_url",
+            "http_status",
+            "access_method_id",
+            "operation_attempt_id",
+            "operation_run_id",
+        ):
+            batch_op.drop_column(column)
     op.drop_table("operation_events")
     op.drop_table("operation_attempts")
     op.drop_index("ix_operation_runs_lease_expires_at", table_name="operation_runs")
