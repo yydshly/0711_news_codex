@@ -4,7 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from newsradar.ingestion.schema import NormalizedRawItem
+from newsradar.ingestion.schema import FetchOutcome, NormalizedRawItem
 from newsradar.sources.schema import AccessMethod, SourceDefinition
 
 from .base import FetchState, HttpPolicy, public_headers, response_result
