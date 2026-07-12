@@ -4,7 +4,8 @@ Date: 2026-07-12
 
 Verified code head: `e6ab5a871a968f2b602cb0510dd5cf22aac23604`
 
-Report snapshot commit: `REPORT_SNAPSHOT_COMMIT` (report-only child of the verified code head).
+Report snapshot commit: `7bd83ca40340bebd1ecf4951033452223f40d146` (report-only child of
+the verified code head).
 A metadata-only successor records that snapshot hash because a Git commit cannot embed its own
 object ID in its contents.
 
