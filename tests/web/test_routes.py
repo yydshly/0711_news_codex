@@ -283,12 +283,14 @@ def client(fake_service: FakeDashboardService) -> Iterator[TestClient]:
         yield test_client
 
 
-def test_root_renders_chinese_read_only_shell(client: TestClient):
+def test_root_renders_chinese_operational_shell(client: TestClient):
     response = client.get("/")
 
     assert response.status_code == 200
     assert "总览指挥台" in response.text
-    assert "只读本机模式" in response.text
+    assert "浏览页面不会发起网络抓取" in response.text
+    assert "抓取、取消、重试和重复候选裁决会写入数据库" in response.text
+    assert "只读本机模式" not in response.text
     assert 'class="skip-link"' in response.text
     assert "<aside" in response.text
     assert "<nav" in response.text

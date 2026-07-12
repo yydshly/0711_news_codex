@@ -101,7 +101,7 @@ def test_postgres_competing_workers_claim_one_operation_once_and_write_one_fetch
             )
             operation_id = operation.id
 
-        def execute(_source, claimed_operation_id, checkpoint):
+        def execute(_source, claimed_operation_id, checkpoint, requested_scope):
             checkpoint("before_local_fetch_run")
             with Session(engine) as fetch_session:
                 fetch_run = FetchRunRecord(

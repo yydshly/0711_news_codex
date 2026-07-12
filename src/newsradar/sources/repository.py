@@ -53,8 +53,8 @@ class SourceRepository:
                 created += 1
             else:
                 updated += 1
-                current.access_methods.clear()
-                self.session.flush()
+
+            existing_methods = {method.priority: method for method in current.access_methods}
 
             current.name = source.name
             current.provider_id = source.provider_id
@@ -83,18 +83,20 @@ class SourceRepository:
             current.definition_hash = definition_hash
 
             for method in source.access_methods:
-                current.access_methods.append(
-                    SourceAccessMethodRecord(
-                        kind=method.kind.value,
-                        url=str(method.url),
-                        priority=method.priority,
-                        requires_manual_approval=method.requires_manual_approval,
-                        auth_env=method.auth_env,
-                        auth_envs=list(method.auth_envs),
-                        headers=method.headers,
-                        params=method.params,
-                    )
-                )
+                record = existing_methods.pop(method.priority, None)
+                if record is None:
+                    record = SourceAccessMethodRecord(priority=method.priority)
+                    current.access_methods.append(record)
+                record.kind = method.kind.value
+                record.url = str(method.url)
+                record.requires_manual_approval = method.requires_manual_approval
+                record.auth_env = method.auth_env
+                record.auth_envs = list(method.auth_envs)
+                record.headers = method.headers
+                record.params = method.params
+
+            for obsolete in existing_methods.values():
+                current.access_methods.remove(obsolete)
 
             self.session.add(
                 SourceDefinitionVersion(

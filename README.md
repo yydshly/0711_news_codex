@@ -37,6 +37,7 @@ uv run newsradar db init
 uv run newsradar db start
 uv run newsradar db status
 uv run newsradar db stop
+uv run newsradar db repair
 
 # Equivalent PowerShell wrapper
 .\scripts\postgres.ps1 -Action status
@@ -59,12 +60,25 @@ uv run newsradar db start
 uv run alembic upgrade head
 uv run newsradar providers sync --root providers
 uv run newsradar sources sync --root sources
-uv run newsradar web
+uv run newsradar serve
 ```
 
-Open `http://127.0.0.1:8765`. The dashboard is a local, read-only view of PostgreSQL: browsing it
-does not sync definitions, run probes, change source status, or write probe history. Launching and
-browsing the dashboard does not call MiniMax or any other model API.
+Open `http://127.0.0.1:8765`. `serve` starts the Web UI and the durable Worker together and is the
+recommended daily runtime. Browsing pages does not fetch external content. Fetch enqueue, cancel,
+retry, duplicate review, and diagnostic bundle actions write audited local state; only the Worker
+performs source network requests. Launching and browsing the dashboard does not call MiniMax.
+
+Use the individual modes for diagnosis:
+
+```powershell
+uv run newsradar web
+uv run newsradar worker --once
+uv run newsradar worker --forever
+uv run newsradar fetch hackernews-top --root sources --no-wait
+```
+
+If only `web` is running, fetch requests remain queued until a Worker starts. `db repair` repairs
+only deterministic partial local states; it never deletes `.local/postgres` or its logs.
 
 The dashboard uses these terms deliberately:
 
@@ -130,7 +144,7 @@ network fetch but does not persist raw items or cursor state:
 uv run newsradar fetch bluesky-bsky --root sources --dry-run --max-items 1
 uv run newsradar fetch mastodon-mastodon --root sources --dry-run --max-items 1
 uv run newsradar fetch google-news-ai --root sources --dry-run --max-items 1
-uv run newsradar fetch gdelt-ai --root sources --dry-run --max-items 1
+uv run newsradar fetch gdelt-ai --root sources --dry-run --max-items 1 --one-off
 ```
 
 Public social accounts provide discovery, engagement, and context only. Google News, GDELT, and
@@ -143,6 +157,22 @@ Operational logs bind a correlation ID to each operation and redact credentials 
 payloads. Record endpoint status, item counts, and error codes—not feed bodies or API responses—in
 run reports.
 
+GDELT 默认不进入常规抓取。它当前标记为 `degraded`，只保留发现能力、人工探测和明确确认后的
+`--one-off` 路径，不能作为唯一事实来源。
+
+## Credentials and risk
+
+Credentials live only in the Git-ignored `.env`. The UI shows variable names and whether each is
+configured, never the values.
+
+- `GITHUB_TOKEN`: optional read-only token for higher GitHub API limits; grant no write scopes.
+- `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`: an official OAuth application pair; revocation,
+  policy, rate-limit, and account-approval risks remain.
+- `YOUTUBE_API_KEY`: a Google Cloud project key subject to quota and billing-project policy; restrict
+  it to the YouTube Data API and local use where possible.
+
+Never copy keys into YAML, reports, diagnostics, logs, screenshots, commits, or issue text.
+
 ## MiniMax
 
 The constrained adapter supports:
@@ -153,6 +183,9 @@ The constrained adapter supports:
 MiniMax is optional in phase one. Without `MINIMAX_API_KEY`, deterministic rules remain usable.
 All source content is marked as untrusted, tool use is disabled, responses are validated with
 Pydantic, and invalid JSON gets at most one repair attempt.
+
+MiniMax 适配器尚未接入 RawItem v1.1。当前抓取、来源健康、资格判断、任务控制和重复候选裁决
+不依赖模型，也不会自动生成新闻摘要或推荐。
 
 ## Quality gates
 

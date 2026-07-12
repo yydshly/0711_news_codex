@@ -58,6 +58,26 @@ def test_system_page_is_read_only_and_renders_health(monkeypatch, db_session) ->
     assert "系统健康" in response.text
 
 
+def test_system_page_shows_credential_names_and_configuration_only(
+    monkeypatch, db_session
+) -> None:
+    from newsradar.web import create_app
+
+    class Credentials:
+        def configured_names(self) -> set[str]:
+            return {"GITHUB_TOKEN", "YOUTUBE_API_KEY"}
+
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: nullcontext(db_session))
+    monkeypatch.setattr("newsradar.web.app.SettingsCredentials", Credentials)
+
+    response = TestClient(create_app()).get("/system")
+
+    assert "GITHUB_TOKEN：已配置" in response.text
+    assert "REDDIT_CLIENT_SECRET：未配置" in response.text
+    assert "YOUTUBE_API_KEY：已配置" in response.text
+    assert "secret-value" not in response.text
+
+
 def test_system_diagnostic_post_rejects_non_loopback_host(monkeypatch, db_session) -> None:
     from newsradar.web import create_app
 

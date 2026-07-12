@@ -14,6 +14,10 @@
   <p>运行中任务：{{ health.current_operation_count }}。诊断包仅记录脱敏后的运行事实和环境变量是否已配置。</p>
   <form method="post" action="/system/diagnostics"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">创建脱敏诊断包</button></form>
 </section>
+<section class="panel"><h2>外部来源凭据</h2>
+  <p>这里只显示环境变量名称和配置状态，不读取到页面、不记录也不显示凭据值。</p>
+  <ul>{% for name, status in credential_statuses %}<li>{{ name }}：{{ status }}</li>{% endfor %}</ul>
+</section>
 <section class="panel"><h2>近期错误类别</h2>
   {% if health.error_categories %}<ul>{% for code, count in health.error_categories %}<li>{{ code }}：{{ count }}</li>{% endfor %}</ul>{% else %}<p>暂无已归类的失败任务。</p>{% endif %}
 </section>

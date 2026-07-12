@@ -2,6 +2,12 @@
 
 {% block content %}
 <div class="dashboard-grid">
+  <section class="panel intro-panel" aria-labelledby="runtime-boundary-heading">
+    <p class="eyebrow">查看与操作严格分开</p>
+    <h2 id="runtime-boundary-heading">本地来源雷达运行边界</h2>
+    <p>浏览页面不会发起网络抓取；目录、探测记录、抓取批次和 RawItem 页面只展示 PostgreSQL 中已有的数据。</p>
+    <p>抓取、取消、重试和重复候选裁决会写入数据库。抓取任务入队后仅由 Worker 访问外部来源。</p>
+  </section>
   <section class="metric-grid" aria-label="严格口径指标">
     <a class="metric-card" href="/providers">
       <span>Provider 总数</span><strong>{{ summary.provider_count }}</strong>

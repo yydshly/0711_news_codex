@@ -1,12 +1,14 @@
 from datetime import UTC
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     Base,
+    FetchRunRecord,
     ModelUsageRecord,
+    SourceAccessMethodRecord,
     SourceDefinitionRecord,
     SourceDefinitionVersion,
     SourceProbeRunRecord,
@@ -67,6 +69,39 @@ def test_sync_versions_changed_definition_without_auto_activation() -> None:
         assert current.poll_interval_minutes == 120
         assert current.status == "candidate"
         assert session.scalar(select(func.count()).select_from(SourceDefinitionVersion)) == 2
+
+
+def test_sync_preserves_access_method_referenced_by_fetch_history() -> None:
+    original = SourceDefinition.model_validate(valid_source())
+    changed_data = valid_source()
+    changed_data["poll_interval_minutes"] = 120
+    changed = SourceDefinition.model_validate(changed_data)
+
+    with make_session() as session:
+        session.execute(text("PRAGMA foreign_keys=ON"))
+        repository = SourceRepository(session)
+        repository.sync([original])
+        session.flush()
+        access_method = session.scalar(select(SourceAccessMethodRecord))
+        assert access_method is not None
+        session.add(
+            FetchRunRecord(
+                source_id=original.id,
+                access_method_id=access_method.id,
+                outcome="success",
+            )
+        )
+        session.commit()
+
+        repository.sync([changed])
+        session.commit()
+
+        preserved = session.scalar(select(SourceAccessMethodRecord))
+        fetch_run = session.scalar(select(FetchRunRecord))
+        assert preserved is not None
+        assert fetch_run is not None
+        assert preserved.id == access_method.id
+        assert fetch_run.access_method_id == preserved.id
 
 
 def test_save_probe_result_persists_metrics_without_secrets() -> None:

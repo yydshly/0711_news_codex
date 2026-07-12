@@ -17,6 +17,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
+from newsradar.credentials import SettingsCredentials
 from newsradar.db.models import SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
@@ -653,6 +654,16 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 health = build_system_health(session)
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
+        configured_credentials = SettingsCredentials().configured_names()
+        credential_statuses = tuple(
+            (name, "已配置" if name in configured_credentials else "未配置")
+            for name in (
+                "GITHUB_TOKEN",
+                "REDDIT_CLIENT_ID",
+                "REDDIT_CLIENT_SECRET",
+                "YOUTUBE_API_KEY",
+            )
+        )
         return templates.TemplateResponse(
             request=request,
             name="system.html",
@@ -662,6 +673,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
                 "action_token": issue_action_token(request),
+                "credential_statuses": credential_statuses,
             },
         )
 
