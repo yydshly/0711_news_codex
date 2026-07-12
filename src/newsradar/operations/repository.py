@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session
+
+from newsradar.db.models import (
+    OperationAttemptRecord,
+    OperationEventRecord,
+    OperationRunRecord,
+    WorkerRecord,
+)
+from newsradar.operations.logging import redact
+from newsradar.operations.schema import OperationStatus, OperationType
+
+MAX_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class OperationLease:
+    operation_id: int
+    attempt_id: int
+    attempt_number: int
+    worker_id: str
+    requested_scope: dict[str, Any]
+
+
+class OperationRepository:
+    """Durable operation queue operations; callers own the enclosing transaction."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def enqueue(
+        self,
+        operation_type: OperationType,
+        requested_scope: dict[str, Any],
+        trigger: str = "manual",
+    ) -> OperationRunRecord:
+        record = OperationRunRecord(
+            operation_type=operation_type.value,
+            trigger=trigger,
+            status=OperationStatus.QUEUED.value,
+            requested_scope=requested_scope,
+            result_summary={},
+            attempt_count=0,
+            next_attempt_at=func.now(),
+        )
+        self.session.add(record)
+        self.session.flush()
+        return record
+
+    def _next_ready_statement(self):
+        now = func.now()
+        return (
+            select(OperationRunRecord)
+            .where(
+                OperationRunRecord.attempt_count < MAX_ATTEMPTS,
+                or_(
+                    and_(
+                        OperationRunRecord.status == OperationStatus.QUEUED.value,
+                        or_(
+                            OperationRunRecord.next_attempt_at.is_(None),
+                            OperationRunRecord.next_attempt_at <= now,
+                        ),
+                    ),
+                    and_(
+                        OperationRunRecord.status == OperationStatus.RUNNING.value,
+                        OperationRunRecord.lease_expires_at < now,
+                    ),
+                ),
+            )
+            .order_by(OperationRunRecord.created_at, OperationRunRecord.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+
+    def lease_next(self, worker_id: str, lease_seconds: int = 60) -> OperationLease | None:
+        """Atomically claim the oldest ready row and bind one immutable attempt."""
+        with self.session.begin_nested():
+            operation = self.session.scalar(self._next_ready_statement())
+            if operation is None:
+                return None
+            self._ensure_worker(worker_id)
+            if operation.status == OperationStatus.RUNNING.value:
+                prior = self.session.scalar(
+                    select(OperationAttemptRecord)
+                    .where(OperationAttemptRecord.operation_run_id == operation.id)
+                    .order_by(OperationAttemptRecord.attempt_number.desc())
+                    .limit(1)
+                )
+                if prior is not None:
+                    prior.status = OperationStatus.INTERRUPTED.value
+                    prior.finished_at = self._now()
+            operation.attempt_count += 1
+            operation.status = OperationStatus.RUNNING.value
+            operation.worker_id = worker_id
+            operation.heartbeat_at = func.now()
+            operation.lease_expires_at = self._lease_expiry(lease_seconds)
+            operation.started_at = operation.started_at or func.now()
+            operation.updated_at = func.now()
+            attempt = OperationAttemptRecord(
+                operation_run_id=operation.id,
+                worker_id=worker_id,
+                attempt_number=operation.attempt_count,
+                status=OperationStatus.RUNNING.value,
+                claimed_at=self._now(),
+                heartbeat_at=func.now(),
+                lease_expires_at=self._lease_expiry(lease_seconds),
+            )
+            self.session.add(attempt)
+            self.session.flush()
+            return OperationLease(
+                operation.id,
+                attempt.id,
+                attempt.attempt_number,
+                worker_id,
+                operation.requested_scope,
+            )
+
+    def renew_lease(self, lease: OperationLease, lease_seconds: int = 60) -> bool:
+        with self.session.begin_nested():
+            operation = self.session.get(
+                OperationRunRecord, lease.operation_id, with_for_update=True
+            )
+            attempt = self.session.get(
+                OperationAttemptRecord, lease.attempt_id, with_for_update=True
+            )
+            if (
+                operation is None
+                or attempt is None
+                or operation.status != OperationStatus.RUNNING.value
+                or operation.worker_id != lease.worker_id
+                or operation.cancel_requested_at is not None
+            ):
+                return False
+            operation.heartbeat_at = func.now()
+            operation.lease_expires_at = self._lease_expiry(lease_seconds)
+            operation.updated_at = func.now()
+            attempt.heartbeat_at = func.now()
+            attempt.lease_expires_at = self._lease_expiry(lease_seconds)
+            return True
+
+    def finish_attempt(
+        self,
+        lease: OperationLease,
+        status: OperationStatus,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        result_summary: dict[str, Any] | None = None,
+    ) -> bool:
+        with self.session.begin_nested():
+            operation = self.session.get(
+                OperationRunRecord, lease.operation_id, with_for_update=True
+            )
+            attempt = self.session.get(
+                OperationAttemptRecord, lease.attempt_id, with_for_update=True
+            )
+            if (
+                operation is None
+                or attempt is None
+                or operation.status != OperationStatus.RUNNING.value
+            ):
+                return False
+            if (
+                operation.worker_id != lease.worker_id
+                or attempt.status != OperationStatus.RUNNING.value
+            ):
+                return False
+            final = status
+            if operation.cancel_requested_at is not None:
+                final = OperationStatus.CANCELLED
+            elif status == OperationStatus.FAILED and operation.attempt_count < MAX_ATTEMPTS:
+                final = OperationStatus.QUEUED
+            now = self._now()
+            attempt.status = status.value if final == OperationStatus.QUEUED else final.value
+            attempt.finished_at = now
+            attempt.error_code = error_code
+            attempt.error_message = redact(error_message or "") or None
+            operation.status = final.value
+            operation.error_code = error_code
+            operation.error_message = redact(error_message or "") or None
+            operation.result_summary = result_summary or operation.result_summary
+            operation.lease_expires_at = None
+            operation.worker_id = None
+            operation.updated_at = func.now()
+            if final == OperationStatus.QUEUED:
+                operation.next_attempt_at = func.now()
+            else:
+                operation.finished_at = now
+            self.session.add(
+                OperationEventRecord(
+                    operation_run_id=operation.id,
+                    attempt_id=attempt.id,
+                    level="error" if status == OperationStatus.FAILED else "info",
+                    phase="finished",
+                    message=redact(error_message or final.value),
+                    details={},
+                    error_code=error_code,
+                )
+            )
+            return True
+
+    def request_cancel(self, operation_id: int) -> bool:
+        with self.session.begin_nested():
+            operation = self.session.get(OperationRunRecord, operation_id, with_for_update=True)
+            if operation is None or operation.status in {
+                item.value for item in OperationStatus.terminal()
+            }:
+                return False
+            operation.cancel_requested_at = self._now()
+            if operation.status == OperationStatus.QUEUED.value:
+                operation.status = OperationStatus.CANCELLED.value
+                operation.finished_at = self._now()
+            operation.updated_at = func.now()
+            return True
+
+    def is_cancel_requested(self, lease: OperationLease) -> bool:
+        operation = self.session.get(OperationRunRecord, lease.operation_id)
+        return operation is None or operation.cancel_requested_at is not None
+
+    def _ensure_worker(self, worker_id: str) -> None:
+        if self.session.get(WorkerRecord, worker_id) is None:
+            self.session.add(
+                WorkerRecord(
+                    worker_id=worker_id,
+                    hostname=worker_id,
+                    started_at=self._now(),
+                    status="running",
+                )
+            )
+            self.session.flush()
+
+    def _lease_expiry(self, seconds: int):
+        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+            return func.now() + timedelta(seconds=seconds)
+        return self._now() + timedelta(seconds=seconds)
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(UTC)
