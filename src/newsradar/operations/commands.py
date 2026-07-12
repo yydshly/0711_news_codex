@@ -70,6 +70,7 @@ class OperationCommandService:
             "versions": versions,
         }
         scope = {
+            "actor": trigger,
             "window_hours": window_hours,
             "algorithm_versions": versions,
             "window_end": window_end.isoformat(),
@@ -98,11 +99,14 @@ class OperationCommandService:
         if operation_type is None or event_id <= 0:
             raise ValueError("invalid event action")
         now = self._utcnow()
+        payload_data = payload or {}
         scope = {
             "event_id": event_id,
-            "payload": payload or {},
+            "payload": payload_data,
+            **{key: value for key, value in payload_data.items() if key != "actor"},
+            "actor": trigger,
             "idempotency_key": f"event-action:{action}:{event_id}:"
-            + sha256(dumps(payload or {}, sort_keys=True).encode()).hexdigest(),
+            + sha256(dumps(payload_data, sort_keys=True).encode()).hexdigest(),
             "deadline_at": (
                 now + timedelta(seconds=self._settings.operation_timeout_seconds)
             ).isoformat(),

@@ -72,3 +72,28 @@ def test_recluster_post_only_enqueues_operation(db_session, monkeypatch):
     operation = db_session.query(OperationRunRecord).one()
     assert operation.operation_type == "event_recluster"
     assert operation.trigger == "web"
+    assert operation.requested_scope["actor"] == "web"
+
+
+def test_event_detail_does_not_render_unsafe_evidence_href(db_session, monkeypatch):
+    from newsradar.db.models import EventItemRecord, RawItemRecord
+
+    _add_event(db_session)
+    raw = RawItemRecord(
+        source_id="github-openai-python",
+        external_id="unsafe-link",
+        canonical_url="javascript:alert(1)",
+        payload={},
+        title="不安全链接",
+    )
+    db_session.add(raw)
+    db_session.flush()
+    db_session.add(EventItemRecord(event_id=41, raw_item_id=raw.id, added_version_number=1))
+    db_session.commit()
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/events/41")
+
+    assert response.status_code == 200
+    assert 'href="javascript:' not in response.text

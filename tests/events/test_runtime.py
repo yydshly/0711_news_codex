@@ -31,6 +31,45 @@ def test_event_action_rejects_unknown_event_id() -> None:
     assert result.retryable is False
 
 
+def test_supported_web_action_is_nonretryable_until_its_mutation_is_implemented() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(EventRecord(id=1, canonical_key="one", status="confirmed"))
+        db.commit()
+
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(1, 1, 1, "worker", {"event_id": 1, "actor": "web"}, "event_recluster"),
+        lambda _: None,
+    )
+
+    assert result.status is OperationStatus.FAILED
+    assert result.error_code == "unsupported_action"
+    assert result.retryable is False
+
+
+def test_merge_validates_both_event_targets_before_returning_unsupported() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(EventRecord(id=1, canonical_key="one", status="confirmed"))
+        db.commit()
+
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1,
+            1,
+            1,
+            "worker",
+            {"event_id": 1, "target_event_id": 2, "actor": "web"},
+            "event_merge",
+        ),
+        lambda _: None,
+    )
+
+    assert result.error_code == "unknown_event"
+
+
 def test_expired_event_pipeline_returns_timeout_without_publishing() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

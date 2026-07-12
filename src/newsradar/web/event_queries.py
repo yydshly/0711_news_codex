@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -44,6 +45,8 @@ class EvidenceRow:
     original_url: str | None
     published_at: datetime | None
     role: str
+    root_evidence_key: str
+    independent: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +54,7 @@ class EventDetailView:
     event: EventRow
     evidence: tuple[EvidenceRow, ...]
     algorithm_version: str
+    model_versions: tuple[str, ...]
     minimax_degraded: bool
 
     @property
@@ -87,12 +91,21 @@ class EventQueryService:
         row = self._event_row(event_id)
         if row is None:
             return None
+        evidence_by_item = {
+            item.get("raw_item_id"): item
+            for item in self._score_breakdown(event_id).get("evidence", ())
+            if isinstance(item, dict) and isinstance(item.get("raw_item_id"), int)
+        }
         evidence = tuple(
             EvidenceRow(
                 title=item.title or "未命名原始证据",
-                original_url=item.original_url or item.canonical_url,
+                original_url=_safe_external_url(item.original_url or item.canonical_url),
                 published_at=item.published_at,
                 role=str((item.raw_payload or {}).get("evidence_role", "未标注")),
+                root_evidence_key=str(
+                    evidence_by_item.get(item.id, {}).get("root_evidence_key", "")
+                ),
+                independent=bool(evidence_by_item.get(item.id, {}).get("independent", False)),
             )
             for item in self.session.scalars(
                 select(RawItemRecord)
@@ -104,16 +117,22 @@ class EventQueryService:
                 .order_by(RawItemRecord.published_at.desc(), RawItemRecord.id.desc())
             )
         )
-        degraded = (
-            self.session.scalar(
-                select(EventModelRunRecord.id).where(
-                    EventModelRunRecord.event_id == event_id,
-                    EventModelRunRecord.algorithm_version.like("%fallback%"),
-                )
+        version = self._current_version(event_id)
+        payload = version.payload if version is not None else {}
+        enrichment = payload.get("enrichment") if isinstance(payload, dict) else None
+        degraded = isinstance(enrichment, dict) and enrichment.get("origin") == "rule_fallback"
+        model_versions = tuple(
+            sorted(
+                {
+                    run.algorithm_version
+                    for run in self.session.scalars(
+                        select(EventModelRunRecord).where(EventModelRunRecord.event_id == event_id)
+                    )
+                }
             )
-            is not None
         )
-        return EventDetailView(row, evidence, "event-intelligence-v1", degraded)
+        algorithm_version = str(self._score_breakdown(event_id).get("rule_version", "unknown"))
+        return EventDetailView(row, evidence, algorithm_version, model_versions, degraded)
 
     def _list(self, filters: dict[str, object]) -> tuple[EventRow, ...]:
         statement = select(EventRecord.id).where(EventRecord.current_version_number > 0)
@@ -138,12 +157,7 @@ class EventQueryService:
         event = self.session.get(EventRecord, event_id)
         if event is None or event.current_version_number <= 0:
             return None
-        version = self.session.scalar(
-            select(EventVersionRecord).where(
-                EventVersionRecord.event_id == event_id,
-                EventVersionRecord.version_number == event.current_version_number,
-            )
-        )
+        version = self._current_version(event_id)
         if version is None:
             return None
         score = self.session.scalar(
@@ -162,3 +176,33 @@ class EventQueryService:
             score.heat if score else 0,
             tuple(str(reason) for reason in breakdown.get("reasons", ())),
         )
+
+    def _current_version(self, event_id: int) -> EventVersionRecord | None:
+        event = self.session.get(EventRecord, event_id)
+        if event is None:
+            return None
+        return self.session.scalar(
+            select(EventVersionRecord).where(
+                EventVersionRecord.event_id == event_id,
+                EventVersionRecord.version_number == event.current_version_number,
+            )
+        )
+
+    def _score_breakdown(self, event_id: int) -> dict:
+        event = self.session.get(EventRecord, event_id)
+        if event is None:
+            return {}
+        score = self.session.scalar(
+            select(EventScoreRecord).where(
+                EventScoreRecord.event_id == event_id,
+                EventScoreRecord.version_number == event.current_version_number,
+            )
+        )
+        return dict(score.breakdown) if score else {}
+
+
+def _safe_external_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    return value if parsed.scheme in {"http", "https"} and parsed.netloc else None

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import EventRecord
+from newsradar.db.models import EventItemRecord, EventRecord
 from newsradar.events.pipeline import EventPipeline
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
@@ -86,19 +87,20 @@ class EventOperationHandler:
                 retryable=True,
             )
         try:
-            exists = session.get(EventRecord, event_id) is not None
+            invalid_result = _validate_event_action(lease, session, event_id)
         finally:
             session.close()
-        if not exists:
-            return OperationResult(
-                status=OperationStatus.FAILED,
-                error_code="unknown_event",
-                error_message=f"Event {event_id} does not exist",
-                retryable=False,
-            )
+        if invalid_result is not None:
+            return invalid_result
         checkpoint("before_event_action")
         return OperationResult(
-            result_summary={"event_id": event_id, "action": lease.operation_type}
+            status=OperationStatus.FAILED,
+            error_code="unsupported_action",
+            error_message=(
+                f"{lease.operation_type} is queued safely but has no worker mutation implementation"
+            ),
+            result_summary={"event_id": event_id, "action": lease.operation_type},
+            retryable=False,
         )
 
 
@@ -129,5 +131,69 @@ def _timeout_result(error: Exception) -> OperationResult:
         status=OperationStatus.FAILED,
         error_code="operation_timeout",
         error_message=str(error),
+        retryable=False,
+    )
+
+
+def _validate_event_action(
+    lease: OperationLease, session: Session, event_id: int
+) -> OperationResult | None:
+    scope = lease.requested_scope
+    if session.get(EventRecord, event_id) is None:
+        return _unknown_event(event_id)
+    if scope.get("actor") != "web":
+        return _invalid_scope("Event actions require actor=web")
+    action = lease.operation_type
+    if action == OperationType.EVENT_MERGE.value:
+        target_event_id = scope.get("target_event_id")
+        if (
+            not isinstance(target_event_id, int)
+            or target_event_id <= 0
+            or target_event_id == event_id
+        ):
+            return _invalid_scope("Merge requires a distinct positive target_event_id")
+        if session.get(EventRecord, target_event_id) is None:
+            return _unknown_event(target_event_id)
+    elif action == OperationType.EVENT_SPLIT.value:
+        member_ids = scope.get("member_ids")
+        if (
+            not isinstance(member_ids, list)
+            or not member_ids
+            or any(not isinstance(item, int) or item <= 0 for item in member_ids)
+        ):
+            return _invalid_scope("Split requires non-empty positive member_ids")
+        active_ids = set(
+            session.scalars(
+                select(EventItemRecord.raw_item_id).where(
+                    EventItemRecord.event_id == event_id,
+                    EventItemRecord.removed_version_number.is_(None),
+                )
+            )
+        )
+        if not set(member_ids).issubset(active_ids):
+            return _invalid_scope("Split members must be active event memberships")
+    elif action not in {
+        OperationType.EVENT_RECLUSTER.value,
+        OperationType.EVENT_ENRICH.value,
+        OperationType.EVENT_EXCLUDE.value,
+    }:
+        return _invalid_scope("Unknown event action")
+    return None
+
+
+def _invalid_scope(message: str) -> OperationResult:
+    return OperationResult(
+        status=OperationStatus.FAILED,
+        error_code="invalid_event_scope",
+        error_message=message,
+        retryable=False,
+    )
+
+
+def _unknown_event(event_id: int) -> OperationResult:
+    return OperationResult(
+        status=OperationStatus.FAILED,
+        error_code="unknown_event",
+        error_message=f"Event {event_id} does not exist",
         retryable=False,
     )

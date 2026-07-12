@@ -61,3 +61,46 @@ def test_detail_exposes_score_and_degradation_state(db_session):
     assert detail is not None
     assert detail.score_reasons == ("多源印证",)
     assert detail.minimax_degraded is False
+
+
+def test_detail_only_exposes_safe_evidence_links_and_evidence_audit_fields(db_session):
+    from newsradar.db.models import EventItemRecord, RawItemRecord
+    from newsradar.web.event_queries import EventQueryService
+
+    record = _event(
+        db_session,
+        event_id=5,
+        status="confirmed",
+        title="安全链接事件",
+        occurred_at=datetime.now(UTC),
+    )
+    source_id = "github-openai-python"
+    raw = RawItemRecord(
+        source_id=source_id,
+        external_id="unsafe-url",
+        canonical_url="javascript:alert(1)",
+        original_url="javascript:alert(1)",
+        payload={},
+        title="不安全链接",
+    )
+    db_session.add(raw)
+    db_session.flush()
+    db_session.add(EventItemRecord(event_id=record.id, raw_item_id=raw.id, added_version_number=1))
+    score = db_session.query(EventScoreRecord).filter_by(event_id=record.id).one()
+    version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
+    version.payload = {"enrichment": {"origin": "rule_fallback"}}
+    score.breakdown = {
+        "reasons": ["多源印证"],
+        "evidence": [
+            {"raw_item_id": raw.id, "root_evidence_key": "root:official", "independent": True}
+        ],
+    }
+    db_session.commit()
+
+    detail = EventQueryService(db_session).get_event(record.id)
+
+    assert detail is not None
+    assert detail.evidence[0].original_url is None
+    assert detail.evidence[0].root_evidence_key == "root:official"
+    assert detail.evidence[0].independent is True
+    assert detail.minimax_degraded is True
