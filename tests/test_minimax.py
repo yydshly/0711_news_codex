@@ -73,6 +73,24 @@ async def test_missing_api_key_returns_rule_fallback_without_network() -> None:
     assert result.confidence == 0.0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ['{"topics":["agents"],"confidence":0.8}', "not json"])
+async def test_model_usage_sink_failure_does_not_block_model_or_fallback(content: str) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_payload(content), request=request)
+
+    def failing_sink(_: ModelUsage) -> None:
+        raise RuntimeError("sink failed: Bearer secret")
+
+    settings = Settings(minimax_api_key="secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await MiniMaxClient(settings, http, failing_sink).infer_source_topics(
+            "Agent research"
+        )
+
+    assert result.confidence in {0.0, 0.8}
+
+
 def test_settings_repr_never_contains_api_key() -> None:
     settings = Settings(minimax_api_key="secret-value")
     assert "secret-value" not in repr(settings)

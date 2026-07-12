@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -115,6 +116,29 @@ async def test_invalid_json_repairs_once_then_falls_back() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "payload",
+    [[], None, {"choices": None}, {"choices": {}}, {"choices": [None]}],
+)
+async def test_malformed_response_shapes_repair_once_then_fall_back(payload: object) -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=payload, request=request)
+
+    settings = Settings(minimax_api_key="secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await EventMiniMaxAdapter(settings, http).enrich_event(
+            candidate_context(), rule_fallback()
+        )
+
+    assert calls == 2
+    assert result.origin == "rule_fallback"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "failure",
     [
         httpx.TimeoutException("timed out"),
@@ -196,3 +220,66 @@ async def test_only_conflict_explanations_use_deep_model() -> None:
         result = await EventMiniMaxAdapter(settings, http).explain_conflict(candidate_context())
 
     assert result.summary == "Sources disagree"
+
+
+@pytest.mark.asyncio
+async def test_adapter_limits_concurrent_model_calls() -> None:
+    active = 0
+    maximum_active = 0
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await release.wait()
+        active -= 1
+        return httpx.Response(
+            200,
+            json=response_payload(
+                '{"zh_title":"title","zh_summary":"summary","why_it_matters":"matters",'
+                '"limitations":[],"origin":"model","confidence":0.9}'
+            ),
+            request=request,
+        )
+
+    settings = Settings(minimax_api_key="secret", event_model_max_concurrency=2)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        adapter = EventMiniMaxAdapter(settings, http)
+        tasks = [
+            asyncio.create_task(adapter.enrich_event(candidate_context(), rule_fallback()))
+            for _ in range(4)
+        ]
+        while active < 2:
+            await asyncio.sleep(0)
+        assert maximum_active == 2
+        release.set()
+        await asyncio.gather(*tasks)
+
+    assert maximum_active == 2
+
+
+def test_adapter_rejects_nonpositive_concurrency() -> None:
+    with pytest.raises(ValueError, match="event_model_max_concurrency"):
+        EventMiniMaxAdapter(Settings(event_model_max_concurrency=0), httpx.AsyncClient())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [response_payload(
+    '{"zh_title":"title","zh_summary":"summary","why_it_matters":"matters",'
+    '"limitations":[],"origin":"model","confidence":0.9}'
+), response_payload("not json")])
+async def test_event_run_sink_failure_does_not_block_model_or_fallback(response: dict) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response, request=request)
+
+    def failing_sink(_: object) -> None:
+        raise RuntimeError("sink failed: Bearer secret")
+
+    settings = Settings(minimax_api_key="secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await EventMiniMaxAdapter(settings, http, failing_sink).enrich_event(
+            candidate_context(), rule_fallback()
+        )
+
+    assert result.origin in {"model", "rule_fallback"}

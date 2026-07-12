@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TypeVar
 
 import httpx
+from pydantic import BaseModel
 
 from newsradar.ai.minimax import UNTRUSTED_PREAMBLE, MiniMaxClient, ModelUsage
 from newsradar.events.schema import (
@@ -28,6 +31,7 @@ class EventModelRun:
 
 
 EventModelRunSink = Callable[[EventModelRun], None]
+T = TypeVar("T", bound=BaseModel)
 
 
 class EventMiniMaxAdapter:
@@ -39,8 +43,11 @@ class EventMiniMaxAdapter:
         http: httpx.AsyncClient,
         event_run_sink: EventModelRunSink | None = None,
     ) -> None:
+        if settings.event_model_max_concurrency <= 0:
+            raise ValueError("event_model_max_concurrency must be positive")
         self.settings = settings
         self.event_run_sink = event_run_sink
+        self._semaphore = asyncio.Semaphore(settings.event_model_max_concurrency)
         self.client = MiniMaxClient(settings, http, self._record_usage)
 
     async def enrich_event(
@@ -52,7 +59,7 @@ class EventMiniMaxAdapter:
             candidate,
             EventEnrichment,
         )
-        result = await self.client.structured(
+        result = await self._structured_call(
             "event_enrichment",
             self.settings.minimax_fast_model,
             prompt,
@@ -80,7 +87,7 @@ class EventMiniMaxAdapter:
             f"Candidate A:\n{self._context(left)}\nCandidate B:\n{self._context(right)}\n"
             f"JSON schema: {json.dumps(PairSemanticDecision.model_json_schema())}"
         )
-        result = await self.client.structured(
+        result = await self._structured_call(
             "event_pair_comparison",
             self.settings.minimax_fast_model,
             prompt,
@@ -98,7 +105,7 @@ class EventMiniMaxAdapter:
             candidate,
             EntitySuggestions,
         )
-        result = await self.client.structured(
+        result = await self._structured_call(
             "event_entity_suggestions",
             self.settings.minimax_fast_model,
             prompt,
@@ -119,7 +126,7 @@ class EventMiniMaxAdapter:
             candidate,
             ConflictExplanation,
         )
-        result = await self.client.structured(
+        result = await self._structured_call(
             "event_conflict_explanation",
             self.settings.minimax_deep_model,
             prompt,
@@ -131,7 +138,29 @@ class EventMiniMaxAdapter:
 
     def _record_usage(self, usage: ModelUsage) -> None:
         if self.event_run_sink:
-            self.event_run_sink(EventModelRun(stage=usage.purpose, usage=usage))
+            try:
+                self.event_run_sink(EventModelRun(stage=usage.purpose, usage=usage))
+            except Exception:
+                return
+
+    async def _structured_call(
+        self,
+        purpose: str,
+        model: str,
+        prompt: str,
+        response_type: type[T],
+        fallback: T,
+        timeout_seconds: float,
+    ) -> T:
+        async with self._semaphore:
+            return await self.client.structured(
+                purpose,
+                model,
+                prompt,
+                response_type,
+                fallback,
+                timeout_seconds,
+            )
 
     @staticmethod
     def _prompt(instruction: str, candidate: CandidateCluster, response_type: type) -> str:

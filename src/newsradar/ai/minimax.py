@@ -192,13 +192,22 @@ class MiniMaxClient:
                 )
                 response.raise_for_status()
                 payload = response.json()
-                content = payload["choices"][0]["message"]["content"]
+                content = self._response_content(payload)
                 first_content = first_content or str(content)
                 result = response_type.model_validate_json(strip_json_fence(str(content)))
                 self._record_usage(purpose, model, payload, started, "success")
                 return result
-            except (httpx.HTTPError, KeyError, IndexError, ValueError, ValidationError) as exc:
-                repairable = isinstance(exc, (KeyError, IndexError, ValueError, ValidationError))
+            except (
+                httpx.HTTPError,
+                KeyError,
+                IndexError,
+                TypeError,
+                ValueError,
+                ValidationError,
+            ) as exc:
+                repairable = isinstance(
+                    exc, (KeyError, IndexError, TypeError, ValueError, ValidationError)
+                )
                 if not repairable or attempt == 1:
                     self._record_usage(
                         purpose,
@@ -222,9 +231,22 @@ class MiniMaxClient:
             if 500 <= status <= 599:
                 return "http_5xx"
             return "http_4xx"
-        if isinstance(exc, (ValidationError, ValueError, KeyError, IndexError)):
+        if isinstance(exc, (ValidationError, ValueError, KeyError, IndexError, TypeError)):
             return "invalid_response"
         return "transport_error"
+
+    @staticmethod
+    def _response_content(payload: object) -> str:
+        """Extract a text completion while treating all unexpected JSON shapes as invalid."""
+        if not isinstance(payload, dict):
+            raise ValueError("response payload must be an object")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError("response choices must contain an object")
+        message = choices[0].get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise ValueError("response choice must contain text content")
+        return message["content"]
 
     def _record_usage(
         self,
@@ -238,14 +260,19 @@ class MiniMaxClient:
         if not self.usage_sink:
             return
         usage = payload.get("usage", {})
-        self.usage_sink(
-            ModelUsage(
-                purpose=purpose,
-                model=model,
-                input_tokens=int(usage.get("prompt_tokens", 0)),
-                output_tokens=int(usage.get("completion_tokens", 0)),
-                latency_ms=(time.perf_counter() - started) * 1000,
-                outcome=outcome,
-                error=redact(error) if error else None,
+        if not isinstance(usage, dict):
+            usage = {}
+        try:
+            self.usage_sink(
+                ModelUsage(
+                    purpose=purpose,
+                    model=model,
+                    input_tokens=int(usage.get("prompt_tokens", 0)),
+                    output_tokens=int(usage.get("completion_tokens", 0)),
+                    latency_ms=(time.perf_counter() - started) * 1000,
+                    outcome=outcome,
+                    error=redact(error) if error else None,
+                )
             )
-        )
+        except Exception:
+            return
