@@ -239,9 +239,7 @@ def test_fetch_enqueues_without_direct_network_work(monkeypatch, tmp_path: Path)
     monkeypatch.setattr("newsradar.cli.OperationCommandService", FakeCommands)
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
 
-    result = runner.invoke(
-        app, ["fetch", "anthropic-news", "--root", str(root), "--no-wait"]
-    )
+    result = runner.invoke(app, ["fetch", "anthropic-news", "--root", str(root), "--no-wait"])
 
     assert result.exit_code == 0
     assert "Queued operations: 41" in result.stdout
@@ -282,9 +280,7 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
             calls.append(received_handler)
             return True
 
-    monkeypatch.setattr(
-        "newsradar.cli.FetchOperationHandler.production", lambda sources: handler
-    )
+    monkeypatch.setattr("newsradar.cli.FetchOperationHandler.production", lambda sources: handler)
     monkeypatch.setattr("newsradar.cli.Worker", FakeWorker)
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
     monkeypatch.setattr(
@@ -297,7 +293,8 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     )
 
     assert result.exit_code == 0
-    assert calls == [handler]
+    assert len(calls) == 1
+    assert calls[0].__class__.__name__ == "OperationRouter"
     assert "processed 1 operation" in result.stdout
 
 

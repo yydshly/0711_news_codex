@@ -13,6 +13,7 @@ import typer
 from newsradar.db.models import OperationRunRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
+from newsradar.events.runtime import EventOperationHandler
 from newsradar.local_postgres import (
     LocalPostgresError,
     build_local_postgres_manager,
@@ -20,6 +21,7 @@ from newsradar.local_postgres import (
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.fetch_runtime import FetchOperationHandler
 from newsradar.operations.repository import OperationRepository
+from newsradar.operations.router import OperationRouter
 from newsradar.operations.worker import Worker
 from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
@@ -42,6 +44,8 @@ app.add_typer(providers_app, name="providers")
 app.add_typer(db_app, name="db")
 operations_app = typer.Typer(help="Inspect and retry durable operations")
 app.add_typer(operations_app, name="operations")
+events_app = typer.Typer(help="Build and inspect durable event intelligence")
+app.add_typer(events_app, name="events")
 diagnostics_app = typer.Typer(help="Create scrubbed local runtime diagnostics")
 app.add_typer(diagnostics_app, name="diagnostics")
 
@@ -211,12 +215,23 @@ def run_worker(
 ) -> None:
     """Consume durable operations; network work only occurs in this process."""
     sources = load_source_tree(root)
-    handler = FetchOperationHandler.production(sources)
+    handler = OperationRouter(
+        {
+            "fetch": FetchOperationHandler.production(sources),
+            "event_pipeline": EventOperationHandler.production(create_session),
+            "event_recluster": EventOperationHandler.production(create_session),
+            "event_enrich": EventOperationHandler.production(create_session),
+            "event_merge": EventOperationHandler.production(create_session),
+            "event_split": EventOperationHandler.production(create_session),
+            "event_exclude": EventOperationHandler.production(create_session),
+        }
+    )
     settings = get_settings()
     identifier = worker_id or f"{socket.gethostname()}-{os.getpid()}"
     processed_count = 0
     while True:
         with create_session() as session:
+
             def guard(lease):
                 # This separate session is deliberate: the production handler owns its
                 # own DB session while doing network I/O, so the lease can be renewed
@@ -242,6 +257,37 @@ def run_worker(
         if not processed:
             time.sleep(poll_seconds)
     typer.echo(f"Worker {identifier} processed {processed_count} operation(s)")
+
+
+@events_app.command("build")
+def build_events(hours: Annotated[int, typer.Option("--hours", min=1)] = 24) -> None:
+    with create_session() as session:
+        operation_id = OperationCommandService(session).enqueue_event_pipeline(
+            window_hours=hours, trigger="cli"
+        )
+    typer.echo(f"Queued event pipeline as operation {operation_id}")
+
+
+@events_app.command("list")
+def list_events() -> None:
+    from sqlalchemy import select
+
+    from newsradar.db.models import EventRecord
+
+    with create_session() as session:
+        for event in session.scalars(select(EventRecord).order_by(EventRecord.updated_at.desc())):
+            typer.echo(f"{event.id} {event.status} {event.canonical_key}")
+
+
+@events_app.command("show")
+def show_event(event_id: int) -> None:
+    from newsradar.db.models import EventRecord
+
+    with create_session() as session:
+        event = session.get(EventRecord, event_id)
+        if event is None:
+            raise typer.Exit(2)
+        typer.echo(f"{event.id} {event.status} {event.canonical_key}")
 
 
 @app.command("serve")

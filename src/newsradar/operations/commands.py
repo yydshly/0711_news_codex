@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from json import dumps
 from time import monotonic, sleep
 
 from sqlalchemy.orm import Session
@@ -40,9 +42,7 @@ class OperationCommandService:
         one_off: bool = False,
         trigger: str,
     ) -> int:
-        deadline_at = self._utcnow() + timedelta(
-            seconds=self._settings.operation_timeout_seconds
-        )
+        deadline_at = self._utcnow() + timedelta(seconds=self._settings.operation_timeout_seconds)
         record = OperationRepository(self.session).enqueue(
             OperationType.FETCH,
             {
@@ -55,6 +55,59 @@ class OperationCommandService:
             },
             trigger=trigger,
         )
+        self.session.commit()
+        return record.id
+
+    def enqueue_event_pipeline(self, *, window_hours: int, trigger: str) -> int:
+        if window_hours <= 0:
+            raise ValueError("window_hours must be positive")
+        now = self._utcnow()
+        versions = {"relevance": "relevance-v1", "entities": "entities-v1", "cluster": "cluster-v1"}
+        window_end = now.replace(minute=0, second=0, microsecond=0)
+        key_parts = {
+            "window_end": window_end.isoformat(),
+            "window_hours": window_hours,
+            "versions": versions,
+        }
+        scope = {
+            "window_hours": window_hours,
+            "algorithm_versions": versions,
+            "window_end": window_end.isoformat(),
+            "idempotency_key": "event-pipeline:"
+            + sha256(dumps(key_parts, sort_keys=True).encode()).hexdigest(),
+            "deadline_at": (
+                now + timedelta(seconds=self._settings.operation_timeout_seconds)
+            ).isoformat(),
+        }
+        record = OperationRepository(self.session).enqueue(
+            OperationType.EVENT_PIPELINE, scope, trigger=trigger
+        )
+        self.session.commit()
+        return record.id
+
+    def enqueue_event_action(
+        self, action: str, event_id: int, payload: dict | None, trigger: str
+    ) -> int:
+        operation_type = {
+            "recluster": OperationType.EVENT_RECLUSTER,
+            "enrich": OperationType.EVENT_ENRICH,
+            "merge": OperationType.EVENT_MERGE,
+            "split": OperationType.EVENT_SPLIT,
+            "exclude": OperationType.EVENT_EXCLUDE,
+        }.get(action)
+        if operation_type is None or event_id <= 0:
+            raise ValueError("invalid event action")
+        now = self._utcnow()
+        scope = {
+            "event_id": event_id,
+            "payload": payload or {},
+            "idempotency_key": f"event-action:{action}:{event_id}:"
+            + sha256(dumps(payload or {}, sort_keys=True).encode()).hexdigest(),
+            "deadline_at": (
+                now + timedelta(seconds=self._settings.operation_timeout_seconds)
+            ).isoformat(),
+        }
+        record = OperationRepository(self.session).enqueue(operation_type, scope, trigger=trigger)
         self.session.commit()
         return record.id
 

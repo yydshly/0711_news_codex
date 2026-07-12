@@ -7,6 +7,12 @@ class OperationType(StrEnum):
     PROVIDER_PROBE = "provider_probe"
     SOURCE_PROBE = "source_probe"
     FETCH = "fetch"
+    EVENT_PIPELINE = "event_pipeline"
+    EVENT_RECLUSTER = "event_recluster"
+    EVENT_ENRICH = "event_enrich"
+    EVENT_MERGE = "event_merge"
+    EVENT_SPLIT = "event_split"
+    EVENT_EXCLUDE = "event_exclude"
 
 
 class OperationStatus(StrEnum):

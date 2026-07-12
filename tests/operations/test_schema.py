@@ -18,6 +18,12 @@ def test_operation_enums_match_the_runtime_contract() -> None:
         "provider_probe",
         "source_probe",
         "fetch",
+        "event_pipeline",
+        "event_recluster",
+        "event_enrich",
+        "event_merge",
+        "event_split",
+        "event_exclude",
     }
     assert {member.value for member in ErrorCategory} == {
         "validation",
