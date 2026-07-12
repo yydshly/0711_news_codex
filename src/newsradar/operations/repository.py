@@ -29,7 +29,7 @@ class OperationLease:
 
 
 class OperationRepository:
-    """Durable operation queue operations; callers own the enclosing transaction."""
+    """Durable operation queue operations in short, independently committed transactions."""
 
     def __init__(self, session: Session):
         self.session = session
@@ -40,18 +40,19 @@ class OperationRepository:
         requested_scope: dict[str, Any],
         trigger: str = "manual",
     ) -> OperationRunRecord:
-        record = OperationRunRecord(
-            operation_type=operation_type.value,
-            trigger=trigger,
-            status=OperationStatus.QUEUED.value,
-            requested_scope=requested_scope,
-            result_summary={},
-            attempt_count=0,
-            next_attempt_at=func.now(),
-        )
-        self.session.add(record)
-        self.session.flush()
-        return record
+        with self._transaction():
+            record = OperationRunRecord(
+                operation_type=operation_type.value,
+                trigger=trigger,
+                status=OperationStatus.QUEUED.value,
+                requested_scope=requested_scope,
+                result_summary={},
+                attempt_count=0,
+                next_attempt_at=func.now(),
+            )
+            self.session.add(record)
+            self.session.flush()
+            return record
 
     def _next_ready_statement(self):
         now = func.now()
@@ -80,7 +81,7 @@ class OperationRepository:
 
     def lease_next(self, worker_id: str, lease_seconds: int = 60) -> OperationLease | None:
         """Atomically claim the oldest ready row and bind one immutable attempt."""
-        with self.session.begin_nested():
+        with self._transaction():
             operation = self.session.scalar(self._next_ready_statement())
             if operation is None:
                 return None
@@ -122,7 +123,7 @@ class OperationRepository:
             )
 
     def renew_lease(self, lease: OperationLease, lease_seconds: int = 60) -> bool:
-        with self.session.begin_nested():
+        with self._transaction():
             operation = self.session.get(
                 OperationRunRecord, lease.operation_id, with_for_update=True
             )
@@ -153,7 +154,7 @@ class OperationRepository:
         error_message: str | None = None,
         result_summary: dict[str, Any] | None = None,
     ) -> bool:
-        with self.session.begin_nested():
+        with self._transaction():
             operation = self.session.get(
                 OperationRunRecord, lease.operation_id, with_for_update=True
             )
@@ -206,7 +207,7 @@ class OperationRepository:
             return True
 
     def request_cancel(self, operation_id: int) -> bool:
-        with self.session.begin_nested():
+        with self._transaction():
             operation = self.session.get(OperationRunRecord, operation_id, with_for_update=True)
             if operation is None or operation.status in {
                 item.value for item in OperationStatus.terminal()
@@ -220,8 +221,15 @@ class OperationRepository:
             return True
 
     def is_cancel_requested(self, lease: OperationLease) -> bool:
-        operation = self.session.get(OperationRunRecord, lease.operation_id)
-        return operation is None or operation.cancel_requested_at is not None
+        with self._transaction():
+            operation = self.session.get(OperationRunRecord, lease.operation_id)
+            return operation is None or operation.cancel_requested_at is not None
+
+    def _transaction(self):
+        """Finish any implicit read transaction before starting a bounded database operation."""
+        if self.session.in_transaction():
+            self.session.commit()
+        return self.session.begin()
 
     def _ensure_worker(self, worker_id: str) -> None:
         if self.session.get(WorkerRecord, worker_id) is None:

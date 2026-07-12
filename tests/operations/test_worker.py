@@ -29,6 +29,38 @@ def test_worker_renews_heartbeat_while_handler_runs() -> None:
         assert renewals == [1]
 
 
+def test_worker_closes_claim_transaction_before_running_handler() -> None:
+    with session() as db:
+        repository = OperationRepository(db)
+        repository.enqueue(OperationType.FETCH, {})
+        transaction_states: list[bool] = []
+
+        Worker(repository, "worker").run_once(
+            lambda lease, checkpoint: transaction_states.append(db.in_transaction())
+        )
+
+        assert transaction_states == [False]
+
+
+def test_worker_uses_injected_clock_for_deterministic_heartbeat_timing() -> None:
+    with session() as db:
+        repository = OperationRepository(db)
+        repository.enqueue(OperationType.FETCH, {})
+        instants = iter((0.0, 5.0, 10.0))
+        renewals: list[int] = []
+        worker = Worker(
+            repository,
+            "worker",
+            heartbeat=lambda lease: renewals.append(lease.operation_id),
+            clock=lambda: next(instants),
+            heartbeat_interval_seconds=10,
+        )
+
+        worker.run_once(lambda lease, checkpoint: (checkpoint("source"), checkpoint("page")))
+
+        assert renewals == [1]
+
+
 def test_worker_stops_at_source_boundary_when_cancellation_is_requested() -> None:
     with session() as db:
         repository = OperationRepository(db)
