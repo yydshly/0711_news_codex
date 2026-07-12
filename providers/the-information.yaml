@@ -1,0 +1,20 @@
+id: the-information
+name: The Information
+category: professional_media
+homepage: https://www.theinformation.com/
+docs_url: https://www.theinformation.com/
+terms_url: https://www.theinformation.com/terms
+auth_mode: paid
+cost_tier: paid
+availability: requires_payment
+capabilities:
+- discovery
+- content
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.theinformation.com/
+- https://www.theinformation.com/terms
+unlock_requirements:
+- 'Obtain official The Information access: requires_payment'
+notes: Capability metadata only; content coverage is assessed per target.

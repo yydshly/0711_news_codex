@@ -40,6 +40,10 @@ def test_source_definition_accepts_audited_https_source() -> None:
     source = SourceDefinition.model_validate(valid_source())
     assert source.id == "anthropic-news"
     assert source.total_risk == 4
+    assert source.provider_id == "independent"
+    assert source.target_type.value == "publisher_feed"
+    assert source.availability.value == "ready"
+    assert source.coverage_mode.value == "direct"
 
 
 @pytest.mark.parametrize(
@@ -87,3 +91,23 @@ def test_load_source_file_rejects_plaintext_secrets(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="credential-like key"):
         load_source_file(path)
+
+
+def test_social_target_cannot_be_evidence_only() -> None:
+    data = valid_source()
+    data.update(
+        {
+            "nature": "social",
+            "roles": ["evidence"],
+            "provider_id": "x",
+            "target_type": "account",
+            "availability": "requires_payment",
+            "coverage_mode": "catalog_only",
+            "official_identity_url": "https://x.com/openai",
+            "reviewed_at": "2026-07-11",
+            "unlock_requirements": ["Purchase X API credits"],
+        }
+    )
+
+    with pytest.raises(ValidationError, match="Social targets"):
+        SourceDefinition.model_validate(data)

@@ -2,15 +2,40 @@ id: hackernews-top
 name: Hacker News Top Stories
 status: candidate
 nature: community
-roles: [discovery, engagement, context]
+roles:
+- discovery
+- engagement
+- context
 language: en
-topics: [developer_tools, agents, ai_infrastructure]
+topics:
+- developer_tools
+- agents
+- ai_infrastructure
 authority_score: 3
 poll_interval_minutes: 15
 access_methods:
-  - kind: public_api
-    url: https://hacker-news.firebaseio.com/v0/topstories.json
-    priority: 1
-expected_fields: [title, canonical_url, published_at, author, engagement]
-risk: {terms: 1, authentication: 0, stability: 1, data_quality: 3, operating_cost: 0, evidence: [https://github.com/HackerNews/API]}
-
+- kind: public_api
+  url: https://hacker-news.firebaseio.com/v0/topstories.json
+  priority: 1
+expected_fields:
+- title
+- canonical_url
+- published_at
+- author
+- engagement
+risk:
+  terms: 1
+  authentication: 0
+  stability: 1
+  data_quality: 3
+  operating_cost: 0
+  evidence:
+  - https://github.com/HackerNews/API
+provider_id: hackernews
+target_type: community
+availability: ready
+coverage_mode: direct
+official_identity_url: https://news.ycombinator.com/
+reviewed_at: '2026-07-11'
+unlock_requirements: []
+notes: 'Fallback: no additional audited method.'

@@ -1,0 +1,42 @@
+id: universe-google-trends-1
+name: Google Trends primary
+provider_id: google-trends
+target_type: publisher_feed
+availability: requires_approval
+coverage_mode: catalog_only
+official_identity_url: https://trends.google.com/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official Google Trends access
+status: candidate
+nature: aggregator
+roles:
+- discovery
+- context
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 2
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://trends.google.com/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 3
+  operating_cost: 0
+  evidence:
+  - https://developers.google.com/search/apis/trends
+  - https://policies.google.com/terms
+  hard_block_reason: requires_approval
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

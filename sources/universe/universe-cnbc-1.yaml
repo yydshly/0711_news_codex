@@ -1,0 +1,41 @@
+id: universe-cnbc-1
+name: CNBC Technology primary
+provider_id: cnbc
+target_type: publisher_feed
+availability: ready
+coverage_mode: direct
+official_identity_url: https://www.cnbc.com/technology/
+reviewed_at: '2026-07-11'
+unlock_requirements: []
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: rss
+  url: https://www.cnbc.com/id/19854910/device/rss/rss.html
+  priority: 1
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 1
+  authentication: 0
+  stability: 2
+  data_quality: 1
+  operating_cost: 0
+  evidence:
+  - https://www.cnbc.com/rss-feeds/
+  - https://www.cnbc.com/nbcuniversal-terms-of-service/
+  hard_block_reason: null
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

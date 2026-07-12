@@ -1,0 +1,43 @@
+id: universe-washington-post-2
+name: The Washington Post Technology AI discovery
+provider_id: washington-post
+target_type: search_query
+availability: manual_only
+coverage_mode: catalog_only
+official_identity_url: https://www.washingtonpost.com/technology/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official The Washington Post Technology access
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://www.washingtonpost.com/technology/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 1
+  operating_cost: 4
+  evidence:
+  - https://www.washingtonpost.com/technology/
+  - https://www.washingtonpost.com/information/2022/01/01/terms-of-service/
+  hard_block_reason: manual_only
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

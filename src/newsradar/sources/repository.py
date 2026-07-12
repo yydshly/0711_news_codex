@@ -57,6 +57,15 @@ class SourceRepository:
                 self.session.flush()
 
             current.name = source.name
+            current.provider_id = source.provider_id
+            current.target_type = source.target_type.value
+            current.availability = source.availability.value
+            current.coverage_mode = source.coverage_mode.value
+            current.official_identity_url = (
+                str(source.official_identity_url) if source.official_identity_url else None
+            )
+            current.reviewed_at = source.reviewed_at
+            current.unlock_requirements = source.unlock_requirements
             if current.status is None or current.status == SourceStatus.CANDIDATE.value:
                 current.status = (
                     SourceStatus.CANDIDATE.value

@@ -1,0 +1,43 @@
+id: universe-wsj-2
+name: The Wall Street Journal Technology AI discovery
+provider_id: wsj
+target_type: search_query
+availability: requires_payment
+coverage_mode: catalog_only
+official_identity_url: https://www.wsj.com/tech
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official The Wall Street Journal Technology access
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://www.wsj.com/tech
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 1
+  operating_cost: 4
+  evidence:
+  - https://www.wsj.com/tech
+  - https://www.wsj.com/policy/terms-of-use
+  hard_block_reason: requires_payment
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

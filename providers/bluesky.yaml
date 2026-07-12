@@ -1,0 +1,20 @@
+id: bluesky
+name: Bluesky
+category: social_community
+homepage: https://bsky.app/
+docs_url: https://docs.bsky.app/
+terms_url: https://bsky.social/about/support/tos
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://docs.bsky.app/
+- https://bsky.social/about/support/tos
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

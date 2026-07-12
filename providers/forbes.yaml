@@ -1,0 +1,20 @@
+id: forbes
+name: Forbes Innovation
+category: professional_media
+homepage: https://www.forbes.com/innovation/
+docs_url: https://www.forbes.com/innovation/
+terms_url: https://www.forbes.com/terms/
+auth_mode: manual
+cost_tier: freemium
+availability: manual_only
+capabilities:
+- discovery
+- content
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.forbes.com/innovation/
+- https://www.forbes.com/terms/
+unlock_requirements:
+- 'Obtain official Forbes Innovation access: manual_only'
+notes: Capability metadata only; content coverage is assessed per target.

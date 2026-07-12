@@ -1,0 +1,41 @@
+id: universe-mit-tech-review-2
+name: MIT Technology Review AI discovery
+provider_id: mit-tech-review
+target_type: search_query
+availability: ready
+coverage_mode: indirect
+official_identity_url: https://www.technologyreview.com/
+reviewed_at: '2026-07-11'
+unlock_requirements: []
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: rss
+  url: https://news.google.com/rss/search?q=AI+technology+source%3A%22MIT+Technology+Review%22
+  priority: 1
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 1
+  authentication: 0
+  stability: 2
+  data_quality: 1
+  operating_cost: 0
+  evidence:
+  - https://www.technologyreview.com/feed/
+  - https://www.technologyreview.com/terms-of-use/
+  hard_block_reason: null
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

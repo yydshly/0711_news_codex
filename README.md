@@ -18,6 +18,7 @@ Copy-Item .env.example .env
 # If PostgreSQL is outside C:\Program Files\PostgreSQL, set POSTGRES_HOME in .env.
 uv run newsradar db init
 uv run alembic upgrade head
+uv run newsradar providers sync --root providers
 uv run newsradar sources sync --root sources
 ```
 
@@ -70,6 +71,26 @@ uv run newsradar sources probe --all --root sources --no-persist `
 YAML is the audited source of truth. Probe history and immutable YAML versions belong in
 PostgreSQL. Probe results never rewrite YAML or automatically activate a source.
 
+## Source Universe v2
+
+Providers describe platform-level access, policy, authentication, cost, and capabilities.
+Sources describe concrete publisher feeds, accounts, channels, communities, queries, and signals.
+Catalog coverage never implies that content is being ingested.
+
+```powershell
+uv run newsradar providers validate --root providers
+uv run newsradar providers sync --root providers
+uv run newsradar providers probe --all --root providers
+uv run newsradar sources coverage --provider-root providers --root sources `
+  --history --output reports/source-coverage.md
+uv run newsradar sources coverage --provider x --provider-root providers --root sources
+```
+
+Restricted platforms remain visible as `requires_credentials`, `requires_approval`,
+`requires_payment`, or `manual_only`. News Codex never falls back to account cookies, browser
+sessions, CAPTCHA bypass, or unaudited scraping. Social content is a discovery/engagement signal;
+it is not treated as verified evidence by itself.
+
 ## MiniMax
 
 The constrained adapter supports:
@@ -88,6 +109,7 @@ uv run ruff check .
 uv run pytest
 ```
 
-The current catalog contains first-party RSS feeds, GitHub releases, Hacker News, arXiv,
-conditional Reddit sources, and discovery-only aggregators. X and high-risk Chinese social
-scraping are intentionally outside phase one.
+The current catalog spans professional media, first-party sources, social/community platforms,
+aggregators/search, research/developer sources, newsletters/podcasts, and trend/business signals.
+X and other restricted platforms are cataloged with explicit unlock requirements rather than
+being silently omitted or scraped through high-risk methods.

@@ -1,0 +1,20 @@
+id: sec-edgar
+name: SEC EDGAR
+category: trend_business
+homepage: https://www.sec.gov/edgar
+docs_url: https://www.sec.gov/search-filings/edgar-application-programming-interfaces
+terms_url: https://www.sec.gov/privacy.htm
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.sec.gov/search-filings/edgar-application-programming-interfaces
+- https://www.sec.gov/privacy.htm
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

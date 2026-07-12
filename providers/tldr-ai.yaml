@@ -1,0 +1,20 @@
+id: tldr-ai
+name: TLDR AI
+category: newsletter_podcast
+homepage: https://tldr.tech/ai
+docs_url: https://tldr.tech/ai
+terms_url: https://tldr.tech/terms
+auth_mode: manual
+cost_tier: free
+availability: manual_only
+capabilities:
+- discovery
+- content
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://tldr.tech/ai
+- https://tldr.tech/terms
+unlock_requirements:
+- 'Obtain official TLDR AI access: manual_only'
+notes: Capability metadata only; content coverage is assessed per target.

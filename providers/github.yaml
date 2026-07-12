@@ -1,0 +1,20 @@
+id: github
+name: GitHub
+category: research_developer
+homepage: https://github.com/
+docs_url: https://docs.github.com/en/rest
+terms_url: https://docs.github.com/en/site-policy/github-terms/github-terms-of-service
+auth_mode: api_key
+cost_tier: free_quota
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://docs.github.com/en/rest
+- https://docs.github.com/en/site-policy/github-terms/github-terms-of-service
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

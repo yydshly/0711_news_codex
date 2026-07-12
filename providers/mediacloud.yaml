@@ -1,0 +1,22 @@
+id: mediacloud
+name: Media Cloud
+category: aggregator_search
+homepage: https://www.mediacloud.org/
+docs_url: https://mediacloud.org/documentation
+terms_url: https://www.mediacloud.org/terms
+auth_mode: api_key
+cost_tier: free_quota
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+- engagement
+required_env:
+- MEDIACLOUD_API_KEY
+reviewed_at: '2026-07-11'
+evidence:
+- https://mediacloud.org/documentation
+- https://www.mediacloud.org/terms
+unlock_requirements:
+- Obtain official Media Cloud access for requires credentials
+notes: Capability metadata only; content coverage is assessed per target.

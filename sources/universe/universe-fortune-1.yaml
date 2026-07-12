@@ -1,0 +1,43 @@
+id: universe-fortune-1
+name: Fortune Technology primary
+provider_id: fortune
+target_type: publisher_feed
+availability: manual_only
+coverage_mode: catalog_only
+official_identity_url: https://fortune.com/tech/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- 'Obtain official Fortune Technology access: manual_only'
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://fortune.com/tech/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 1
+  operating_cost: 4
+  evidence:
+  - https://fortune.com/tech/
+  - https://fortune.com/terms-of-use/
+  hard_block_reason: manual_only
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

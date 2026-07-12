@@ -1,0 +1,20 @@
+id: fortune
+name: Fortune Technology
+category: professional_media
+homepage: https://fortune.com/tech/
+docs_url: https://fortune.com/tech/
+terms_url: https://fortune.com/terms-of-use/
+auth_mode: manual
+cost_tier: freemium
+availability: manual_only
+capabilities:
+- discovery
+- content
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://fortune.com/tech/
+- https://fortune.com/terms-of-use/
+unlock_requirements:
+- 'Obtain official Fortune Technology access: manual_only'
+notes: Capability metadata only; content coverage is assessed per target.

@@ -2,15 +2,38 @@ id: arxiv-cs-dc
 name: arXiv cs.DC
 status: candidate
 nature: research
-roles: [discovery, evidence]
+roles:
+- discovery
+- evidence
 language: en
-topics: [research, ai_infrastructure]
+topics:
+- research
+- ai_infrastructure
 authority_score: 4
 poll_interval_minutes: 360
 access_methods:
-  - kind: atom
-    url: https://export.arxiv.org/api/query?search_query=cat:cs.DC&sortBy=submittedDate&sortOrder=descending&max_results=5
-    priority: 1
-expected_fields: [title, canonical_url, published_at, author, summary]
-risk: {terms: 1, authentication: 0, stability: 1, data_quality: 2, operating_cost: 0, evidence: [https://info.arxiv.org/help/api/index.html]}
-
+- kind: atom
+  url: https://export.arxiv.org/api/query?search_query=cat:cs.DC&sortBy=submittedDate&sortOrder=descending&max_results=5
+  priority: 1
+expected_fields:
+- title
+- canonical_url
+- published_at
+- author
+- summary
+risk:
+  terms: 1
+  authentication: 0
+  stability: 1
+  data_quality: 2
+  operating_cost: 0
+  evidence:
+  - https://info.arxiv.org/help/api/index.html
+provider_id: arxiv
+target_type: topic
+availability: ready
+coverage_mode: direct
+official_identity_url: https://arxiv.org/
+reviewed_at: '2026-07-11'
+unlock_requirements: []
+notes: 'Fallback: no additional audited method.'

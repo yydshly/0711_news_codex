@@ -1,0 +1,21 @@
+id: no-priors
+name: No Priors
+category: newsletter_podcast
+homepage: https://www.youtube.com/@NoPriorsPodcast
+docs_url: https://www.youtube.com/@NoPriorsPodcast
+terms_url: https://www.youtube.com/static?template=terms
+auth_mode: api_key
+cost_tier: free_quota
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+required_env:
+- YOUTUBE_API_KEY
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.youtube.com/@NoPriorsPodcast
+- https://www.youtube.com/static?template=terms
+unlock_requirements:
+- 'Obtain official No Priors access: requires_credentials'
+notes: Capability metadata only; content coverage is assessed per target.

@@ -1,0 +1,21 @@
+id: ap
+name: Associated Press
+category: professional_media
+homepage: https://apnews.com/technology
+docs_url: https://developer.ap.org/
+terms_url: https://www.ap.org/terms-and-conditions/
+auth_mode: approval
+cost_tier: enterprise
+availability: requires_approval
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://developer.ap.org/
+- https://www.ap.org/terms-and-conditions/
+unlock_requirements:
+- Obtain official Associated Press access for requires approval
+notes: Capability metadata only; content coverage is assessed per target.

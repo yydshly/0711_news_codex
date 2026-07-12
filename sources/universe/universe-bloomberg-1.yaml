@@ -1,0 +1,43 @@
+id: universe-bloomberg-1
+name: Bloomberg Technology primary
+provider_id: bloomberg
+target_type: publisher_feed
+availability: requires_payment
+coverage_mode: catalog_only
+official_identity_url: https://www.bloomberg.com/technology
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official Bloomberg Technology access
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://www.bloomberg.com/technology
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 1
+  operating_cost: 4
+  evidence:
+  - https://www.bloomberg.com/professional/product/data/
+  - https://www.bloomberg.com/notices/tos/
+  hard_block_reason: requires_payment
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

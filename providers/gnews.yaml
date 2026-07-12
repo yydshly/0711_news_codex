@@ -1,0 +1,21 @@
+id: gnews
+name: GNews API
+category: aggregator_search
+homepage: https://gnews.io/
+docs_url: https://docs.gnews.io/
+terms_url: https://gnews.io/terms
+auth_mode: api_key
+cost_tier: freemium
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+required_env:
+- GNEWS_KEY
+reviewed_at: '2026-07-11'
+evidence:
+- https://docs.gnews.io/
+- https://gnews.io/terms
+unlock_requirements:
+- 'Obtain official GNews API access: requires_credentials'
+notes: Capability metadata only; content coverage is assessed per target.

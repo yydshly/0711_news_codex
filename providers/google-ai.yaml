@@ -1,0 +1,20 @@
+id: google-ai
+name: Google AI
+category: first_party
+homepage: https://ai.google/
+docs_url: https://blog.google/technology/ai/
+terms_url: https://policies.google.com/terms
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://blog.google/technology/ai/
+- https://policies.google.com/terms
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.
