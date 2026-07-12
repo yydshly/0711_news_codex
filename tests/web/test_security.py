@@ -1,6 +1,11 @@
 import pytest
 
-from newsradar.web.security import UnsafeWrite, require_loopback_host, require_same_origin
+from newsradar.web.security import (
+    UnsafeWrite,
+    consume_one_time_token,
+    require_loopback_host,
+    require_same_origin,
+)
 
 
 def test_local_write_rejects_remote_host() -> None:
@@ -16,3 +21,10 @@ def test_local_write_accepts_localhost_and_same_origin() -> None:
 def test_local_write_rejects_cross_origin() -> None:
     with pytest.raises(UnsafeWrite, match="origin"):
         require_same_origin("https://example.com", "127.0.0.1:8765")
+
+
+def test_one_time_token_cannot_be_reused() -> None:
+    state = {"tokens": ["first"]}
+    consume_one_time_token(state, "first")
+    with pytest.raises(UnsafeWrite, match="token"):
+        consume_one_time_token(state, "first")

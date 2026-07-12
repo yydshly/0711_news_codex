@@ -18,6 +18,14 @@ def require_loopback_host(host: str | None) -> None:
 def require_same_origin(origin: str | None, host: str | None) -> None:
     if not origin or not host:
         raise UnsafeWrite("same origin is required")
+
+
+def consume_one_time_token(state: dict, token: str) -> None:
+    tokens = state.get("tokens", [])
+    if not isinstance(token, str) or token not in tokens:
+        raise UnsafeWrite("invalid or reused token")
+    tokens.remove(token)
+    state["tokens"] = tokens
     parsed = urlsplit(origin)
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != host.lower():
         raise UnsafeWrite("same origin is required")
