@@ -241,14 +241,22 @@ class RawItemRepository:
             )
         )
         if exists is None:
-            self.session.add(
-                DuplicateCandidateRecord(
-                    raw_item_id=left,
-                    candidate_raw_item_id=right,
-                    match_type=match_type,
-                    score=score,
-                )
-            )
+            try:
+                with self.session.begin_nested():
+                    self.session.add(
+                        DuplicateCandidateRecord(
+                            raw_item_id=left,
+                            candidate_raw_item_id=right,
+                            match_type=match_type,
+                            score=score,
+                        )
+                    )
+                    self.session.flush()
+            except IntegrityError:
+                # A concurrent writer may have inserted this immutable candidate
+                # after the existence check. Its unique key makes that equivalent
+                # to the candidate already being present.
+                pass
 
     def _write_audit(
         self,

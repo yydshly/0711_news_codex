@@ -284,6 +284,39 @@ def test_cross_source_near_titles_create_an_idempotent_candidate() -> None:
         assert candidate.score == 0.9
 
 
+def test_candidate_uniqueness_race_does_not_fail_raw_item_upsert() -> None:
+    with make_session() as session:
+        fetch_run_id = prepare(session)
+        repository = RawItemRepository(session)
+        repository.upsert(fetch_run_id, "source", item())
+        other_run_id = prepare_other_source(session)
+        session.execute(
+            text(
+                "CREATE TRIGGER duplicate_candidate_race BEFORE INSERT ON duplicate_candidates "
+                "BEGIN "
+                "INSERT INTO duplicate_candidates "
+                "(raw_item_id, candidate_raw_item_id, match_type, score, status) "
+                "VALUES (NEW.raw_item_id, NEW.candidate_raw_item_id, NEW.match_type, "
+                "NEW.score, NEW.status); "
+                "END"
+            )
+        )
+
+        result = repository.upsert(other_run_id, "other", item(external_id="other-42"))
+
+        assert result.action is ItemAction.INSERTED
+        assert session.scalar(select(func.count()).select_from(RawItemRecord)) == 2
+        assert session.scalar(select(func.count()).select_from(DuplicateCandidateRecord)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(FetchRunItemRecord)
+                .where(FetchRunItemRecord.action == ItemAction.FAILED.value)
+            )
+            == 0
+        )
+
+
 def test_meaningful_title_update_creates_cross_source_candidate() -> None:
     with make_session() as session:
         fetch_run_id = prepare(session)

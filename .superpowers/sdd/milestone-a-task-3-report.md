@@ -58,3 +58,14 @@ and idempotent duplicate-candidate creation.
 - GREEN: `uv run pytest tests/ingestion/test_repository.py -q` passed: **12 passed**.
 - Full verification: `uv run pytest` passed: **190 passed, 4 warnings**; `uv run ruff
   check .` passed: **All checks passed**.
+
+## Candidate-concurrency follow-up
+
+- Candidate insertion now occurs in its own nested savepoint. A unique-key collision
+  after the existence check is treated as an already-created immutable candidate, so
+  the surrounding raw-item write can commit.
+- RED: the forced SQLite duplicate-candidate trigger made the enclosing upsert return
+  `failed/write_conflict` before this change.
+- GREEN: `uv run pytest tests/ingestion/test_repository.py -q` passed: **13 passed**.
+- Full verification: `uv run pytest` passed: **191 passed, 4 warnings**; `uv run ruff
+  check .` passed: **All checks passed**.
