@@ -45,11 +45,12 @@ class GdeltFetcher:
                 if not isinstance(url, str) or not isinstance(title, str) or not title.strip():
                     raise ValueError("missing_url_or_title")
                 attribution = await self.resolver.resolve(url)
+                canonical_url = attribution.publisher_url or url
                 items.append(
                     NormalizedRawItem(
                         external_id=hashlib.sha256(url.encode()).hexdigest(),
                         title=title.strip(),
-                        canonical_url=url,
+                        canonical_url=canonical_url,
                         original_url=url,
                         summary=article.get("excerpt")
                         if isinstance(article.get("excerpt"), str)
