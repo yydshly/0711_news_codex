@@ -118,17 +118,26 @@ class FetcherFactory:
 
     def for_method(self, method: AccessMethod) -> Fetcher:
         from .arxiv import ArxivFetcher
+        from .bluesky import BlueskyFetcher
         from .github import GitHubFetcher
         from .hackernews import HackerNewsFetcher
+        from .mastodon import MastodonFetcher
         from .rss import RssFetcher
 
         host = (httpx.URL(str(method.url)).host or "").lower()
+        path = httpx.URL(str(method.url)).path
         if host == "hacker-news.firebaseio.com":
             return HackerNewsFetcher(self.policy)
         if host == "api.github.com":
             return GitHubFetcher(self.policy)
         if host == "export.arxiv.org":
             return ArxivFetcher(self.policy)
+        if host == "public.api.bsky.app":
+            return BlueskyFetcher(self.policy)
+        if method.kind is AccessKind.PUBLIC_API and (
+            path.startswith("/api/v1/accounts/") or path == "/api/v1/timelines/public"
+        ):
+            return MastodonFetcher(self.policy)
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
             return RssFetcher(self.policy)
         raise ValueError(f"unsupported_fetch_method:{method.kind.value}")
