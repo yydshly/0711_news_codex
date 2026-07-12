@@ -134,6 +134,7 @@ def test_pipeline_keeps_event_identity_and_source_publication_time_when_new_sour
                 canonical_url="https://official.test/a",
                 payload={},
                 title="OpenAI launches Orion model",
+                title_fingerprint="openai-launches-orion-model",
                 published_at=published_at,
             )
         )
@@ -153,6 +154,7 @@ def test_pipeline_keeps_event_identity_and_source_publication_time_when_new_sour
                 canonical_url="https://media.test/b",
                 payload={},
                 title="OpenAI launches Orion model",
+                title_fingerprint="openai-launches-orion-model",
                 published_at=published_at,
             )
         )
@@ -206,6 +208,7 @@ def test_minimax_invocation_has_no_open_session_or_event_lease_before_publicatio
                 canonical_url="https://official.test/first",
                 payload={},
                 title="OpenAI launches Orion model",
+                title_fingerprint="openai-launches-orion-model",
                 published_at=datetime.now(UTC),
             )
         )
@@ -239,6 +242,7 @@ def test_minimax_invocation_has_no_open_session_or_event_lease_before_publicatio
                 canonical_url="https://official.test/second",
                 payload={},
                 title="OpenAI launches Orion model",
+                title_fingerprint="openai-launches-orion-model",
                 published_at=datetime.now(UTC),
             )
         )
@@ -287,3 +291,43 @@ def test_minimax_invocation_has_no_open_session_or_event_lease_before_publicatio
         event = db.get(EventRecord, event_id)
         assert event is not None
         assert event.lease_operation_id is None
+
+
+def test_pipeline_counts_independent_evidence_items_suppressed_by_duplicate_root() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        for source_id in ("official-a", "official-b"):
+            db.add(
+                SourceDefinitionRecord(
+                    id=source_id,
+                    name=source_id,
+                    status="active",
+                    nature="first_party",
+                    language="en",
+                    roles=["evidence"],
+                    topics=["ai"],
+                    authority_score=90,
+                    poll_interval_minutes=60,
+                    expected_fields=[],
+                    definition_hash=source_id,
+                )
+            )
+            db.add(
+                RawItemRecord(
+                    source_id=source_id,
+                    external_id="shared-release",
+                    canonical_url="https://acme.test/releases/alpha",
+                    payload={},
+                    title="Acme launches Alpha model",
+                    published_at=datetime.now(UTC),
+                )
+            )
+        db.commit()
+
+    with Session(engine) as db:
+        result = EventPipeline.production(db).run(
+            window_hours=24, operation_id=3, checkpoint=lambda _: None
+        )
+
+    assert result.duplicate_root_suppressed_count == 1

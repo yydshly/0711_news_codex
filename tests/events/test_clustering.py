@@ -48,6 +48,83 @@ def test_same_company_different_actions_do_not_merge() -> None:
     assert "conflicting_action" in decision.reasons
 
 
+def test_same_company_action_and_day_do_not_merge_different_object_entities() -> None:
+    left = item(
+        entities=("organization:acme", "model:alpha"),
+        title="Acme launches Alpha",
+    )
+    right = item(
+        raw_item_id=2,
+        entities=("organization:acme", "model:beta"),
+        title="Acme launches Beta",
+    )
+
+    decision = compare_items(left, right)
+
+    assert decision.matched is False
+    assert "shared_organization" in decision.reasons
+    assert "shared_object_entity" not in decision.reasons
+
+
+def test_same_company_action_and_shared_object_entity_is_a_compatible_weak_match() -> None:
+    left = item(
+        entities=("organization:acme", "model:alpha"),
+        title="Acme launches Alpha",
+    )
+    right = item(
+        raw_item_id=2,
+        entities=("organization:acme", "model:alpha"),
+        title="Acme launches its Alpha system",
+    )
+
+    decision = compare_items(left, right)
+
+    assert decision.matched
+    assert "shared_object_entity" in decision.reasons
+
+
+def test_same_upstream_root_is_a_strong_match_without_explicit_object_entity() -> None:
+    left = item(
+        canonical_url="https://media-a.test/alpha",
+        original_url="https://acme.test/releases/alpha",
+        title="Acme introduces its newest system",
+    )
+    right = item(
+        raw_item_id=2,
+        canonical_url="https://media-b.test/coverage",
+        original_url="https://acme.test/releases/alpha",
+        title="The latest Acme release arrives",
+    )
+
+    decision = compare_items(left, right)
+
+    assert decision.matched
+    assert "same_evidence_root" in decision.reasons
+
+
+def test_new_media_source_on_same_root_keeps_anchor_candidate_identity() -> None:
+    first = item(
+        raw_item_id=1,
+        canonical_url="https://media-a.test/coverage",
+        original_url="https://acme.test/releases/alpha",
+        title="Acme release coverage",
+        title_fingerprint="z-release",
+    )
+    later = item(
+        raw_item_id=2,
+        canonical_url="https://media-b.test/story",
+        original_url="https://acme.test/releases/alpha",
+        title="A closer look at the release",
+        title_fingerprint="a-release",
+    )
+
+    first_key = cluster_candidates((first,))[0].candidate_key
+    combined = cluster_candidates((first, later))[0]
+
+    assert combined.raw_item_ids == (1, 2)
+    assert combined.candidate_key == first_key
+
+
 def test_same_resolved_publisher_url_is_a_strong_match() -> None:
     decision = compare_items(
         item(canonical_url="https://publisher.test/story"),

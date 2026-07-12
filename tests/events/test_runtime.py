@@ -1,14 +1,95 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import Session, sessionmaker
 
-from newsradar.db.models import Base, EventRecord, RawItemRecord, SourceDefinitionRecord
+from newsradar.ai.minimax import ModelUsage
+from newsradar.db.models import (
+    Base,
+    EventItemRecord,
+    EventModelRunRecord,
+    EventRecord,
+    EventVersionRecord,
+    ModelUsageRecord,
+    RawItemRecord,
+    SourceDefinitionRecord,
+)
+from newsradar.events.minimax import EventModelRun
+from newsradar.events.pipeline import EventPipeline
+from newsradar.events.publishing import rule_enrichment
 from newsradar.events.repository import EventRepository
 from newsradar.events.runtime import EventOperationHandler
+from newsradar.events.schema import EventEnrichment, EventStatus, PublishedEvent, ScoreBreakdown
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
+
+
+def _score() -> ScoreBreakdown:
+    return ScoreBreakdown(
+        ai_relevance=80,
+        source_coverage=50,
+        source_authority=90,
+        recency=90,
+        engagement_velocity=0,
+        novelty=50,
+        importance=70,
+        credibility=90,
+        heat=78,
+        rule_version="score-v1",
+        reasons=("fixture",),
+    )
+
+
+def _seed_published_event(engine, titles: tuple[str, ...], *, origin: str = "rule_fallback") -> int:
+    with Session(engine) as db:
+        db.add(
+            SourceDefinitionRecord(
+                id="official",
+                name="Official",
+                status="active",
+                nature="first_party",
+                language="en",
+                roles=["evidence"],
+                topics=["ai"],
+                authority_score=90,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash="official",
+            )
+        )
+        raw_ids = []
+        for index, title in enumerate(titles, start=1):
+            raw = RawItemRecord(
+                source_id="official",
+                external_id=str(index),
+                canonical_url=f"https://official.test/{index}",
+                payload={},
+                title=title,
+                title_fingerprint=f"title-{index}",
+                published_at=datetime.now(UTC),
+            )
+            db.add(raw)
+            db.flush()
+            raw_ids.append(raw.id)
+        event = EventRepository(db).publish_complete_event(
+            PublishedEvent(
+                canonical_key="legacy-combined",
+                status=EventStatus.CONFIRMED,
+                enrichment=EventEnrichment(
+                    zh_title="Current title",
+                    zh_summary="Current summary",
+                    why_it_matters="Current reason",
+                    origin=origin,
+                    confidence=0.8 if origin == "model" else 0,
+                ),
+                score=_score(),
+                source_item_ids=tuple(raw_ids),
+            ),
+            operation_id=1,
+        )
+        db.commit()
+        return event.id
 
 
 def test_event_handler_rejects_invalid_pipeline_scope() -> None:
@@ -33,20 +114,167 @@ def test_event_action_rejects_unknown_event_id() -> None:
     assert result.retryable is False
 
 
-def test_recluster_action_is_completed_by_the_worker() -> None:
+def test_recluster_splits_incompatible_members_and_publishes_changed_versions() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
-    with Session(engine) as db:
-        db.add(EventRecord(id=1, canonical_key="one", status="confirmed"))
-        db.commit()
+    event_id = _seed_published_event(
+        engine,
+        ("OpenAI launches Alpha model", "OpenAI launches Beta model"),
+    )
 
     result = EventOperationHandler(lambda: Session(engine))(
-        OperationLease(1, 1, 1, "worker", {"event_id": 1, "actor": "web"}, "event_recluster"),
+        OperationLease(
+            1, 1, 1, "worker", {"event_id": event_id, "actor": "web"}, "event_recluster"
+        ),
         lambda _: None,
     )
 
     assert result.status is OperationStatus.SUCCEEDED
     assert result.result_summary["action"] == "event_recluster"
+    assert result.result_summary["changed"] is True
+    assert result.result_summary["candidate_count"] == 2
+    assert len(result.result_summary["created_event_ids"]) == 1
+    with Session(engine) as db:
+        target = db.get(EventRecord, event_id)
+        assert target is not None
+        assert target.current_version_number == 2
+        active_target = set(
+            db.scalars(
+                select(EventItemRecord.raw_item_id).where(
+                    EventItemRecord.event_id == event_id,
+                    EventItemRecord.removed_version_number.is_(None),
+                )
+            )
+        )
+        assert active_target == {1}
+        split_id = result.result_summary["created_event_ids"][0]
+        active_split = set(
+            db.scalars(
+                select(EventItemRecord.raw_item_id).where(
+                    EventItemRecord.event_id == split_id,
+                    EventItemRecord.removed_version_number.is_(None),
+                )
+            )
+        )
+        assert active_split == {2}
+
+
+def test_recluster_does_not_publish_when_membership_is_unchanged() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    event_id = _seed_published_event(engine, ("OpenAI launches Alpha model",))
+
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1, 2, 1, "worker", {"event_id": event_id, "actor": "web"}, "event_recluster"
+        ),
+        lambda _: None,
+    )
+
+    assert result.result_summary["changed"] is False
+    with Session(engine) as db:
+        assert db.get(EventRecord, event_id).current_version_number == 1
+        assert db.query(EventVersionRecord).count() == 1
+
+
+def test_enrich_calls_model_without_session_or_lease_and_persists_provenance(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    event_id = _seed_published_event(engine, ("OpenAI launches Alpha model",))
+    open_sessions: set[Session] = set()
+
+    class TrackingSession(Session):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            open_sessions.add(self)
+
+        def close(self) -> None:
+            try:
+                super().close()
+            finally:
+                open_sessions.discard(self)
+
+    def model_enrichment(candidate):
+        assert open_sessions == set()
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("select lease_operation_id from events where id=:event_id"),
+                {"event_id": event_id},
+            ) is None
+        usage = ModelUsage(
+            purpose="event_enrichment",
+            model="MiniMax-M2.7-highspeed",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=2,
+            outcome="success",
+        )
+        return (
+            EventEnrichment(
+                zh_title="Alpha 模型发布",
+                zh_summary="OpenAI 发布 Alpha 模型",
+                why_it_matters="新的模型版本",
+                origin="model",
+                confidence=0.9,
+            ),
+            (EventModelRun(stage=usage.purpose, usage=usage),),
+        )
+
+    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(model_enrichment))
+    factory = sessionmaker(bind=engine, class_=TrackingSession, expire_on_commit=False)
+    result = EventOperationHandler(factory)(
+        OperationLease(
+            1, 3, 1, "worker", {"event_id": event_id, "actor": "web"}, "event_enrich"
+        ),
+        lambda _: None,
+    )
+
+    assert result.result_summary["changed"] is True
+    assert result.result_summary["model_origin"] == "model"
+    assert open_sessions == set()
+    with Session(engine) as db:
+        event = db.get(EventRecord, event_id)
+        assert event is not None
+        assert event.current_version_number == 2
+        version = db.scalar(
+            select(EventVersionRecord).where(
+                EventVersionRecord.event_id == event_id,
+                EventVersionRecord.version_number == 2,
+            )
+        )
+        assert version is not None
+        assert version.payload["enrichment"]["zh_title"] == "Alpha 模型发布"
+        usage = db.scalar(select(ModelUsageRecord))
+        run = db.scalar(select(EventModelRunRecord))
+        assert usage is not None and usage.outcome == "success"
+        assert run is not None and run.event_id == event_id
+        assert event.lease_operation_id is None
+
+
+def test_enrich_publishes_deterministic_rule_fallback_after_model_degradation(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    event_id = _seed_published_event(
+        engine, ("OpenAI launches Alpha model",), origin="model"
+    )
+
+    def degraded(candidate):
+        return rule_enrichment(candidate), ()
+
+    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(degraded))
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1, 4, 1, "worker", {"event_id": event_id, "actor": "web"}, "event_enrich"
+        ),
+        lambda _: None,
+    )
+
+    assert result.result_summary["model_origin"] == "rule_fallback"
+    with Session(engine) as db:
+        current = EventRepository(db).get_current_event(event_id)
+        assert current is not None
+        assert current.payload["enrichment"]["origin"] == "rule_fallback"
+        assert current.payload["enrichment"]["zh_title"] == "Current title"
 
 
 def test_exclude_action_marks_event_rejected_and_releases_lease() -> None:

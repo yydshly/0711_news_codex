@@ -18,6 +18,7 @@ from newsradar.db.models import (
 )
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
 from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
+from newsradar.events.evidence import assess_evidence, count_suppressed_independent_roots
 from newsradar.events.minimax import EventMiniMaxAdapter, EventModelRun
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.relevance import RELEVANCE_RULE_VERSION, evaluate_relevance
@@ -65,6 +66,10 @@ class EventPipeline:
         checkpoint("after_event_rules")
         candidates = self._cluster(items)
         checkpoint("after_event_cluster")
+        duplicate_root_suppressed_count = sum(
+            count_suppressed_independent_roots(assess_evidence(candidate.items))
+            for candidate in candidates
+        )
         event_ids, created_versions, model_fallback_count = self._publish(
             candidates, operation_id, checkpoint
         )
@@ -74,7 +79,7 @@ class EventPipeline:
             created_event_versions=created_versions,
             candidate_count=len(candidates),
             processed_item_count=len(items),
-            duplicate_root_suppressed_count=0,
+            duplicate_root_suppressed_count=duplicate_root_suppressed_count,
             model_fallback_count=model_fallback_count,
         )
 

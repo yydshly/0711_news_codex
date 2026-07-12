@@ -22,6 +22,14 @@ class EventPublisher:
     def publish(
         self, candidate_id: int, operation_id: int, enrichment: EventEnrichment | None = None
     ) -> PublishedEvent:
+        published = self.assemble(candidate_id, enrichment)
+        event = self.repository.publish_complete_event(published, operation_id)
+        return published.model_copy(update={"event_id": event.id})
+
+    def assemble(
+        self, candidate_id: int, enrichment: EventEnrichment | None = None
+    ) -> PublishedEvent:
+        """Build the complete deterministic snapshot without making it reader-visible."""
         candidate, source_item_ids = self.repository.get_candidate_for_publication(candidate_id)
         evidence = assess_evidence(candidate.items)
         decision = decide_publication(candidate, evidence)
@@ -30,7 +38,7 @@ class EventPublisher:
         # fallback is always complete, so an absent key or a model outage cannot
         # block a confirmed event or leave NULL reader-facing fields.
         enrichment = enrichment or _rule_enrichment(candidate)
-        published = PublishedEvent(
+        return PublishedEvent(
             canonical_key=candidate.candidate_key,
             status=decision.status,
             category=candidate.category,
@@ -40,8 +48,6 @@ class EventPublisher:
             evidence=evidence,
             source_item_ids=source_item_ids,
         )
-        event = self.repository.publish_complete_event(published, operation_id)
-        return published.model_copy(update={"event_id": event.id})
 
 
 def _score_input(metadata: dict, evidence: tuple[EvidenceAssessment, ...]) -> EventScoreInput:

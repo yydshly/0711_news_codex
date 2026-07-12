@@ -9,10 +9,27 @@ from time import monotonic
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import EventItemRecord, EventRecord
+from newsradar.db.models import (
+    EventItemRecord,
+    EventRecord,
+    RawItemRecord,
+    SourceDefinitionRecord,
+)
+from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
+from newsradar.events.entities import extract_entities
 from newsradar.events.pipeline import EventPipeline
+from newsradar.events.publishing import EventPublisher
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import EventEnrichment, EventStatus, PublishedEvent, ScoreBreakdown
+from newsradar.events.schema import (
+    CandidateCluster,
+    ClusterItem,
+    EventCategory,
+    EventEnrichment,
+    EventStatus,
+    PublishedEvent,
+    RawItemText,
+    ScoreBreakdown,
+)
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
@@ -98,6 +115,10 @@ class EventOperationHandler:
             deadline.check("before_event_action")
         except (OperationTimedOut, ValueError) as error:
             return _timeout_result(error)
+        if lease.operation_type == OperationType.EVENT_ENRICH.value:
+            return _handle_event_enrich(
+                self._session_factory, lease, checkpoint, deadline, event_id
+            )
         session = self._session_factory()
         if session is None:
             return OperationResult(
@@ -131,7 +152,7 @@ class EventOperationHandler:
             session.commit()
             checkpoint("before_event_action")
             deadline.check("before_event_mutation")
-            _apply_event_action(lease, session, event_id)
+            action_summary = _apply_event_action(lease, session, event_id)
             deadline.check("after_event_mutation")
             for release_id in reversed(claimed):
                 repository.release_event(release_id, lease.operation_id)
@@ -153,7 +174,11 @@ class EventOperationHandler:
             session.close()
         return OperationResult(
             status=OperationStatus.SUCCEEDED,
-            result_summary={"event_id": event_id, "action": lease.operation_type},
+            result_summary={
+                "event_id": event_id,
+                "action": lease.operation_type,
+                **action_summary,
+            },
         )
 
 
@@ -257,7 +282,9 @@ def _unknown_event(event_id: int) -> OperationResult:
     )
 
 
-def _apply_event_action(lease: OperationLease, session: Session, event_id: int) -> None:
+def _apply_event_action(
+    lease: OperationLease, session: Session, event_id: int
+) -> dict[str, object]:
     """Perform only the validated, local mutation; no web process/model work occurs here."""
     action = lease.operation_type
     repository = EventRepository(session)
@@ -267,6 +294,7 @@ def _apply_event_action(lease: OperationLease, session: Session, event_id: int) 
         repository.publish_complete_event(
             _snapshot(repository, event, status=EventStatus.REJECTED), lease.operation_id
         )
+        return {"changed": True}
     elif action == OperationType.EVENT_MERGE.value:
         target_id = int(lease.requested_scope["target_event_id"])
         survivor = session.get(EventRecord, event_id)
@@ -287,6 +315,7 @@ def _apply_event_action(lease: OperationLease, session: Session, event_id: int) 
             _snapshot(repository, target, status=EventStatus.REJECTED, source_item_ids=()),
             lease.operation_id,
         )
+        return {"changed": True, "merged_event_id": target_id}
     elif action == OperationType.EVENT_SPLIT.value:
         member_ids = set(lease.requested_scope["member_ids"])
         event = session.get(EventRecord, event_id)
@@ -304,16 +333,227 @@ def _apply_event_action(lease: OperationLease, session: Session, event_id: int) 
             score=_score(repository, event),
             source_item_ids=tuple(sorted(member_ids)),
         )
-        repository.publish_complete_event(split, lease.operation_id)
-    elif action in {OperationType.EVENT_RECLUSTER.value, OperationType.EVENT_ENRICH.value}:
+        split_record = repository.publish_complete_event(split, lease.operation_id)
+        return {"changed": True, "split_event_id": split_record.id}
+    elif action == OperationType.EVENT_RECLUSTER.value:
+        return _recluster_event(repository, lease, event_id)
+    raise AssertionError(f"validated event action was not implemented: {action}")
+
+
+def _handle_event_enrich(
+    session_factory: Callable[[], Session | None],
+    lease: OperationLease,
+    checkpoint: Callable[[str], None],
+    deadline,
+    event_id: int,
+) -> OperationResult:
+    """Run advisory model work before acquiring the short publication lease."""
+    session = session_factory()
+    if session is None:
+        return OperationResult(
+            status=OperationStatus.FAILED,
+            error_code="event_runtime_unavailable",
+            retryable=True,
+        )
+    try:
+        invalid_result = _validate_event_action(lease, session, event_id)
+        if invalid_result is not None:
+            return invalid_result
+        candidate = _event_candidate(session, event_id)
+    finally:
+        session.close()
+
+    try:
+        checkpoint("before_event_model")
+        deadline.check("before_event_model")
+        enrichment, model_runs = EventPipeline._enrich(candidate)
+        checkpoint("after_event_model")
+        deadline.check("after_event_model")
+    except OperationTimedOut as error:
+        return _timeout_result(error)
+
+    session = session_factory()
+    if session is None:
+        return OperationResult(
+            status=OperationStatus.FAILED,
+            error_code="event_runtime_unavailable",
+            retryable=True,
+        )
+    claimed = False
+    try:
+        invalid_result = _validate_event_action(lease, session, event_id)
+        if invalid_result is not None:
+            return invalid_result
+        repository = EventRepository(session)
+        deadline.check("before_event_lease")
+        claimed = repository.claim_event(
+            event_id, lease.operation_id, datetime.now(UTC) + timedelta(minutes=5)
+        )
+        if not claimed:
+            session.commit()
+            return OperationResult(
+                status=OperationStatus.FAILED,
+                error_code="event_lease_unavailable",
+                error_message="Event is being changed by another worker",
+                retryable=True,
+            )
+        session.commit()
+        checkpoint("before_event_action")
+        deadline.check("before_event_mutation")
         event = session.get(EventRecord, event_id)
         assert event is not None
-        enrichment = _enrichment(repository, event)
-        if action == OperationType.EVENT_ENRICH.value:
-            enrichment = enrichment.model_copy(update={"origin": "rule_fallback", "confidence": 0})
-        repository.publish_complete_event(
-            _snapshot(repository, event, enrichment=enrichment), lease.operation_id
+        changed = _enrichment(repository, event) != enrichment
+        if changed:
+            repository.publish_complete_event(
+                _snapshot(repository, event, enrichment=enrichment), lease.operation_id
+            )
+        persisted_model_runs = 0
+        for model_run in model_runs:
+            try:
+                with session.begin_nested():
+                    repository.record_model_run(event_id, model_run.usage)
+                persisted_model_runs += 1
+            except Exception:
+                continue
+        deadline.check("after_event_mutation")
+        repository.release_event(event_id, lease.operation_id)
+        session.commit()
+    except OperationTimedOut as error:
+        session.rollback()
+        if claimed:
+            EventRepository(session).release_event(event_id, lease.operation_id)
+            session.commit()
+        return _timeout_result(error)
+    except Exception:
+        session.rollback()
+        if claimed:
+            EventRepository(session).release_event(event_id, lease.operation_id)
+            session.commit()
+        raise
+    finally:
+        session.close()
+    return OperationResult(
+        status=OperationStatus.SUCCEEDED,
+        result_summary={
+            "event_id": event_id,
+            "action": lease.operation_type,
+            "changed": changed,
+            "model_origin": enrichment.origin,
+            "model_run_count": persisted_model_runs,
+        },
+    )
+
+
+def _recluster_event(
+    repository: EventRepository, lease: OperationLease, event_id: int
+) -> dict[str, object]:
+    event = repository.session.get(EventRecord, event_id)
+    assert event is not None
+    items = _event_cluster_items(repository.session, event_id)
+    previous_ids = tuple(sorted(item.raw_item_id for item in items))
+    if not previous_ids:
+        return {
+            "changed": False,
+            "candidate_count": 0,
+            "previous_member_ids": [],
+            "current_member_ids": [],
+            "created_event_ids": [],
+        }
+    category = EventCategory(event.category) if event.category else None
+    candidates = tuple(
+        candidate.model_copy(update={"category": category})
+        for candidate in cluster_candidates(items)
+    )
+    candidate_ids: dict[str, int] = {}
+    for candidate in candidates:
+        record = repository.upsert_candidate(candidate, CLUSTER_RULE_VERSION)
+        repository.replace_candidate_items(record.id, candidate.raw_item_ids)
+        candidate_ids[candidate.candidate_key] = record.id
+
+    anchor_id = min(previous_ids)
+    retained = next(candidate for candidate in candidates if anchor_id in candidate.raw_item_ids)
+    retained_ids = tuple(sorted(retained.raw_item_ids))
+    changed = retained_ids != previous_ids or len(candidates) > 1
+    created_event_ids: list[int] = []
+    publisher = EventPublisher(repository)
+    if changed:
+        retained_snapshot = publisher.assemble(
+            candidate_ids[retained.candidate_key], _enrichment(repository, event)
+        ).model_copy(update={"event_id": event.id, "canonical_key": event.canonical_key})
+        repository.publish_complete_event(retained_snapshot, lease.operation_id)
+        for candidate in candidates:
+            if candidate is retained:
+                continue
+            published = publisher.publish(
+                candidate_ids[candidate.candidate_key], lease.operation_id
+            )
+            assert published.event_id is not None
+            created_event_ids.append(published.event_id)
+    return {
+        "changed": changed,
+        "candidate_count": len(candidates),
+        "previous_member_ids": list(previous_ids),
+        "current_member_ids": list(retained_ids),
+        "created_event_ids": created_event_ids,
+    }
+
+
+def _event_candidate(session: Session, event_id: int) -> CandidateCluster:
+    event = session.get(EventRecord, event_id)
+    assert event is not None
+    items = _event_cluster_items(session, event_id)
+    current = EventRepository(session).get_current_event(event_id)
+    title = current.zh_title if current and current.zh_title else (items[0].title if items else "")
+    return CandidateCluster(
+        candidate_key=event.canonical_key,
+        title=title,
+        category=EventCategory(event.category) if event.category else None,
+        items=items,
+        raw_item_ids=tuple(item.raw_item_id for item in items),
+        occurred_at=event.occurred_at,
+    )
+
+
+def _event_cluster_items(session: Session, event_id: int) -> tuple[ClusterItem, ...]:
+    rows = session.execute(
+        select(RawItemRecord, SourceDefinitionRecord)
+        .join(SourceDefinitionRecord, SourceDefinitionRecord.id == RawItemRecord.source_id)
+        .join(EventItemRecord, EventItemRecord.raw_item_id == RawItemRecord.id)
+        .where(
+            EventItemRecord.event_id == event_id,
+            EventItemRecord.removed_version_number.is_(None),
         )
+        .order_by(RawItemRecord.id)
+    ).all()
+    return tuple(
+        ClusterItem(
+            raw_item_id=raw.id,
+            title=raw.title or "",
+            canonical_url=raw.canonical_url,
+            canonical_url_hash=raw.canonical_url_hash,
+            original_url=raw.original_url,
+            title_fingerprint=raw.title_fingerprint,
+            entities=tuple(
+                entity.canonical_key
+                for entity in extract_entities(
+                    RawItemText(
+                        raw_item_id=raw.id,
+                        title=raw.title or "",
+                        summary=raw.summary or "",
+                        content=raw.content or "",
+                        item_kind=raw.item_kind,
+                        publisher_name=raw.publisher_name or source.name,
+                        source_topics=tuple(source.topics),
+                    )
+                )
+            ),
+            published_at=raw.published_at,
+            source_nature=source.nature,
+            source_roles=tuple(source.roles),
+            publisher_name=raw.publisher_name or source.name,
+        )
+        for raw, source in rows
+    )
 
 
 def _active_ids(session: Session, event_id: int) -> set[int]:

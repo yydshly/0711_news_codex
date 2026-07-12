@@ -19,6 +19,23 @@ def assess_evidence(items: tuple[ClusterItem, ...]) -> tuple[EvidenceAssessment,
     return tuple(_assess(item) for item in items)
 
 
+def count_suppressed_independent_roots(
+    assessments: tuple[EvidenceAssessment, ...],
+) -> int:
+    """Count independent-eligible items omitted after root de-duplication."""
+    seen: set[str] = set()
+    suppressed = 0
+    for assessment in assessments:
+        if not assessment.independent:
+            continue
+        root = assessment.root_evidence_key or f"item:{assessment.raw_item_id}"
+        if root in seen:
+            suppressed += 1
+        else:
+            seen.add(root)
+    return suppressed
+
+
 def _assess(item: ClusterItem) -> EvidenceAssessment:
     role = _ROLE_BY_NATURE.get(item.source_nature or "", EvidenceRole.COMMUNITY)
     source_allows_evidence = "evidence" in item.source_roles

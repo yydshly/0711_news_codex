@@ -10,6 +10,7 @@ from newsradar.events.schema import CandidateCluster, ClusterDecision, ClusterIt
 CLUSTER_RULE_VERSION = "cluster-v1"
 _CANDIDATE_WINDOW_SECONDS = 48 * 60 * 60
 _GENERIC_ENTITIES = frozenset({"ai", "agent", "api", "benchmark", "llm", "model"})
+_OBJECT_ENTITY_TYPES = frozenset({"product", "model", "paper", "dataset", "project"})
 _ACTION_GROUPS = {
     "launch": frozenset(
         {"announce", "announced", "launch", "launches", "launched", "release", "released"}
@@ -94,8 +95,16 @@ def _entity_action_similarity(
     shared_entities = _non_generic_entities(left.entities) & _non_generic_entities(right.entities)
     if not shared_entities:
         return 0.0
-    reasons.append("shared_entity")
-    if left_action and left_action == right_action:
+    shared_objects = {
+        entity
+        for entity in shared_entities
+        if _entity_type(entity) in _OBJECT_ENTITY_TYPES
+    }
+    if shared_objects:
+        reasons.append("shared_object_entity")
+    else:
+        reasons.append("shared_organization")
+    if shared_objects and left_action and left_action == right_action:
         reasons.append("same_action")
         return 0.8
     return 0.4
@@ -118,6 +127,9 @@ def _immutable_identity_score(left: ClusterItem, right: ClusterItem, reasons: li
     )
     if same_canonical_url:
         reasons.append("same_canonical_url")
+        score += 1.0
+    elif _url_identities(left) & _url_identities(right):
+        reasons.append("same_evidence_root")
         score += 1.0
     if left.repository_id and left.repository_id == right.repository_id:
         reasons.append("same_repository_id")
@@ -181,6 +193,14 @@ def _non_generic_entities(entities: tuple[str, ...]) -> set[str]:
     }
 
 
+def _entity_type(entity: str) -> str:
+    return entity.split(":", 1)[0].casefold() if ":" in entity else ""
+
+
+def _url_identities(item: ClusterItem) -> set[str]:
+    return {value for value in (item.canonical_url, item.original_url) if value}
+
+
 def _action(title: str) -> str | None:
     tokens = set(title.casefold().replace("-", " ").split())
     return next((name for name, words in _ACTION_GROUPS.items() if tokens & words), None)
@@ -192,24 +212,33 @@ def _candidate_key(items: tuple[ClusterItem, ...]) -> str:
     Member ids deliberately do not participate: later independent reporting changes a
     version's memberships, not the identity of the underlying event.
     """
-    primary = min(
-        (entity for item in items for entity in _non_generic_entities(item.entities)),
-        default="title:"
-        + min(
-            (item.title_fingerprint or item.title.casefold() for item in items), default=""
+    anchor = min(items, key=lambda item: item.raw_item_id)
+    anchor_entities = _non_generic_entities(anchor.entities)
+    primary = next(
+        (
+            value
+            for value in (
+                f"repository:{anchor.repository_id}" if anchor.repository_id else None,
+                f"paper:{anchor.paper_id}" if anchor.paper_id else None,
+                f"root:{anchor.original_url}" if anchor.original_url else None,
+                f"url:{anchor.canonical_url}" if anchor.canonical_url else None,
+                min(
+                    (
+                        entity
+                        for entity in anchor_entities
+                        if _entity_type(entity) in _OBJECT_ENTITY_TYPES
+                    ),
+                    default=None,
+                ),
+                f"title:{anchor.title_fingerprint or anchor.title.casefold()}",
+            )
+            if value
         ),
+        "title:",
     )
-    action = next((value for value in (_action(item.title) for item in items) if value), "report")
-    occurred = min(
-        (item.published_at for item in items if item.published_at is not None),
-        default=datetime(1970, 1, 1, tzinfo=UTC),
-    )
-    # The object/title fingerprint prevents two same-company, same-day launches
-    # from collapsing solely because their organization/action/time agree.
-    object_key = min(
-        (item.title_fingerprint or item.title.casefold() for item in items), default=""
-    )
-    value = f"{primary}|{object_key}|{action}|{occurred.date().isoformat()}"
+    action = _action(anchor.title) or "report"
+    occurred = anchor.published_at or datetime(1970, 1, 1, tzinfo=UTC)
+    value = f"{primary}|{action}|{occurred.date().isoformat()}"
     return f"event-v2:{sha256(value.encode()).hexdigest()[:16]}"
 
 
