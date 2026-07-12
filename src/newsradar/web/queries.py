@@ -346,6 +346,9 @@ class DashboardQueryService:
                 zh_label("outcome", latest.outcome) if latest else _NO_PROBE_LABEL
             ),
             reviewed_at=provider.reviewed_at,
+            auth_mode=provider.auth_mode,
+            auth_label=zh_label("auth_mode", provider.auth_mode),
+            capabilities=tuple(provider.capabilities),
         )
 
     def _target_rows_for_records(
@@ -399,6 +402,8 @@ class DashboardQueryService:
                     latest_outcome_label=(
                         zh_label("outcome", latest.outcome) if latest else _NO_PROBE_LABEL
                     ),
+                    roles=tuple(source.roles),
+                    role_labels=tuple(zh_label("role", role) for role in source.roles),
                 )
             )
         return rows

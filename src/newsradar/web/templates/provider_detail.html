@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}{{ provider.row.name }} · 来源能力{% endblock %}
+{% block header %}<h1>{{ provider.row.name }}</h1>{% endblock %}
+
+{% block content %}
+<div class="detail-page">
+  <nav class="breadcrumbs" aria-label="面包屑"><a href="/providers">来源能力</a><span aria-hidden="true">/</span><span>{{ provider.row.name }}</span></nav>
+  <section class="panel detail-hero" aria-labelledby="provider-detail-heading">
+    <p class="eyebrow">Provider 登记详情</p>
+    <h2 id="provider-detail-heading">{{ provider.row.name }}</h2>
+    <div class="tag-list"><span class="status status-{{ 'healthy' if provider.row.availability == 'ready' else 'blocked' }}">{{ provider.row.availability_label }}</span><span>{{ provider.row.category_label }}</span><span>{{ provider.row.cost_label }}</span><span>{{ provider.auth_label }}</span></div>
+    {% if provider.notes %}<p>{{ provider.notes }}</p>{% endif %}
+    <dl class="detail-grid">
+      <div><dt>官方网站</dt><dd><a href="{{ provider.homepage }}" target="_blank" rel="noopener noreferrer">打开官网</a></dd></div>
+      <div><dt>文档</dt><dd><a href="{{ provider.docs_url }}" target="_blank" rel="noopener noreferrer">打开文档</a></dd></div>
+      <div><dt>服务条款</dt><dd><a href="{{ provider.terms_url }}" target="_blank" rel="noopener noreferrer">查看条款</a></dd></div>
+      <div><dt>审核日期</dt><dd><time datetime="{{ provider.row.reviewed_at.isoformat() }}">{{ provider.row.reviewed_at }}</time></dd></div>
+      <div><dt>能力</dt><dd>{{ provider.capabilities | join('、') if provider.capabilities else '未记录' }}</dd></div>
+      <div><dt>环境变量名称</dt><dd>{{ provider.required_env | join('、') if provider.required_env else '不需要' }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel" aria-labelledby="unlock-heading"><h2 id="unlock-heading">解锁步骤</h2>{% if provider.unlock_requirements %}<ol>{% for item in provider.unlock_requirements %}<li>{{ item }}</li>{% endfor %}</ol>{% else %}<p class="empty-state">无需额外解锁步骤。</p>{% endif %}</section>
+
+  <section class="panel" aria-labelledby="provider-evidence-heading"><h2 id="provider-evidence-heading">审核证据</h2>{% if provider.evidence %}<ul class="link-list">{% for link in provider.evidence %}<li><a href="{{ link }}" target="_blank" rel="noopener noreferrer">证据 {{ loop.index }}</a></li>{% endfor %}</ul>{% else %}<p class="empty-state">未记录证据链接。</p>{% endif %}</section>
+
+  <section class="panel table-panel" aria-labelledby="related-targets-heading"><h2 id="related-targets-heading">相关 Target</h2>{% if provider.targets %}<div class="table-scroll" role="region" aria-label="相关 Target" tabindex="0"><table><thead><tr><th scope="col">名称</th><th scope="col">覆盖</th><th scope="col">可用性</th><th scope="col">最新内容探测结果</th></tr></thead><tbody>{% for target in provider.targets %}<tr><th scope="row"><a href="/targets/{{ target.source_id }}">{{ target.name }}</a></th><td>{{ target.coverage_label }}</td><td>{{ target.availability_label }}</td><td>{{ target.latest_outcome_label }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty-state">尚无相关 Target。</p>{% endif %}</section>
+
+  <section class="panel table-panel" aria-labelledby="capability-probes-heading"><h2 id="capability-probes-heading">最新能力探测</h2>{% if provider.probes %}<div class="table-scroll" role="region" aria-label="最新能力探测" tabindex="0"><table><thead><tr><th scope="col">时间</th><th scope="col">结果</th><th scope="col">说明</th><th scope="col">HTTP</th><th scope="col">延迟</th></tr></thead><tbody>{% for probe in provider.probes[:3] %}<tr><td><time datetime="{{ probe.checked_at.isoformat() }}">{{ probe.checked_at.strftime('%Y-%m-%d %H:%M') }}</time></td><td>{{ probe.probe_type_label }} · {{ probe.outcome_label }}</td><td>{{ probe.reason_zh }}</td><td>{{ probe.http_status if probe.http_status is not none else '—' }}</td><td>{{ ('%.0f ms' | format(probe.latency_ms)) if probe.latency_ms is not none else '—' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty-state">尚无能力探测历史。</p>{% endif %}</section>
+</div>
+{% endblock %}

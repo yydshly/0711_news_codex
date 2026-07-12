@@ -54,6 +54,19 @@ def test_filters_and_unknown_details(query_service):
     assert query_service.target_detail("missing") is None
 
 
+def test_catalog_rows_include_list_metadata_without_detail_queries(query_service):
+    provider = next(row for row in query_service.providers() if row.provider_id == "github")
+    assert provider.auth_mode == "none"
+    assert provider.auth_label == "无需认证"
+    assert provider.capabilities == ("search",)
+
+    target = next(
+        row for row in query_service.targets() if row.source_id == "github-openai-python"
+    )
+    assert target.roles == ("discovery",)
+    assert target.role_labels == ("发现",)
+
+
 def test_details_contain_audited_fields_but_no_secret_values(query_service):
     provider = query_service.provider_detail("x")
     assert provider is not None

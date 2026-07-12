@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}{{ target.row.name }} · 目标目录{% endblock %}
+{% block header %}<h1>{{ target.row.name }}</h1>{% endblock %}
+
+{% block content %}
+<div class="detail-page">
+  <nav class="breadcrumbs" aria-label="面包屑"><a href="/targets">目标目录</a><span aria-hidden="true">/</span><span>{{ target.row.name }}</span></nav>
+  <section class="panel detail-hero" aria-labelledby="target-detail-heading">
+    <p class="eyebrow">Target 审核详情</p><h2 id="target-detail-heading">{{ target.row.name }}</h2>
+    <div class="tag-list"><span class="status status-{{ 'healthy' if target.row.availability == 'ready' else 'blocked' }}">{{ target.row.availability_label }}</span><span>{{ target.row.coverage_label }}</span><span>{{ target.status_label }}</span></div>
+    {% if target.notes %}<p>{{ target.notes }}</p>{% endif %}
+    <dl class="detail-grid">
+      <div><dt>Provider</dt><dd><a href="/providers/{{ target.row.provider_id }}">{{ target.row.provider_name }}</a></dd></div>
+      <div><dt>目标类型</dt><dd>{{ target.row.target_type_label }}</dd></div>
+      <div><dt>性质</dt><dd>{{ target.nature_label }}</dd></div>
+      <div><dt>语言</dt><dd>{{ target.language }}</dd></div>
+      <div><dt>角色</dt><dd>{% for value, label in target.roles %}{{ label }}{% if not loop.last %}、{% endif %}{% else %}未记录{% endfor %}</dd></div>
+      <div><dt>主题</dt><dd>{{ target.topics | join('、') if target.topics else '未记录' }}</dd></div>
+      <div><dt>审核日期</dt><dd>{% if target.reviewed_at %}<time datetime="{{ target.reviewed_at.isoformat() }}">{{ target.reviewed_at }}</time>{% else %}未记录{% endif %}</dd></div>
+      <div><dt>官方身份页</dt><dd>{% if target.official_identity_url %}<a href="{{ target.official_identity_url }}" target="_blank" rel="noopener noreferrer">打开官方页面</a>{% else %}未记录{% endif %}</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel" aria-labelledby="access-heading"><h2 id="access-heading">访问方式</h2>{% if target.access_methods %}<div class="method-list">{% for method in target.access_methods %}<article><p class="eyebrow">{{ '首选访问方式' if loop.first else '备用访问方式' }}</p><h3>{{ method.kind_label }}</h3><dl><div><dt>优先级</dt><dd>{{ method.priority }}</dd></div><div><dt>入口</dt><dd><a href="{{ method.url }}" target="_blank" rel="noopener noreferrer">打开访问入口</a></dd></div><div><dt>环境变量名称</dt><dd>{{ method.auth_env if method.auth_env else '不需要' }}</dd></div><div><dt>人工审批</dt><dd>{{ '需要' if method.requires_manual_approval else '不需要' }}</dd></div></dl></article>{% endfor %}</div>{% else %}<p class="empty-state">尚未配置访问方式。</p>{% endif %}</section>
+
+  <section class="panel" aria-labelledby="expected-fields-heading"><h2 id="expected-fields-heading">预期字段</h2>{% if target.expected_fields %}<ul class="chip-list">{% for field in target.expected_fields %}<li><code>{{ field }}</code></li>{% endfor %}</ul>{% else %}<p class="empty-state">未记录预期字段。</p>{% endif %}</section>
+
+  <section class="panel" aria-labelledby="risk-heading"><h2 id="risk-heading">风险分项</h2>{% if target.risk %}<dl class="risk-grid"><div><dt>条款</dt><dd>{{ target.risk.terms }}</dd></div><div><dt>认证</dt><dd>{{ target.risk.authentication }}</dd></div><div><dt>稳定性</dt><dd>{{ target.risk.stability }}</dd></div><div><dt>数据质量</dt><dd>{{ target.risk.data_quality }}</dd></div><div><dt>运营成本</dt><dd>{{ target.risk.operating_cost }}</dd></div><div><dt>总分</dt><dd>{{ target.risk.total }}</dd></div></dl>{% if target.risk.hard_block_reason %}<p class="risk-warning">硬阻塞：{{ target.risk.hard_block_reason }}</p>{% endif %}<h3>风险证据</h3><ul class="link-list">{% for link in target.risk.evidence %}<li><a href="{{ link }}" target="_blank" rel="noopener noreferrer">证据 {{ loop.index }}</a></li>{% else %}<li>未记录证据链接</li>{% endfor %}</ul>{% else %}<p class="empty-state">尚无风险评估。</p>{% endif %}</section>
+
+  <section class="panel table-panel" aria-labelledby="content-probes-heading"><div class="section-heading"><div><p class="eyebrow">内容探测，不是能力探测</p><h2 id="content-probes-heading">最近三次内容探测</h2></div>{% if target.recent_probes and target.recent_probes[0].completeness is not none %}<span class="scope-label">最新样本完整度 {{ '%.0f%%' | format(target.recent_probes[0].completeness * 100) }}</span>{% endif %}</div>{% if target.recent_probes %}<div class="table-scroll" role="region" aria-label="最近三次内容探测" tabindex="0"><table><thead><tr><th scope="col">时间</th><th scope="col">结果</th><th scope="col">完整度</th><th scope="col">说明</th></tr></thead><tbody>{% for probe in target.recent_probes %}<tr><td><time datetime="{{ probe.checked_at.isoformat() }}">{{ probe.checked_at.strftime('%Y-%m-%d %H:%M') }}</time></td><td>{{ probe.outcome_label }}</td><td>{{ ('%.0f%%' | format(probe.completeness * 100)) if probe.completeness is not none else '—' }}</td><td>{{ probe.reason_zh }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty-state">尚无内容探测历史。</p>{% endif %}</section>
+
+  <section class="panel" aria-labelledby="target-unlock-heading"><h2 id="target-unlock-heading">解锁步骤</h2>{% if target.unlock_requirements %}<ol>{% for item in target.unlock_requirements %}<li>{{ item }}</li>{% endfor %}</ol>{% else %}<p class="empty-state">无需额外解锁步骤。</p>{% endif %}</section>
+</div>
+{% endblock %}

@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import select_autoescape
@@ -18,6 +19,89 @@ from newsradar.web.queries import DashboardQueryService
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
 _WEB_ROOT = Path(__file__).resolve().parent
 _UNDEFINED_TABLE_SQLSTATE = "42P01"
+
+ProviderCategory = Literal[
+    "social_community",
+    "professional_media",
+    "first_party",
+    "aggregator_search",
+    "research_developer",
+    "newsletter_podcast",
+    "trend_business",
+]
+Availability = Literal[
+    "ready",
+    "requires_credentials",
+    "requires_approval",
+    "requires_payment",
+    "manual_only",
+    "unavailable",
+]
+CostTier = Literal["free", "free_quota", "freemium", "paid", "enterprise", "unknown"]
+TargetType = Literal[
+    "publisher_feed",
+    "account",
+    "channel",
+    "keyword",
+    "topic",
+    "community",
+    "search_query",
+    "trend",
+    "market",
+]
+CoverageMode = Literal["direct", "indirect", "catalog_only"]
+
+_PROVIDER_CATEGORIES = (
+    ("social_community", "社交与社区"),
+    ("professional_media", "专业媒体"),
+    ("first_party", "第一方来源"),
+    ("aggregator_search", "聚合与搜索"),
+    ("research_developer", "研究与开发者"),
+    ("newsletter_podcast", "新闻简报与播客"),
+    ("trend_business", "趋势与商业"),
+)
+_AVAILABILITIES = (
+    ("ready", "可直接使用"),
+    ("requires_credentials", "需要凭据"),
+    ("requires_approval", "需要审批"),
+    ("requires_payment", "需要付费"),
+    ("manual_only", "仅限手动"),
+    ("unavailable", "不可用"),
+)
+_COST_TIERS = (
+    ("free", "免费"),
+    ("free_quota", "免费额度"),
+    ("freemium", "基础免费"),
+    ("paid", "付费"),
+    ("enterprise", "企业版"),
+    ("unknown", "未知"),
+)
+_TARGET_TYPES = (
+    ("publisher_feed", "发布方订阅源"),
+    ("account", "账号"),
+    ("channel", "频道"),
+    ("keyword", "关键词"),
+    ("topic", "主题"),
+    ("community", "社区"),
+    ("search_query", "搜索查询"),
+    ("trend", "趋势"),
+    ("market", "市场"),
+)
+_COVERAGE_MODES = (
+    ("direct", "直接覆盖"),
+    ("indirect", "间接发现"),
+    ("catalog_only", "仅目录收录"),
+)
+
+
+def _active_filters(**values: object) -> dict[str, object]:
+    return {key: value for key, value in values.items() if value not in (None, "")}
+
+
+def _normalized_query(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.strip()[:100]
 
 
 @contextmanager
@@ -115,6 +199,100 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "diagnostic": diagnostic,
                 "recent_probes": probes[:10],
                 "top_gaps": gaps[:5],
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+            },
+        )
+
+    @app.get("/providers", response_class=HTMLResponse)
+    def provider_catalog(
+        request: Request,
+        category: Annotated[ProviderCategory | None, Query()] = None,
+        availability: Annotated[Availability | None, Query()] = None,
+        cost_tier: Annotated[CostTier | None, Query()] = None,
+        q: str | None = None,
+    ) -> HTMLResponse:
+        filters = _active_filters(
+            category=category,
+            availability=availability,
+            cost_tier=cost_tier,
+            q=_normalized_query(q),
+        )
+        with resolved_service_factory() as service:
+            rows = service.providers(filters)
+        return templates.TemplateResponse(
+            request=request,
+            name="providers.html",
+            context={
+                "providers": rows,
+                "filters": filters,
+                "category_options": _PROVIDER_CATEGORIES,
+                "availability_options": _AVAILABILITIES,
+                "cost_options": _COST_TIERS,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+            },
+        )
+
+    @app.get("/providers/{provider_id}", response_class=HTMLResponse)
+    def provider_details(request: Request, provider_id: str) -> HTMLResponse:
+        with resolved_service_factory() as service:
+            detail = service.provider_detail(provider_id)
+        if detail is None:
+            raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="provider_detail.html",
+            context={
+                "provider": detail,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+            },
+        )
+
+    @app.get("/targets", response_class=HTMLResponse)
+    def target_catalog(
+        request: Request,
+        provider_id: str | None = None,
+        target_type: Annotated[TargetType | None, Query()] = None,
+        coverage_mode: Annotated[CoverageMode | None, Query()] = None,
+        availability: Annotated[Availability | None, Query()] = None,
+        q: str | None = None,
+    ) -> HTMLResponse:
+        filters = _active_filters(
+            provider_id=provider_id,
+            target_type=target_type,
+            coverage_mode=coverage_mode,
+            availability=availability,
+            q=_normalized_query(q),
+        )
+        with resolved_service_factory() as service:
+            rows = service.targets(filters)
+        return templates.TemplateResponse(
+            request=request,
+            name="targets.html",
+            context={
+                "targets": rows,
+                "filters": filters,
+                "target_type_options": _TARGET_TYPES,
+                "coverage_options": _COVERAGE_MODES,
+                "availability_options": _AVAILABILITIES,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+            },
+        )
+
+    @app.get("/targets/{source_id}", response_class=HTMLResponse)
+    def target_details(request: Request, source_id: str) -> HTMLResponse:
+        with resolved_service_factory() as service:
+            detail = service.target_detail(source_id)
+        if detail is None:
+            raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="target_detail.html",
+            context={
+                "target": detail,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
             },

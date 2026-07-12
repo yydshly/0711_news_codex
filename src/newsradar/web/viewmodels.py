@@ -32,6 +32,9 @@ class ProviderRow:
     latest_outcome: str | None
     latest_outcome_label: str
     reviewed_at: date
+    auth_mode: str = ""
+    auth_label: str = "未记录"
+    capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +55,8 @@ class TargetRow:
     latest_content_at: datetime | None
     latest_outcome: str | None
     latest_outcome_label: str
+    roles: tuple[str, ...] = ()
+    role_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -171,6 +171,56 @@ tbody th { font-weight: 600; }
 .gap-list li div { display: grid; }
 .gap-list li span, .empty-state { color: var(--muted); }
 
+.catalog-page,
+.detail-page {
+  display: grid;
+  gap: 1rem;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.catalog-page .panel,
+.detail-page .panel { max-width: none; }
+.filter-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: end;
+}
+.target-filters { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.filter-form label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.875rem; }
+.filter-form input,
+.filter-form select,
+.filter-form button {
+  min-height: 2.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.filter-form button { border-color: var(--info); cursor: pointer; }
+.filter-actions { display: flex; gap: 0.75rem; align-items: center; }
+.catalog-table th small { display: block; color: var(--muted); font-weight: 400; }
+.catalog-table table { min-width: 1100px; }
+.breadcrumbs { display: flex; gap: 0.5rem; color: var(--muted); }
+.tag-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.tag-list > span:not(.status) { padding: 0.35rem 0.65rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.detail-grid,
+.risk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 0; }
+.detail-grid div,
+.risk-grid div,
+.method-list article { padding: 1rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--panel-2); }
+dt { color: var(--muted); font-size: 0.85rem; }
+dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
+.method-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+.method-list h3 { margin-top: 0; }
+.method-list dl { display: grid; gap: 0.65rem; margin: 0; }
+.chip-list,
+.link-list { display: flex; flex-wrap: wrap; gap: 0.65rem; padding: 0; list-style: none; }
+.chip-list li { padding: 0.35rem 0.6rem; border: 1px solid var(--line); border-radius: 0.35rem; }
+.risk-warning { margin-top: 1rem; color: var(--blocked); }
+
 @media (max-width: 1100px) {
   .dashboard-grid, .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-card, .category-panel, .diagnostic-stack, .probes-panel, .gaps-panel { grid-column: span 1; }
@@ -197,6 +247,12 @@ tbody th { font-weight: 600; }
   .dashboard-grid, .metric-grid { grid-template-columns: minmax(0, 1fr); }
   .metric-card { min-height: 8rem; }
   .gap-list li { align-items: start; }
+  .filter-form,
+  .target-filters { grid-template-columns: minmax(0, 1fr); }
+  .filter-actions { justify-content: space-between; }
+  .detail-grid,
+  .risk-grid,
+  .method-list { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 480px) {

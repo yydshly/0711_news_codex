@@ -2,19 +2,31 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from newsradar.web import create_app
-from newsradar.web.viewmodels import DashboardSummary, GapGroup, ProbeRow
+from newsradar.web.viewmodels import (
+    AccessMethodView,
+    DashboardSummary,
+    GapGroup,
+    ProbeRow,
+    ProviderDetail,
+    ProviderRow,
+    RiskView,
+    TargetDetail,
+    TargetRow,
+)
 
 
 class FakeDashboardService:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.provider_filters: dict[str, str] | None = None
+        self.target_filters: dict[str, str] | None = None
 
     def summary(self) -> DashboardSummary:
         self.calls.append("summary")
@@ -29,9 +41,146 @@ class FakeDashboardService:
             latest_probe_at=datetime(2026, 7, 11, 9, 30),
         )
 
-    def providers(self):
+    def providers(self, filters=None):
         self.calls.append("providers")
-        return []
+        self.provider_filters = filters
+        return [self._provider_row()]
+
+    @staticmethod
+    def _provider_row() -> ProviderRow:
+        return ProviderRow(
+            provider_id="github",
+            name="GitHub",
+            category="research_developer",
+            category_label="研究与开发者",
+            cost_tier="free",
+            cost_label="免费",
+            availability="ready",
+            availability_label="可直接使用",
+            target_count=1,
+            direct_count=1,
+            indirect_count=0,
+            latest_outcome="success",
+            latest_outcome_label="成功",
+            reviewed_at=date(2026, 7, 10),
+            auth_mode="api_key",
+            auth_label="API 密钥",
+            capabilities=("search", "releases"),
+        )
+
+    @staticmethod
+    def _target_row() -> TargetRow:
+        return TargetRow(
+            source_id="github-openai-python",
+            name="OpenAI Python",
+            provider_id="github",
+            provider_name="GitHub",
+            target_type="publisher_feed",
+            target_type_label="发布方订阅源",
+            coverage_mode="direct",
+            coverage_label="直接覆盖",
+            availability="ready",
+            availability_label="可直接使用",
+            access_kind="rss",
+            access_label="RSS",
+            risk_total=5,
+            latest_content_at=datetime(2026, 7, 11, 9, 30),
+            latest_outcome="success",
+            latest_outcome_label="成功",
+            roles=("discovery",),
+            role_labels=("发现",),
+        )
+
+    def provider_detail(self, provider_id: str):
+        self.calls.append("provider_detail")
+        if provider_id != "github":
+            return None
+        return ProviderDetail(
+            row=self._provider_row(),
+            homepage="https://github.example/",
+            docs_url="https://github.example/docs",
+            terms_url="https://github.example/terms",
+            auth_mode="api_key",
+            auth_label="API 密钥",
+            capabilities=("search", "releases"),
+            required_env=("GITHUB_TOKEN",),
+            evidence=("https://github.example/evidence",),
+            unlock_requirements=("配置只读令牌",),
+            notes="已审核的 Provider",
+            targets=(self._target_row(),),
+            probes=(
+                ProbeRow(
+                    probe_id="capability-1",
+                    object_id="github",
+                    object_name="GitHub",
+                    probe_type="capability",
+                    probe_type_label="能力探测",
+                    outcome="success",
+                    outcome_label="成功",
+                    checked_at=datetime(2026, 7, 11, 9, 30),
+                    http_status=200,
+                    latency_ms=25.0,
+                    completeness=None,
+                    reason_zh="成功",
+                    reason_raw="ok",
+                ),
+            ),
+        )
+
+    def targets(self, filters=None):
+        self.calls.append("targets")
+        self.target_filters = filters
+        return [self._target_row()]
+
+    def target_detail(self, source_id: str):
+        self.calls.append("target_detail")
+        if source_id != "github-openai-python":
+            return None
+        return TargetDetail(
+            row=self._target_row(),
+            official_identity_url="https://github.example/openai-python",
+            reviewed_at=date(2026, 7, 10),
+            status="active",
+            status_label="启用",
+            nature="first_party",
+            nature_label="第一方",
+            language="en",
+            roles=(("discovery", "发现"),),
+            topics=("ai", "python"),
+            expected_fields=("title", "canonical_url"),
+            unlock_requirements=("配置只读令牌",),
+            notes="已审核的 Target",
+            access_methods=(
+                AccessMethodView(
+                    kind="rss",
+                    kind_label="RSS",
+                    url="https://feeds.example/openai-python",
+                    priority=1,
+                    requires_manual_approval=False,
+                    auth_env="GITHUB_TOKEN",
+                ),
+                AccessMethodView(
+                    kind="html",
+                    kind_label="网页 HTML",
+                    url="https://github.example/openai-python",
+                    priority=2,
+                    requires_manual_approval=False,
+                    auth_env=None,
+                ),
+            ),
+            risk=RiskView(
+                terms=1,
+                authentication=1,
+                stability=1,
+                data_quality=1,
+                operating_cost=1,
+                total=5,
+                evidence=("https://risk.example/openai-python",),
+                hard_block_reason=None,
+                assessed_at=datetime(2026, 7, 10, 9, 30),
+            ),
+            recent_probes=tuple(self.probes()),
+        )
 
     def probes(self):
         self.calls.append("probes")
@@ -71,13 +220,17 @@ class FakePostgresError(Exception):
         self.sqlstate = sqlstate
 
 
-@contextmanager
-def fake_service_context() -> Iterator[FakeDashboardService]:
-    yield FakeDashboardService()
+@pytest.fixture
+def fake_service() -> FakeDashboardService:
+    return FakeDashboardService()
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(fake_service: FakeDashboardService) -> Iterator[TestClient]:
+    @contextmanager
+    def fake_service_context() -> Iterator[FakeDashboardService]:
+        yield fake_service
+
     with TestClient(
         create_app(lambda: fake_service_context()), raise_server_exceptions=False
     ) as test_client:
@@ -248,3 +401,98 @@ def test_static_shell_assets_preserve_accessible_navigation(client: TestClient):
     assert ":focus-visible" in css.text
     assert "@media (max-width: 760px)" in css.text
     assert "aria-expanded" in javascript.text
+
+
+def test_provider_filter_is_forwarded_and_preserved(client, fake_service):
+    response = client.get(
+        "/providers?availability=requires_payment&cost_tier=paid&q=%20X%20"
+    )
+
+    assert response.status_code == 200
+    assert fake_service.provider_filters == {
+        "availability": "requires_payment",
+        "cost_tier": "paid",
+        "q": "X",
+    }
+    assert 'value="requires_payment" selected' in response.text
+    assert 'value="paid" selected' in response.text
+    assert 'value="X"' in response.text
+    for text in ("GitHub", "研究与开发者", "API 密钥", "search", "releases"):
+        assert text in response.text
+
+
+def test_provider_query_is_trimmed_to_one_hundred_characters(client, fake_service):
+    response = client.get(f"/providers?q={'x' * 120}")
+
+    assert response.status_code == 200
+    assert fake_service.provider_filters["q"] == "x" * 100
+
+
+def test_target_filter_is_forwarded_and_catalog_columns_render(client, fake_service):
+    response = client.get(
+        "/targets?provider_id=github&target_type=publisher_feed"
+        "&coverage_mode=direct&availability=ready&q=Python"
+    )
+
+    assert response.status_code == 200
+    assert fake_service.target_filters == {
+        "provider_id": "github",
+        "target_type": "publisher_feed",
+        "coverage_mode": "direct",
+        "availability": "ready",
+        "q": "Python",
+    }
+    for text in (
+        "OpenAI Python",
+        "GitHub",
+        "发布方订阅源",
+        "发现",
+        "直接覆盖",
+        "可直接使用",
+        "RSS",
+        "成功",
+    ):
+        assert text in response.text
+
+
+def test_provider_detail_shows_audit_links_env_names_and_probes(client):
+    response = client.get("/providers/github")
+
+    assert response.status_code == 200
+    for text in ("官方网站", "文档", "服务条款", "GITHUB_TOKEN", "配置只读令牌"):
+        assert text in response.text
+    assert "能力探测" in response.text
+    assert 'target="_blank" rel="noopener noreferrer"' in response.text
+
+
+def test_target_detail_explains_access_and_risk_without_secrets(client):
+    response = client.get("/targets/github-openai-python")
+
+    assert response.status_code == 200
+    for text in (
+        "首选访问方式",
+        "备用访问方式",
+        "风险分项",
+        "预期字段",
+        "最新样本完整度",
+        "GITHUB_TOKEN",
+    ):
+        assert text in response.text
+    assert "100%" in response.text
+    assert "secret-token-value" not in response.text
+    assert "Authorization" not in response.text
+    assert "Cookie" not in response.text
+
+
+def test_catalog_tables_are_keyboard_scroll_regions(client):
+    for path, label in (("/providers", "Provider 列表"), ("/targets", "Target 列表")):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert 'class="table-scroll"' in response.text
+        assert 'tabindex="0"' in response.text
+        assert f'aria-label="{label}"' in response.text
+
+
+def test_unknown_provider_and_target_return_404(client):
+    assert client.get("/providers/unknown").status_code == 404
+    assert client.get("/targets/unknown").status_code == 404
