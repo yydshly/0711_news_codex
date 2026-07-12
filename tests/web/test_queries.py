@@ -118,6 +118,18 @@ def test_filters_and_unknown_details(query_service):
     assert query_service.target_detail("missing") is None
 
 
+def test_target_metric_filters_match_summary_counts(query_service):
+    summary = query_service.summary()
+
+    free_direct = query_service.targets({"free_direct": True})
+    three_success = query_service.targets({"three_success": True})
+
+    assert len(free_direct) == summary.free_direct_count
+    assert [row.source_id for row in free_direct] == ["github-openai-python"]
+    assert len(three_success) == summary.three_success_count
+    assert [row.source_id for row in three_success] == ["github-openai-python"]
+
+
 def test_catalog_rows_include_list_metadata_without_detail_queries(query_service):
     provider = next(row for row in query_service.providers() if row.provider_id == "github")
     assert provider.auth_mode == "none"
@@ -253,6 +265,83 @@ def test_probe_date_and_outcome_filters_are_inclusive(query_service):
     )
 
     assert [row.probe_id for row in rows] == ["capability-1"]
+
+
+def test_degraded_probe_filter_uses_domain_outcome(query_service, db_session):
+    from datetime import UTC, datetime
+
+    from newsradar.db.models import SourceProbeRunRecord
+
+    db_session.add(
+        SourceProbeRunRecord(
+            source_id="search-ai",
+            access_kind="rss",
+            access_url="https://feeds.example/search-ai",
+            outcome="degraded",
+            started_at=datetime(2026, 7, 11, 10, 59, tzinfo=UTC),
+            finished_at=datetime(2026, 7, 11, 11, 0, tzinfo=UTC),
+            latency_ms=10.0,
+            http_status=200,
+            final_url="https://feeds.example/search-ai",
+            response_headers={},
+            metrics={"field_completeness": 0.5},
+            schema_fingerprint="degraded",
+            suggested_status="degraded",
+            reason="partial fields",
+            error_code=None,
+        )
+    )
+    db_session.commit()
+
+    rows = query_service.probes({"outcome": "degraded", "page": 1, "page_size": 100})
+
+    assert [row.object_id for row in rows] == ["search-ai"]
+    assert rows[0].outcome_label == "降级"
+
+
+def test_probe_pagination_has_database_limit_offset_and_row_bound(query_service, db_session):
+    from sqlalchemy import event
+
+    statements: list[str] = []
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.lower().split()))
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", capture_statement)
+    try:
+        rows = query_service.probes({"page": 2, "page_size": 2})
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", capture_statement)
+
+    assert len(rows) <= 2
+    history_sql = next(sql for sql in statements if "union all" in sql)
+    assert " limit " in history_sql
+    assert " offset " in history_sql
+
+
+def test_summary_and_provider_latest_queries_rank_history_in_sql(query_service, db_session):
+    from sqlalchemy import event
+
+    statements: list[str] = []
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.lower().split()))
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", capture_statement)
+    try:
+        query_service.summary()
+        query_service.providers()
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", capture_statement)
+
+    content_sql = next(
+        sql for sql in statements if "source_probe_runs" in sql and "history_rank <=" in sql
+    )
+    provider_sql = next(
+        sql for sql in statements if "provider_probe_runs" in sql and "history_rank =" in sql
+    )
+    assert "row_number() over" in content_sql
+    assert "row_number() over" in provider_sql
 
 
 def test_gap_groups_use_fixed_order_and_keep_blocked_targets_visible(query_service):

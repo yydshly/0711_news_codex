@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -48,41 +48,63 @@ class DashboardQueryService:
         self._session = session
 
     def summary(self) -> DashboardSummary:
-        providers = self._session.scalars(select(ProviderDefinitionRecord)).all()
-        targets = self._session.scalars(select(SourceDefinitionRecord)).all()
-        runs = self._content_runs()
+        provider_count = self._session.scalar(select(func.count(ProviderDefinitionRecord.id))) or 0
+        target_count = self._session.scalar(select(func.count(SourceDefinitionRecord.id))) or 0
+        runs = self._recent_content_runs(3)
         runs_by_source: dict[str, list[SourceProbeRunRecord]] = defaultdict(list)
         for run in runs:
             runs_by_source[run.source_id].append(run)
 
-        latest_content = runs[0].finished_at if runs else None
-        latest_capability = self._session.scalar(
-            select(func.max(ProviderProbeRunRecord.checked_at))
-        )
-        latest_probe_at = max(
-            (value for value in (latest_content, latest_capability) if value is not None),
-            default=None,
-        )
-        provider_cost = {provider.id: provider.cost_tier for provider in providers}
-        category_counts = Counter(provider.category for provider in providers)
+        category_counts = self._session.execute(
+            select(ProviderDefinitionRecord.category, func.count(ProviderDefinitionRecord.id))
+            .group_by(ProviderDefinitionRecord.category)
+            .order_by(ProviderDefinitionRecord.category)
+        ).all()
+        free_direct_count = self._session.scalar(
+            select(func.count(SourceDefinitionRecord.id))
+            .join(
+                ProviderDefinitionRecord,
+                ProviderDefinitionRecord.id == SourceDefinitionRecord.provider_id,
+            )
+            .where(
+                SourceDefinitionRecord.coverage_mode == "direct",
+                SourceDefinitionRecord.availability == "ready",
+                ProviderDefinitionRecord.cost_tier.in_(FREE_COST_TIERS),
+            )
+        ) or 0
+        indirect_count = self._session.scalar(
+            select(func.count(SourceDefinitionRecord.id)).where(
+                SourceDefinitionRecord.coverage_mode == "indirect"
+            )
+        ) or 0
+        blocked_count = self._session.scalar(
+            select(func.count(SourceDefinitionRecord.id)).where(
+                SourceDefinitionRecord.availability != "ready"
+            )
+        ) or 0
         return DashboardSummary(
-            provider_count=len(providers),
-            target_count=len(targets),
-            free_direct_count=sum(
-                target.coverage_mode == "direct"
-                and target.availability == "ready"
-                and provider_cost.get(target.provider_id) in FREE_COST_TIERS
-                for target in targets
-            ),
-            indirect_count=sum(target.coverage_mode == "indirect" for target in targets),
-            blocked_count=sum(target.availability != "ready" for target in targets),
+            provider_count=provider_count,
+            target_count=target_count,
+            free_direct_count=free_direct_count,
+            indirect_count=indirect_count,
+            blocked_count=blocked_count,
             three_success_count=sum(
                 len(source_runs[:3]) == 3
                 and all(run.outcome in SUCCESS_OUTCOMES for run in source_runs[:3])
                 for source_runs in runs_by_source.values()
             ),
-            category_counts=tuple(sorted(category_counts.items())),
-            latest_probe_at=latest_probe_at,
+            category_counts=tuple(category_counts),
+            latest_probe_at=self.latest_probe_at(),
+        )
+
+    def latest_probe_at(self) -> datetime | None:
+        latest_content = self._session.scalar(select(func.max(SourceProbeRunRecord.finished_at)))
+        latest_capability = self._session.scalar(
+            select(func.max(ProviderProbeRunRecord.checked_at))
+        )
+        return max(
+            (value for value in (latest_content, latest_capability) if value is not None),
+            default=None,
         )
 
     def providers(self, filters: Mapping[str, Any] | None = None) -> list[ProviderRow]:
@@ -162,6 +184,19 @@ class DashboardQueryService:
         ):
             if value := filters.get(key):
                 statement = statement.where(column == value)
+        if filters.get("free_direct"):
+            statement = statement.join(
+                ProviderDefinitionRecord,
+                ProviderDefinitionRecord.id == SourceDefinitionRecord.provider_id,
+            ).where(
+                SourceDefinitionRecord.coverage_mode == "direct",
+                SourceDefinitionRecord.availability == "ready",
+                ProviderDefinitionRecord.cost_tier.in_(FREE_COST_TIERS),
+            )
+        if filters.get("three_success"):
+            statement = statement.where(
+                SourceDefinitionRecord.id.in_(self._three_success_source_ids())
+            )
         if query := self._normalized_query(filters.get("q")):
             pattern = f"%{query}%"
             statement = statement.where(
@@ -214,19 +249,20 @@ class DashboardQueryService:
     def probes(self, filters: Mapping[str, Any] | None = None) -> list[ProbeRow]:
         filters = filters or {}
         requested_type = filters.get("probe_type")
-        rows: list[tuple[ProbeRow, str]] = []
+        page = max(int(filters.get("page", 1)), 1)
+        page_size = min(max(int(filters.get("page_size", 100)), 1), 200)
+        branches = []
         if requested_type in (None, "content"):
             content_statement = (
                 select(
-                    SourceProbeRunRecord,
-                    SourceDefinitionRecord.name,
-                    SourceDefinitionRecord.provider_id,
+                    literal("content").label("probe_type"),
+                    SourceProbeRunRecord.id.label("record_id"),
+                    SourceProbeRunRecord.finished_at.label("checked_at"),
                 )
                 .join(
                     SourceDefinitionRecord,
                     SourceDefinitionRecord.id == SourceProbeRunRecord.source_id,
                 )
-                .order_by(SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc())
             )
             content_statement = self._apply_probe_record_filters(
                 content_statement,
@@ -238,19 +274,17 @@ class DashboardQueryService:
                 content_statement = content_statement.where(
                     SourceDefinitionRecord.provider_id == provider_id
                 )
-            rows.extend(
-                (self._source_probe_row(record, name), provider_id)
-                for record, name, provider_id in self._session.execute(content_statement)
-            )
+            branches.append(content_statement)
         if requested_type in (None, "capability"):
             capability_statement = (
-                select(ProviderProbeRunRecord, ProviderDefinitionRecord.name)
+                select(
+                    literal("capability").label("probe_type"),
+                    ProviderProbeRunRecord.id.label("record_id"),
+                    ProviderProbeRunRecord.checked_at.label("checked_at"),
+                )
                 .join(
                     ProviderDefinitionRecord,
                     ProviderDefinitionRecord.id == ProviderProbeRunRecord.provider_id,
-                )
-                .order_by(
-                    ProviderProbeRunRecord.checked_at.desc(), ProviderProbeRunRecord.id.desc()
                 )
             )
             capability_statement = self._apply_probe_record_filters(
@@ -263,13 +297,47 @@ class DashboardQueryService:
                 capability_statement = capability_statement.where(
                     ProviderProbeRunRecord.provider_id == provider_id
                 )
-            rows.extend(
-                (self._provider_probe_row(record, name), record.provider_id)
-                for record, name in self._session.execute(capability_statement)
+            branches.append(capability_statement)
+        if not branches:
+            return []
+        unified = union_all(*branches).subquery()
+        selected = self._session.execute(
+            select(unified.c.probe_type, unified.c.record_id)
+            .order_by(unified.c.checked_at.desc(), unified.c.record_id.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        ).all()
+        content_ids = [record_id for probe_type, record_id in selected if probe_type == "content"]
+        capability_ids = [
+            record_id for probe_type, record_id in selected if probe_type == "capability"
+        ]
+        content_rows = {
+            record.id: self._source_probe_row(record, name)
+            for record, name in self._session.execute(
+                select(SourceProbeRunRecord, SourceDefinitionRecord.name)
+                .join(
+                    SourceDefinitionRecord,
+                    SourceDefinitionRecord.id == SourceProbeRunRecord.source_id,
+                )
+                .where(SourceProbeRunRecord.id.in_(content_ids))
             )
+        }
+        capability_rows = {
+            record.id: self._provider_probe_row(record, name)
+            for record, name in self._session.execute(
+                select(ProviderProbeRunRecord, ProviderDefinitionRecord.name)
+                .join(
+                    ProviderDefinitionRecord,
+                    ProviderDefinitionRecord.id == ProviderProbeRunRecord.provider_id,
+                )
+                .where(ProviderProbeRunRecord.id.in_(capability_ids))
+            )
+        }
         return [
-            row
-            for row, _provider_id in sorted(rows, key=lambda item: item[0].checked_at, reverse=True)
+            content_rows[record_id]
+            if probe_type == "content"
+            else capability_rows[record_id]
+            for probe_type, record_id in selected
         ]
 
     def gap_groups(self) -> tuple[GapGroup, ...]:
@@ -409,24 +477,82 @@ class DashboardQueryService:
             )
         return rows
 
-    def _content_runs(self) -> list[SourceProbeRunRecord]:
+    def _recent_content_runs(self, per_source_limit: int) -> list[SourceProbeRunRecord]:
+        ranked = (
+            select(
+                SourceProbeRunRecord.id.label("record_id"),
+                func.row_number()
+                .over(
+                    partition_by=SourceProbeRunRecord.source_id,
+                    order_by=(
+                        SourceProbeRunRecord.finished_at.desc(),
+                        SourceProbeRunRecord.id.desc(),
+                    ),
+                )
+                .label("history_rank"),
+            )
+            .subquery()
+        )
         return list(
             self._session.scalars(
-                select(SourceProbeRunRecord).order_by(
-                    SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc()
+                select(SourceProbeRunRecord)
+                .join(ranked, SourceProbeRunRecord.id == ranked.c.record_id)
+                .where(ranked.c.history_rank <= per_source_limit)
+                .order_by(SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc())
+            )
+        )
+
+    def _three_success_source_ids(self) -> list[str]:
+        ranked = (
+            select(
+                SourceProbeRunRecord.source_id.label("source_id"),
+                SourceProbeRunRecord.outcome.label("outcome"),
+                func.row_number()
+                .over(
+                    partition_by=SourceProbeRunRecord.source_id,
+                    order_by=(
+                        SourceProbeRunRecord.finished_at.desc(),
+                        SourceProbeRunRecord.id.desc(),
+                    ),
+                )
+                .label("history_rank"),
+            )
+            .subquery()
+        )
+        return list(
+            self._session.scalars(
+                select(ranked.c.source_id)
+                .where(ranked.c.history_rank <= 3)
+                .group_by(ranked.c.source_id)
+                .having(func.count() == 3)
+                .having(
+                    func.sum(case((ranked.c.outcome == "success", 1), else_=0)) == 3
                 )
             )
         )
 
     def _latest_capability_runs(self) -> dict[str, ProviderProbeRunRecord]:
-        latest: dict[str, ProviderProbeRunRecord] = {}
-        for run in self._session.scalars(
-            select(ProviderProbeRunRecord).order_by(
-                ProviderProbeRunRecord.checked_at.desc(), ProviderProbeRunRecord.id.desc()
+        ranked = (
+            select(
+                ProviderProbeRunRecord.id.label("record_id"),
+                func.row_number()
+                .over(
+                    partition_by=ProviderProbeRunRecord.provider_id,
+                    order_by=(
+                        ProviderProbeRunRecord.checked_at.desc(),
+                        ProviderProbeRunRecord.id.desc(),
+                    ),
+                )
+                .label("history_rank"),
             )
-        ):
-            latest.setdefault(run.provider_id, run)
-        return latest
+            .subquery()
+        )
+        records = self._session.scalars(
+            select(ProviderProbeRunRecord)
+            .join(ranked, ProviderProbeRunRecord.id == ranked.c.record_id)
+            .where(ranked.c.history_rank == 1)
+        )
+        return {record.provider_id: record for record in records}
 
     def _latest_risks(self, source_ids: Sequence[str]) -> dict[str, SourceRiskAssessmentRecord]:
         if not source_ids:

@@ -18,11 +18,11 @@
           浏览页面
         </button>
         <nav id="site-nav" class="site-nav" aria-label="主要导航" data-open="true">
-          <a href="/" aria-current="page">总览指挥台</a>
-          <a href="/providers">来源能力</a>
-          <a href="/probes">探测记录</a>
-          <a href="/targets">目标目录</a>
-          <a href="/gaps">阻塞与解锁</a>
+          <a href="/"{% if request.url.path == '/' %} aria-current="page"{% endif %}>总览指挥台</a>
+          <a href="/providers"{% if request.url.path.startswith('/providers') %} aria-current="page"{% endif %}>来源能力</a>
+          <a href="/probes"{% if request.url.path.startswith('/probes') %} aria-current="page"{% endif %}>探测记录</a>
+          <a href="/targets"{% if request.url.path.startswith('/targets') %} aria-current="page"{% endif %}>目标目录</a>
+          <a href="/gaps"{% if request.url.path.startswith('/gaps') %} aria-current="page"{% endif %}>阻塞与解锁</a>
         </nav>
         <p class="scope-note">本界面只读取本机目录与探测记录，不执行同步、探测或内容生成。</p>
       </aside>
@@ -34,6 +34,7 @@
           </div>
           <div class="status-cluster" aria-label="运行状态">
             <span class="status status-{{ database_status_tone | default('info') }}">{{ database_status | default('数据库状态未知') }}</span>
+            <span class="status status-info">数据最后更新时间：{% if latest_probe_at is defined and latest_probe_at is not none %}{{ latest_probe_at.strftime('%Y-%m-%d %H:%M') }}{% elif latest_probe_at is defined %}暂无探测历史{% else %}不可用{% endif %}</span>
             <span class="status status-info">只读本机模式</span>
           </div>
         </header>

@@ -46,6 +46,10 @@ class FakeDashboardService:
             latest_probe_at=datetime(2026, 7, 11, 9, 30),
         )
 
+    def latest_probe_at(self):
+        self.calls.append("latest_probe_at")
+        return datetime(2026, 7, 11, 9, 45)
+
     def providers(self, filters=None):
         self.calls.append("providers")
         self.provider_filters = filters
@@ -291,6 +295,8 @@ def test_root_renders_chinese_read_only_shell(client: TestClient):
     assert "<main" in response.text
     for label in ("总览指挥台", "来源能力", "探测记录", "目标目录", "阻塞与解锁"):
         assert label in response.text
+    assert "数据最后更新时间" in response.text
+    assert "2026-07-11 09:30" in response.text
 
 
 def test_dashboard_shows_strict_metrics_and_diagnostic(client: TestClient):
@@ -320,7 +326,27 @@ def test_dashboard_shows_strict_metrics_and_diagnostic(client: TestClient):
         assert text in response.text
     assert "示例内容源" in response.text
     assert "需要付费" in response.text
-    assert 'href="/targets?coverage_mode=direct&amp;availability=ready"' in response.text
+    assert 'href="/targets?free_direct=true"' in response.text
+    assert 'href="/targets?three_success=true"' in response.text
+
+
+def test_dashboard_metric_counts_equal_real_target_drilldowns(db_session):
+    from newsradar.web.queries import DashboardQueryService
+
+    @contextmanager
+    def real_service_context():
+        yield DashboardQueryService(db_session)
+
+    with TestClient(create_app(lambda: real_service_context())) as real_client:
+        dashboard = real_client.get("/")
+        free_direct = real_client.get("/targets?free_direct=true")
+        three_success = real_client.get("/targets?three_success=true")
+
+    assert dashboard.status_code == free_direct.status_code == three_success.status_code == 200
+    assert "免费直接覆盖</span><strong>1</strong>" in dashboard.text
+    assert "连续三轮成功</span><strong>1</strong>" in dashboard.text
+    assert "Target 列表</h2></div><span class=\"scope-label\">1 条" in free_direct.text
+    assert "Target 列表</h2></div><span class=\"scope-label\">1 条" in three_success.text
 
 
 def test_dashboard_calls_out_missing_probe_history():
@@ -338,7 +364,7 @@ def test_dashboard_calls_out_missing_probe_history():
                 latest_probe_at=None,
             )
 
-        def probes(self):
+        def probes(self, filters=None):
             self.calls.append("probes")
             return []
 
@@ -529,6 +555,16 @@ def test_target_filter_is_forwarded_and_catalog_columns_render(client, fake_serv
         assert text in response.text
 
 
+def test_target_metric_filters_are_forwarded(client, fake_service):
+    response = client.get("/targets?free_direct=true")
+    assert response.status_code == 200
+    assert fake_service.target_filters == {"free_direct": True}
+
+    response = client.get("/targets?three_success=true")
+    assert response.status_code == 200
+    assert fake_service.target_filters == {"three_success": True}
+
+
 def test_independent_targets_do_not_link_to_a_missing_provider(client, fake_service):
     independent = replace(
         fake_service._target_row(),
@@ -627,6 +663,8 @@ def test_probe_page_visibly_distinguishes_probe_types(client, fake_service):
         "provider_id": "x",
         "from_date": date(2026, 7, 1),
         "to_date": date(2026, 7, 11),
+        "page": 1,
+        "page_size": 100,
     }
     for text in (
         "能力探测",
@@ -641,6 +679,83 @@ def test_probe_page_visibly_distinguishes_probe_types(client, fake_service):
     assert "只确认平台能力，不代表获取到内容" in capability_row
     assert "&lt;payment required&gt;" in response.text
     assert '<th scope="col">完整度</th>' not in response.text
+
+
+def test_probe_route_accepts_degraded_and_forwards_pagination(client, fake_service):
+    response = client.get("/probes?outcome=degraded&page=2&page_size=25")
+
+    assert response.status_code == 200
+    assert fake_service.probe_filters == {
+        "outcome": "degraded",
+        "page": 2,
+        "page_size": 25,
+    }
+    assert 'value="degraded" selected' in response.text
+
+
+def test_degraded_probe_route_filters_real_query_service(db_session):
+    from datetime import UTC
+
+    from newsradar.db.models import SourceProbeRunRecord
+    from newsradar.web.queries import DashboardQueryService
+
+    checked_at = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
+    db_session.add(
+        SourceProbeRunRecord(
+            source_id="search-ai",
+            access_kind="rss",
+            access_url="https://feeds.example/search-ai",
+            outcome="degraded",
+            started_at=checked_at,
+            finished_at=checked_at,
+            latency_ms=10.0,
+            http_status=200,
+            final_url="https://feeds.example/search-ai",
+            response_headers={},
+            metrics={"field_completeness": 0.5},
+            schema_fingerprint="degraded-route",
+            suggested_status="degraded",
+            reason="partial fields",
+            error_code=None,
+        )
+    )
+    db_session.commit()
+
+    @contextmanager
+    def real_service_context():
+        yield DashboardQueryService(db_session)
+
+    with TestClient(create_app(lambda: real_service_context())) as real_client:
+        response = real_client.get("/probes?outcome=degraded")
+
+    assert response.status_code == 200
+    assert "AI Search" in response.text
+    assert "降级" in response.text
+    assert "OpenAI Python" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("path", "active_href"),
+    [
+        ("/", "/"),
+        ("/providers", "/providers"),
+        ("/providers/github", "/providers"),
+        ("/probes", "/probes"),
+        ("/targets", "/targets"),
+        ("/targets/github-openai-python", "/targets"),
+        ("/gaps", "/gaps"),
+    ],
+)
+def test_only_current_navigation_item_has_aria_current(client, path, active_href):
+    response = client.get(path)
+
+    assert response.status_code == 200
+    assert response.text.count('aria-current="page"') == 1
+    assert f'href="{active_href}" aria-current="page"' in response.text
+
+
+def test_probe_page_size_is_capped(client):
+    assert client.get("/probes?page_size=201").status_code == 422
 
 
 def test_gap_page_keeps_restricted_platforms_visible(client):

@@ -11,7 +11,7 @@
       <span>Target 总数</span><strong>{{ summary.target_count }}</strong>
       <small>已登记目标</small>
     </a>
-    <a class="metric-card" href="/targets?coverage_mode=direct&amp;availability=ready">
+    <a class="metric-card" href="/targets?free_direct=true">
       <span>免费直接覆盖</span><strong>{{ summary.free_direct_count }}</strong>
       <small>免费且可直接访问</small>
     </a>
@@ -23,7 +23,7 @@
       <span>阻塞目标</span><strong>{{ summary.blocked_count }}</strong>
       <small>尚待凭据、审批或付费</small>
     </a>
-    <a class="metric-card" href="/probes?probe_type=content&amp;outcome=success">
+    <a class="metric-card" href="/targets?three_success=true">
       <span>连续三轮成功</span><strong>{{ summary.three_success_count }}</strong>
       <small>内容探测严格计数</small>
     </a>

@@ -44,6 +44,11 @@
       </table>
     </div>
     {% else %}<p class="empty-state">没有符合筛选条件的探测记录。</p>{% endif %}
+    <nav class="pagination" aria-label="探测历史分页">
+      {% if page > 1 %}<a href="{{ request.url.include_query_params(page=page - 1, page_size=page_size) }}">上一页</a>{% endif %}
+      <span>第 {{ page }} 页 · 每页最多 {{ page_size }} 条</span>
+      {% if probes | length == page_size %}<a href="{{ request.url.include_query_params(page=page + 1, page_size=page_size) }}">下一页</a>{% endif %}
+    </nav>
   </section>
 </div>
 {% endblock %}

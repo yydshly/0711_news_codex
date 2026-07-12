@@ -14,7 +14,9 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from starlette.templating import Jinja2Templates
 
 from newsradar.db.session import create_session
+from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.diagnostics import build_diagnostic_narrative
+from newsradar.web.i18n import zh_label
 from newsradar.web.queries import DashboardQueryService
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
@@ -52,8 +54,8 @@ TargetType = Literal[
 ]
 CoverageMode = Literal["direct", "indirect", "catalog_only"]
 ProbeType = Literal["capability", "content"]
-ProbeOutcome = Literal["success", "partial", "blocked", "failed"]
 QueryResult = TypeVar("QueryResult")
+PROBE_OUTCOME_VALUES = tuple(outcome.value for outcome in DomainProbeOutcome)
 
 _PROVIDER_CATEGORIES = (
     ("social_community", "社交与社区"),
@@ -97,11 +99,8 @@ _COVERAGE_MODES = (
     ("catalog_only", "仅目录收录"),
 )
 _PROBE_TYPES = (("capability", "能力探测"), ("content", "内容探测"))
-_PROBE_OUTCOMES = (
-    ("success", "成功"),
-    ("partial", "部分成功"),
-    ("blocked", "阻塞"),
-    ("failed", "失败"),
+_PROBE_OUTCOMES = tuple(
+    (outcome, zh_label("outcome", outcome)) for outcome in PROBE_OUTCOME_VALUES
 )
 
 
@@ -179,6 +178,14 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         except (OperationalError, ProgrammingError) as error:
             return None, database_error_response(request, error)
 
+    def query_with_timestamp_safely(
+        request: Request,
+        query: Callable[[DashboardQueryService], QueryResult],
+    ) -> tuple[tuple[QueryResult, object] | None, HTMLResponse | None]:
+        return query_service_safely(
+            request, lambda service: (query(service), service.latest_probe_at())
+        )
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         response = await call_next(request)
@@ -203,7 +210,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         def load_dashboard(service: DashboardQueryService):
             summary = service.summary()
             providers = service.providers()
-            probes = service.probes()
+            probes = service.probes({"page": 1, "page_size": 10})
             gaps = service.gap_groups()
             diagnostic = build_diagnostic_narrative(summary, providers, gaps)
             return summary, diagnostic, probes, gaps
@@ -223,6 +230,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "top_gaps": gaps[:5],
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
+                "latest_probe_at": summary.latest_probe_at,
             },
         )
 
@@ -240,12 +248,13 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             cost_tier=cost_tier,
             q=_normalized_query(q),
         )
-        rows, error_response = query_service_safely(
+        result, error_response = query_with_timestamp_safely(
             request, lambda service: service.providers(filters)
         )
         if error_response is not None:
             return error_response
-        assert rows is not None
+        assert result is not None
+        rows, latest_probe_at = result
         return templates.TemplateResponse(
             request=request,
             name="providers.html",
@@ -257,16 +266,19 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "cost_options": _COST_TIERS,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
             },
         )
 
     @app.get("/providers/{provider_id}", response_class=HTMLResponse)
     def provider_details(request: Request, provider_id: str) -> HTMLResponse:
-        detail, error_response = query_service_safely(
+        result, error_response = query_with_timestamp_safely(
             request, lambda service: service.provider_detail(provider_id)
         )
         if error_response is not None:
             return error_response
+        assert result is not None
+        detail, latest_probe_at = result
         if detail is None:
             raise HTTPException(status_code=404)
         return templates.TemplateResponse(
@@ -276,6 +288,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "provider": detail,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
             },
         )
 
@@ -286,6 +299,8 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         target_type: Annotated[TargetType | None, Query()] = None,
         coverage_mode: Annotated[CoverageMode | None, Query()] = None,
         availability: Annotated[Availability | None, Query()] = None,
+        free_direct: bool = False,
+        three_success: bool = False,
         q: str | None = None,
     ) -> HTMLResponse:
         filters = _active_filters(
@@ -293,14 +308,17 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             target_type=target_type,
             coverage_mode=coverage_mode,
             availability=availability,
+            free_direct=True if free_direct else None,
+            three_success=True if three_success else None,
             q=_normalized_query(q),
         )
-        rows, error_response = query_service_safely(
+        result, error_response = query_with_timestamp_safely(
             request, lambda service: service.targets(filters)
         )
         if error_response is not None:
             return error_response
-        assert rows is not None
+        assert result is not None
+        rows, latest_probe_at = result
         return templates.TemplateResponse(
             request=request,
             name="targets.html",
@@ -312,16 +330,19 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "availability_options": _AVAILABILITIES,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
             },
         )
 
     @app.get("/targets/{source_id}", response_class=HTMLResponse)
     def target_details(request: Request, source_id: str) -> HTMLResponse:
-        detail, error_response = query_service_safely(
+        result, error_response = query_with_timestamp_safely(
             request, lambda service: service.target_detail(source_id)
         )
         if error_response is not None:
             return error_response
+        assert result is not None
+        detail, latest_probe_at = result
         if detail is None:
             raise HTTPException(status_code=404)
         return templates.TemplateResponse(
@@ -331,6 +352,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "target": detail,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
             },
         )
 
@@ -338,24 +360,29 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
     def probe_history(
         request: Request,
         probe_type: Annotated[ProbeType | None, Query()] = None,
-        outcome: Annotated[ProbeOutcome | None, Query()] = None,
+        outcome: Annotated[DomainProbeOutcome | None, Query()] = None,
         provider_id: str | None = None,
         from_date: date | None = None,
         to_date: date | None = None,
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 100,
     ) -> HTMLResponse:
         filters = _active_filters(
             probe_type=probe_type,
-            outcome=outcome,
+            outcome=outcome.value if outcome else None,
             provider_id=_normalized_query(provider_id),
             from_date=from_date,
             to_date=to_date,
+            page=page,
+            page_size=page_size,
         )
-        rows, error_response = query_service_safely(
+        result, error_response = query_with_timestamp_safely(
             request, lambda service: service.probes(filters)
         )
         if error_response is not None:
             return error_response
-        assert rows is not None
+        assert result is not None
+        rows, latest_probe_at = result
         return templates.TemplateResponse(
             request=request,
             name="probes.html",
@@ -367,17 +394,21 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "has_content_probe": any(row.probe_type == "content" for row in rows),
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
+                "page": page,
+                "page_size": page_size,
             },
         )
 
     @app.get("/gaps", response_class=HTMLResponse)
     def coverage_gaps(request: Request) -> HTMLResponse:
-        groups, error_response = query_service_safely(
+        result, error_response = query_with_timestamp_safely(
             request, lambda service: service.gap_groups()
         )
         if error_response is not None:
             return error_response
-        assert groups is not None
+        assert result is not None
+        groups, latest_probe_at = result
         return templates.TemplateResponse(
             request=request,
             name="gaps.html",
@@ -385,6 +416,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "gap_groups": groups,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
             },
         )
 
