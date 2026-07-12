@@ -1,5 +1,7 @@
 # Event Intelligence v1 final fixes report
 
+Verified implementation commit: `475ee616f41468bda049027563135e1ee5120f07`.
+
 ## RED evidence
 
 With `.env` isolated and restored through `try/finally`:
