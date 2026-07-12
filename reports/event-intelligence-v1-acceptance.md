@@ -1,108 +1,114 @@
-﻿# Event Intelligence v1 Acceptance Evidence
+# Event Intelligence v1 — Final Acceptance
 
 Date: 2026-07-12
-Acceptance baseline commit: `475ee616f41468bda049027563135e1ee5120f07`
-Database migration: `20260712_0008 (head)`
 
-## Automated gate
+Verified code head: `e6ab5a871a968f2b602cb0510dd5cf22aac23604`
 
-`uv run alembic upgrade head` and `uv run alembic current` reported the revision above. `uv run
-ruff check .` completed with no violations. The full suite completed with the project `.env`
-temporarily removed from test discovery so optional local credentials could not change
-credential-absence tests; it was restored immediately: 459 passed, 3 skipped.
+Report snapshot commit: `REPORT_SNAPSHOT_COMMIT` (report-only child of the verified code head).
+A metadata-only successor records that snapshot hash because a Git commit cannot embed its own
+object ID in its contents.
 
-Dedicated release checks passed:
+Database revision: `20260712_0008 (head)`
+
+## Current result
+
+Event Intelligence v1 is accepted at the verified code head. The deterministic pipeline, optional
+MiniMax enrichment, durable Worker operations, immutable publication, audited evidence projection,
+manual event actions, and Chinese event views are covered by the automated and recorded evidence
+below.
+
+The final closure review is resolved:
+
+- weak clustering cannot merge two same-organization, same-action, same-day stories unless they
+  also share a compatible object entity; immutable URL/repository/paper identity, exact title
+  fingerprint, or a shared audited upstream root remains a strong match;
+- `event_recluster` reconstructs active RawItems, reruns current clustering, persists candidate
+  memberships, publishes changed membership versions, creates split-off events, and creates no
+  version when membership is unchanged;
+- `event_enrich` builds bounded current context, closes the read session, invokes MiniMax with no
+  Event lease or SQLAlchemy session open, then claims a short publication lease, persists bounded
+  provenance best-effort, and publishes a model or deterministic fallback enrichment;
+- `duplicate_root_suppressed_count` is calculated from independent-eligible
+  `EvidenceAssessment.root_evidence_key` duplicates instead of a constant.
+
+## Final automated gate
+
+The project `.env` was moved to a same-directory backup inside `try/finally` and restored
+immediately after the suite, preventing optional local credentials from changing credential-absence
+tests.
+
+```text
+uv run pytest
+476 passed, 3 skipped, 8 warnings in 21.07s
+
+uv run ruff check .
+All checks passed!
+
+uv run alembic current
+20260712_0008 (head)
+
+uv run alembic check
+No new upgrade operations detected.
+
+git diff --check
+exit 0
+```
+
+The eight warnings are third-party FastAPI/Starlette and Alembic deprecation warnings; the gate has
+no test failures or project lint violations.
+
+Focused semantic coverage includes false-cluster protection, strong title/root identity,
+anchor-stable candidate identity, real recluster split and no-change behavior, model-free
+transaction boundaries, enrichment success/fallback provenance, merge dual-lease cleanup, and
+actual duplicate-root counting. The Worker/web/acceptance regression command also completed with
+no failures:
 
 ```powershell
-uv run pytest tests/acceptance/test_event_web_worker_flow.py `
+uv run pytest tests/events tests/operations `
+  tests/web/test_event_routes.py tests/web/test_event_queries.py `
+  tests/acceptance/test_event_web_worker_flow.py `
   tests/acceptance/test_event_postgres_contention.py `
   tests/acceptance/test_event_model_degradation.py -q
 ```
 
-Result: 3 passed. They cover web enqueue -> durable Worker -> published event detail, a real
-PostgreSQL expired-lease recovery, and MiniMax-off fallback with no HTTP call.
+## Recorded live operations
 
-## Real-data rounds
+These are the latest recorded live PostgreSQL Worker runs. They predate the verified code head and
+are retained as operational evidence, not represented as a new live run of `e6ab5a8`.
 
-Approved-source fetch work was queued before the event rounds. Its Worker operations reached
-terminal state, but `fetch --wait` then raised `DetachedInstanceError` while printing terminal
-rows; see known gaps. No credentials, feed bodies, or upstream error URLs are included.
+| Operation | Window | Relevant / candidates | Event IDs / new versions | Duration | Retry | Duplicate root | Model fallback |
+| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 112 | 24h | 2 / 2 | 10, 11 / 2 | 625 ms | 0 | 0 | 2 |
+| 113 | 24h | 2 / 2 | 10, 11 / 0 | 375 ms | 0 | 0 | 0 |
+| 114 | 24h | 2 / 2 | 10, 11 / 0 | 562 ms | 0 | 0 | 0 |
 
-| Round | Operation | Window | Relevant / candidates | Published IDs / new versions | Status split | Model calls |
-| --- | ---: | ---: | ---: | --- | --- | ---: |
-| 1 | 104 | 24h | 2 / 2 | 1, 2 / 2 | emerging 2; confirmed 0; disputed 0 | 0 |
-| 2 | 105 | 24h | 2 / 2 | 1, 2 / 0 | emerging 2; confirmed 0; disputed 0 | 0 |
-| 3 | 106 | 24h | 2 / 2 | 1, 2 / 0 | emerging 2; confirmed 0; disputed 0 | 0 |
+All three operations succeeded. Operations 113 and 114 demonstrate replay without duplicate
+versions. Operation 108 remains the recorded no-key run: it succeeded with IDs 1 and 2, created no
+new version, and recorded no model run. Current automated coverage separately proves no-key and
+model-failure fallback publication.
 
-All three operations succeeded. Repeated IDs and zero new versions in rounds 2 and 3 are replay
-evidence. Persisted summaries do not expose duplicate-root suppression, retry totals, duration, or
-model-fallback counters, so those values are intentionally not claimed.
+The earlier acceptance-only seven-day operation 107 processed 9 relevant items/candidates,
+published IDs 1 through 9 with 7 new versions, and produced 2 confirmed plus 7 emerging events. It
+did not establish all four product categories from live inputs.
 
-### Model-off round
+## Reader and recovery evidence
 
-Operation 108 was a standard 24-hour build consumed by a one-shot Worker launched with
-`MINIMAX_API_KEY` absent while preserving only the required local database connection. It
-succeeded, returned IDs 1 and 2, created zero versions, and recorded zero model runs. The dedicated
-test additionally proves the no-key path makes no HTTP request and returns `rule_fallback`.
+Recorded loopback checks returned HTTP 200 for `/`, `/events`, `/emerging`, `/events/1`, and
+`/operations/104`; event detail retained original-link traceability. Current automated route tests
+cover the same reader projections and audited enqueue-only web action boundary.
 
-### Separate 7-day category check
+The PostgreSQL contention acceptance test covers expired Event lease recovery. Runtime tests cover
+ascending dual-lease acquisition, reverse release, partial-claim cleanup, and timeout cleanup.
+Pipeline and manual-enrich instrumentation prove MiniMax invocation occurs with no pipeline-created
+SQLAlchemy session and no Event publication lease held.
 
-Because the 24-hour input lacked the four target categories, acceptance-only operation 107 used
-`--hours 168`; the homepage product window remains 24 hours. It succeeded with 9 relevant items /
-candidates, IDs 1 through 9, and 7 new versions; status was confirmed 2 and emerging 7. All nine
-stored events have null category, so four-category coverage remains unproven.
+## Current limitations
 
-## Browser-ready acceptance
+- The recorded live corpus did not prove all four target categories; deterministic fixtures cover
+  product/model, research, developer-tool, and company classification.
+- No new external-source or paid MiniMax live run was executed at `e6ab5a8`; final closure evidence
+  for those paths is deterministic automated coverage plus the earlier recorded operations above.
+- The suite emits the eight third-party deprecation warnings listed in the final gate.
 
-The worktree was served on a non-conflicting loopback port while a Worker was active. Textual
-route checks were HTTP 200: `/` (2,396 bytes), `/events` (3,247), `/emerging` (2,781), `/events/1`
-(3,297), and `/operations/104` (2,997). Detail ID 1 retained original-link traceability. No
-screenshot was captured; status and rendered-byte checks are the textual browser evidence.
-
-## Known gaps and review focus
-
-- `newsradar fetch --wait` has a post-completion detached-instance failure while rendering status.
-- Real 24-hour and 7-day data did not establish category coverage.
-- Operation summaries omit duration, duplicate-root, retry, and model-fallback counters.
-- The actual migration head is `20260712_0008`; the brief expected `20260712_0007`.
-
-## Final-review reproducibility update
-
-The final regression suite uses an isolated environment: `.env` is moved aside in a `try/finally`
-block and restored immediately afterwards. The deterministic fixture suite now covers product/model,
-research, developer-tool, and company category inputs when live inputs do not supply all four.
-The real-data limitation remains transparent: the recorded live rounds did not establish all four
-categories.
-
-Operation summaries now record the bounded counters required for reruns: duration, retry count,
-duplicate-root suppression, and model-fallback count. The final run duration and retry values must
-be taken from the terminal operation records; no invented live values are included here.
-
-### Fixed-head live rerun
-
-On the final-code verification run, three 24-hour Worker builds completed as operations 112, 113,
-and 114. Each processed two relevant items/candidates and returned event IDs 10 and 11. Operation
-112 created two versions with duration 625 ms, retry count 0, duplicate-root suppression 0, and
-model fallback 2. Operations 113 and 114 replayed without versions (375 ms and 562 ms respectively;
-retry 0, duplicate-root 0, model fallback 0). All three succeeded. The existing MiniMax-off operation
-108 remains the no-key evidence. Live inputs still do not prove all four categories; deterministic
-fixtures cover product/model, research, developer-tool, and company classification.
-
-### Closure verification after `f37329e`
-
-The production pipeline now has explicit automated evidence that no pipeline-created SQLAlchemy
-session and no Event lease exists during MiniMax adapter invocation; the publication lease is
-claimed afterward and released after the atomic publish. Production-path tests persist both success
-and fallback model usage plus linked Event model runs, project the model version on event detail,
-and prove a forced provenance sink failure does not block publication.
-
-Manual merge coverage verifies ascending Event-ID lease acquisition, reverse-order release, partial
-claim cleanup, and deadline cleanup after both leases are held. The post-claim deadline path returns
-terminal `operation_timeout` without publishing a version or stranding either lease.
-
-The reported full-suite hang was not reproducible as a hang. A redirected `pytest -vv -s` process
-completed in 24.00 seconds; with local `.env` credentials loaded it failed only the Reddit
-credential-absence test (467 passed, 1 failed). PostgreSQL had no open transactions or ungranted
-locks in the captured activity state. With `.env` isolated and restored in `finally`, the full suite
-completed: 468 passed, 3 skipped in 23.13 seconds. Ruff passed, Alembic reported
-`20260712_0008 (head)` with no pending upgrade operations, and `git diff --check` exited zero.
+There are no current known gaps for detached CLI rendering, operation counters, migration-head
+expectations, recluster semantics, enrich semantics, model provenance, or duplicate-root counting.

@@ -105,3 +105,36 @@ uv run alembic current    -> 20260712_0008 (head)
 uv run alembic check      -> No new upgrade operations detected.
 git diff --check          -> exit 0
 ```
+
+## Final closure review
+
+Verified code head: `e6ab5a871a968f2b602cb0510dd5cf22aac23604`.
+
+RED tests demonstrated four remaining defects: same-organization/action/time merged distinct model
+objects; a shared upstream root did not form a strong match; recluster/enrich returned success for
+snapshot no-ops; and the duplicate-root summary remained zero for two independent-eligible items
+with one root.
+
+The final implementation now:
+
+- requires a shared product/model/paper/dataset/project entity for weak entity/action matches,
+  while retaining immutable identity, exact title fingerprint, and common upstream-root matches;
+- anchors candidate identity to the earliest durable member's immutable content identity, so later
+  coverage does not rename an existing event;
+- runs recluster against reconstructed active RawItems, persists recomputed candidate membership,
+  versions only changed target membership, and publishes deterministic split-off events;
+- runs manual enrichment outside every SQLAlchemy session and Event lease, then claims a short
+  publication lease, versions changed enrichment, persists `ModelUsageRecord` and
+  `EventModelRunRecord` rows best-effort, and releases safely on deadline/error;
+- derives duplicate-root suppression from the actual independent `EvidenceAssessment` roots.
+
+Fresh verification at that code head:
+
+```text
+focused Worker/web/acceptance regression -> exit 0
+uv run pytest                            -> 476 passed, 3 skipped in 21.07s
+uv run ruff check .                      -> All checks passed!
+uv run alembic current                   -> 20260712_0008 (head)
+uv run alembic check                     -> No new upgrade operations detected.
+git diff --check                         -> exit 0
+```
