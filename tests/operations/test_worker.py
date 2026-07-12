@@ -182,3 +182,18 @@ def test_slow_handler_observes_cancellation_from_background_lease_monitor(tmp_pa
         record = verify_session.get(OperationRunRecord, operation_id)
         assert record is not None
         assert record.status == OperationStatus.CANCELLED
+
+
+def test_monitored_handler_does_not_use_owner_session_from_background_thread() -> None:
+    with session() as db:
+        repository = OperationRepository(db)
+        repository.enqueue(OperationType.FETCH, {})
+
+        processed = Worker(
+            repository,
+            "worker",
+            lease_guard=lambda lease: True,
+            monitor_interval_seconds=0.01,
+        ).run_once(lambda lease, checkpoint: checkpoint("background"))
+
+        assert processed is True

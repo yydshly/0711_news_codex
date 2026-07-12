@@ -328,3 +328,24 @@ def test_serve_runs_runtime_supervisor(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert calls == ["run"]
+
+
+def test_operations_retry_uses_unified_audited_command_service(monkeypatch) -> None:
+    calls: list[tuple[int, str]] = []
+
+    class FakeCommands:
+        def __init__(self, session):
+            pass
+
+        def retry(self, operation_id: int, *, trigger: str) -> int:
+            calls.append((operation_id, trigger))
+            return 8
+
+    monkeypatch.setattr("newsradar.cli.OperationCommandService", FakeCommands)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+
+    result = runner.invoke(app, ["operations", "retry", "7"])
+
+    assert result.exit_code == 0
+    assert calls == [(7, "cli")]
+    assert "Queued retry for 7 as operation 8" in result.stdout

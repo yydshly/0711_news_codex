@@ -82,6 +82,16 @@ class SlowFactory:
         return SlowFetcher()
 
 
+class SecretFailureFetcher:
+    async def fetch(self, source, method, state: FetchState, limit: int) -> FetchResult:
+        raise RuntimeError("request failed: https://api.test/items?key=super-secret-value")
+
+
+class SecretFailureFactory:
+    def for_method(self, method):
+        return SecretFailureFetcher()
+
+
 @pytest.mark.asyncio
 async def test_service_closes_state_read_transaction_before_network_fetch() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -261,3 +271,43 @@ async def test_source_timeout_returns_retryable_transport_failure() -> None:
         assert summary.result.outcome is FetchOutcome.FAILED
         assert summary.result.error_code == "source_timeout"
         assert summary.result.error_category.value == "transport"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_fetch_failure_is_redacted_before_database_persistence() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        data = valid_source()
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
+        source = SourceDefinition.model_validate(data)
+        SourceRepository(session).sync([source])
+        session.commit()
+
+        await IngestionService(session, SecretFailureFactory()).fetch_source(source)
+        error_message = session.scalar(select(FetchRunRecord.error_message))
+
+        assert error_message is not None
+        assert "super-secret-value" not in error_message
+        assert "[REDACTED]" in error_message
+
+
+@pytest.mark.asyncio
+async def test_injected_settings_determine_configured_credentials() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        data = valid_source()
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
+        data["access_methods"][0]["auth_envs"] = ["YOUTUBE_API_KEY"]
+        source = SourceDefinition.model_validate(data)
+        SourceRepository(session).sync([source])
+        session.commit()
+
+        summary = await IngestionService(
+            session,
+            InspectingFactory(session),
+            settings=Settings(youtube_api_key="configured"),
+        ).fetch_source(source)
+
+        assert summary.result.outcome is FetchOutcome.NO_CHANGE

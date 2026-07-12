@@ -11,6 +11,7 @@ from newsradar.db.models import (
     SourceAccessMethodRecord,
     SourceDefinitionRecord,
     SourceDefinitionVersion,
+    SourceFetchStateRecord,
     SourceProbeRunRecord,
     SourceProbeSampleRecord,
 )
@@ -102,6 +103,41 @@ def test_sync_preserves_access_method_referenced_by_fetch_history() -> None:
         assert fetch_run is not None
         assert preserved.id == access_method.id
         assert fetch_run.access_method_id == preserved.id
+
+
+def test_sync_can_remove_historically_referenced_access_method() -> None:
+    original = SourceDefinition.model_validate(valid_source())
+    changed_data = valid_source()
+    changed_data["access_methods"] = [
+        {"kind": "rss", "url": "https://www.anthropic.com/news/new.xml", "priority": 2}
+    ]
+    changed = SourceDefinition.model_validate(changed_data)
+
+    with make_session() as session:
+        session.execute(text("PRAGMA foreign_keys=ON"))
+        repository = SourceRepository(session)
+        repository.sync([original])
+        method = session.scalar(select(SourceAccessMethodRecord))
+        assert method is not None
+        session.add(FetchRunRecord(source_id=original.id, access_method_id=method.id))
+        session.add(
+            SourceFetchStateRecord(
+                source_id=original.id,
+                access_method_id=method.id,
+                consecutive_failures=0,
+            )
+        )
+        session.commit()
+
+        repository.sync([changed])
+        session.commit()
+
+        fetch_run = session.scalar(select(FetchRunRecord))
+        methods = session.scalars(select(SourceAccessMethodRecord)).all()
+        assert fetch_run is not None
+        assert fetch_run.access_method_id is None
+        assert [method.priority for method in methods] == [2]
+        assert session.scalar(select(SourceFetchStateRecord)) is None
 
 
 def test_save_probe_result_persists_metrics_without_secrets() -> None:

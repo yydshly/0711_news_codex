@@ -15,6 +15,7 @@ from newsradar.ingestion.fetchers.base import FetcherFactory, FetchState
 from newsradar.ingestion.fetchers.credentials import SettingsCredentials
 from newsradar.ingestion.repository import ItemAction, RawItemRepository
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
+from newsradar.operations.logging import redact
 from newsradar.operations.schema import ErrorCategory
 from newsradar.settings import Settings, get_settings
 from newsradar.sources.schema import SourceDefinition
@@ -48,7 +49,7 @@ class IngestionService:
         self.configured_env = (
             configured_env
             if configured_env is not None
-            else SettingsCredentials().configured_names()
+            else SettingsCredentials(self.settings).configured_names()
         )
 
     async def fetch_source(
@@ -248,7 +249,8 @@ class IngestionService:
             datetime.now(UTC),
             result.http_status,
         )
-        run.error_code, run.error_message = result.error_code, result.error_message
+        run.error_code = result.error_code
+        run.error_message = redact(result.error_message or "") or None
         if method_id is not None:
             state = self._fetch_state(source_id, method_id)
             state.consecutive_failures += 1

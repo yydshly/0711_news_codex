@@ -80,7 +80,11 @@ class Worker:
 
         def checkpoint(boundary: str) -> None:
             nonlocal last_heartbeat
-            if cancellation_seen.is_set() or self.repository.is_cancel_requested(lease):
+            if cancellation_seen.is_set() or (
+                self._lease_guard is not None and not self._lease_guard(lease)
+            ) or (
+                self._lease_guard is None and self.repository.is_cancel_requested(lease)
+            ):
                 raise _Cancelled()
             now = self._clock()
             if (

@@ -20,7 +20,6 @@ from newsradar.local_postgres import (
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.fetch_runtime import FetchOperationHandler
 from newsradar.operations.repository import OperationRepository
-from newsradar.operations.schema import OperationType
 from newsradar.operations.worker import Worker
 from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
@@ -196,14 +195,11 @@ def show_operation(operation_id: int) -> None:
 @operations_app.command("retry")
 def retry_operation(operation_id: int) -> None:
     with create_session() as session:
-        operation = session.get(OperationRunRecord, operation_id)
-        if operation is None:
-            raise typer.Exit(2)
-        OperationRepository(session).enqueue(
-            OperationType(operation.operation_type), operation.requested_scope
-        )
-        session.commit()
-    typer.echo(f"Queued retry for {operation_id}")
+        try:
+            retry_id = OperationCommandService(session).retry(operation_id, trigger="cli")
+        except ValueError:
+            raise typer.Exit(2) from None
+    typer.echo(f"Queued retry for {operation_id} as operation {retry_id}")
 
 
 @app.command("worker")

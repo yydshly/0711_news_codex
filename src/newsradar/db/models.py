@@ -204,7 +204,9 @@ class FetchRunRecord(Base):
     error: Mapped[str | None] = mapped_column(Text)
     operation_run_id: Mapped[int | None] = mapped_column(ForeignKey("operation_runs.id"))
     operation_attempt_id: Mapped[int | None] = mapped_column(ForeignKey("operation_attempts.id"))
-    access_method_id: Mapped[int | None] = mapped_column(ForeignKey("source_access_methods.id"))
+    access_method_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_access_methods.id", ondelete="SET NULL")
+    )
     http_status: Mapped[int | None] = mapped_column(Integer)
     final_url: Mapped[str | None] = mapped_column(Text)
     etag: Mapped[str | None] = mapped_column(String(512))

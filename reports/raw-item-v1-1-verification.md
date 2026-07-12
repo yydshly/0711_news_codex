@@ -76,4 +76,14 @@ uv run newsradar worker --once
 ## 最终质量门
 
 - `uv run ruff check .`：通过。
-- `uv run pytest -q`：342 项通过，0 项失败；仅有已知依赖弃用警告。
+- `uv run pytest -q`：347 项通过，0 项失败，0 项跳过；仅有已知依赖弃用警告。
+- PostgreSQL 迁移 `0006 → 0005 → 0006` 往返通过，修订后的历史接入方式外键策略已在实库应用。
+- 跟踪文件和诊断包脱敏扫描未发现真实凭据；诊断包仅包含 `manifest.json` 和 `snapshot.json`。
+
+## 最终审查修复
+
+- CLI `operations retry` 已改用与 Web 相同的 `OperationCommandService`，新任务保留 `retry_of_operation_id` 和 `trigger=cli` 审计信息。
+- 受监控的 Worker 后台执行线程不再访问拥有者线程的 SQLAlchemy Session；取消状态由独立监控 Session 传播。
+- URL 查询参数 `key=` 纳入统一脱敏，fetch failure 在写入 `fetch_runs` 前再次脱敏。
+- `IngestionService` 现在使用注入的 Settings 计算凭据状态，测试与生产配置口径一致。
+- 删除已被历史抓取引用的接入方式时，fetch run 外键安全置空、对应游标状态清理；普通定义更新仍保留接入方式 ID 和抓取状态。

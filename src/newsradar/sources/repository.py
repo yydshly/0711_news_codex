@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import ModelUsage
@@ -12,6 +13,7 @@ from newsradar.db.models import (
     SourceAccessMethodRecord,
     SourceDefinitionRecord,
     SourceDefinitionVersion,
+    SourceFetchStateRecord,
     SourceProbeRunRecord,
     SourceProbeSampleRecord,
     SourceRiskAssessmentRecord,
@@ -96,6 +98,11 @@ class SourceRepository:
                 record.params = method.params
 
             for obsolete in existing_methods.values():
+                self.session.execute(
+                    delete(SourceFetchStateRecord).where(
+                        SourceFetchStateRecord.access_method_id == obsolete.id
+                    )
+                )
                 current.access_methods.remove(obsolete)
 
             self.session.add(

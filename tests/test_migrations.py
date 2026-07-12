@@ -157,6 +157,12 @@ def test_v1_1_closure_migration_adds_multi_credential_storage(tmp_path: Path) ->
         raw_item_indexes = {
             index["name"] for index in inspect(connection).get_indexes("raw_items")
         }
+        access_method_fk = next(
+            foreign_key
+            for foreign_key in inspect(connection).get_foreign_keys("fetch_runs")
+            if foreign_key["constrained_columns"] == ["access_method_id"]
+        )
 
     assert "auth_envs" in columns
     assert "ix_raw_items_title_fingerprint_published_at" in raw_item_indexes
+    assert access_method_fk["options"].get("ondelete") == "SET NULL"

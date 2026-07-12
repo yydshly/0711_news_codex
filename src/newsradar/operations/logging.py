@@ -12,7 +12,10 @@ _SECRET_PATTERNS = (
     (re.compile(r"(?i)bearer\s+[\w.\-~=+/]+"), "Bearer [REDACTED]"),
     (re.compile(r"(?i)(cookie\s*:\s*)[^\r\n]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(authorization\s*:\s*)[^\r\n]+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)([?&](?:api[_-]?key|token|access_token)=)[^&#\s]+"), r"\1[REDACTED]"),
+    (
+        re.compile(r"(?i)([?&](?:key|api[_-]?key|token|access_token)=)[^&#\s]+"),
+        r"\1[REDACTED]",
+    ),
     (
         re.compile(r"(?i)\b(api[_-]?key|token|password)\s*[=:]\s*[^\s,&;]+"),
         lambda match: f"{match.group(1)}=[REDACTED]",
