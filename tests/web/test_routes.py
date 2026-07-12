@@ -464,11 +464,14 @@ def test_target_detail_uses_safe_migration_error_boundary():
 
 
 def test_static_shell_assets_preserve_accessible_navigation(client: TestClient):
+    shell = client.get("/")
     css = client.get("/static/styles.css")
     javascript = client.get("/static/app.js")
 
+    assert shell.status_code == 200
     assert css.status_code == 200
     assert javascript.status_code == 200
+    assert 'href="http://testserver/static/styles.css?v=20260711-2"' in shell.text
     assert ":focus-visible" in css.text
     assert "@media (max-width: 760px)" in css.text
     assert "aria-expanded" in javascript.text
