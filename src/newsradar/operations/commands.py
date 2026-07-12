@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from time import monotonic, sleep
 
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from newsradar.db.models import OperationRunRecord
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.schema import OperationStatus, OperationType
+from newsradar.settings import Settings, get_settings
 
 
 class OperationCommandService:
@@ -19,10 +21,14 @@ class OperationCommandService:
         *,
         sleeper: Callable[[float], None] = sleep,
         clock: Callable[[], float] = monotonic,
+        utcnow: Callable[[], datetime] | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.session = session
         self._sleeper = sleeper
         self._clock = clock
+        self._utcnow = utcnow or (lambda: datetime.now(UTC))
+        self._settings = settings or get_settings()
 
     def enqueue_fetch(
         self,
@@ -34,6 +40,9 @@ class OperationCommandService:
         one_off: bool = False,
         trigger: str,
     ) -> int:
+        deadline_at = self._utcnow() + timedelta(
+            seconds=self._settings.operation_timeout_seconds
+        )
         record = OperationRepository(self.session).enqueue(
             OperationType.FETCH,
             {
@@ -42,6 +51,7 @@ class OperationCommandService:
                 "dry_run": dry_run,
                 "max_items": max_items,
                 "one_off": one_off,
+                "deadline_at": deadline_at.isoformat(),
             },
             trigger=trigger,
         )
@@ -55,6 +65,9 @@ class OperationCommandService:
             raise ValueError("operation is not retryable")
         scope = dict(original.requested_scope)
         scope["retry_of_operation_id"] = operation_id
+        scope["deadline_at"] = (
+            self._utcnow() + timedelta(seconds=self._settings.operation_timeout_seconds)
+        ).isoformat()
         record = OperationRepository(self.session).enqueue(
             OperationType(original.operation_type), scope, trigger=trigger
         )

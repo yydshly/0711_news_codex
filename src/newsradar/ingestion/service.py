@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -13,6 +15,8 @@ from newsradar.ingestion.fetchers.base import FetcherFactory, FetchState
 from newsradar.ingestion.fetchers.credentials import SettingsCredentials
 from newsradar.ingestion.repository import ItemAction, RawItemRepository
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
+from newsradar.operations.schema import ErrorCategory
+from newsradar.settings import Settings, get_settings
 from newsradar.sources.schema import SourceDefinition
 
 
@@ -32,9 +36,15 @@ class IngestionService:
     """Coordinates network-only fetchers with short, separately committed writes."""
 
     def __init__(
-        self, session: Session, factory: FetcherFactory, *, configured_env: set[str] | None = None
+        self,
+        session: Session,
+        factory: FetcherFactory,
+        *,
+        configured_env: set[str] | None = None,
+        settings: Settings | None = None,
     ):
         self.session, self.factory = session, factory
+        self.settings = settings or get_settings()
         self.configured_env = (
             configured_env
             if configured_env is not None
@@ -49,6 +59,7 @@ class IngestionService:
         max_items: int | None = None,
         dry_run: bool = False,
         operation_run_id: int | None = None,
+        checkpoint: Callable[[str], None] | None = None,
     ) -> SourceFetchSummary:
         decision = evaluate_fetch_eligibility(
             source,
@@ -79,6 +90,7 @@ class IngestionService:
                 max_items=max_items,
                 dry_run=dry_run,
                 operation_run_id=operation_run_id,
+                checkpoint=checkpoint,
             )
         finally:
             self._release_advisory_lock(lock_connection, source.id)
@@ -91,6 +103,7 @@ class IngestionService:
         max_items: int | None,
         dry_run: bool,
         operation_run_id: int | None,
+        checkpoint: Callable[[str], None] | None,
     ) -> SourceFetchSummary:
         limit = min(
             max_items or source.ingestion.max_items_per_run, source.ingestion.max_items_per_run
@@ -98,7 +111,21 @@ class IngestionService:
         method_id, state = self._state(source.id, str(method.url))
         # Fetching is intentionally outside every database transaction.
         try:
-            result = await self.factory.for_method(method).fetch(source, method, state, limit)
+            if checkpoint is not None:
+                checkpoint("before_network")
+            async with asyncio.timeout(self.settings.source_timeout_seconds):
+                result = await self.factory.for_method(method).fetch(source, method, state, limit)
+            if checkpoint is not None:
+                checkpoint("after_network")
+        except TimeoutError:
+            result = FetchResult(
+                outcome=FetchOutcome.FAILED,
+                error_category=ErrorCategory.TRANSPORT,
+                error_code="source_timeout",
+                error_message=(
+                    f"Source fetch exceeded {self.settings.source_timeout_seconds:g} seconds"
+                ),
+            )
         except Exception as exc:
             result = FetchResult(
                 outcome=FetchOutcome.FAILED, error_code="fetch_failed", error_message=str(exc)
@@ -106,10 +133,16 @@ class IngestionService:
         if dry_run:
             return SourceFetchSummary(source.id, result, error_code=result.error_code)
         fetch_run = self._start_run(source.id, method_id, operation_run_id)
-        if result.outcome in {FetchOutcome.SUCCEEDED, FetchOutcome.PARTIAL}:
+        if result.outcome in {
+            FetchOutcome.SUCCEEDED,
+            FetchOutcome.PARTIAL,
+            FetchOutcome.NO_CHANGE,
+        }:
             counts = {action: 0 for action in ItemAction}
             repository = RawItemRepository(self.session)
             for item in result.items:
+                if checkpoint is not None:
+                    checkpoint("before_item")
                 try:
                     written = repository.upsert(fetch_run.id, source.id, item)
                 except Exception:
@@ -122,6 +155,8 @@ class IngestionService:
                 counts[written.action] += 1
                 # Keep each unit of work bounded; repository uses savepoints for item failures.
                 self.session.commit()
+                if checkpoint is not None:
+                    checkpoint("after_item")
             result = result.model_copy(
                 update={
                     "outcome": (
@@ -138,7 +173,7 @@ class IngestionService:
             )
             self._commit_success(fetch_run, source.id, method_id, result)
         else:
-            self._finish_run(fetch_run, result)
+            self._finish_run(fetch_run, source.id, method_id, result)
         return SourceFetchSummary(source.id, result, fetch_run.id, result.error_code)
 
     def _acquire_advisory_lock(self, source_id: str) -> Connection | None:
@@ -201,13 +236,24 @@ class IngestionService:
         self.session.commit()
         return run
 
-    def _finish_run(self, run: FetchRunRecord, result: FetchResult) -> None:
+    def _finish_run(
+        self,
+        run: FetchRunRecord,
+        source_id: str,
+        method_id: int | None,
+        result: FetchResult,
+    ) -> None:
         run.outcome, run.finished_at, run.http_status = (
             result.outcome.value,
             datetime.now(UTC),
             result.http_status,
         )
         run.error_code, run.error_message = result.error_code, result.error_message
+        if method_id is not None:
+            state = self._fetch_state(source_id, method_id)
+            state.consecutive_failures += 1
+            state.last_failure_at = datetime.now(UTC)
+            state.last_error_code = result.error_code
         self.session.commit()
 
     def _commit_success(
@@ -235,15 +281,7 @@ class IngestionService:
             result.items_failed,
         )
         if method_id is not None:
-            state = self.session.scalar(
-                select(SourceFetchStateRecord).where(
-                    SourceFetchStateRecord.source_id == source_id,
-                    SourceFetchStateRecord.access_method_id == method_id,
-                )
-            )
-            if state is None:
-                state = SourceFetchStateRecord(source_id=source_id, access_method_id=method_id)
-                self.session.add(state)
+            state = self._fetch_state(source_id, method_id)
             state.etag, state.last_modified, state.cursor, state.last_success_at = (
                 result.etag,
                 result.last_modified,
@@ -251,4 +289,22 @@ class IngestionService:
                 datetime.now(UTC),
             )
             state.consecutive_failures = 0
+            state.last_failure_at = None
+            state.last_error_code = None
         self.session.commit()
+
+    def _fetch_state(self, source_id: str, method_id: int) -> SourceFetchStateRecord:
+        state = self.session.scalar(
+            select(SourceFetchStateRecord).where(
+                SourceFetchStateRecord.source_id == source_id,
+                SourceFetchStateRecord.access_method_id == method_id,
+            )
+        )
+        if state is None:
+            state = SourceFetchStateRecord(
+                source_id=source_id,
+                access_method_id=method_id,
+                consecutive_failures=0,
+            )
+            self.session.add(state)
+        return state

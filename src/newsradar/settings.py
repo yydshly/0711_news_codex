@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     reddit_client_id: SecretStr | None = None
     reddit_client_secret: SecretStr | None = None
     youtube_api_key: SecretStr | None = None
+    http_connect_timeout_seconds: float = 10
+    http_read_timeout_seconds: float = 30
+    http_request_timeout_seconds: float = 45
+    source_timeout_seconds: float = 120
+    operation_timeout_seconds: float = 1800
+    db_lock_timeout_seconds: float = 5
+    worker_lease_seconds: float = 60
+    worker_heartbeat_seconds: float = 15
+    default_pages_per_fetch: int = 1
+    max_pages_per_fetch: int = 10
 
 
 @lru_cache

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -9,6 +11,7 @@ from newsradar.ingestion.fetchers.base import FetchState
 from newsradar.ingestion.repository import RawItemRepository
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.ingestion.service import IngestionService
+from newsradar.settings import Settings
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.schema import SourceDefinition
 
@@ -54,6 +57,31 @@ class ItemFactory:
         return ItemFetcher()
 
 
+class FailedFetcher:
+    async def fetch(self, source, method, state: FetchState, limit: int) -> FetchResult:
+        return FetchResult(
+            outcome=FetchOutcome.FAILED,
+            error_code="upstream_timeout",
+            error_message="upstream timed out",
+        )
+
+
+class FailedFactory:
+    def for_method(self, method):
+        return FailedFetcher()
+
+
+class SlowFetcher:
+    async def fetch(self, source, method, state: FetchState, limit: int) -> FetchResult:
+        await asyncio.sleep(60)
+        raise AssertionError("source timeout did not cancel the fetch")
+
+
+class SlowFactory:
+    def for_method(self, method):
+        return SlowFetcher()
+
+
 @pytest.mark.asyncio
 async def test_service_closes_state_read_transaction_before_network_fetch() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -68,6 +96,25 @@ async def test_service_closes_state_read_transaction_before_network_fetch() -> N
         summary = await IngestionService(session, InspectingFactory(session)).fetch_source(source)
 
     assert summary.result.outcome is FetchOutcome.NO_CHANGE
+
+
+@pytest.mark.asyncio
+async def test_no_change_is_healthy_and_resets_failure_streak() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        data = valid_source()
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
+        source = SourceDefinition.model_validate(data)
+        SourceRepository(session).sync([source])
+        session.commit()
+
+        await IngestionService(session, InspectingFactory(session)).fetch_source(source)
+        state = session.scalar(select(SourceFetchStateRecord))
+
+        assert state is not None
+        assert state.consecutive_failures == 0
+        assert state.last_error_code is None
 
 
 @pytest.mark.asyncio
@@ -171,3 +218,46 @@ async def test_service_records_item_write_failure_and_finishes_fetch_run(
         assert summary.result.outcome is FetchOutcome.PARTIAL
         assert summary.result.items_failed == 1
         assert session.scalar(select(FetchRunRecord.outcome)) == FetchOutcome.PARTIAL.value
+
+
+@pytest.mark.asyncio
+async def test_failed_fetch_increments_source_failure_state() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        data = valid_source()
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
+        source = SourceDefinition.model_validate(data)
+        SourceRepository(session).sync([source])
+        session.commit()
+
+        summary = await IngestionService(session, FailedFactory()).fetch_source(source)
+        state = session.scalar(select(SourceFetchStateRecord))
+
+        assert summary.result.outcome is FetchOutcome.FAILED
+        assert state is not None
+        assert state.consecutive_failures == 1
+        assert state.last_failure_at is not None
+        assert state.last_error_code == "upstream_timeout"
+
+
+@pytest.mark.asyncio
+async def test_source_timeout_returns_retryable_transport_failure() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        data = valid_source()
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
+        source = SourceDefinition.model_validate(data)
+        SourceRepository(session).sync([source])
+        session.commit()
+
+        summary = await IngestionService(
+            session,
+            SlowFactory(),
+            settings=Settings(source_timeout_seconds=0.01),
+        ).fetch_source(source)
+
+        assert summary.result.outcome is FetchOutcome.FAILED
+        assert summary.result.error_code == "source_timeout"
+        assert summary.result.error_category.value == "transport"  # type: ignore[union-attr]

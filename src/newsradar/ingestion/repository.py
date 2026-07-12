@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -217,10 +217,7 @@ class RawItemRepository:
             self._add_candidate(record.id, candidate.id, "canonical_url", 1.0)
 
         title_matches = self.session.scalars(
-            select(RawItemRecord).where(
-                RawItemRecord.id != record.id,
-                RawItemRecord.source_id != record.source_id,
-            )
+            self._title_candidate_statement(record, item)
         ).all()
         for candidate in title_matches:
             candidate_item = NormalizedRawItem(
@@ -240,6 +237,34 @@ class RawItemRepository:
             score = title_similarity(item, candidate_item)
             if score >= 0.9:
                 self._add_candidate(record.id, candidate.id, "title", score)
+
+    def _title_candidate_statement(
+        self, record: RawItemRecord, item: NormalizedRawItem
+    ):
+        recent_cutoff = _now() - timedelta(days=30)
+        statement = select(RawItemRecord).where(
+            RawItemRecord.id != record.id,
+            RawItemRecord.source_id != record.source_id,
+        )
+        if item.published_at is not None:
+            published_at = _as_utc(item.published_at)
+            assert published_at is not None
+            statement = statement.where(
+                or_(
+                    and_(
+                        RawItemRecord.published_at.is_not(None),
+                        RawItemRecord.published_at >= published_at - timedelta(days=7),
+                        RawItemRecord.published_at <= published_at + timedelta(days=7),
+                    ),
+                    and_(
+                        RawItemRecord.published_at.is_(None),
+                        RawItemRecord.fetched_at >= recent_cutoff,
+                    ),
+                )
+            )
+        else:
+            statement = statement.where(RawItemRecord.fetched_at >= recent_cutoff)
+        return statement.order_by(RawItemRecord.fetched_at.desc()).limit(500)
 
     def _add_candidate(
         self, raw_item_id: int, candidate_id: int, match_type: str, score: float

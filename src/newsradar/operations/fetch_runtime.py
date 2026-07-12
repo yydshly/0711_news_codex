@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Protocol
 
 from newsradar.db.session import create_session
 from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
 from newsradar.ingestion.schema import FetchOutcome
 from newsradar.ingestion.service import IngestionService, SourceFetchSummary
+from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import ErrorCategory, OperationStatus, OperationType
 from newsradar.operations.worker import OperationResult
@@ -20,6 +21,7 @@ class FetchExecutor(Protocol):
         source: SourceDefinition,
         operation_id: int,
         checkpoint: Callable[[str], None],
+        requested_scope: Mapping[str, object],
     ) -> SourceFetchSummary: ...
 
 
@@ -62,9 +64,36 @@ class FetchOperationHandler:
                 ),
                 retryable=False,
             )
+        deadline = None
+        if "deadline_at" in lease.requested_scope:
+            try:
+                deadline = OperationDeadline.from_scope(lease.requested_scope)
+                deadline.check("before_source")
+            except (OperationTimedOut, ValueError) as error:
+                return OperationResult(
+                    status=OperationStatus.FAILED,
+                    error_code="operation_timeout",
+                    error_message=str(error),
+                    retryable=False,
+                )
         checkpoint("before_source")
-        summary = self._executor(source, lease.operation_id, checkpoint)
+        summary = self._executor(
+            source,
+            lease.operation_id,
+            checkpoint,
+            lease.requested_scope,
+        )
         checkpoint("after_source")
+        if deadline is not None:
+            try:
+                deadline.check("after_source")
+            except OperationTimedOut as error:
+                return OperationResult(
+                    status=OperationStatus.FAILED,
+                    error_code="operation_timeout",
+                    error_message=str(error),
+                    retryable=False,
+                )
         return _result_from_summary(summary)
 
 
@@ -130,7 +159,10 @@ def _is_retryable_fetch_failure(result) -> bool:
 
 
 def _execute_production_fetch(
-    source: SourceDefinition, operation_id: int, _checkpoint: Callable[[str], None]
+    source: SourceDefinition,
+    operation_id: int,
+    checkpoint: Callable[[str], None],
+    requested_scope: Mapping[str, object],
 ) -> SourceFetchSummary:
     """Keep the request process outside the web request and every DB transaction."""
 
@@ -140,8 +172,15 @@ def _execute_production_fetch(
             with create_session() as session:
                 return await IngestionService(session, FetcherFactory(policy)).fetch_source(
                     source,
-                    approved_only=True,
+                    approved_only=not bool(requested_scope.get("one_off", False)),
+                    max_items=(
+                        requested_scope.get("max_items")
+                        if isinstance(requested_scope.get("max_items"), int)
+                        else None
+                    ),
+                    dry_run=bool(requested_scope.get("dry_run", False)),
                     operation_run_id=operation_id,
+                    checkpoint=checkpoint,
                 )
         finally:
             await policy.client.aclose()

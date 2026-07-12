@@ -10,7 +10,10 @@ from typing import Protocol
 import httpx
 
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
+from newsradar.settings import get_settings
 from newsradar.sources.schema import AccessKind, AccessMethod, SourceDefinition
+
+from .retry_after import parse_retry_after
 
 
 @dataclass(frozen=True)
@@ -47,8 +50,13 @@ class HttpPolicy:
 
     @classmethod
     def default(cls) -> HttpPolicy:
+        settings = get_settings()
         limits = httpx.Limits(max_connections=16, max_keepalive_connections=8)
-        timeout = httpx.Timeout(45.0, connect=10.0, read=30.0)
+        timeout = httpx.Timeout(
+            settings.http_request_timeout_seconds,
+            connect=settings.http_connect_timeout_seconds,
+            read=settings.http_read_timeout_seconds,
+        )
         return cls(httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True))
 
     async def get(self, url: str, **kwargs: object) -> httpx.Response:
@@ -59,7 +67,7 @@ class HttpPolicy:
                     response = await self._stream_get(url, **kwargs)
                     if response.status_code not in {502, 503, 504, 429} or attempt == self.retries:
                         return response
-                    delay = min(float(response.headers.get("retry-after", "0") or 0), 30.0)
+                    delay = min(parse_retry_after(response.headers.get("retry-after")) or 0, 30.0)
                 except (httpx.TransportError, httpx.TimeoutException):
                     if attempt == self.retries:
                         raise
@@ -129,6 +137,9 @@ def response_result(response: httpx.Response, **values: object) -> FetchResult:
     }
     remaining = response.headers.get("x-ratelimit-remaining")
     values.setdefault("outcome", FetchOutcome.SUCCEEDED)
+    values.setdefault(
+        "retry_after_seconds", parse_retry_after(response.headers.get("retry-after"))
+    )
     return FetchResult(
         http_status=response.status_code,
         final_url=str(response.url),

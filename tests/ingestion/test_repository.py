@@ -391,6 +391,55 @@ def test_meaningful_title_update_creates_cross_source_candidate() -> None:
         }
 
 
+def test_title_candidate_search_excludes_distant_published_items() -> None:
+    with make_session() as session:
+        first_run_id = prepare(session)
+        repository = RawItemRepository(session)
+        repository.upsert(
+            first_run_id,
+            "source",
+            item(
+                title="OpenAI releases GPT 5 model for all developers",
+                published_at=datetime(2025, 1, 1, tzinfo=UTC),
+            ),
+        )
+        other_run_id = prepare_other_source(session)
+
+        repository.upsert(
+            other_run_id,
+            "other",
+            item(
+                external_id="other-42",
+                canonical_url="https://other.example/releases/2",
+                title="OpenAI releases GPT 5 model for all developers",
+                published_at=datetime(2026, 7, 11, tzinfo=UTC),
+            ),
+        )
+
+        assert session.scalar(select(func.count()).select_from(DuplicateCandidateRecord)) == 0
+
+
+def test_title_candidate_query_is_cross_source_time_bounded_and_limited() -> None:
+    with make_session() as session:
+        repository = RawItemRepository(session)
+        record = RawItemRecord(
+            id=42,
+            source_id="source",
+            external_id="42",
+            canonical_url="https://example.test/42",
+            payload={},
+            published_at=datetime(2026, 7, 11, tzinfo=UTC),
+        )
+
+        statement = repository._title_candidate_statement(record, item())
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+
+        assert "raw_items.source_id != 'source'" in sql
+        assert "raw_items.published_at" in sql
+        assert "raw_items.fetched_at" in sql
+        assert "LIMIT 500" in sql
+
+
 def test_integrity_error_rolls_back_only_that_item_and_later_items_remain_processable() -> None:
     with make_session() as session:
         fetch_run_id = prepare(session)

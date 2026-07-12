@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -54,7 +56,7 @@ def test_worker_executes_queued_fetch_and_persists_summary() -> None:
         operation = OperationRepository(db).enqueue(OperationType.FETCH, {"source_id": "source-a"})
         calls: list[str] = []
 
-        def execute(source, operation_id, checkpoint):
+        def execute(source, operation_id, checkpoint, requested_scope):
             calls.append(source.id)
             assert operation_id == operation.id
             checkpoint("network_complete")
@@ -88,7 +90,7 @@ def test_worker_keeps_policy_blocked_fetch_terminal_without_retry() -> None:
     with _session() as db:
         operation = OperationRepository(db).enqueue(OperationType.FETCH, {"source_id": "source-a"})
 
-        def execute(source, operation_id, checkpoint):
+        def execute(source, operation_id, checkpoint, requested_scope):
             return SourceFetchSummary(
                 source.id,
                 FetchResult(
@@ -133,7 +135,7 @@ def test_fetch_worker_does_not_retry_credential_or_client_errors() -> None:
     with _session() as db:
         operation = OperationRepository(db).enqueue(OperationType.FETCH, {"source_id": "source-a"})
 
-        def execute(source, operation_id, checkpoint):
+        def execute(source, operation_id, checkpoint, requested_scope):
             return SourceFetchSummary(
                 source.id,
                 FetchResult(
@@ -160,7 +162,7 @@ def test_fetch_worker_retries_transport_and_rate_limit_failures() -> None:
     with _session() as db:
         operation = OperationRepository(db).enqueue(OperationType.FETCH, {"source_id": "source-a"})
 
-        def execute(source, operation_id, checkpoint):
+        def execute(source, operation_id, checkpoint, requested_scope):
             return SourceFetchSummary(
                 source.id,
                 FetchResult(
@@ -179,3 +181,54 @@ def test_fetch_worker_retries_transport_and_rate_limit_failures() -> None:
         assert record is not None
         assert record.status == OperationStatus.QUEUED
         assert record.attempt_count == 1
+
+
+def test_fetch_worker_rejects_expired_operation_before_source_execution() -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+
+    with _session() as db:
+        expired = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH,
+            {"source_id": "source-a", "deadline_at": expired},
+        )
+        calls: list[str] = []
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler([_source()], lambda *_: calls.append("executed"))
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert calls == []
+        assert record is not None
+        assert record.status == OperationStatus.FAILED
+        assert record.error_code == "operation_timeout"
+
+
+def test_fetch_worker_passes_audited_scope_to_executor() -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+
+    with _session() as db:
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH,
+            {
+                "source_id": "source-a",
+                "dry_run": True,
+                "max_items": 3,
+                "one_off": True,
+            },
+        )
+        scopes: list[dict[str, object]] = []
+
+        def execute(source, operation_id, checkpoint, requested_scope):
+            scopes.append(dict(requested_scope))
+            return SourceFetchSummary(
+                source.id,
+                FetchResult(outcome=FetchOutcome.SUCCEEDED),
+            )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler([_source()], execute)
+        )
+
+        assert scopes == [operation.requested_scope]

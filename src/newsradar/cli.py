@@ -27,6 +27,7 @@ from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.runtime import RuntimeSupervisor
+from newsradar.settings import get_settings
 from newsradar.sources.probes.factory import ProbeFactory
 from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.reporting import render_source_report
@@ -200,6 +201,7 @@ def run_worker(
     """Consume durable operations; network work only occurs in this process."""
     sources = load_source_tree(root)
     handler = FetchOperationHandler.production(sources)
+    settings = get_settings()
     identifier = worker_id or f"{socket.gethostname()}-{os.getpid()}"
     processed_count = 0
     while True:
@@ -210,14 +212,17 @@ def run_worker(
                 # without sharing a SQLAlchemy Session across threads.
                 with create_session() as monitor_session:
                     monitor = OperationRepository(monitor_session)
-                    renewed = monitor.renew_lease(lease)
+                    renewed = monitor.renew_lease(
+                        lease, lease_seconds=settings.worker_lease_seconds
+                    )
                     return renewed and not monitor.is_cancel_requested(lease)
 
             processed = Worker(
                 OperationRepository(session),
                 identifier,
                 lease_guard=guard,
-                monitor_interval_seconds=15,
+                lease_seconds=settings.worker_lease_seconds,
+                monitor_interval_seconds=settings.worker_heartbeat_seconds,
             ).run_once(handler)
         if processed:
             processed_count += 1

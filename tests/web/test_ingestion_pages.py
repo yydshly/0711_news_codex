@@ -55,7 +55,9 @@ def test_fetch_action_enqueues_once_and_never_fetches_in_request(monkeypatch, db
     operations = db_session.scalars(select(OperationRunRecord)).all()
     assert len(operations) == 1
     assert operations[0].operation_type == "fetch"
-    assert operations[0].requested_scope == {
+    scope = dict(operations[0].requested_scope)
+    assert datetime.fromisoformat(scope.pop("deadline_at")).tzinfo is not None
+    assert scope == {
         "dry_run": False,
         "max_items": None,
         "one_off": False,

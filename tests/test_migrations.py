@@ -154,5 +154,9 @@ def test_v1_1_closure_migration_adds_multi_credential_storage(tmp_path: Path) ->
     with engine.connect() as connection:
         access_methods = inspect(connection).get_columns("source_access_methods")
         columns = {column["name"] for column in access_methods}
+        raw_item_indexes = {
+            index["name"] for index in inspect(connection).get_indexes("raw_items")
+        }
 
     assert "auth_envs" in columns
+    assert "ix_raw_items_title_fingerprint_published_at" in raw_item_indexes

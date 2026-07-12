@@ -227,6 +227,11 @@ class RawItemRecord(Base):
         Index("ix_raw_items_source_published_at", "source_id", "published_at"),
         Index("ix_raw_items_canonical_url_hash", "canonical_url_hash"),
         Index("ix_raw_items_title_fingerprint", "title_fingerprint"),
+        Index(
+            "ix_raw_items_title_fingerprint_published_at",
+            "title_fingerprint",
+            "published_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -391,6 +396,8 @@ class SourceFetchStateRecord(Base):
     cursor: Mapped[str | None] = mapped_column(Text)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

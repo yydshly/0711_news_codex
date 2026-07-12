@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import Base, OperationRunRecord
 from newsradar.operations.commands import OperationCommandService
+from newsradar.settings import Settings
 
 
 def session() -> Session:
@@ -29,7 +32,9 @@ def test_enqueue_fetch_records_complete_scope() -> None:
         assert record is not None
         assert record.status == "queued"
         assert record.trigger == "cli"
-        assert record.requested_scope == {
+        scope = dict(record.requested_scope)
+        assert datetime.fromisoformat(scope.pop("deadline_at")).tzinfo is not None
+        assert scope == {
             "source_id": "github-openai-python",
             "provider": None,
             "dry_run": False,
@@ -54,3 +59,19 @@ def test_retry_creates_new_auditable_operation() -> None:
         assert retry.id != original_id
         assert retry.trigger == "web"
         assert retry.requested_scope["retry_of_operation_id"] == original_id
+
+
+def test_enqueue_fetch_persists_operation_deadline() -> None:
+    now = datetime(2026, 7, 12, 0, 0, tzinfo=UTC)
+    with session() as db:
+        service = OperationCommandService(
+            db,
+            settings=Settings(operation_timeout_seconds=30),
+            utcnow=lambda: now,
+        )
+
+        operation_id = service.enqueue_fetch(source_id="source", trigger="cli")
+        record = db.get(OperationRunRecord, operation_id)
+
+        assert record is not None
+        assert record.requested_scope["deadline_at"] == "2026-07-12T00:00:30+00:00"

@@ -7,6 +7,7 @@ import yaml
 from typer.testing import CliRunner
 
 from newsradar.cli import app
+from newsradar.settings import Settings
 
 from .test_provider_schema import valid_provider
 from .test_source_schema import valid_source
@@ -250,10 +251,19 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     calls: list[object] = []
 
     class FakeWorker:
-        def __init__(self, repository, worker_id, *, lease_guard, monitor_interval_seconds):
+        def __init__(
+            self,
+            repository,
+            worker_id,
+            *,
+            lease_guard,
+            lease_seconds,
+            monitor_interval_seconds,
+        ):
             assert worker_id == "worker-test"
             assert callable(lease_guard)
-            assert monitor_interval_seconds == 15
+            assert lease_seconds == 75
+            assert monitor_interval_seconds == 12
 
         def run_once(self, received_handler):
             calls.append(received_handler)
@@ -264,6 +274,10 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     )
     monkeypatch.setattr("newsradar.cli.Worker", FakeWorker)
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(
+        "newsradar.cli.get_settings",
+        lambda: Settings(worker_lease_seconds=75, worker_heartbeat_seconds=12),
+    )
 
     result = runner.invoke(
         app, ["worker", "--root", str(root), "--worker-id", "worker-test", "--once"]
