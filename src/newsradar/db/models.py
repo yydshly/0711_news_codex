@@ -415,3 +415,130 @@ class ModelUsageRecord(Base):
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RawItemProcessingRecord(Base):
+    __tablename__ = "raw_item_processing"
+    __table_args__ = (UniqueConstraint("raw_item_id", "stage", "algorithm_version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventCandidateRecord(Base):
+    __tablename__ = "event_candidates"
+    __table_args__ = (
+        UniqueConstraint("candidate_key", "algorithm_version"),
+        Index("ix_event_candidates_state", "state", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    candidate_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    category: Mapped[str | None] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventCandidateItemRecord(Base):
+    __tablename__ = "event_candidate_items"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "raw_item_id"),
+        Index("ix_event_candidate_items_active", "candidate_id", "raw_item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("event_candidates.id"), nullable=False)
+    raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventRecord(Base):
+    __tablename__ = "events"
+    __table_args__ = (Index("ix_events_status_occurred_at", "status", "occurred_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    canonical_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(32))
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operation_runs.id"))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventVersionRecord(Base):
+    __tablename__ = "event_versions"
+    __table_args__ = (UniqueConstraint("event_id", "version_number"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    zh_title: Mapped[str | None] = mapped_column(Text)
+    zh_summary: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventItemRecord(Base):
+    __tablename__ = "event_items"
+    __table_args__ = (UniqueConstraint("event_id", "raw_item_id", "added_version_number"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), nullable=False)
+    raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"), nullable=False)
+    added_version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EntityRecord(Base):
+    __tablename__ = "entities"
+    __table_args__ = (UniqueConstraint("canonical_key", "entity_type"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    canonical_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventEntityRecord(Base):
+    __tablename__ = "event_entities"
+    __table_args__ = (UniqueConstraint("event_id", "entity_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), nullable=False)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("entities.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventScoreRecord(Base):
+    __tablename__ = "event_scores"
+    __table_args__ = (Index("ix_event_scores_ranking", "heat", "event_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    heat: Mapped[float] = mapped_column(Float, nullable=False)
+    breakdown: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventModelRunRecord(Base):
+    __tablename__ = "event_model_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id"))
+    raw_item_id: Mapped[int | None] = mapped_column(ForeignKey("raw_items.id"))
+    model_usage_id: Mapped[int | None] = mapped_column(ForeignKey("model_usage.id"))
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

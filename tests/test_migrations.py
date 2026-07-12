@@ -166,3 +166,79 @@ def test_v1_1_closure_migration_adds_multi_credential_storage(tmp_path: Path) ->
     assert "auth_envs" in columns
     assert "ix_raw_items_title_fingerprint_published_at" in raw_item_indexes
     assert access_method_fk["options"].get("ondelete") == "SET NULL"
+
+
+def test_event_intelligence_migration_creates_event_tables_and_preserves_raw_items(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "event-intelligence.db"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path.as_posix()}")
+
+    command.upgrade(config, "20260712_0006")
+    engine = create_engine(config.get_main_option("sqlalchemy.url"))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_providers (
+                    id, name, category, homepage, docs_url, terms_url, auth_mode, cost_tier,
+                    availability, capabilities, required_env, reviewed_at, evidence,
+                    unlock_requirements, definition_hash, created_at, updated_at
+                ) VALUES (
+                    'independent', 'Independent', 'publisher', 'https://example.com',
+                    'https://example.com/docs', 'https://example.com/terms', 'none', 'free',
+                    'ready', '[]', '[]', '2026-07-11', '[]', '[]', 'provider-hash',
+                    '2026-07-11T00:00:00+00:00', '2026-07-11T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_definitions (
+                    id, name, status, nature, language, roles, topics, authority_score,
+                    poll_interval_minutes, expected_fields, definition_hash, created_at, updated_at,
+                    provider_id, target_type, availability, coverage_mode, unlock_requirements
+                ) VALUES (
+                    'source', 'Source', 'approved', 'publisher', 'en', '[]', '[]', 1,
+                    60, '[]', 'source-hash', '2026-07-11T00:00:00+00:00',
+                    '2026-07-11T00:00:00+00:00', 'independent', 'publisher_feed', 'ready',
+                    'direct', '[]'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO raw_items (source_id, external_id, canonical_url, payload, fetched_at)
+                VALUES ('source', 'raw-1', 'https://example.com/item', '{}',
+                        '2026-07-12T00:00:00+00:00')
+                """
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert {
+            "raw_item_processing",
+            "event_candidates",
+            "event_candidate_items",
+            "events",
+            "event_versions",
+            "event_items",
+            "entities",
+            "event_entities",
+            "event_scores",
+            "event_model_runs",
+        } <= tables
+        assert connection.execute(text("SELECT external_id FROM raw_items")).scalar_one() == "raw-1"
+
+    command.downgrade(config, "20260712_0006")
+    with engine.connect() as connection:
+        assert "events" not in inspect(connection).get_table_names()
+        assert connection.execute(text("SELECT external_id FROM raw_items")).scalar_one() == "raw-1"
