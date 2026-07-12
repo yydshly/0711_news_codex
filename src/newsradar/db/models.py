@@ -489,12 +489,21 @@ class EventVersionRecord(Base):
 
 class EventItemRecord(Base):
     __tablename__ = "event_items"
-    __table_args__ = (UniqueConstraint("event_id", "raw_item_id", "added_version_number"),)
+    __table_args__ = (
+        UniqueConstraint("event_id", "raw_item_id", "added_version_number"),
+        Index(
+            "ix_event_items_active_membership",
+            "event_id",
+            "removed_version_number",
+            "raw_item_id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), nullable=False)
     raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"), nullable=False)
     added_version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    removed_version_number: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

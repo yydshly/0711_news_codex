@@ -76,8 +76,14 @@ def upgrade() -> None:
         sa.Column("event_id", sa.Integer(), sa.ForeignKey("events.id"), nullable=False),
         sa.Column("raw_item_id", sa.Integer(), sa.ForeignKey("raw_items.id"), nullable=False),
         sa.Column("added_version_number", sa.Integer(), nullable=False),
+        sa.Column("removed_version_number", sa.Integer()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("event_id", "raw_item_id", "added_version_number"),
+    )
+    op.create_index(
+        "ix_event_items_active_membership",
+        "event_items",
+        ["event_id", "removed_version_number", "raw_item_id"],
     )
     op.create_table(
         "entities",
@@ -125,6 +131,7 @@ def downgrade() -> None:
     op.drop_table("event_scores")
     op.drop_table("event_entities")
     op.drop_table("entities")
+    op.execute("DROP INDEX IF EXISTS ix_event_items_active_membership")
     op.drop_table("event_items")
     op.drop_table("event_versions")
     op.drop_index("ix_event_candidate_items_active", table_name="event_candidate_items")

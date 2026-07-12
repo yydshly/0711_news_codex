@@ -223,7 +223,8 @@ def test_event_intelligence_migration_creates_event_tables_and_preserves_raw_ite
     command.upgrade(config, "head")
 
     with engine.connect() as connection:
-        tables = set(inspect(connection).get_table_names())
+        inspector = inspect(connection)
+        tables = set(inspector.get_table_names())
         assert {
             "raw_item_processing",
             "event_candidates",
@@ -236,6 +237,33 @@ def test_event_intelligence_migration_creates_event_tables_and_preserves_raw_ite
             "event_scores",
             "event_model_runs",
         } <= tables
+        def unique_columns(table_name: str) -> set[tuple[str, ...]]:
+            return {
+                tuple(constraint["column_names"])
+                for constraint in inspector.get_unique_constraints(table_name)
+            }
+
+        assert unique_columns("raw_item_processing") >= {
+            ("raw_item_id", "stage", "algorithm_version")
+        }
+        assert unique_columns("event_candidates") >= {("candidate_key", "algorithm_version")}
+        assert unique_columns("event_versions") >= {("event_id", "version_number")}
+        assert unique_columns("event_items") >= {
+            ("event_id", "raw_item_id", "added_version_number")
+        }
+        assert unique_columns("entities") >= {("canonical_key", "entity_type")}
+        assert {
+            index["name"] for index in inspector.get_indexes("events")
+        } >= {"ix_events_status_occurred_at"}
+        assert {
+            index["name"] for index in inspector.get_indexes("event_scores")
+        } >= {"ix_event_scores_ranking"}
+        assert {
+            index["name"] for index in inspector.get_indexes("event_candidates")
+        } >= {"ix_event_candidates_state"}
+        assert {
+            index["name"] for index in inspector.get_indexes("event_items")
+        } >= {"ix_event_items_active_membership"}
         assert connection.execute(text("SELECT external_id FROM raw_items")).scalar_one() == "raw-1"
 
     command.downgrade(config, "20260712_0006")
