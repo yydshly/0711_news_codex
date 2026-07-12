@@ -1,0 +1,43 @@
+id: universe-tiktok-2
+name: TikTok AI discovery
+provider_id: tiktok
+target_type: account
+availability: requires_approval
+coverage_mode: catalog_only
+official_identity_url: https://www.tiktok.com/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official TikTok access
+status: candidate
+nature: social
+roles:
+- discovery
+- engagement
+- context
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 2
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://www.tiktok.com/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 3
+  operating_cost: 0
+  evidence:
+  - https://developers.tiktok.com/products/research-api/
+  - https://www.tiktok.com/legal/terms-of-service
+  hard_block_reason: requires_approval
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

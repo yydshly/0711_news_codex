@@ -1,0 +1,21 @@
+id: financial-times
+name: Financial Times Technology
+category: professional_media
+homepage: https://www.ft.com/technology
+docs_url: https://developer.ft.com/
+terms_url: https://help.ft.com/legal-privacy/terms-conditions/
+auth_mode: approval
+cost_tier: enterprise
+availability: requires_approval
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://developer.ft.com/
+- https://help.ft.com/legal-privacy/terms-conditions/
+unlock_requirements:
+- Obtain official Financial Times Technology access for requires approval
+notes: Capability metadata only; content coverage is assessed per target.

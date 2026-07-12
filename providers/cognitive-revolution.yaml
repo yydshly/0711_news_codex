@@ -1,0 +1,20 @@
+id: cognitive-revolution
+name: The Cognitive Revolution
+category: newsletter_podcast
+homepage: https://www.cognitiverevolution.ai/
+docs_url: https://www.cognitiverevolution.ai/
+terms_url: https://www.cognitiverevolution.ai/
+auth_mode: manual
+cost_tier: free
+availability: manual_only
+capabilities:
+- discovery
+- content
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.cognitiverevolution.ai/
+- https://www.cognitiverevolution.ai/
+unlock_requirements:
+- 'Obtain official The Cognitive Revolution access: manual_only'
+notes: Capability metadata only; content coverage is assessed per target.

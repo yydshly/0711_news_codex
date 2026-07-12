@@ -1,0 +1,20 @@
+id: cnbc
+name: CNBC Technology
+category: professional_media
+homepage: https://www.cnbc.com/technology/
+docs_url: https://www.cnbc.com/rss-feeds/
+terms_url: https://www.cnbc.com/nbcuniversal-terms-of-service/
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.cnbc.com/rss-feeds/
+- https://www.cnbc.com/nbcuniversal-terms-of-service/
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

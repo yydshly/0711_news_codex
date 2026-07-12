@@ -1,0 +1,21 @@
+id: discord
+name: Discord Communities
+category: social_community
+homepage: https://discord.com/
+docs_url: https://discord.com/developers/docs/intro
+terms_url: https://discord.com/terms
+auth_mode: manual
+cost_tier: free_quota
+availability: manual_only
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://discord.com/developers/docs/intro
+- https://discord.com/terms
+unlock_requirements:
+- Obtain official Discord Communities access for manual only
+notes: Capability metadata only; content coverage is assessed per target.

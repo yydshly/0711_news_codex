@@ -1,0 +1,42 @@
+id: universe-event-registry-1
+name: Event Registry primary
+provider_id: event-registry
+target_type: publisher_feed
+availability: requires_credentials
+coverage_mode: catalog_only
+official_identity_url: https://eventregistry.org/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- 'Obtain official Event Registry access: requires_credentials'
+status: candidate
+nature: aggregator
+roles:
+- discovery
+- context
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://eventregistry.org/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 1
+  operating_cost: 4
+  evidence:
+  - https://eventregistry.org/documentation
+  - https://eventregistry.org/terms
+  hard_block_reason: requires_credentials
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

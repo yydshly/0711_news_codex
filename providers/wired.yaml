@@ -1,0 +1,20 @@
+id: wired
+name: WIRED
+category: professional_media
+homepage: https://www.wired.com/
+docs_url: https://www.wired.com/feed/rss
+terms_url: https://www.condenast.com/user-agreement
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.wired.com/feed/rss
+- https://www.condenast.com/user-agreement
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

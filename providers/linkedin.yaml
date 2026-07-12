@@ -1,0 +1,21 @@
+id: linkedin
+name: LinkedIn
+category: social_community
+homepage: https://www.linkedin.com/
+docs_url: https://learn.microsoft.com/linkedin/
+terms_url: https://www.linkedin.com/legal/user-agreement
+auth_mode: approval
+cost_tier: enterprise
+availability: requires_approval
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://learn.microsoft.com/linkedin/
+- https://www.linkedin.com/legal/user-agreement
+unlock_requirements:
+- Obtain official LinkedIn access for requires approval
+notes: Capability metadata only; content coverage is assessed per target.

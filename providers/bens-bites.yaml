@@ -1,0 +1,20 @@
+id: bens-bites
+name: Ben's Bites
+category: newsletter_podcast
+homepage: https://www.bensbites.com/
+docs_url: https://www.bensbites.com/
+terms_url: https://www.bensbites.com/terms
+auth_mode: manual
+cost_tier: freemium
+availability: manual_only
+capabilities:
+- discovery
+- content
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.bensbites.com/
+- https://www.bensbites.com/terms
+unlock_requirements:
+- 'Obtain official Ben''s Bites access: manual_only'
+notes: Capability metadata only; content coverage is assessed per target.

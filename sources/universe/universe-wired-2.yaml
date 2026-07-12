@@ -1,0 +1,41 @@
+id: universe-wired-2
+name: WIRED AI discovery
+provider_id: wired
+target_type: search_query
+availability: ready
+coverage_mode: indirect
+official_identity_url: https://www.wired.com/
+reviewed_at: '2026-07-11'
+unlock_requirements: []
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: rss
+  url: https://news.google.com/rss/search?q=AI+technology+source%3A%22WIRED%22
+  priority: 1
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 1
+  authentication: 0
+  stability: 2
+  data_quality: 1
+  operating_cost: 0
+  evidence:
+  - https://www.wired.com/feed/rss
+  - https://www.condenast.com/user-agreement
+  hard_block_reason: null
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

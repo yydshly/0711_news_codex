@@ -1,0 +1,22 @@
+id: youtube
+name: YouTube
+category: social_community
+homepage: https://www.youtube.com/
+docs_url: https://developers.google.com/youtube/v3
+terms_url: https://www.youtube.com/static?template=terms
+auth_mode: api_key
+cost_tier: free_quota
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+- engagement
+required_env:
+- YOUTUBE_API_KEY
+reviewed_at: '2026-07-11'
+evidence:
+- https://developers.google.com/youtube/v3
+- https://www.youtube.com/static?template=terms
+unlock_requirements:
+- Obtain official YouTube access for requires credentials
+notes: Capability metadata only; content coverage is assessed per target.

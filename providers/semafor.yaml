@@ -1,0 +1,20 @@
+id: semafor
+name: Semafor Technology
+category: professional_media
+homepage: https://www.semafor.com/technology
+docs_url: https://www.semafor.com/technology
+terms_url: https://www.semafor.com/terms
+auth_mode: manual
+cost_tier: free
+availability: manual_only
+capabilities:
+- discovery
+- content
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.semafor.com/technology
+- https://www.semafor.com/terms
+unlock_requirements:
+- 'Obtain official Semafor Technology access: manual_only'
+notes: Capability metadata only; content coverage is assessed per target.

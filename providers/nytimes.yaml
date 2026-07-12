@@ -1,0 +1,22 @@
+id: nytimes
+name: The New York Times Technology
+category: professional_media
+homepage: https://www.nytimes.com/section/technology
+docs_url: https://developer.nytimes.com/
+terms_url: https://help.nytimes.com/hc/en-us/articles/115014893428-Terms-of-service
+auth_mode: api_key
+cost_tier: free_quota
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+- engagement
+required_env:
+- NYTIMES_API_KEY
+reviewed_at: '2026-07-11'
+evidence:
+- https://developer.nytimes.com/
+- https://help.nytimes.com/hc/en-us/articles/115014893428-Terms-of-service
+unlock_requirements:
+- Obtain official The New York Times Technology access for requires credentials
+notes: Capability metadata only; content coverage is assessed per target.

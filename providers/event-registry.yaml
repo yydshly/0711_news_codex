@@ -1,0 +1,21 @@
+id: event-registry
+name: Event Registry
+category: aggregator_search
+homepage: https://eventregistry.org/
+docs_url: https://eventregistry.org/documentation
+terms_url: https://eventregistry.org/terms
+auth_mode: api_key
+cost_tier: freemium
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+required_env:
+- EVENT_REGISTRY_KEY
+reviewed_at: '2026-07-11'
+evidence:
+- https://eventregistry.org/documentation
+- https://eventregistry.org/terms
+unlock_requirements:
+- 'Obtain official Event Registry access: requires_credentials'
+notes: Capability metadata only; content coverage is assessed per target.

@@ -1,0 +1,20 @@
+id: arxiv
+name: arXiv
+category: research_developer
+homepage: https://arxiv.org/
+docs_url: https://info.arxiv.org/help/api/
+terms_url: https://info.arxiv.org/help/license/index.html
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://info.arxiv.org/help/api/
+- https://info.arxiv.org/help/license/index.html
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

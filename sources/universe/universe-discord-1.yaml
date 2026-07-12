@@ -1,0 +1,43 @@
+id: universe-discord-1
+name: Discord Communities primary
+provider_id: discord
+target_type: account
+availability: manual_only
+coverage_mode: catalog_only
+official_identity_url: https://discord.com/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official Discord Communities access
+status: candidate
+nature: social
+roles:
+- discovery
+- engagement
+- context
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 2
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://discord.com/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 3
+  operating_cost: 0
+  evidence:
+  - https://discord.com/developers/docs/intro
+  - https://discord.com/terms
+  hard_block_reason: manual_only
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

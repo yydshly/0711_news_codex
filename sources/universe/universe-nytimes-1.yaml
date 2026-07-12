@@ -1,0 +1,43 @@
+id: universe-nytimes-1
+name: The New York Times Technology primary
+provider_id: nytimes
+target_type: publisher_feed
+availability: requires_credentials
+coverage_mode: catalog_only
+official_identity_url: https://www.nytimes.com/section/technology
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official The New York Times Technology access
+status: candidate
+nature: professional_media
+roles:
+- discovery
+- context
+- evidence
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://www.nytimes.com/section/technology
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 1
+  operating_cost: 0
+  evidence:
+  - https://developer.nytimes.com/
+  - https://help.nytimes.com/hc/en-us/articles/115014893428-Terms-of-service
+  hard_block_reason: requires_credentials
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

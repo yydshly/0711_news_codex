@@ -1,0 +1,20 @@
+id: mit-tech-review
+name: MIT Technology Review
+category: professional_media
+homepage: https://www.technologyreview.com/
+docs_url: https://www.technologyreview.com/feed/
+terms_url: https://www.technologyreview.com/terms-of-use/
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.technologyreview.com/feed/
+- https://www.technologyreview.com/terms-of-use/
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.
