@@ -97,13 +97,27 @@ async def _fetch_sources(
             # Each source owns a Session so failures do not leak transaction state.
             with create_session() as session:
                 service = IngestionService(session, FetcherFactory(policy))
-                return await service.fetch_source(
-                    source,
-                    approved_only=approved,
-                    max_items=max_items,
-                    dry_run=dry_run,
-                    operation_run_id=operation_id,
-                )
+                try:
+                    return await service.fetch_source(
+                        source,
+                        approved_only=approved,
+                        max_items=max_items,
+                        dry_run=dry_run,
+                        operation_run_id=operation_id,
+                    )
+                except Exception as exc:
+                    from newsradar.ingestion.schema import FetchOutcome, FetchResult
+                    from newsradar.ingestion.service import SourceFetchSummary
+
+                    return SourceFetchSummary(
+                        source.id,
+                        FetchResult(
+                            outcome=FetchOutcome.FAILED,
+                            error_code="source_processing_failed",
+                            error_message=str(exc),
+                        ),
+                        error_code="source_processing_failed",
+                    )
 
     try:
         return await asyncio.gather(*(fetch_one(source) for source in selected))

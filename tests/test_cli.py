@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -178,3 +179,48 @@ def test_fetch_one_off_requires_confirmation(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "One-off fetch risk" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_isolates_one_source_processing_exception(monkeypatch) -> None:
+    from newsradar.ingestion.schema import FetchOutcome, FetchResult
+    from newsradar.ingestion.service import SourceFetchSummary
+
+    class Policy:
+        class client:
+            @staticmethod
+            async def aclose():
+                return None
+
+    class Service:
+        def __init__(self, session, factory):
+            pass
+
+        async def fetch_source(self, source, **kwargs):
+            if source.id == "broken":
+                raise RuntimeError("write failed")
+            return SourceFetchSummary(source.id, FetchResult(outcome=FetchOutcome.SUCCEEDED))
+
+    first = valid_source()
+    first["id"] = "broken"
+    second = valid_source()
+    second["id"] = "healthy"
+    monkeypatch.setattr("newsradar.cli.HttpPolicy.default", lambda: Policy())
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr("newsradar.cli.IngestionService", Service)
+
+    from newsradar.cli import _fetch_sources
+    from newsradar.sources.schema import SourceDefinition
+
+    results = await _fetch_sources(
+        [SourceDefinition.model_validate(first), SourceDefinition.model_validate(second)],
+        approved=True,
+        max_items=None,
+        dry_run=False,
+        operation_id=1,
+    )
+
+    assert [result.result.outcome for result in results] == [
+        FetchOutcome.FAILED,
+        FetchOutcome.SUCCEEDED,
+    ]

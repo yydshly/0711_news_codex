@@ -12,6 +12,18 @@ Verification (2026-07-11):
 
 - `uv run pytest tests/ingestion/fetchers -q`: 6 passed.
 - `uv run ruff check .`: passed.
+
+## Advisory-lock and source-isolation follow-up (2026-07-11)
+
+- PostgreSQL advisory locking now checks out a dedicated SQLAlchemy `Connection` for the entire source-fetch lifetime. `pg_try_advisory_lock` and `pg_advisory_unlock` execute on that same connection; each lock statement is rolled back before network work so no database transaction or row lock spans HTTP. The connection is released in `finally`, including persistence failures.
+- Bounded CLI fan-out now converts unexpected per-source processing failures into failed source summaries, allowing the remaining sources to complete.
+- Focused regression evidence: lock connection affinity and persistence-exception release; batch isolation with one failing and one successful source.
+
+Verification after follow-up:
+
+- `uv run pytest tests/test_cli.py tests/ingestion/test_service.py -q`: 19 passed.
+- `uv run pytest -q`: 221 passed (same FastAPI/Alembic deprecation warnings).
+- `uv run ruff check .`: passed.
 - `uv run pytest -q`: 213 passed (with pre-existing FastAPI/Alembic deprecation warnings).
 
 Known limitation: this is the four baseline open-source integrations only; it does not claim coverage of the complete source universe.

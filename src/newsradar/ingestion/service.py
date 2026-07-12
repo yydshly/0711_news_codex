@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import FetchRunRecord, SourceAccessMethodRecord, SourceFetchStateRecord
@@ -21,6 +22,10 @@ class SourceFetchSummary:
     result: FetchResult
     fetch_run_id: int | None = None
     error_code: str | None = None
+
+
+class SourceFetchLockedError(Exception):
+    pass
 
 
 class IngestionService:
@@ -54,14 +59,35 @@ class IngestionService:
                 error_message=decision.reason,
             )
             return SourceFetchSummary(source.id, result, error_code=decision.error_code)
-        method = decision.access_method
-        if not self._acquire_advisory_lock(source.id):
+        try:
+            lock_connection = self._acquire_advisory_lock(source.id)
+        except SourceFetchLockedError:
             result = FetchResult(
                 outcome=FetchOutcome.BLOCKED,
                 error_code="source_fetch_locked",
                 error_message="A fetch for this source is already running",
             )
             return SourceFetchSummary(source.id, result, error_code=result.error_code)
+        try:
+            return await self._fetch_eligible(
+                source,
+                decision.access_method,
+                max_items=max_items,
+                dry_run=dry_run,
+                operation_run_id=operation_run_id,
+            )
+        finally:
+            self._release_advisory_lock(lock_connection, source.id)
+
+    async def _fetch_eligible(
+        self,
+        source: SourceDefinition,
+        method,
+        *,
+        max_items: int | None,
+        dry_run: bool,
+        operation_run_id: int | None,
+    ) -> SourceFetchSummary:
         limit = min(
             max_items or source.ingestion.max_items_per_run, source.ingestion.max_items_per_run
         )
@@ -74,7 +100,6 @@ class IngestionService:
                 outcome=FetchOutcome.FAILED, error_code="fetch_failed", error_message=str(exc)
             )
         if dry_run:
-            self._release_advisory_lock(source.id)
             return SourceFetchSummary(source.id, result, error_code=result.error_code)
         fetch_run = self._start_run(source.id, method_id, operation_run_id)
         if result.outcome in {FetchOutcome.SUCCEEDED, FetchOutcome.PARTIAL}:
@@ -97,28 +122,33 @@ class IngestionService:
             self._commit_success(fetch_run, source.id, method_id, result)
         else:
             self._finish_run(fetch_run, result)
-        self._release_advisory_lock(source.id)
         return SourceFetchSummary(source.id, result, fetch_run.id, result.error_code)
 
-    def _acquire_advisory_lock(self, source_id: str) -> bool:
+    def _acquire_advisory_lock(self, source_id: str) -> Connection | None:
         if self.session.bind is None or self.session.bind.dialect.name != "postgresql":
-            return True
+            return None
+        connection = self.session.bind.connect()
         try:
-            return bool(
-                self.session.scalar(select(func.pg_try_advisory_lock(func.hashtext(source_id))))
+            acquired = bool(
+                connection.scalar(select(func.pg_try_advisory_lock(func.hashtext(source_id))))
             )
-        finally:
-            if self.session.in_transaction():
-                self.session.rollback()
+            connection.rollback()
+            if not acquired:
+                raise SourceFetchLockedError
+            return connection
+        except Exception:
+            connection.close()
+            raise
 
-    def _release_advisory_lock(self, source_id: str) -> None:
-        if self.session.bind is None or self.session.bind.dialect.name != "postgresql":
+    @staticmethod
+    def _release_advisory_lock(connection: Connection | None, source_id: str) -> None:
+        if connection is None:
             return
         try:
-            self.session.scalar(select(func.pg_advisory_unlock(func.hashtext(source_id))))
+            connection.scalar(select(func.pg_advisory_unlock(func.hashtext(source_id))))
         finally:
-            if self.session.in_transaction():
-                self.session.rollback()
+            connection.rollback()
+            connection.close()
 
     def _state(self, source_id: str, url: str) -> tuple[int | None, FetchState]:
         try:

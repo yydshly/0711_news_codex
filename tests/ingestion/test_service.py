@@ -85,3 +85,64 @@ async def test_service_dry_run_writes_neither_raw_items_nor_cursor_state() -> No
         assert summary.result.outcome is FetchOutcome.SUCCEEDED
         assert session.scalar(select(func.count()).select_from(RawItemRecord)) == 0
         assert session.scalar(select(func.count()).select_from(SourceFetchStateRecord)) == 0
+
+
+def test_postgres_advisory_lock_uses_one_dedicated_connection_for_lock_and_unlock() -> None:
+    events: list[str] = []
+
+    class Connection:
+        def scalar(self, statement):
+            events.append("unlock" if "pg_advisory_unlock" in str(statement) else "lock")
+            return True
+
+        def rollback(self):
+            events.append("rollback")
+
+        def close(self):
+            events.append("close")
+
+    class Bind:
+        class dialect:
+            name = "postgresql"
+
+        def connect(self):
+            events.append("connect")
+            return connection
+
+    connection = Connection()
+    service = object.__new__(IngestionService)
+    service.session = type("Session", (), {"bind": Bind()})()
+
+    locked = service._acquire_advisory_lock("source")
+    service._release_advisory_lock(locked, "source")
+
+    assert events == ["connect", "lock", "rollback", "unlock", "rollback", "close"]
+
+
+@pytest.mark.asyncio
+async def test_lock_is_released_when_persistence_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        data = valid_source()
+        data["ingestion"] = {"enabled": True}
+        source = SourceDefinition.model_validate(data)
+        SourceRepository(session).sync([source])
+        session.commit()
+        service = IngestionService(session, ItemFactory())
+        sentinel = object()
+        released: list[object] = []
+        monkeypatch.setattr(service, "_acquire_advisory_lock", lambda source_id: sentinel)
+        monkeypatch.setattr(
+            service,
+            "_release_advisory_lock",
+            lambda connection, source_id: released.append(connection),
+        )
+        monkeypatch.setattr(
+            service, "_start_run", lambda *args: (_ for _ in ()).throw(RuntimeError("db"))
+        )
+
+        with pytest.raises(RuntimeError, match="db"):
+            await service.fetch_source(source)
+
+    assert released == [sentinel]
