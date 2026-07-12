@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from newsradar.events.entities import (
     ENTITY_RULE_VERSION,
     canonical_entity_key,
@@ -41,3 +45,30 @@ def test_extract_entities_returns_stable_order_and_deduplicates_aliases() -> Non
         ("OpenAI", "organization:openai"),
         ("huggingface", "organization:huggingface"),
     ]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        RawItemText(summary="OpenAI"),
+        RawItemText(content="OpenAI"),
+        RawItemText(item_kind="OpenAI"),
+        RawItemText(publisher_name="OpenAI"),
+        RawItemText(source_topics=("OpenAI",)),
+    ],
+)
+def test_entities_use_each_entity_bearing_pure_input_field(item: RawItemText) -> None:
+    assert extract_entities(item)[0].canonical_key == "organization:openai"
+
+
+def test_entity_extraction_is_byte_equivalent_on_replay() -> None:
+    item = RawItemText(title="OpenAI and huggingface", source_topics=("Hugging Face",))
+
+    first = json.dumps(
+        [entity.model_dump(mode="json") for entity in extract_entities(item)], separators=(",", ":")
+    )
+    second = json.dumps(
+        [entity.model_dump(mode="json") for entity in extract_entities(item)], separators=(",", ":")
+    )
+
+    assert first == second

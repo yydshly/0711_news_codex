@@ -62,6 +62,7 @@ class RawItemText(_Schema):
     content: str = ""
     item_kind: str | None = None
     publisher_name: str | None = None
+    source_topics: tuple[str, ...] = ()
 
 
 class RelevanceDecision(_Schema):

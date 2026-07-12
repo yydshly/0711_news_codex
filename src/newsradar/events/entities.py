@@ -38,7 +38,7 @@ def canonical_entity_key(name: str, entity_type: EntityType) -> str:
 
 def extract_entities(item: RawItemText) -> tuple[ExtractedEntity, ...]:
     """Extract known organizations in mention order without network or model calls."""
-    text = " ".join(filter(None, (item.title, item.summary, item.content)))
+    text = " ".join(_item_text_parts(item))
     entities: list[ExtractedEntity] = []
     seen_keys: set[str] = set()
     for mention, canonical_name in _organization_mentions(text):
@@ -73,3 +73,19 @@ def _organization_mentions(text: str) -> Iterator[tuple[str, str]]:
 
 def _normalized_name(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _item_text_parts(item: RawItemText) -> tuple[str, ...]:
+    return tuple(
+        filter(
+            None,
+            (
+                item.title,
+                item.summary,
+                item.content,
+                item.item_kind,
+                item.publisher_name,
+                *item.source_topics,
+            ),
+        )
+    )

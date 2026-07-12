@@ -22,7 +22,7 @@ def normalize_text(value: str) -> str:
 
 def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
     """Classify a normalized item using local, explainable relevance rules."""
-    text = normalize_text(" ".join(filter(None, (item.title, item.summary, item.content))))
+    text = normalize_text(" ".join(_item_text_parts(item)))
     matched = tuple(sorted(term for term in AI_TERMS if _contains_term(text, term)))
     score = min(100, len(matched) * 25)
     return RelevanceDecision(
@@ -45,3 +45,19 @@ def infer_rule_topics(text: str) -> tuple[str, ...]:
 
 def _contains_term(text: str, term: str) -> bool:
     return f" {term} " in f" {text} "
+
+
+def _item_text_parts(item: RawItemText) -> tuple[str, ...]:
+    return tuple(
+        filter(
+            None,
+            (
+                item.title,
+                item.summary,
+                item.content,
+                item.item_kind,
+                item.publisher_name,
+                *item.source_topics,
+            ),
+        )
+    )

@@ -47,3 +47,30 @@ def test_relevance_decision_is_byte_equivalent_on_replay() -> None:
     second = json.dumps(evaluate_relevance(item).model_dump(), separators=(",", ":"))
 
     assert first == second
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        RawItemText(summary="model"),
+        RawItemText(content="model"),
+        RawItemText(item_kind="model"),
+        RawItemText(publisher_name="OpenAI model updates"),
+        RawItemText(source_topics=("model",)),
+    ],
+)
+def test_relevance_uses_each_pure_input_field(item: RawItemText) -> None:
+    assert evaluate_relevance(item).is_relevant
+
+
+def test_relevance_matches_terms_at_word_boundaries_only() -> None:
+    result = evaluate_relevance(RawItemText(title="Models improve deployment"))
+
+    assert result.is_relevant is False
+    assert result.reasons == ("no_ai_signal",)
+
+
+def test_relevance_normalizes_case_punctuation_and_whitespace() -> None:
+    result = evaluate_relevance(RawItemText(title="  MODEL—API\n"))
+
+    assert result.reasons == ("matched:api", "matched:model")
