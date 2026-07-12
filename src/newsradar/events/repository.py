@@ -61,11 +61,13 @@ class EventRepository:
         self, candidate: CandidateCluster, algorithm_version: str
     ) -> EventCandidateRecord:
         now = datetime.now(UTC)
+        metadata = dict(candidate.metadata)
+        metadata["_candidate_reasons"] = list(candidate.reasons)
         values = {
             EventCandidateRecord.title: candidate.title,
             EventCandidateRecord.category: candidate.category.value if candidate.category else None,
             EventCandidateRecord.state: candidate.state,
-            EventCandidateRecord.metadata_json: candidate.metadata,
+            EventCandidateRecord.metadata_json: metadata,
             EventCandidateRecord.updated_at: now,
         }
         self.session.execute(
@@ -165,6 +167,7 @@ class EventRepository:
                 category=EventCategory(record.category) if record.category else None,
                 items=items,
                 raw_item_ids=raw_item_ids,
+                reasons=tuple(record.metadata_json.get("_candidate_reasons", ())),
                 state=record.state,
                 metadata=record.metadata_json,
             ),

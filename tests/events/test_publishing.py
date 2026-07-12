@@ -120,6 +120,18 @@ def test_publisher_persists_evidence_limitations_in_score_reasons(db_session: Se
     assert "evidence_limitation:not_peer_reviewed" in score.breakdown["reasons"]
 
 
+def test_publisher_marks_persisted_conflicting_candidate_as_disputed(db_session: Session) -> None:
+    candidate = persisted_candidate(
+        db_session,
+        (("official", "first_party", "https://official.test/release"),),
+        reasons=("conflicting_action",),
+    )
+
+    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+
+    assert published.status is EventStatus.DISPUTED
+
+
 def test_repository_has_no_incomplete_public_version_publish_path() -> None:
     assert not hasattr(EventRepository, "publish_version")
 
@@ -149,7 +161,9 @@ def test_failure_before_version_switch_preserves_previous_readable_version(
 
 
 def persisted_candidate(
-    db_session: Session, sources: tuple[tuple[str, str, str], ...]
+    db_session: Session,
+    sources: tuple[tuple[str, str, str], ...],
+    reasons: tuple[str, ...] = (),
 ):
     raw_item_ids: list[int] = []
     for source_id, nature, canonical_url in sources:
@@ -178,7 +192,11 @@ def persisted_candidate(
         raw_item_ids.append(item.id)
     repository = EventRepository(db_session)
     record = repository.upsert_candidate(
-        CandidateCluster(candidate_key=f"release:{sources[0][0]}", title="Release"),
+        CandidateCluster(
+            candidate_key=f"release:{sources[0][0]}",
+            title="Release",
+            reasons=reasons,
+        ),
         "cluster-v1",
     )
     repository.replace_candidate_items(record.id, tuple(raw_item_ids))
