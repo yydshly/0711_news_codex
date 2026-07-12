@@ -40,7 +40,7 @@
         {% for target in targets %}
           <tr>
             <th scope="row"><a href="/targets/{{ target.source_id }}">{{ target.name }}</a><small>{{ target.source_id }}</small></th>
-            <td><a href="/providers/{{ target.provider_id }}">{{ target.provider_name }}</a></td>
+            <td>{% if target.provider_id == 'independent' %}{{ target.provider_name }}{% else %}<a href="/providers/{{ target.provider_id }}">{{ target.provider_name }}</a>{% endif %}</td>
             <td>{{ target.target_type_label }}</td>
             <td>{{ target.role_labels | join('、') if target.role_labels else '未记录' }}</td>
             <td>{{ target.coverage_label }}</td>

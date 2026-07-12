@@ -11,7 +11,7 @@
     <div class="tag-list"><span class="status status-{{ 'healthy' if target.row.availability == 'ready' else 'blocked' }}">{{ target.row.availability_label }}</span><span>{{ target.row.coverage_label }}</span><span>{{ target.status_label }}</span></div>
     {% if target.notes %}<p>{{ target.notes }}</p>{% endif %}
     <dl class="detail-grid">
-      <div><dt>Provider</dt><dd><a href="/providers/{{ target.row.provider_id }}">{{ target.row.provider_name }}</a></dd></div>
+      <div><dt>Provider</dt><dd>{% if target.row.provider_id == 'independent' %}{{ target.row.provider_name }}{% else %}<a href="/providers/{{ target.row.provider_id }}">{{ target.row.provider_name }}</a>{% endif %}</dd></div>
       <div><dt>目标类型</dt><dd>{{ target.row.target_type_label }}</dd></div>
       <div><dt>性质</dt><dd>{{ target.nature_label }}</dd></div>
       <div><dt>语言</dt><dd>{{ target.language }}</dd></div>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date, datetime
 
 import pytest
@@ -525,6 +526,22 @@ def test_target_filter_is_forwarded_and_catalog_columns_render(client, fake_serv
         assert text in response.text
 
 
+def test_independent_targets_do_not_link_to_a_missing_provider(client, fake_service):
+    independent = replace(
+        fake_service._target_row(),
+        provider_id="independent",
+        provider_name="independent",
+    )
+    fake_service._target_row = lambda: independent
+
+    for path in ("/targets", f"/targets/{independent.source_id}"):
+        response = client.get(path)
+
+        assert response.status_code == 200
+        assert '<a href="/providers/independent">' not in response.text
+        assert "independent" in response.text
+
+
 def test_provider_detail_shows_audit_links_env_names_and_probes(client):
     response = client.get("/providers/github")
 
@@ -618,11 +635,18 @@ def test_gap_page_keeps_restricted_platforms_visible(client):
         assert platform in response.text
     for text in (
         "不等于实时内容覆盖",
-        "不会使用 Cookie",
+        "不会复用浏览器会话",
         "无已审核替代路径",
         "审核 API 权限",
     ):
         assert text in response.text
+    for sensitive_name in (
+        "MINIMAX_API_KEY",
+        "DATABASE_URL",
+        "Authorization",
+        "Cookie",
+    ):
+        assert sensitive_name not in response.text
 
 
 def test_probe_page_shows_suggested_status_for_both_probe_types(client):
