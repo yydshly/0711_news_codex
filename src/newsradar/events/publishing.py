@@ -24,6 +24,7 @@ class EventPublisher:
             status=decision.status,
             category=candidate.category,
             score=score,
+            evidence=evidence,
             source_item_ids=source_item_ids,
         )
         event = self.repository.publish_complete_event(published, operation_id)

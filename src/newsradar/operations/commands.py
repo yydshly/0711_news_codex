@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import OperationRunRecord
 from newsradar.operations.repository import OperationRepository
+from newsradar.operations.retry_policy import is_retryable_error
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.settings import Settings, get_settings
 
@@ -118,7 +119,11 @@ class OperationCommandService:
     def retry(self, operation_id: int, *, trigger: str) -> int:
         original = self.session.get(OperationRunRecord, operation_id)
         terminal_statuses = {item.value for item in OperationStatus.terminal()}
-        if original is None or original.status not in terminal_statuses:
+        if (
+            original is None
+            or original.status not in terminal_statuses
+            or not is_retryable_error(original.error_code)
+        ):
             raise ValueError("operation is not retryable")
         scope = dict(original.requested_scope)
         scope["retry_of_operation_id"] = operation_id

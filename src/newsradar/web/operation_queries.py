@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import OperationAttemptRecord, OperationEventRecord, OperationRunRecord
+from newsradar.operations.retry_policy import is_retryable_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class OperationRow:
     created_at: datetime
     error_code: str | None
     error_message: str | None
+    retry_allowed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,4 +85,5 @@ class OperationQueryService:
             created_at=record.created_at,
             error_code=record.error_code,
             error_message=record.error_message,
+            retry_allowed=is_retryable_error(record.error_code),
         )

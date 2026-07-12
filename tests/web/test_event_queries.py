@@ -86,11 +86,9 @@ def test_detail_only_exposes_safe_evidence_links_and_evidence_audit_fields(db_se
     db_session.add(raw)
     db_session.flush()
     db_session.add(EventItemRecord(event_id=record.id, raw_item_id=raw.id, added_version_number=1))
-    score = db_session.query(EventScoreRecord).filter_by(event_id=record.id).one()
     version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
-    version.payload = {"enrichment": {"origin": "rule_fallback"}}
-    score.breakdown = {
-        "reasons": ["多源印证"],
+    version.payload = {
+        "enrichment": {"origin": "rule_fallback"},
         "evidence": [
             {"raw_item_id": raw.id, "root_evidence_key": "root:official", "independent": True}
         ],

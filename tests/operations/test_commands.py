@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -59,6 +60,24 @@ def test_retry_creates_new_auditable_operation() -> None:
         assert retry.id != original_id
         assert retry.trigger == "web"
         assert retry.requested_scope["retry_of_operation_id"] == original_id
+
+
+def test_retry_rejects_durable_nonretryable_failure() -> None:
+    with session() as db:
+        original = OperationRunRecord(
+            operation_type="event_recluster",
+            trigger="web",
+            status="failed",
+            requested_scope={"event_id": 1, "actor": "web"},
+            result_summary={},
+            attempt_count=1,
+            error_code="unsupported_action",
+        )
+        db.add(original)
+        db.commit()
+
+        with pytest.raises(ValueError, match="not retryable"):
+            OperationCommandService(db).retry(original.id, trigger="web")
 
 
 def test_enqueue_fetch_persists_operation_deadline() -> None:

@@ -24,3 +24,10 @@ No browser server was launched for this subtask; coverage is browser-ready templ
 - GREEN: unsupported event action types now validate their complete durable scope in the worker, then fail once with nonretryable `unsupported_action` instead of succeeding as no-ops. Merge checks both events; split checks active memberships; malformed scopes fail nonretryably. Command scopes include an explicit top-level actor and auditable payload fields.
 - GREEN: evidence projection only accepts absolute HTTP(S) URLs, includes root-evidence and independence metadata, renders persisted score/model versions, and derives MiniMax degradation from the persisted enrichment origin. Operation details render the escaped, auditable request scope.
 - Verification: `uv run pytest tests/events/test_runtime.py tests/web/test_event_queries.py tests/web/test_event_routes.py tests/operations -q` — 49 passed; full suite and Ruff run after the final changes below.
+
+## Final review remediation (RED/GREEN)
+
+- RED: the detail projection derived role data from an ad-hoc raw-item payload and retry allowed terminal failures regardless of durable error reason.
+- GREEN: `PublishedEvent` now carries the audited `EvidenceAssessment` snapshot into the immutable event-version payload. The detail query reads role, root key, independence, and limitations from that published snapshot. `test_pipeline_persists_audited_evidence_for_web_detail` drives a real pipeline publication from first-party source metadata through the web query.
+- GREEN: durable nonretryable error codes are centrally classified. `OperationCommandService.retry` rejects them and operation detail only renders Retry when the operation's persisted error code is retryable.
+- Verification: `uv run pytest tests/events/test_pipeline.py tests/operations/test_commands.py tests/web/test_event_queries.py tests/web/test_operation_queries.py -q` — 11 passed.

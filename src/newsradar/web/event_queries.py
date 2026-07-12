@@ -47,6 +47,7 @@ class EvidenceRow:
     role: str
     root_evidence_key: str
     independent: bool
+    limitations: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,9 +92,11 @@ class EventQueryService:
         row = self._event_row(event_id)
         if row is None:
             return None
+        version = self._current_version(event_id)
+        payload = version.payload if version is not None else {}
         evidence_by_item = {
             item.get("raw_item_id"): item
-            for item in self._score_breakdown(event_id).get("evidence", ())
+            for item in (payload.get("evidence", ()) if isinstance(payload, dict) else ())
             if isinstance(item, dict) and isinstance(item.get("raw_item_id"), int)
         }
         evidence = tuple(
@@ -101,11 +104,15 @@ class EventQueryService:
                 title=item.title or "未命名原始证据",
                 original_url=_safe_external_url(item.original_url or item.canonical_url),
                 published_at=item.published_at,
-                role=str((item.raw_payload or {}).get("evidence_role", "未标注")),
+                role=str(evidence_by_item.get(item.id, {}).get("role", "未标注")),
                 root_evidence_key=str(
                     evidence_by_item.get(item.id, {}).get("root_evidence_key", "")
                 ),
                 independent=bool(evidence_by_item.get(item.id, {}).get("independent", False)),
+                limitations=tuple(
+                    str(value)
+                    for value in evidence_by_item.get(item.id, {}).get("limitations", ())
+                ),
             )
             for item in self.session.scalars(
                 select(RawItemRecord)
@@ -117,8 +124,6 @@ class EventQueryService:
                 .order_by(RawItemRecord.published_at.desc(), RawItemRecord.id.desc())
             )
         )
-        version = self._current_version(event_id)
-        payload = version.payload if version is not None else {}
         enrichment = payload.get("enrichment") if isinstance(payload, dict) else None
         degraded = isinstance(enrichment, dict) and enrichment.get("origin") == "rule_fallback"
         model_versions = tuple(

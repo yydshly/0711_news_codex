@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import Base, EventVersionRecord, RawItemRecord, SourceDefinitionRecord
 from newsradar.events.pipeline import EventPipeline
+from newsradar.web.event_queries import EventQueryService
 
 
 def test_pipeline_replay_does_not_duplicate_versions() -> None:
@@ -46,3 +47,46 @@ def test_pipeline_replay_does_not_duplicate_versions() -> None:
         assert second.created_event_versions == 0
         assert second.current_event_ids == first.current_event_ids
         assert db.query(EventVersionRecord).count() == 1
+
+
+def test_pipeline_persists_audited_evidence_for_web_detail() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(
+            SourceDefinitionRecord(
+                id="official-source",
+                name="Official",
+                status="active",
+                nature="first_party",
+                language="en",
+                roles=["evidence"],
+                topics=["ai"],
+                authority_score=90,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash="official",
+            )
+        )
+        db.add(
+            RawItemRecord(
+                source_id="official-source",
+                external_id="official-1",
+                canonical_url="https://example.test/official-1",
+                payload={},
+                title="OpenAI launches model",
+                published_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+        event_id = EventPipeline.production(db).run(
+            window_hours=24, operation_id=1, checkpoint=lambda _: None
+        ).current_event_ids[0]
+
+        detail = EventQueryService(db).get_event(event_id)
+
+    assert detail is not None
+    assert detail.evidence[0].role == "official"
+    assert detail.evidence[0].root_evidence_key == "https://example.test/official-1"
+    assert detail.evidence[0].independent is True
+    assert detail.evidence[0].limitations == ()

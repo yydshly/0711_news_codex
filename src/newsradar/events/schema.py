@@ -207,4 +207,5 @@ class PublishedEvent(_Schema):
     occurred_at: datetime | None = None
     enrichment: EventEnrichment | None = None
     score: ScoreBreakdown | None = None
+    evidence: tuple[EvidenceAssessment, ...] = ()
     source_item_ids: tuple[int, ...] = ()
