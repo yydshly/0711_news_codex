@@ -62,3 +62,31 @@ block. The only emitted warnings are pre-existing third-party deprecation warnin
 Event action operation types currently validate their target and return an auditable
 worker result. Their editorial mutation semantics are intentionally deferred to the
 subsequent event-management task; this task establishes their durable worker route.
+
+## Review follow-up: target validation and deadlines
+
+The review identified two P1 gaps in the initial runtime adapter. The action branch
+validated only that `event_id` was positive, and the pipeline branch persisted a
+deadline without enforcing it.
+
+### RED evidence
+
+```powershell
+uv run pytest tests/events/test_runtime.py -q
+# 1 passed, 2 failed
+```
+
+The unknown-event action incorrectly returned `succeeded`; the expired pipeline
+created one event before returning.
+
+### GREEN evidence
+
+`EventOperationHandler` now opens a short session to verify action targets before
+accepting an action. Pipeline operations create `OperationDeadline` from their scope,
+check it before opening the pipeline session, and wrap every pipeline checkpoint so
+deadlines are checked at bounded stage/candidate boundaries.
+
+```powershell
+uv run pytest tests/events/test_runtime.py -q
+# 3 passed
+```
