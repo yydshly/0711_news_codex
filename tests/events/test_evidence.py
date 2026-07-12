@@ -17,11 +17,11 @@ def evidence_item(**changes: object) -> ClusterItem:
 
 
 def test_aggregator_and_original_share_one_root_evidence() -> None:
-    original = evidence_item()
+    original = evidence_item(canonical_url="https://publisher.test/story", original_url=None)
     aggregate = evidence_item(
         raw_item_id=2,
-        canonical_url="https://news.google.test/item",
-        original_url="https://publisher.test/story",
+        canonical_url="https://publisher.test/story",
+        original_url="https://news.google.test/item",
         source_nature="aggregator",
         source_roles=("discovery",),
     )
@@ -34,22 +34,31 @@ def test_aggregator_and_original_share_one_root_evidence() -> None:
     assert assessments[1].role is EvidenceRole.AGGREGATOR
 
 
-def test_rewrite_is_not_independent_evidence() -> None:
+def test_source_claimed_official_role_cannot_override_aggregator_metadata() -> None:
     assessment = assess_evidence(
         (
             evidence_item(
-                canonical_url="https://rewrite.test/coverage",
-                original_url="https://publisher.test/story",
+                evidence_role=EvidenceRole.OFFICIAL,
+                source_nature="aggregator",
+                source_roles=("evidence",),
             ),
         )
     )[0]
 
     assert assessment.independent is False
-    assert "rewritten_or_resolved_copy" in assessment.limitations
+    assert assessment.role is EvidenceRole.AGGREGATOR
+    assert "source_role_conflict" in assessment.limitations
 
 
 def test_non_evidence_source_cannot_be_independent() -> None:
     assessment = assess_evidence((evidence_item(source_roles=("discovery",)),))[0]
+
+    assert assessment.independent is False
+    assert "source_not_evidence" in assessment.limitations
+
+
+def test_missing_audited_source_roles_cannot_be_independent() -> None:
+    assessment = assess_evidence((evidence_item(source_roles=()),))[0]
 
     assert assessment.independent is False
     assert "source_not_evidence" in assessment.limitations

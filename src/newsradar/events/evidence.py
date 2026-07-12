@@ -20,19 +20,22 @@ def assess_evidence(items: tuple[ClusterItem, ...]) -> tuple[EvidenceAssessment,
 
 
 def _assess(item: ClusterItem) -> EvidenceAssessment:
-    role = item.evidence_role or _ROLE_BY_NATURE.get(
-        item.source_nature or "", EvidenceRole.COMMUNITY
+    role = _ROLE_BY_NATURE.get(item.source_nature or "", EvidenceRole.COMMUNITY)
+    source_allows_evidence = "evidence" in item.source_roles
+    independent = (
+        role
+        in {
+            EvidenceRole.OFFICIAL,
+            EvidenceRole.PROFESSIONAL_MEDIA,
+            EvidenceRole.RESEARCH,
+        }
+        and source_allows_evidence
     )
-    rewrite = bool(
-        item.original_url and item.canonical_url and item.original_url != item.canonical_url
-    )
-    source_allows_evidence = not item.source_roles or "evidence" in item.source_roles
-    independent = role is not EvidenceRole.AGGREGATOR and not rewrite and source_allows_evidence
     limitations: list[str] = []
-    if role is EvidenceRole.AGGREGATOR:
-        limitations.append("aggregator_not_independent")
-    if rewrite:
-        limitations.append("rewritten_or_resolved_copy")
+    if item.evidence_role is not None and item.evidence_role is not role:
+        limitations.append("source_role_conflict")
+    if role in {EvidenceRole.AGGREGATOR, EvidenceRole.SOCIAL, EvidenceRole.COMMUNITY}:
+        limitations.append("source_nature_not_independent")
     if not source_allows_evidence:
         limitations.append("source_not_evidence")
     if _is_preprint(item):
@@ -48,10 +51,10 @@ def _assess(item: ClusterItem) -> EvidenceAssessment:
 
 
 def _root_evidence_key(item: ClusterItem) -> str:
-    if item.original_url:
-        return item.original_url
     if item.canonical_url:
         return item.canonical_url
+    if item.original_url:
+        return item.original_url
     return f"publisher:{(item.publisher_name or '').casefold()}:{item.title_fingerprint or ''}"
 
 

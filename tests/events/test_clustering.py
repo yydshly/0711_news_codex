@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from newsradar.events import clustering
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates, compare_items
 from newsradar.events.schema import ClusterItem
 
@@ -45,14 +48,40 @@ def test_same_company_different_actions_do_not_merge() -> None:
     assert "conflicting_action" in decision.reasons
 
 
-def test_common_original_url_is_a_strong_match() -> None:
+def test_same_resolved_publisher_url_is_a_strong_match() -> None:
     decision = compare_items(
-        item(original_url="https://publisher.test/story"),
-        item(raw_item_id=2, original_url="https://publisher.test/story"),
+        item(canonical_url="https://publisher.test/story"),
+        item(raw_item_id=2, canonical_url="https://publisher.test/story"),
     )
 
     assert decision.matched
-    assert "same_original_url" in decision.reasons
+    assert "same_canonical_url" in decision.reasons
+
+
+def test_same_canonical_url_overrides_conflicting_title_actions() -> None:
+    decision = compare_items(
+        item(canonical_url="https://publisher.test/story", title="Acme launches Model X"),
+        item(
+            raw_item_id=2,
+            canonical_url="https://publisher.test/story",
+            title="Acme acquires DataCo",
+        ),
+    )
+
+    assert decision.matched
+    assert "same_canonical_url" in decision.reasons
+    assert "conflicting_action" not in decision.reasons
+
+
+@pytest.mark.parametrize("identity", ["repository_id", "paper_id"])
+def test_repository_and_paper_identity_override_conflicting_title_actions(identity: str) -> None:
+    decision = compare_items(
+        item(**{identity: "shared", "title": "Acme launches Model X"}),
+        item(raw_item_id=2, **{identity: "shared", "title": "Acme acquires DataCo"}),
+    )
+
+    assert decision.matched
+    assert f"same_{identity}" in decision.reasons
 
 
 def test_candidate_generation_only_merges_blocked_items_within_48_hours() -> None:
@@ -75,3 +104,23 @@ def test_shared_generic_entity_is_not_a_blocking_key() -> None:
     right = item(raw_item_id=2, entities=("organization:model",))
 
     assert cluster_candidates((left, right))[0].raw_item_ids == (1,)
+
+
+def test_candidate_generation_compares_only_shared_blocking_buckets(monkeypatch) -> None:
+    first = item(raw_item_id=1, title_fingerprint="shared")
+    second = item(raw_item_id=2, title_fingerprint="shared")
+    unrelated = tuple(
+        item(raw_item_id=index, title_fingerprint=f"other-{index}") for index in range(3, 20)
+    )
+    compared: list[tuple[int, int]] = []
+    real_compare = clustering.compare_items
+
+    def recording_compare(left: ClusterItem, right: ClusterItem):
+        compared.append((left.raw_item_id, right.raw_item_id))
+        return real_compare(left, right)
+
+    monkeypatch.setattr(clustering, "compare_items", recording_compare)
+
+    cluster_candidates((first, second, *unrelated))
+
+    assert compared == [(1, 2)]

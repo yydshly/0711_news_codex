@@ -23,23 +23,10 @@ _ACTION_GROUPS = {
 def compare_items(left: ClusterItem, right: ClusterItem) -> ClusterDecision:
     """Compare a pre-blocked pair using local, explainable evidence only."""
     reasons: list[str] = []
+    score = _immutable_identity_score(left, right, reasons)
     left_action, right_action = _action(left.title), _action(right.title)
-    if left_action and right_action and left_action != right_action:
+    if score == 0 and left_action and right_action and left_action != right_action:
         return _decision(False, 0.0, ("conflicting_action",))
-
-    score = 0.0
-    if left.canonical_url_hash and left.canonical_url_hash == right.canonical_url_hash:
-        reasons.append("same_canonical_url")
-        score += 1.0
-    if left.original_url and left.original_url == right.original_url:
-        reasons.append("same_original_url")
-        score += 1.0
-    if left.repository_id and left.repository_id == right.repository_id:
-        reasons.append("same_repository_id")
-        score += 1.0
-    if left.paper_id and left.paper_id == right.paper_id:
-        reasons.append("same_paper_id")
-        score += 1.0
     if left.title_fingerprint and left.title_fingerprint == right.title_fingerprint:
         reasons.append("same_title_fingerprint")
         score += 0.8
@@ -53,18 +40,12 @@ def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster
     ordered = tuple(sorted(items, key=lambda item: item.raw_item_id))
     parents = list(range(len(ordered)))
     reasons_by_index: list[set[str]] = [set() for _ in ordered]
-    for left_index, left in enumerate(ordered):
-        for right_index in range(left_index + 1, len(ordered)):
-            right = ordered[right_index]
-            if not _within_candidate_window(left, right) or not _shares_blocking_key(left, right):
-                continue
-            decision = compare_items(left, right)
-            if decision.matched and _can_union_within_window(
-                parents, ordered, left_index, right_index
-            ):
-                _union(parents, left_index, right_index)
-                reasons_by_index[left_index].update(decision.reasons)
-                reasons_by_index[right_index].update(decision.reasons)
+    for left_index, right_index in _candidate_pairs(ordered):
+        decision = compare_items(ordered[left_index], ordered[right_index])
+        if decision.matched and _can_union_within_window(parents, ordered, left_index, right_index):
+            _union(parents, left_index, right_index)
+            reasons_by_index[left_index].update(decision.reasons)
+            reasons_by_index[right_index].update(decision.reasons)
 
     grouped: dict[int, list[int]] = {}
     for index in range(len(ordered)):
@@ -125,17 +106,58 @@ def _time_similarity(left: datetime | None, right: datetime | None, reasons: lis
     return 0.0
 
 
-def _shares_blocking_key(left: ClusterItem, right: ClusterItem) -> bool:
-    return any(
-        (
-            bool(left.canonical_url_hash and left.canonical_url_hash == right.canonical_url_hash),
-            bool(left.title_fingerprint and left.title_fingerprint == right.title_fingerprint),
-            bool(_non_generic_entities(left.entities) & _non_generic_entities(right.entities)),
-            bool(left.repository_id and left.repository_id == right.repository_id),
-            bool(left.paper_id and left.paper_id == right.paper_id),
-            bool(left.original_url and left.original_url == right.original_url),
-        )
+def _immutable_identity_score(left: ClusterItem, right: ClusterItem, reasons: list[str]) -> float:
+    score = 0.0
+    same_canonical_url = bool(
+        (left.canonical_url_hash and left.canonical_url_hash == right.canonical_url_hash)
+        or (left.canonical_url and left.canonical_url == right.canonical_url)
     )
+    if same_canonical_url:
+        reasons.append("same_canonical_url")
+        score += 1.0
+    if left.repository_id and left.repository_id == right.repository_id:
+        reasons.append("same_repository_id")
+        score += 1.0
+    if left.paper_id and left.paper_id == right.paper_id:
+        reasons.append("same_paper_id")
+        score += 1.0
+    return score
+
+
+def _candidate_pairs(items: tuple[ClusterItem, ...]) -> tuple[tuple[int, int], ...]:
+    buckets: dict[str, list[int]] = {}
+    for index, item in enumerate(items):
+        if item.published_at is None:
+            continue
+        for key in _blocking_keys(item):
+            buckets.setdefault(key, []).append(index)
+    pairs: set[tuple[int, int]] = set()
+    for indexes in buckets.values():
+        time_ordered = sorted(indexes, key=lambda index: (items[index].published_at, index))
+        for offset, left_index in enumerate(time_ordered):
+            for right_index in time_ordered[offset + 1 :]:
+                if not _within_candidate_window(items[left_index], items[right_index]):
+                    break
+                pairs.add((min(left_index, right_index), max(left_index, right_index)))
+    return tuple(sorted(pairs))
+
+
+def _blocking_keys(item: ClusterItem) -> tuple[str, ...]:
+    keys = set()
+    if item.canonical_url_hash:
+        keys.add(f"canonical_hash:{item.canonical_url_hash}")
+    if item.canonical_url:
+        keys.add(f"canonical_url:{item.canonical_url}")
+    if item.title_fingerprint:
+        keys.add(f"title:{item.title_fingerprint}")
+    keys.update(f"entity:{entity}" for entity in _non_generic_entities(item.entities))
+    if item.repository_id:
+        keys.add(f"repository:{item.repository_id}")
+    if item.paper_id:
+        keys.add(f"paper:{item.paper_id}")
+    if item.original_url:
+        keys.add(f"discovery:{item.original_url}")
+    return tuple(sorted(keys))
 
 
 def _within_candidate_window(left: ClusterItem, right: ClusterItem) -> bool:
