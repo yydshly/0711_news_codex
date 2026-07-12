@@ -1,0 +1,43 @@
+id: universe-producthunt-2
+name: Product Hunt AI discovery
+provider_id: producthunt
+target_type: account
+availability: requires_credentials
+coverage_mode: catalog_only
+official_identity_url: https://www.producthunt.com/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official Product Hunt access
+status: candidate
+nature: social
+roles:
+- discovery
+- engagement
+- context
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 2
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://www.producthunt.com/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 3
+  operating_cost: 0
+  evidence:
+  - https://api.producthunt.com/v2/docs
+  - https://www.producthunt.com/terms
+  hard_block_reason: requires_credentials
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

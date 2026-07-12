@@ -1,0 +1,20 @@
+id: semantic-scholar
+name: Semantic Scholar
+category: research_developer
+homepage: https://www.semanticscholar.org/
+docs_url: https://api.semanticscholar.org/api-docs/
+terms_url: https://www.semanticscholar.org/product/api/license
+auth_mode: none
+cost_tier: free_quota
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://api.semanticscholar.org/api-docs/
+- https://www.semanticscholar.org/product/api/license
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

@@ -1,0 +1,21 @@
+id: google-trends
+name: Google Trends
+category: trend_business
+homepage: https://trends.google.com/
+docs_url: https://developers.google.com/search/apis/trends
+terms_url: https://policies.google.com/terms
+auth_mode: approval
+cost_tier: free_quota
+availability: requires_approval
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://developers.google.com/search/apis/trends
+- https://policies.google.com/terms
+unlock_requirements:
+- Obtain official Google Trends access for requires approval
+notes: Capability metadata only; content coverage is assessed per target.

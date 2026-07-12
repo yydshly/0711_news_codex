@@ -1,0 +1,20 @@
+id: openai
+name: OpenAI
+category: first_party
+homepage: https://openai.com/
+docs_url: https://openai.com/news/
+terms_url: https://openai.com/policies/terms-of-use/
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://openai.com/news/
+- https://openai.com/policies/terms-of-use/
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

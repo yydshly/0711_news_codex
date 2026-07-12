@@ -2,16 +2,42 @@ id: reddit-artificial
 name: Reddit Artificial
 status: candidate
 nature: community
-roles: [discovery, engagement, context]
+roles:
+- discovery
+- engagement
+- context
 language: en
-topics: [foundation_models, agents]
+topics:
+- foundation_models
+- agents
 authority_score: 2
 poll_interval_minutes: 60
 access_methods:
-  - kind: rest_api
-    url: https://oauth.reddit.com/r/artificial/new
-    priority: 1
-    params: {limit: '5'}
-expected_fields: [title, canonical_url, published_at, author, engagement]
-risk: {terms: 3, authentication: 3, stability: 2, data_quality: 3, operating_cost: 1, evidence: [https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki]}
-
+- kind: rest_api
+  url: https://oauth.reddit.com/r/artificial/new
+  priority: 1
+  params:
+    limit: '5'
+expected_fields:
+- title
+- canonical_url
+- published_at
+- author
+- engagement
+risk:
+  terms: 3
+  authentication: 3
+  stability: 2
+  data_quality: 3
+  operating_cost: 1
+  evidence:
+  - https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki
+provider_id: reddit
+target_type: community
+availability: requires_credentials
+coverage_mode: direct
+official_identity_url: https://www.reddit.com/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Obtain official Reddit access for requires credentials
+notes: 'Fallback: no additional audited method.'

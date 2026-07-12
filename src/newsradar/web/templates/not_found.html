@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}页面不存在 · News Codex{% endblock %}
+{% block header %}<h1>页面不存在</h1>{% endblock %}
+{% block content %}
+<section class="panel failure-panel" aria-labelledby="not-found-title">
+  <p class="eyebrow">404</p>
+  <h2 id="not-found-title">页面不存在</h2>
+  <p>这个本地只读页面尚未提供，或地址有误。</p>
+  <a class="button-link" href="/">返回总览指挥台</a>
+</section>
+{% endblock %}

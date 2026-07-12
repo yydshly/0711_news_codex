@@ -1,0 +1,21 @@
+id: threads
+name: Threads
+category: social_community
+homepage: https://www.threads.com/
+docs_url: https://developers.facebook.com/docs/threads/
+terms_url: https://help.instagram.com/769983657850450
+auth_mode: approval
+cost_tier: free_quota
+availability: requires_approval
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://developers.facebook.com/docs/threads/
+- https://help.instagram.com/769983657850450
+unlock_requirements:
+- Obtain official Threads access for requires approval
+notes: Capability metadata only; content coverage is assessed per target.

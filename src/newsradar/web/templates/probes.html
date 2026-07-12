@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}探测记录 · News Codex{% endblock %}
+{% block header %}<h1>探测记录</h1>{% endblock %}
+
+{% block content %}
+<div class="catalog-page">
+  <section class="panel intro-panel" aria-labelledby="probe-heading">
+    <p class="eyebrow">历史结果，不执行新探测</p>
+    <h2 id="probe-heading">能力探测与内容探测严格分开</h2>
+    <div class="probe-legend">
+      <article class="probe-kind capability"><strong>能力探测</strong><p>只确认平台能力，不代表获取到内容。</p></article>
+      <article class="probe-kind content"><strong>内容探测</strong><p>验证具体目标是否实际返回内容及字段完整度。</p></article>
+    </div>
+  </section>
+
+  <form class="panel filter-form probe-filters" method="get" action="/probes" aria-label="筛选探测记录">
+    <label>探测类型<select name="probe_type"><option value="">全部类型</option>{% for value, label in probe_type_options %}<option value="{{ value }}"{% if filters.get('probe_type') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label>结果<select name="outcome"><option value="">全部结果</option>{% for value, label in outcome_options %}<option value="{{ value }}"{% if filters.get('outcome') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label>Provider ID<input name="provider_id" maxlength="100" value="{{ filters.get('provider_id', '') }}"></label>
+    <label>起始日期<input type="date" name="from_date" value="{{ filters.get('from_date', '') }}"></label>
+    <label>结束日期<input type="date" name="to_date" value="{{ filters.get('to_date', '') }}"></label>
+    <div class="filter-actions"><button type="submit">应用筛选</button><a href="/probes">清除</a></div>
+  </form>
+
+  <section class="panel table-panel catalog-table" aria-labelledby="probe-table-heading">
+    <div class="section-heading"><div><p class="eyebrow">默认按时间倒序</p><h2 id="probe-table-heading">探测历史</h2></div><span class="scope-label">{{ probes | length }} 条</span></div>
+    {% if probes %}
+    <div class="table-scroll" role="region" aria-label="探测历史" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">类型</th><th scope="col">对象</th><th scope="col">结果</th><th scope="col">建议状态</th><th scope="col">时间</th><th scope="col">HTTP</th><th scope="col">延迟</th>{% if has_content_probe %}<th scope="col">完整度</th>{% endif %}<th scope="col">中文说明</th><th scope="col">审计</th></tr></thead>
+        <tbody>{% for probe in probes %}<tr>
+          <td><span class="probe-badge probe-{{ probe.probe_type }}">{{ probe.probe_type_label }}</span>{% if probe.probe_type == 'capability' %}<small>只确认平台能力，不代表获取到内容</small>{% endif %}</td>
+          <th scope="row">{{ probe.object_name }}<small>{{ probe.object_id }}</small></th>
+          <td><span class="status status-{{ 'healthy' if probe.outcome == 'success' else 'blocked' if probe.outcome == 'blocked' else 'failed' }}">{{ probe.outcome_label }}</span></td>
+          <td>{{ probe.suggested_status_label }}</td>
+          <td><time datetime="{{ probe.checked_at.isoformat() }}">{{ probe.checked_at.strftime('%Y-%m-%d %H:%M') }}</time></td>
+          <td>{{ probe.http_status if probe.http_status is not none else '未记录' }}</td>
+          <td>{{ ('%.0f ms' | format(probe.latency_ms)) if probe.latency_ms is not none else '未记录' }}</td>
+          {% if has_content_probe %}<td>{% if probe.probe_type == 'content' and probe.completeness is not none %}{{ '%.0f%%' | format(probe.completeness * 100) }}{% elif probe.probe_type == 'content' %}未记录{% else %}不适用{% endif %}</td>{% endif %}
+          <td>{{ probe.reason_zh }}</td>
+          <td><details><summary>原始原因</summary><code>{{ probe.reason_raw }}</code></details></td>
+        </tr>{% endfor %}</tbody>
+      </table>
+    </div>
+    {% else %}<p class="empty-state">没有符合筛选条件的探测记录。</p>{% endif %}
+    <nav class="pagination" aria-label="探测历史分页">
+      {% if page > 1 %}<a href="{{ request.url.include_query_params(page=page - 1, page_size=page_size) }}">上一页</a>{% endif %}
+      <span>第 {{ page }} 页 · 每页最多 {{ page_size }} 条</span>
+      {% if probes | length == page_size %}<a href="{{ request.url.include_query_params(page=page + 1, page_size=page_size) }}">下一页</a>{% endif %}
+    </nav>
+  </section>
+</div>
+{% endblock %}

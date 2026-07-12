@@ -1,0 +1,812 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
+from datetime import date, datetime
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError, ProgrammingError
+
+from newsradar.web import create_app
+from newsradar.web.viewmodels import (
+    AccessMethodView,
+    DashboardSummary,
+    GapGroup,
+    GapTarget,
+    ProbeRow,
+    ProviderDetail,
+    ProviderRow,
+    RiskView,
+    TargetDetail,
+    TargetRow,
+)
+
+
+class FakeDashboardService:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.provider_filters: dict[str, str] | None = None
+        self.target_filters: dict[str, str] | None = None
+        self.probe_filters: dict[str, object] | None = None
+        self.content_completeness: float | None = 1.0
+        self.has_content_probes = True
+
+    def summary(self) -> DashboardSummary:
+        self.calls.append("summary")
+        return DashboardSummary(
+            provider_count=2,
+            target_count=3,
+            free_direct_count=1,
+            indirect_count=1,
+            blocked_count=1,
+            three_success_count=0,
+            category_counts=(("first_party", 2),),
+            latest_probe_at=datetime(2026, 7, 11, 9, 30),
+        )
+
+    def latest_probe_at(self):
+        self.calls.append("latest_probe_at")
+        return datetime(2026, 7, 11, 9, 45)
+
+    def providers(self, filters=None):
+        self.calls.append("providers")
+        self.provider_filters = filters
+        return [self._provider_row()]
+
+    @staticmethod
+    def _provider_row() -> ProviderRow:
+        return ProviderRow(
+            provider_id="github",
+            name="GitHub",
+            category="research_developer",
+            category_label="研究与开发者",
+            cost_tier="free",
+            cost_label="免费",
+            availability="ready",
+            availability_label="可直接使用",
+            target_count=1,
+            direct_count=1,
+            indirect_count=0,
+            latest_outcome="success",
+            latest_outcome_label="成功",
+            reviewed_at=date(2026, 7, 10),
+            auth_mode="api_key",
+            auth_label="API 密钥",
+            capabilities=("search", "releases"),
+        )
+
+    @staticmethod
+    def _target_row() -> TargetRow:
+        return TargetRow(
+            source_id="github-openai-python",
+            name="OpenAI Python",
+            provider_id="github",
+            provider_name="GitHub",
+            target_type="publisher_feed",
+            target_type_label="发布方订阅源",
+            coverage_mode="direct",
+            coverage_label="直接覆盖",
+            availability="ready",
+            availability_label="可直接使用",
+            access_kind="rss",
+            access_label="RSS",
+            risk_total=5,
+            latest_content_at=datetime(2026, 7, 11, 9, 30),
+            latest_outcome="success",
+            latest_outcome_label="成功",
+            roles=("discovery",),
+            role_labels=("发现",),
+        )
+
+    def provider_detail(self, provider_id: str):
+        self.calls.append("provider_detail")
+        if provider_id != "github":
+            return None
+        return ProviderDetail(
+            row=self._provider_row(),
+            homepage="https://github.example/",
+            docs_url="https://github.example/docs",
+            terms_url="https://github.example/terms",
+            auth_mode="api_key",
+            auth_label="API 密钥",
+            capabilities=("search", "releases"),
+            required_env=("GITHUB_TOKEN",),
+            evidence=("https://github.example/evidence",),
+            unlock_requirements=("配置只读令牌",),
+            notes="已审核的 Provider",
+            targets=(self._target_row(),),
+            probes=(
+                ProbeRow(
+                    probe_id="capability-1",
+                    object_id="github",
+                    object_name="GitHub",
+                    probe_type="capability",
+                    probe_type_label="能力探测",
+                    outcome="success",
+                    outcome_label="成功",
+                    checked_at=datetime(2026, 7, 11, 9, 30),
+                    http_status=200,
+                    latency_ms=25.0,
+                    completeness=None,
+                    reason_zh="成功",
+                    reason_raw="ok",
+                ),
+            ),
+        )
+
+    def targets(self, filters=None):
+        self.calls.append("targets")
+        self.target_filters = filters
+        return [self._target_row()]
+
+    def target_detail(self, source_id: str):
+        self.calls.append("target_detail")
+        if source_id != "github-openai-python":
+            return None
+        return TargetDetail(
+            row=self._target_row(),
+            official_identity_url="https://github.example/openai-python",
+            reviewed_at=date(2026, 7, 10),
+            status="active",
+            status_label="启用",
+            nature="first_party",
+            nature_label="第一方",
+            language="en",
+            roles=(("discovery", "发现"),),
+            topics=("ai", "python"),
+            expected_fields=("title", "canonical_url"),
+            unlock_requirements=("配置只读令牌",),
+            notes="已审核的 Target",
+            access_methods=(
+                AccessMethodView(
+                    kind="rss",
+                    kind_label="RSS",
+                    url="https://feeds.example/openai-python",
+                    priority=1,
+                    requires_manual_approval=False,
+                    auth_env="GITHUB_TOKEN",
+                ),
+                AccessMethodView(
+                    kind="html",
+                    kind_label="网页 HTML",
+                    url="https://github.example/openai-python",
+                    priority=2,
+                    requires_manual_approval=False,
+                    auth_env=None,
+                ),
+            ),
+            risk=RiskView(
+                terms=1,
+                authentication=1,
+                stability=1,
+                data_quality=1,
+                operating_cost=1,
+                total=5,
+                evidence=("https://risk.example/openai-python",),
+                hard_block_reason=None,
+                assessed_at=datetime(2026, 7, 10, 9, 30),
+            ),
+            recent_probes=tuple(self.probes()) if self.has_content_probes else (),
+        )
+
+    def probes(self, filters=None):
+        self.calls.append("probes")
+        self.probe_filters = filters
+        rows = [
+            ProbeRow(
+                probe_id="capability-1",
+                object_id="x",
+                object_name="X",
+                probe_type="capability",
+                probe_type_label="能力探测",
+                outcome="blocked",
+                outcome_label="阻塞",
+                checked_at=datetime(2026, 7, 11, 9, 45),
+                http_status=403,
+                latency_ms=20.0,
+                completeness=None,
+                reason_zh="当前权限未获批准",
+                reason_raw="<payment required>",
+                suggested_status="requires_payment",
+                suggested_status_label="需要付费",
+            ),
+            ProbeRow(
+                probe_id="content-1",
+                object_id="source-1",
+                object_name="示例内容源",
+                probe_type="content",
+                probe_type_label="内容探测",
+                outcome="success",
+                outcome_label="成功",
+                checked_at=datetime(2026, 7, 11, 9, 30),
+                http_status=200,
+                latency_ms=25.0,
+                completeness=self.content_completeness,
+                reason_zh="成功",
+                reason_raw="ok",
+                suggested_status="active",
+                suggested_status_label="启用",
+            )
+        ]
+        if filters and filters.get("probe_type"):
+            return [row for row in rows if row.probe_type == filters["probe_type"]]
+        return rows
+
+    def gap_groups(self):
+        self.calls.append("gap_groups")
+        platforms = ("X", "Facebook", "Instagram", "TikTok", "LinkedIn")
+        return (
+            GapGroup(
+                availability="requires_payment",
+                label="需要付费",
+                target_count=len(platforms),
+                targets=tuple(
+                    GapTarget(
+                        source_id=platform.lower(),
+                        name=f"{platform} 目标",
+                        provider_id=platform.lower(),
+                        provider_name=platform,
+                        impact=f"{platform} 内容当前不可直接读取",
+                        alternative="无已审核替代路径",
+                        cost_label="付费",
+                        unlock_requirements=("审核 API 权限",),
+                        evidence=(f"https://{platform.lower()}.example/evidence",),
+                    )
+                    for platform in platforms
+                ),
+            ),
+        )
+
+
+class FakePostgresError(Exception):
+    def __init__(self, message: str, sqlstate: str | None) -> None:
+        super().__init__(message)
+        self.sqlstate = sqlstate
+
+
+@pytest.fixture
+def fake_service() -> FakeDashboardService:
+    return FakeDashboardService()
+
+
+@pytest.fixture
+def client(fake_service: FakeDashboardService) -> Iterator[TestClient]:
+    @contextmanager
+    def fake_service_context() -> Iterator[FakeDashboardService]:
+        yield fake_service
+
+    with TestClient(
+        create_app(lambda: fake_service_context()), raise_server_exceptions=False
+    ) as test_client:
+        yield test_client
+
+
+def test_root_renders_chinese_read_only_shell(client: TestClient):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "总览指挥台" in response.text
+    assert "只读本机模式" in response.text
+    assert 'class="skip-link"' in response.text
+    assert "<aside" in response.text
+    assert "<nav" in response.text
+    assert "<main" in response.text
+    for label in ("总览指挥台", "来源能力", "探测记录", "目标目录", "阻塞与解锁"):
+        assert label in response.text
+    assert "数据最后更新时间" in response.text
+    assert "2026-07-11 09:30" in response.text
+
+
+def test_dashboard_shows_strict_metrics_and_diagnostic(client: TestClient):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    for text in (
+        "Provider 总数",
+        "Target 总数",
+        "免费直接覆盖",
+        "间接发现",
+        "阻塞目标",
+        "连续三轮成功",
+    ):
+        assert text in response.text
+    for text in ("当前能感知", "主要盲区", "建议下一步"):
+        assert text in response.text
+    for text in (
+        "社交与社区",
+        "专业媒体",
+        "第一方来源",
+        "聚合与搜索",
+        "研究与开发者",
+        "新闻简报与播客",
+        "趋势与商业",
+    ):
+        assert text in response.text
+    assert "示例内容源" in response.text
+    assert "需要付费" in response.text
+    assert 'href="/targets?free_direct=true"' in response.text
+    assert 'href="/targets?three_success=true"' in response.text
+
+
+def test_dashboard_metric_counts_equal_real_target_drilldowns(db_session):
+    from newsradar.web.queries import DashboardQueryService
+
+    @contextmanager
+    def real_service_context():
+        yield DashboardQueryService(db_session)
+
+    with TestClient(create_app(lambda: real_service_context())) as real_client:
+        dashboard = real_client.get("/")
+        free_direct = real_client.get("/targets?free_direct=true")
+        three_success = real_client.get("/targets?three_success=true")
+
+    assert dashboard.status_code == free_direct.status_code == three_success.status_code == 200
+    assert "免费直接覆盖</span><strong>1</strong>" in dashboard.text
+    assert "连续三轮成功</span><strong>1</strong>" in dashboard.text
+    assert "Target 列表</h2></div><span class=\"scope-label\">1 条" in free_direct.text
+    assert "Target 列表</h2></div><span class=\"scope-label\">1 条" in three_success.text
+
+
+def test_dashboard_calls_out_missing_probe_history():
+    class NoProbeHistoryService(FakeDashboardService):
+        def summary(self) -> DashboardSummary:
+            summary = super().summary()
+            return DashboardSummary(
+                provider_count=summary.provider_count,
+                target_count=summary.target_count,
+                free_direct_count=summary.free_direct_count,
+                indirect_count=summary.indirect_count,
+                blocked_count=summary.blocked_count,
+                three_success_count=summary.three_success_count,
+                category_counts=summary.category_counts,
+                latest_probe_at=None,
+            )
+
+        def probes(self, filters=None):
+            self.calls.append("probes")
+            return []
+
+    @contextmanager
+    def no_history_context() -> Iterator[NoProbeHistoryService]:
+        yield NoProbeHistoryService()
+
+    with TestClient(create_app(lambda: no_history_context())) as test_client:
+        response = test_client.get("/")
+
+    assert response.status_code == 200
+    assert "暂无探测历史" in response.text
+
+
+def test_security_headers_are_present(client: TestClient):
+    response = client.get("/")
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "default-src 'self'" in response.headers["content-security-policy"]
+
+
+def test_method_not_allowed_preserves_status_and_security_headers(client: TestClient):
+    response = client.post("/")
+
+    assert response.status_code == 405
+    assert "default-src 'self'" in response.headers["content-security-policy"]
+
+
+def test_unknown_route_is_chinese_404(client: TestClient):
+    response = client.get("/missing")
+
+    assert response.status_code == 404
+    assert "页面不存在" in response.text
+
+
+def _response_for_database_error(error: Exception, path: str = "/"):
+    @contextmanager
+    def failing_context() -> Iterator[FakeDashboardService]:
+        raise error
+        yield FakeDashboardService()
+
+    with TestClient(create_app(lambda: failing_context())) as test_client:
+        return test_client.get(path)
+
+
+def test_unavailable_database_renders_safe_command_and_failed_status():
+    error = OperationalError(
+        "connection has password=do-not-leak", {}, Exception("secret")
+    )
+
+    response = _response_for_database_error(error)
+
+    assert response.status_code == 503
+    assert "uv run newsradar db start" in response.text
+    assert 'class="status status-failed"' in response.text
+    assert "数据库连接失败" in response.text
+    assert "do-not-leak" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_undefined_table_renders_migration_command_and_blocked_status():
+    error = ProgrammingError(
+        "missing table api_key=do-not-leak",
+        {},
+        FakePostgresError("undefined table secret", "42P01"),
+    )
+
+    response = _response_for_database_error(error)
+
+    assert response.status_code == 503
+    assert "uv run alembic upgrade head" in response.text
+    assert 'class="status status-blocked"' in response.text
+    assert "数据库等待迁移" in response.text
+    assert "do-not-leak" not in response.text
+    assert "undefined table secret" not in response.text
+
+
+def test_other_programming_error_renders_generic_safe_failure():
+    error = ProgrammingError(
+        "invalid query api_key=do-not-leak",
+        {},
+        FakePostgresError("syntax secret", "42601"),
+    )
+
+    response = _response_for_database_error(error)
+
+    assert response.status_code == 503
+    assert "数据库查询失败" in response.text
+    assert 'class="status status-failed"' in response.text
+    assert "uv run alembic upgrade head" not in response.text
+    assert "do-not-leak" not in response.text
+    assert "syntax secret" not in response.text
+
+
+def test_provider_list_uses_safe_database_error_boundary():
+    error = OperationalError(
+        "connection has password=do-not-leak", {}, Exception("secret")
+    )
+
+    response = _response_for_database_error(error, "/providers")
+
+    assert response.status_code == 503
+    assert "uv run newsradar db start" in response.text
+    assert "数据库连接失败" in response.text
+    assert "do-not-leak" not in response.text
+
+
+def test_target_detail_uses_safe_migration_error_boundary():
+    error = ProgrammingError(
+        "missing table api_key=do-not-leak",
+        {},
+        FakePostgresError("undefined table secret", "42P01"),
+    )
+
+    response = _response_for_database_error(error, "/targets/github-openai-python")
+
+    assert response.status_code == 503
+    assert "uv run alembic upgrade head" in response.text
+    assert "数据库等待迁移" in response.text
+    assert "do-not-leak" not in response.text
+    assert "undefined table secret" not in response.text
+
+
+def test_static_shell_assets_preserve_accessible_navigation(client: TestClient):
+    shell = client.get("/")
+    css = client.get("/static/styles.css")
+    javascript = client.get("/static/app.js")
+
+    assert shell.status_code == 200
+    assert css.status_code == 200
+    assert javascript.status_code == 200
+    assert 'href="http://testserver/static/styles.css?v=20260711-2"' in shell.text
+    assert ":focus-visible" in css.text
+    assert "@media (max-width: 760px)" in css.text
+    assert "aria-expanded" in javascript.text
+
+
+def test_provider_filter_is_forwarded_and_preserved(client, fake_service):
+    response = client.get(
+        "/providers?availability=requires_payment&cost_tier=paid&q=%20X%20"
+    )
+
+    assert response.status_code == 200
+    assert fake_service.provider_filters == {
+        "availability": "requires_payment",
+        "cost_tier": "paid",
+        "q": "X",
+    }
+    assert 'value="requires_payment" selected' in response.text
+    assert 'value="paid" selected' in response.text
+    assert 'value="X"' in response.text
+    for text in ("GitHub", "研究与开发者", "API 密钥", "search", "releases"):
+        assert text in response.text
+
+
+def test_provider_query_is_trimmed_to_one_hundred_characters(client, fake_service):
+    response = client.get(f"/providers?q={'x' * 120}")
+
+    assert response.status_code == 200
+    assert fake_service.provider_filters["q"] == "x" * 100
+
+
+def test_target_filter_is_forwarded_and_catalog_columns_render(client, fake_service):
+    response = client.get(
+        "/targets?provider_id=github&target_type=publisher_feed"
+        "&coverage_mode=direct&availability=ready&q=Python"
+    )
+
+    assert response.status_code == 200
+    assert fake_service.target_filters == {
+        "provider_id": "github",
+        "target_type": "publisher_feed",
+        "coverage_mode": "direct",
+        "availability": "ready",
+        "q": "Python",
+    }
+    for text in (
+        "OpenAI Python",
+        "GitHub",
+        "发布方订阅源",
+        "发现",
+        "直接覆盖",
+        "可直接使用",
+        "RSS",
+        "成功",
+    ):
+        assert text in response.text
+
+
+def test_target_metric_filters_are_forwarded(client, fake_service):
+    response = client.get("/targets?free_direct=true")
+    assert response.status_code == 200
+    assert fake_service.target_filters == {"free_direct": True}
+
+    response = client.get("/targets?three_success=true")
+    assert response.status_code == 200
+    assert fake_service.target_filters == {"three_success": True}
+
+
+def test_independent_targets_do_not_link_to_a_missing_provider(client, fake_service):
+    independent = replace(
+        fake_service._target_row(),
+        provider_id="independent",
+        provider_name="independent",
+    )
+    fake_service._target_row = lambda: independent
+
+    for path in ("/targets", f"/targets/{independent.source_id}"):
+        response = client.get(path)
+
+        assert response.status_code == 200
+        assert '<a href="/providers/independent">' not in response.text
+        assert "independent" in response.text
+
+
+def test_provider_detail_shows_audit_links_env_names_and_probes(client):
+    response = client.get("/providers/github")
+
+    assert response.status_code == 200
+    for text in ("官方网站", "文档", "服务条款", "GITHUB_TOKEN", "配置只读令牌"):
+        assert text in response.text
+    assert "能力探测" in response.text
+    assert 'target="_blank" rel="noopener noreferrer"' in response.text
+
+
+def test_target_detail_explains_access_and_risk_without_secrets(client):
+    response = client.get("/targets/github-openai-python")
+
+    assert response.status_code == 200
+    for text in (
+        "首选访问方式",
+        "备用访问方式",
+        "风险分项",
+        "预期字段",
+        "最新样本完整度",
+        "GITHUB_TOKEN",
+    ):
+        assert text in response.text
+    assert "100%" in response.text
+    assert "secret-token-value" not in response.text
+    assert "Authorization" not in response.text
+    assert "Cookie" not in response.text
+
+
+def test_target_detail_marks_missing_sample_completeness(client, fake_service):
+    fake_service.content_completeness = None
+
+    response = client.get("/targets/github-openai-python")
+
+    assert response.status_code == 200
+    assert "最新样本完整度：未记录" in response.text
+
+
+def test_target_detail_keeps_never_probed_semantics(client, fake_service):
+    fake_service.has_content_probes = False
+
+    response = client.get("/targets/github-openai-python")
+
+    assert response.status_code == 200
+    assert "尚未探测" in response.text
+
+
+def test_catalog_tables_are_keyboard_scroll_regions(client):
+    for path, label in (("/providers", "Provider 列表"), ("/targets", "Target 列表")):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert 'class="panel table-panel catalog-table"' in response.text
+        assert 'class="table-scroll"' in response.text
+        assert 'tabindex="0"' in response.text
+        assert f'aria-label="{label}"' in response.text
+
+
+def test_catalog_tables_contain_wide_tables_inside_their_scroll_region(client):
+    css = client.get("/static/styles.css")
+
+    assert css.status_code == 200
+    assert ".catalog-page > * { min-width: 0; }" in css.text
+    assert ".catalog-table { min-width: 0; max-width: 100%; }" in css.text
+    assert (
+        ".table-scroll { width: 100%; max-width: 100%; min-width: 0; "
+        "overflow-x: auto; }"
+    ) in css.text
+
+
+def test_probe_page_visibly_distinguishes_probe_types(client, fake_service):
+    response = client.get(
+        "/probes?probe_type=capability&outcome=blocked&provider_id=x"
+        "&from_date=2026-07-01&to_date=2026-07-11"
+    )
+
+    assert response.status_code == 200
+    assert fake_service.probe_filters == {
+        "probe_type": "capability",
+        "outcome": "blocked",
+        "provider_id": "x",
+        "from_date": date(2026, 7, 1),
+        "to_date": date(2026, 7, 11),
+        "page": 1,
+        "page_size": 100,
+    }
+    for text in (
+        "能力探测",
+        "内容探测",
+        "原始原因",
+        "只确认平台能力，不代表获取到内容",
+    ):
+        assert text in response.text
+    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[
+        1
+    ].split("</tr>", 1)[0]
+    assert "只确认平台能力，不代表获取到内容" in capability_row
+    assert "&lt;payment required&gt;" in response.text
+    assert '<th scope="col">完整度</th>' not in response.text
+
+
+def test_probe_route_accepts_degraded_and_forwards_pagination(client, fake_service):
+    response = client.get("/probes?outcome=degraded&page=2&page_size=25")
+
+    assert response.status_code == 200
+    assert fake_service.probe_filters == {
+        "outcome": "degraded",
+        "page": 2,
+        "page_size": 25,
+    }
+    assert 'value="degraded" selected' in response.text
+
+
+def test_degraded_probe_route_filters_real_query_service(db_session):
+    from datetime import UTC
+
+    from newsradar.db.models import SourceProbeRunRecord
+    from newsradar.web.queries import DashboardQueryService
+
+    checked_at = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
+    db_session.add(
+        SourceProbeRunRecord(
+            source_id="search-ai",
+            access_kind="rss",
+            access_url="https://feeds.example/search-ai",
+            outcome="degraded",
+            started_at=checked_at,
+            finished_at=checked_at,
+            latency_ms=10.0,
+            http_status=200,
+            final_url="https://feeds.example/search-ai",
+            response_headers={},
+            metrics={"field_completeness": 0.5},
+            schema_fingerprint="degraded-route",
+            suggested_status="degraded",
+            reason="partial fields",
+            error_code=None,
+        )
+    )
+    db_session.commit()
+
+    @contextmanager
+    def real_service_context():
+        yield DashboardQueryService(db_session)
+
+    with TestClient(create_app(lambda: real_service_context())) as real_client:
+        response = real_client.get("/probes?outcome=degraded")
+
+    assert response.status_code == 200
+    assert "AI Search" in response.text
+    assert "降级" in response.text
+    assert "OpenAI Python" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("path", "active_href"),
+    [
+        ("/", "/"),
+        ("/providers", "/providers"),
+        ("/providers/github", "/providers"),
+        ("/probes", "/probes"),
+        ("/targets", "/targets"),
+        ("/targets/github-openai-python", "/targets"),
+        ("/gaps", "/gaps"),
+    ],
+)
+def test_only_current_navigation_item_has_aria_current(client, path, active_href):
+    response = client.get(path)
+
+    assert response.status_code == 200
+    assert response.text.count('aria-current="page"') == 1
+    assert f'href="{active_href}" aria-current="page"' in response.text
+
+
+def test_probe_page_size_is_capped(client):
+    assert client.get("/probes?page_size=201").status_code == 422
+
+
+def test_gap_page_keeps_restricted_platforms_visible(client):
+    response = client.get("/gaps")
+
+    assert response.status_code == 200
+    for platform in ("X", "Facebook", "Instagram", "TikTok", "LinkedIn"):
+        assert platform in response.text
+    for text in (
+        "不等于实时内容覆盖",
+        "不会复用浏览器会话",
+        "无已审核替代路径",
+        "审核 API 权限",
+    ):
+        assert text in response.text
+    for sensitive_name in (
+        "MINIMAX_API_KEY",
+        "DATABASE_URL",
+        "Authorization",
+        "Cookie",
+    ):
+        assert sensitive_name not in response.text
+
+
+def test_probe_page_shows_suggested_status_for_both_probe_types(client):
+    response = client.get("/probes")
+
+    assert response.status_code == 200
+    assert '<th scope="col">建议状态</th>' in response.text
+    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[
+        1
+    ].split("</tr>", 1)[0]
+    content_row = response.text.split('class="probe-badge probe-content"', 1)[1].split(
+        "</tr>", 1
+    )[0]
+    assert "需要付费" in capability_row
+    assert "启用" in content_row
+
+
+def test_probe_and_gap_pages_use_safe_database_error_boundary():
+    error = OperationalError(
+        "connection has password=do-not-leak", {}, Exception("secret")
+    )
+
+    for path in ("/probes", "/gaps"):
+        response = _response_for_database_error(error, path)
+        assert response.status_code == 503
+        assert "uv run newsradar db start" in response.text
+        assert "do-not-leak" not in response.text
+
+
+def test_unknown_provider_and_target_return_404(client):
+    assert client.get("/providers/unknown").status_code == 404
+    assert client.get("/targets/unknown").status_code == 404

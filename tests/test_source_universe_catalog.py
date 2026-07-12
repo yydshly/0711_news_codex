@@ -1,0 +1,48 @@
+from pathlib import Path
+
+from newsradar.providers.schema import Availability, CoverageMode, ProviderCategory
+from newsradar.providers.yaml_loader import load_provider_tree
+from newsradar.sources.yaml_loader import load_source_tree
+
+
+def test_source_universe_meets_coverage_floor() -> None:
+    providers = load_provider_tree(Path("providers"))
+    sources = load_source_tree(Path("sources"))
+
+    assert len(providers) >= 35
+    assert len(sources) >= 120
+    assert {provider.category for provider in providers} == set(ProviderCategory)
+    assert {"x", "facebook", "instagram", "tiktok", "linkedin"} <= {
+        provider.id for provider in providers
+    }
+    direct_free = [
+        source
+        for source in sources
+        if source.coverage_mode == CoverageMode.DIRECT and source.availability == Availability.READY
+    ]
+    assert len(direct_free) >= 25
+
+
+def test_every_universe_target_has_audited_identity_and_provider() -> None:
+    providers = {provider.id for provider in load_provider_tree(Path("providers"))}
+    sources = load_source_tree(Path("sources"))
+    universe = [source for source in sources if source.provider_id != "independent"]
+
+    assert universe
+    for source in universe:
+        assert source.provider_id in providers
+        assert source.official_identity_url is not None
+        assert source.reviewed_at is not None
+        assert source.risk.evidence
+        assert source.access_methods
+        if len(source.access_methods) == 1:
+            assert source.notes and "fallback" in source.notes.lower()
+
+
+def test_restricted_platforms_are_visible_but_not_claimed_as_direct_ready() -> None:
+    providers = {provider.id: provider for provider in load_provider_tree(Path("providers"))}
+
+    for provider_id in ("x", "facebook", "instagram", "tiktok", "linkedin"):
+        provider = providers[provider_id]
+        assert provider.availability != Availability.READY
+        assert provider.unlock_requirements

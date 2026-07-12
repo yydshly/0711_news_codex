@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}阻塞与解锁 · News Codex{% endblock %}
+{% block header %}<h1>阻塞与解锁</h1>{% endblock %}
+
+{% block content %}
+<div class="catalog-page">
+  <section class="panel compliance-notice" aria-labelledby="gap-heading">
+    <p class="eyebrow">合规边界</p>
+    <h2 id="gap-heading">登记在地图中，不等于实时内容覆盖</h2>
+    <p>受限社交平台会依据当前数据库记录持续显示，但不会冒充可用或实时覆盖。本地只读页面不会复用浏览器会话、不会绕过登录或审批，也不会执行付费、写入或自动解锁操作。</p>
+  </section>
+
+  {% if gap_groups %}
+    {% for group in gap_groups %}
+    <section class="panel gap-group" aria-labelledby="gap-{{ group.availability }}">
+      <div class="section-heading"><div><p class="eyebrow">{{ group.availability }}</p><h2 id="gap-{{ group.availability }}">{{ group.label }}</h2></div><span class="scope-label">{{ group.target_count }} 个目标</span></div>
+      <div class="gap-cards">
+        {% for target in group.targets %}<article class="gap-card">
+          <h3><a href="/targets/{{ target.source_id }}">{{ target.name }}</a></h3>
+          <dl>
+            <div><dt>Provider</dt><dd><a href="/providers/{{ target.provider_id }}">{{ target.provider_name }}</a></dd></div>
+            <div><dt>影响</dt><dd>{{ target.impact }}</dd></div>
+            <div><dt>当前间接替代</dt><dd>{{ target.alternative }}</dd></div>
+            <div><dt>成本</dt><dd>{{ target.cost_label }}</dd></div>
+          </dl>
+          <h4>解锁步骤</h4>
+          {% if target.unlock_requirements %}<ol>{% for step in target.unlock_requirements %}<li>{{ step }}</li>{% endfor %}</ol>{% else %}<p class="empty-state">暂无已审核解锁步骤</p>{% endif %}
+          <h4>证据</h4>
+          {% if target.evidence %}<ul class="link-list">{% for url in target.evidence %}<li><a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</a></li>{% endfor %}</ul>{% else %}<p class="empty-state">未记录证据</p>{% endif %}
+        </article>{% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+  {% else %}<section class="panel"><p class="empty-state">当前数据库中没有阻塞目标。</p></section>{% endif %}
+</div>
+{% endblock %}

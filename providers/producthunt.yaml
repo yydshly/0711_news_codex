@@ -1,0 +1,22 @@
+id: producthunt
+name: Product Hunt
+category: social_community
+homepage: https://www.producthunt.com/
+docs_url: https://api.producthunt.com/v2/docs
+terms_url: https://www.producthunt.com/terms
+auth_mode: oauth
+cost_tier: free_quota
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+- engagement
+required_env:
+- PRODUCTHUNT_ACCESS
+reviewed_at: '2026-07-11'
+evidence:
+- https://api.producthunt.com/v2/docs
+- https://www.producthunt.com/terms
+unlock_requirements:
+- Obtain official Product Hunt access for requires credentials
+notes: Capability metadata only; content coverage is assessed per target.

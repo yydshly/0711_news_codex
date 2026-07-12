@@ -1,0 +1,20 @@
+id: hard-fork
+name: Hard Fork
+category: newsletter_podcast
+homepage: https://www.nytimes.com/column/hard-fork
+docs_url: https://feeds.simplecast.com/l2i9YnTd
+terms_url: https://help.nytimes.com/hc/en-us/articles/115014893428-Terms-of-service
+auth_mode: none
+cost_tier: free
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://feeds.simplecast.com/l2i9YnTd
+- https://help.nytimes.com/hc/en-us/articles/115014893428-Terms-of-service
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

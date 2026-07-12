@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}总览指挥台 · News Codex{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') ~ '?v=20260711-2' }}">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="站点导航">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">NC</span>
+          <div><strong>News Codex</strong><span>来源感知台</span></div>
+        </div>
+        <button class="nav-toggle" type="button" aria-expanded="true" aria-controls="site-nav">
+          浏览页面
+        </button>
+        <nav id="site-nav" class="site-nav" aria-label="主要导航" data-open="true">
+          <a href="/"{% if request.url.path == '/' %} aria-current="page"{% endif %}>总览指挥台</a>
+          <a href="/providers"{% if request.url.path.startswith('/providers') %} aria-current="page"{% endif %}>来源能力</a>
+          <a href="/probes"{% if request.url.path.startswith('/probes') %} aria-current="page"{% endif %}>探测记录</a>
+          <a href="/targets"{% if request.url.path.startswith('/targets') %} aria-current="page"{% endif %}>目标目录</a>
+          <a href="/gaps"{% if request.url.path.startswith('/gaps') %} aria-current="page"{% endif %}>阻塞与解锁</a>
+        </nav>
+        <p class="scope-note">本界面只读取本机目录与探测记录，不执行同步、探测或内容生成。</p>
+      </aside>
+      <div class="workspace">
+        <header class="status-header">
+          <div>
+            <span class="eyebrow">本地来源能力</span>
+            {% block header %}<h1>总览指挥台</h1>{% endblock %}
+          </div>
+          <div class="status-cluster" aria-label="运行状态">
+            <span class="status status-{{ database_status_tone | default('info') }}">{{ database_status | default('数据库状态未知') }}</span>
+            <span class="status status-info">数据最后更新时间：{% if latest_probe_at is defined and latest_probe_at is not none %}{{ latest_probe_at.strftime('%Y-%m-%d %H:%M') }}{% elif latest_probe_at is defined %}暂无探测历史{% else %}不可用{% endif %}</span>
+            <span class="status status-info">只读本机模式</span>
+          </div>
+        </header>
+        <main id="main-content" tabindex="-1">
+          {% block content %}
+          <section class="panel intro-panel" aria-labelledby="shell-heading">
+            <p class="eyebrow">来源登记、能力探测、内容探测严格分开</p>
+            <h2 id="shell-heading">中文来源感知台</h2>
+            <p>这里展示经过登记和探测的数据状态；已登记不代表内容已读取，能力可用也不代表内容探测成功。</p>
+          </section>
+          {% endblock %}
+        </main>
+      </div>
+    </div>
+    <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

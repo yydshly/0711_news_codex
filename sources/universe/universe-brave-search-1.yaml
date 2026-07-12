@@ -1,0 +1,42 @@
+id: universe-brave-search-1
+name: Brave Search API primary
+provider_id: brave-search
+target_type: publisher_feed
+availability: requires_credentials
+coverage_mode: catalog_only
+official_identity_url: https://brave.com/search/api/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- 'Obtain official Brave Search API access: requires_credentials'
+status: candidate
+nature: aggregator
+roles:
+- discovery
+- context
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 4
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://brave.com/search/api/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 1
+  operating_cost: 4
+  evidence:
+  - https://api-dashboard.search.brave.com/app/documentation
+  - https://brave.com/terms-of-use/
+  hard_block_reason: requires_credentials
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

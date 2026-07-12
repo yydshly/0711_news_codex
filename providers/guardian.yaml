@@ -1,0 +1,20 @@
+id: guardian
+name: The Guardian Technology
+category: professional_media
+homepage: https://www.theguardian.com/technology
+docs_url: https://open-platform.theguardian.com/
+terms_url: https://www.theguardian.com/help/terms-of-service
+auth_mode: api_key
+cost_tier: freemium
+availability: ready
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://open-platform.theguardian.com/
+- https://www.theguardian.com/help/terms-of-service
+unlock_requirements: []
+notes: Capability metadata only; content coverage is assessed per target.

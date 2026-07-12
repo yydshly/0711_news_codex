@@ -1,0 +1,21 @@
+id: reuters
+name: Reuters
+category: professional_media
+homepage: https://www.reuters.com/technology/
+docs_url: https://www.reutersagency.com/en/services/content-delivery/
+terms_url: https://www.reuters.com/info-pages/terms-of-use/
+auth_mode: manual
+cost_tier: enterprise
+availability: manual_only
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://www.reutersagency.com/en/services/content-delivery/
+- https://www.reuters.com/info-pages/terms-of-use/
+unlock_requirements:
+- Obtain official Reuters access for manual only
+notes: Capability metadata only; content coverage is assessed per target.

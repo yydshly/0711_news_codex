@@ -1,0 +1,21 @@
+id: instagram
+name: Instagram
+category: social_community
+homepage: https://www.instagram.com/
+docs_url: https://developers.facebook.com/docs/instagram-platform/
+terms_url: https://help.instagram.com/581066165581870
+auth_mode: approval
+cost_tier: free_quota
+availability: requires_approval
+capabilities:
+- discovery
+- content
+- engagement
+required_env: []
+reviewed_at: '2026-07-11'
+evidence:
+- https://developers.facebook.com/docs/instagram-platform/
+- https://help.instagram.com/581066165581870
+unlock_requirements:
+- Obtain official Instagram access for requires approval
+notes: Capability metadata only; content coverage is assessed per target.

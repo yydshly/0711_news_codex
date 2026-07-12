@@ -1,0 +1,21 @@
+id: newsapi
+name: NewsAPI
+category: aggregator_search
+homepage: https://newsapi.org/
+docs_url: https://newsapi.org/docs
+terms_url: https://newsapi.org/terms
+auth_mode: api_key
+cost_tier: freemium
+availability: requires_credentials
+capabilities:
+- discovery
+- content
+required_env:
+- NEWSAPI_KEY
+reviewed_at: '2026-07-11'
+evidence:
+- https://newsapi.org/docs
+- https://newsapi.org/terms
+unlock_requirements:
+- 'Obtain official NewsAPI access: requires_credentials'
+notes: Capability metadata only; content coverage is assessed per target.

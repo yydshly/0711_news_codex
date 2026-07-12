@@ -1,8 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -19,6 +29,13 @@ class SourceDefinitionRecord(Base):
 
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(120), nullable=False, default="independent")
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False, default="publisher_feed")
+    availability: Mapped[str] = mapped_column(String(32), nullable=False, default="ready")
+    coverage_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="direct")
+    official_identity_url: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[date | None] = mapped_column(Date)
+    unlock_requirements: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="candidate")
     nature: Mapped[str] = mapped_column(String(32), nullable=False)
     language: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -41,6 +58,55 @@ class SourceDefinitionRecord(Base):
     risks: Mapped[list[SourceRiskAssessmentRecord]] = relationship(
         cascade="all, delete-orphan", back_populates="source"
     )
+
+
+class ProviderDefinitionRecord(Base):
+    __tablename__ = "source_providers"
+
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    homepage: Mapped[str] = mapped_column(Text, nullable=False)
+    docs_url: Mapped[str] = mapped_column(Text, nullable=False)
+    terms_url: Mapped[str] = mapped_column(Text, nullable=False)
+    auth_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    cost_tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    availability: Mapped[str] = mapped_column(String(32), nullable=False)
+    capabilities: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    required_env: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    reviewed_at: Mapped[date] = mapped_column(Date, nullable=False)
+    evidence: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    unlock_requirements: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    notes: Mapped[str | None] = mapped_column(Text)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderDefinitionVersion(Base):
+    __tablename__ = "source_provider_versions"
+    __table_args__ = (UniqueConstraint("provider_id", "definition_hash"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("source_providers.id"), nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    definition: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderProbeRunRecord(Base):
+    __tablename__ = "source_provider_probe_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("source_providers.id"), nullable=False)
+    probe_type: Mapped[str] = mapped_column(String(32), nullable=False, default="capability")
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    availability: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    latency_ms: Mapped[float | None] = mapped_column(Float)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    evidence_url: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class SourceDefinitionVersion(Base):

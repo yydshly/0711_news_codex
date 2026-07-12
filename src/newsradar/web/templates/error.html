@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}本地服务暂不可用 · News Codex{% endblock %}
+{% block header %}<h1>本地服务暂不可用</h1>{% endblock %}
+{% block content %}
+<section class="panel failure-panel" aria-labelledby="error-title">
+  <p class="eyebrow">安全故障说明</p>
+  <h2 id="error-title">{{ error_title }}</h2>
+  <p>{{ error_message }}</p>
+  {% if recovery_command is defined %}
+    <p>在项目目录运行：</p>
+    <code class="recovery-command">{{ recovery_command }}</code>
+  {% endif %}
+</section>
+{% endblock %}

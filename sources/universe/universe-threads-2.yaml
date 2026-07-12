@@ -1,0 +1,43 @@
+id: universe-threads-2
+name: Threads AI discovery
+provider_id: threads
+target_type: account
+availability: requires_approval
+coverage_mode: catalog_only
+official_identity_url: https://www.threads.com/
+reviewed_at: '2026-07-11'
+unlock_requirements:
+- Unlock official Threads access
+status: candidate
+nature: social
+roles:
+- discovery
+- engagement
+- context
+language: en
+topics:
+- artificial_intelligence
+- technology
+authority_score: 2
+poll_interval_minutes: 60
+access_methods:
+- kind: html
+  url: https://www.threads.com/
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 4
+  stability: 2
+  data_quality: 3
+  operating_cost: 0
+  evidence:
+  - https://developers.facebook.com/docs/threads/
+  - https://help.instagram.com/769983657850450
+  hard_block_reason: requires_approval
+notes: 'Fallback: no additional audited method; coverage status is explicit.'

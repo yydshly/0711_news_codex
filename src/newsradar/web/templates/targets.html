@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}目标目录 · News Codex{% endblock %}
+{% block header %}<h1>目标目录</h1>{% endblock %}
+
+{% block content %}
+<div class="catalog-page">
+  <section class="panel intro-panel" aria-labelledby="targets-heading">
+    <p class="eyebrow">内容访问目录</p>
+    <h2 id="targets-heading">Target 目录</h2>
+    <p>这里展示登记目标及其最近内容探测。尚未探测不代表成功，间接发现也不代表已直接读取内容。</p>
+  </section>
+
+  <form class="panel filter-form target-filters" method="get" action="/targets" aria-label="筛选 Target">
+    <label>关键词
+      <input type="search" name="q" maxlength="100" value="{{ filters.get('q', '') }}" placeholder="名称或 ID">
+    </label>
+    <label>Provider ID
+      <input name="provider_id" value="{{ filters.get('provider_id', '') }}">
+    </label>
+    <label>目标类型
+      <select name="target_type"><option value="">全部类型</option>{% for value, label in target_type_options %}<option value="{{ value }}"{% if filters.get('target_type') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    </label>
+    <label>覆盖方式
+      <select name="coverage_mode"><option value="">全部方式</option>{% for value, label in coverage_options %}<option value="{{ value }}"{% if filters.get('coverage_mode') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    </label>
+    <label>可用性
+      <select name="availability"><option value="">全部状态</option>{% for value, label in availability_options %}<option value="{{ value }}"{% if filters.get('availability') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    </label>
+    <div class="filter-actions"><button type="submit">应用筛选</button><a href="/targets">清除</a></div>
+  </form>
+
+  <section class="panel table-panel catalog-table" aria-labelledby="target-table-heading">
+    <div class="section-heading"><div><p class="eyebrow">目录结果</p><h2 id="target-table-heading">Target 列表</h2></div><span class="scope-label">{{ targets | length }} 条</span></div>
+    {% if targets %}
+    <div class="table-scroll" role="region" aria-label="Target 列表" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">名称</th><th scope="col">Provider</th><th scope="col">类型</th><th scope="col">角色</th><th scope="col">覆盖</th><th scope="col">可用性</th><th scope="col">首选协议</th><th scope="col">风险</th><th scope="col">最新内容时间</th><th scope="col">最新内容探测结果</th></tr></thead>
+        <tbody>
+        {% for target in targets %}
+          <tr>
+            <th scope="row"><a href="/targets/{{ target.source_id }}">{{ target.name }}</a><small>{{ target.source_id }}</small></th>
+            <td>{% if target.provider_id == 'independent' %}{{ target.provider_name }}{% else %}<a href="/providers/{{ target.provider_id }}">{{ target.provider_name }}</a>{% endif %}</td>
+            <td>{{ target.target_type_label }}</td>
+            <td>{{ target.role_labels | join('、') if target.role_labels else '未记录' }}</td>
+            <td>{{ target.coverage_label }}</td>
+            <td><span class="status status-{{ 'healthy' if target.availability == 'ready' else 'blocked' }}">{{ target.availability_label }}</span></td>
+            <td>{{ target.access_label }}</td>
+            <td>{{ target.risk_total if target.risk_total is not none else '未评估' }}</td>
+            <td>{% if target.latest_content_at %}<time datetime="{{ target.latest_content_at.isoformat() }}">{{ target.latest_content_at.strftime('%Y-%m-%d %H:%M') }}</time>{% else %}尚未探测{% endif %}</td>
+            <td>{{ target.latest_outcome_label }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p class="empty-state">没有符合当前筛选条件的 Target。</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

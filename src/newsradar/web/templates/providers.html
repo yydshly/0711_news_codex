@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}来源能力 · News Codex{% endblock %}
+{% block header %}<h1>来源能力</h1>{% endblock %}
+
+{% block content %}
+<div class="catalog-page">
+  <section class="panel intro-panel" aria-labelledby="providers-heading">
+    <p class="eyebrow">登记与能力探测</p>
+    <h2 id="providers-heading">Provider 目录</h2>
+    <p>这里列出已登记的来源能力。登记不代表已抓取内容，能力探测结果也不等同于内容探测结果。</p>
+  </section>
+
+  <form class="panel filter-form" method="get" action="/providers" aria-label="筛选 Provider">
+    <label>关键词
+      <input type="search" name="q" maxlength="100" value="{{ filters.get('q', '') }}" placeholder="名称或 ID">
+    </label>
+    <label>分类
+      <select name="category">
+        <option value="">全部分类</option>
+        {% for value, label in category_options %}<option value="{{ value }}"{% if filters.get('category') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>成本
+      <select name="cost_tier">
+        <option value="">全部成本</option>
+        {% for value, label in cost_options %}<option value="{{ value }}"{% if filters.get('cost_tier') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>可用性
+      <select name="availability">
+        <option value="">全部状态</option>
+        {% for value, label in availability_options %}<option value="{{ value }}"{% if filters.get('availability') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="filter-actions"><button type="submit">应用筛选</button><a href="/providers">清除</a></div>
+  </form>
+
+  <section class="panel table-panel catalog-table" aria-labelledby="provider-table-heading">
+    <div class="section-heading"><div><p class="eyebrow">目录结果</p><h2 id="provider-table-heading">Provider 列表</h2></div><span class="scope-label">{{ providers | length }} 条</span></div>
+    {% if providers %}
+    <div class="table-scroll" role="region" aria-label="Provider 列表" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">名称</th><th scope="col">分类</th><th scope="col">成本</th><th scope="col">认证</th><th scope="col">可用性</th><th scope="col">能力</th><th scope="col">目标数量</th><th scope="col">最新能力探测</th><th scope="col">审核日期</th></tr></thead>
+        <tbody>
+        {% for provider in providers %}
+          <tr>
+            <th scope="row"><a href="/providers/{{ provider.provider_id }}">{{ provider.name }}</a><small>{{ provider.provider_id }}</small></th>
+            <td>{{ provider.category_label }}</td>
+            <td>{{ provider.cost_label }}</td>
+            <td>{{ provider.auth_label }}</td>
+            <td><span class="status status-{{ 'healthy' if provider.availability == 'ready' else 'blocked' }}">{{ provider.availability_label }}</span></td>
+            <td>{{ provider.capabilities | join('、') if provider.capabilities else '未记录' }}</td>
+            <td>{{ provider.target_count }}（直接 {{ provider.direct_count }} / 间接 {{ provider.indirect_count }}）</td>
+            <td>{{ provider.latest_outcome_label }}</td>
+            <td><time datetime="{{ provider.reviewed_at.isoformat() }}">{{ provider.reviewed_at }}</time></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p class="empty-state">没有符合当前筛选条件的 Provider。</p>{% endif %}
+  </section>
+</div>
+{% endblock %}
