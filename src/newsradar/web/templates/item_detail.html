@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block title %}条目详情 · News Codex{% endblock %}
+{% block header %}<h1>条目详情</h1>{% endblock %}
+{% block content %}<section class="panel"><h2>{{ item.title }}</h2><p>来源：{{ item.source_name }}（{{ item.provider_id }}）</p><p><a href="{{ item.canonical_url }}" target="_blank" rel="noopener noreferrer">原始链接</a></p><p>首次发现：{{ item.first_seen_at or '—' }}；最后发现：{{ item.last_seen_at or '—' }}</p></section><section class="panel"><h2>内容版本</h2>{% if item.versions %}<ul>{% for version in item.versions %}<li>#{{ version.snapshot_id }} · {{ version.created_at }} · {{ version.content_hash }}</li>{% endfor %}</ul>{% else %}<p>暂无版本快照。</p>{% endif %}</section>{% endblock %}

@@ -4,24 +4,37 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from datetime import date
 from pathlib import Path
+from secrets import token_urlsafe
 from typing import Annotated, Literal, TypeVar
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import select_autoescape
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
+from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
+from newsradar.db.models import SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
+from newsradar.operations.repository import OperationRepository
+from newsradar.operations.schema import OperationType
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.diagnostics import build_diagnostic_narrative
 from newsradar.web.i18n import zh_label
+from newsradar.web.item_queries import ItemQueryService
 from newsradar.web.operation_queries import OperationQueryService
 from newsradar.web.queries import DashboardQueryService
 from newsradar.web.routes.system import build_system_health
-from newsradar.web.security import UnsafeWrite, require_loopback_host, require_same_origin
+from newsradar.web.security import (
+    UnsafeWrite,
+    consume_one_time_token,
+    require_loopback_host,
+    require_same_origin,
+)
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
 _WEB_ROOT = Path(__file__).resolve().parent
@@ -135,6 +148,12 @@ def _is_undefined_table(error: ProgrammingError) -> bool:
 def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
     resolved_service_factory = service_factory or _dashboard_service_context
     app = FastAPI(title="News Codex 来源感知台", docs_url=None, redoc_url=None)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=token_urlsafe(32),
+        same_site="strict",
+        https_only=False,
+    )
     templates = Jinja2Templates(directory=_WEB_ROOT / "templates")
     templates.env.autoescape = select_autoescape(("html", "xml"), default_for_string=True)
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
@@ -189,6 +208,26 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         return query_service_safely(
             request, lambda service: (query(service), service.latest_probe_at())
         )
+
+    def issue_action_token(request: Request) -> str:
+        token = token_urlsafe(32)
+        request.session["tokens"] = [token]
+        return token
+
+    async def require_safe_action(request: Request) -> dict[str, str]:
+        try:
+            require_loopback_host(request.headers.get("host"))
+            require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            body = (await request.body()).decode("utf-8", errors="replace")
+            values = {
+                name: entries[-1]
+                for name, entries in parse_qs(body, keep_blank_values=True).items()
+                if entries
+            }
+            consume_one_time_token(request.session, values.get("action_token", ""))
+            return values
+        except UnsafeWrite as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -436,6 +475,129 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             name="operations.html",
             context={
                 "operations": rows,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+                "action_token": issue_action_token(request),
+            },
+        )
+
+    @app.post("/operations/fetch")
+    async def enqueue_fetch(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        source_id = values.get("source_id", "").strip()
+        if not source_id:
+            raise HTTPException(status_code=422, detail="source_id is required")
+        try:
+            with create_session() as session:
+                source_exists = session.scalar(
+                    select(SourceDefinitionRecord.id).where(SourceDefinitionRecord.id == source_id)
+                )
+                if source_exists is None:
+                    raise HTTPException(status_code=422, detail="unknown source_id")
+                operation = OperationRepository(session).enqueue(
+                    OperationType.FETCH,
+                    {"source_id": source_id, "provider": None, "dry_run": False},
+                    trigger="web",
+                )
+                session.commit()
+                operation_id = operation.id
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+
+    @app.get("/operations/{operation_id}", response_class=HTMLResponse)
+    def operation_detail(request: Request, operation_id: int) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                detail = OperationQueryService(session).get(operation_id)
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        if detail is None:
+            raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="operation_detail.html",
+            context={
+                "operation_detail": detail,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/fetch-runs", response_class=HTMLResponse)
+    def fetch_runs(request: Request, source_id: str | None = None) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                rows = ItemQueryService(session).list_fetch_runs(source_id=source_id)
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="fetch_runs.html",
+            context={
+                "fetch_runs": rows,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/items", response_class=HTMLResponse)
+    def raw_items(
+        request: Request, source_id: str | None = None, q: str | None = None
+    ) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                page = ItemQueryService(session).list_items(
+                    source_id=source_id, title_query=_normalized_query(q)
+                )
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="items.html",
+            context={
+                "item_page": page,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/items/{raw_item_id}", response_class=HTMLResponse)
+    def raw_item_detail(request: Request, raw_item_id: int) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                item = ItemQueryService(session).get_item(raw_item_id)
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        if item is None:
+            raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="item_detail.html",
+            context={
+                "item": item,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/duplicates", response_class=HTMLResponse)
+    def duplicates(request: Request) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                rows = ItemQueryService(session).list_duplicate_candidates()
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="duplicates.html",
+            context={
+                "duplicates": rows,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
