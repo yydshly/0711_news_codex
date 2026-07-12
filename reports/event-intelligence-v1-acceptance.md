@@ -1,7 +1,7 @@
-# Event Intelligence v1 Acceptance Evidence
+﻿# Event Intelligence v1 Acceptance Evidence
 
-Date: 2026-07-12  
-Acceptance baseline commit: `475ee616f41468bda049027563135e1ee5120f07`  
+Date: 2026-07-12
+Acceptance baseline commit: `475ee616f41468bda049027563135e1ee5120f07`
 Database migration: `20260712_0008 (head)`
 
 ## Automated gate
