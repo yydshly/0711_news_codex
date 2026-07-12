@@ -187,6 +187,29 @@ Pydantic, and invalid JSON gets at most one repair attempt.
 MiniMax 适配器尚未接入 RawItem v1.1。当前抓取、来源健康、资格判断、任务控制和重复候选裁决
 不依赖模型，也不会自动生成新闻摘要或推荐。
 
+## Event intelligence v1
+
+Event builds are durable operations: the web route or CLI only queues work, and a Worker publishes
+completed immutable event versions. The homepage keeps its 24-hour confirmed-event window; use a
+wider build window only for a separately labelled operational coverage check.
+
+```powershell
+uv run newsradar serve
+uv run newsradar fetch --no-wait
+uv run newsradar events build --hours 24
+uv run newsradar operations list
+```
+
+Open `/`, `/events`, `/emerging`, and `/events/<id>` on the local UI. Event details retain original
+evidence links, roles, and independent-root information. MiniMax is optional: when it is not
+configured, rule-based enrichment continues without a model request. Never put credentials, feed
+bodies, or unredacted upstream error URLs in acceptance notes; see
+`reports/event-intelligence-v1-acceptance.md` for scrubbed operational evidence.
+
+Use `operations list` to observe the fetch terminal status while the Worker is running. The current
+`fetch --wait` output path has a known post-completion status-rendering defect and is not the
+recommended operator workflow.
+
 ## Quality gates
 
 ```powershell
