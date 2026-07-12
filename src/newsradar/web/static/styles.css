@@ -112,6 +112,8 @@ h1 { margin-bottom: 0; font-size: clamp(1.5rem, 3vw, 2.2rem); }
 .status { padding: 0.35rem 0.65rem; border: 1px solid currentcolor; border-radius: 999px; font-size: 0.85rem; }
 .status-healthy { color: var(--healthy); }
 .status-info { color: var(--info); }
+.status-blocked { color: var(--blocked); }
+.status-failed { color: var(--failed); }
 main { padding: 2rem; }
 .panel { max-width: 850px; padding: 1.5rem; border: 1px solid var(--line); border-radius: 0.75rem; background: var(--panel); }
 .failure-panel { border-color: color-mix(in srgb, var(--failed), var(--line) 55%); }
