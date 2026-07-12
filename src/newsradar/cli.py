@@ -26,6 +26,7 @@ from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
+from newsradar.runtime import RuntimeSupervisor
 from newsradar.sources.probes.factory import ProbeFactory
 from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.reporting import render_source_report
@@ -193,7 +194,7 @@ def retry_operation(operation_id: int) -> None:
 def run_worker(
     root: RootOption = Path("sources"),
     worker_id: Annotated[str | None, typer.Option()] = None,
-    once: Annotated[bool, typer.Option("--once/--forever")] = True,
+    once: Annotated[bool, typer.Option("--once/--forever")] = False,
     poll_seconds: Annotated[float, typer.Option(min=0.1, max=60.0)] = 1.0,
 ) -> None:
     """Consume durable operations; network work only occurs in this process."""
@@ -228,9 +229,11 @@ def run_worker(
 
 
 @app.command("serve")
-def serve_help() -> None:
-    """Serve the web UI (use `web` to run it)."""
-    typer.echo("Use `newsradar web` to start the UI server.")
+def serve() -> None:
+    """Start the local Web UI and durable Worker together."""
+    exit_code = RuntimeSupervisor().run()
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 @diagnostics_app.command("create")

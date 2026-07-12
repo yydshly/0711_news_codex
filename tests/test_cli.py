@@ -278,3 +278,26 @@ def test_cli_has_no_direct_fetch_batch_runner() -> None:
     from newsradar import cli as cli_module
 
     assert not hasattr(cli_module, "_fetch_sources")
+
+
+def test_worker_help_defaults_to_forever() -> None:
+    result = runner.invoke(app, ["worker", "--help"])
+
+    assert result.exit_code == 0
+    assert "[default: forever]" in result.stdout
+
+
+def test_serve_runs_runtime_supervisor(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeSupervisor:
+        def run(self) -> int:
+            calls.append("run")
+            return 0
+
+    monkeypatch.setattr("newsradar.cli.RuntimeSupervisor", FakeSupervisor)
+
+    result = runner.invoke(app, ["serve"])
+
+    assert result.exit_code == 0
+    assert calls == ["run"]
