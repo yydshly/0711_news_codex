@@ -7,11 +7,16 @@ from typing import Annotated
 import httpx
 import typer
 
+from newsradar.db.models import OperationRunRecord
 from newsradar.db.session import create_session
+from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
+from newsradar.ingestion.service import IngestionService
 from newsradar.local_postgres import (
     LocalPostgresError,
     build_local_postgres_manager,
 )
+from newsradar.operations.repository import OperationRepository
+from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
@@ -29,6 +34,8 @@ db_app = typer.Typer(help="Manage the project-local PostgreSQL runtime")
 app.add_typer(sources_app, name="sources")
 app.add_typer(providers_app, name="providers")
 app.add_typer(db_app, name="db")
+operations_app = typer.Typer(help="Inspect and retry durable operations")
+app.add_typer(operations_app, name="operations")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
@@ -77,6 +84,120 @@ def run_web(
     from newsradar.web import create_app
 
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
+
+
+async def _fetch_sources(
+    selected, *, approved: bool, max_items: int | None, dry_run: bool, operation_id: int
+):
+    policy = HttpPolicy.default()
+    try:
+        with create_session() as session:
+            service = IngestionService(session, FetcherFactory(policy))
+            return [
+                await service.fetch_source(
+                    source,
+                    approved_only=approved,
+                    max_items=max_items,
+                    dry_run=dry_run,
+                    operation_run_id=operation_id,
+                )
+                for source in selected
+            ]
+    finally:
+        await policy.client.aclose()
+
+
+@app.command("fetch")
+def fetch_sources(
+    source_id: Annotated[str | None, typer.Argument()] = None,
+    root: RootOption = Path("sources"),
+    approved: Annotated[bool, typer.Option("--approved")] = False,
+    provider: Annotated[str | None, typer.Option()] = None,
+    max_items: Annotated[int | None, typer.Option(min=1)] = None,
+    dry_run: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Run a bounded synchronous fetch operation for audited source definitions."""
+    sources = load_source_tree(root)
+    selected = [source for source in sources if source_id is None or source.id == source_id]
+    if provider:
+        selected = [source for source in selected if source.provider_id == provider]
+    if not selected:
+        typer.echo("No matching sources")
+        raise typer.Exit(2)
+    with create_session() as session:
+        SourceRepository(session).sync(selected)
+        operation = OperationRepository(session).enqueue(
+            OperationType.FETCH,
+            {"source_id": source_id, "provider": provider, "dry_run": dry_run},
+        )
+        session.commit()
+        operation_id = operation.id
+    summaries = asyncio.run(
+        _fetch_sources(
+            selected,
+            approved=approved,
+            max_items=max_items,
+            dry_run=dry_run,
+            operation_id=operation_id,
+        )
+    )
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is not None:
+            operation.status = (
+                OperationStatus.PARTIAL.value
+                if any(item.result.outcome.value == "failed" for item in summaries)
+                else OperationStatus.SUCCEEDED.value
+            )
+            session.commit()
+    for summary in summaries:
+        typer.echo(f"{summary.source_id}: {summary.result.outcome}")
+
+
+@operations_app.command("list")
+def list_operations() -> None:
+    from sqlalchemy import select
+
+    with create_session() as session:
+        for operation in session.scalars(
+            select(OperationRunRecord).order_by(OperationRunRecord.id.desc())
+        ):
+            typer.echo(f"{operation.id} {operation.operation_type} {operation.status}")
+
+
+@operations_app.command("show")
+def show_operation(operation_id: int) -> None:
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is None:
+            raise typer.Exit(2)
+        typer.echo(f"{operation.id} {operation.operation_type} {operation.status}")
+        typer.echo(str(operation.requested_scope))
+
+
+@operations_app.command("retry")
+def retry_operation(operation_id: int) -> None:
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is None:
+            raise typer.Exit(2)
+        OperationRepository(session).enqueue(
+            OperationType(operation.operation_type), operation.requested_scope
+        )
+        session.commit()
+    typer.echo(f"Queued retry for {operation_id}")
+
+
+@app.command("worker")
+def worker_help() -> None:
+    """Worker execution is available to the durable operation runtime."""
+    typer.echo("Use the operation worker runtime to process queued operations.")
+
+
+@app.command("serve")
+def serve_help() -> None:
+    """Serve the web UI (use `web` to run it)."""
+    typer.echo("Use `newsradar web` to start the UI server.")
 
 
 @providers_app.command("validate")
