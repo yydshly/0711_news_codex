@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from starlette.templating import Jinja2Templates
 
 from newsradar.db.session import create_session
+from newsradar.web.diagnostics import build_diagnostic_narrative
 from newsradar.web.queries import DashboardQueryService
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
@@ -64,6 +65,10 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         try:
             with resolved_service_factory() as service:
                 summary = service.summary()
+                providers = service.providers()
+                probes = service.probes()
+                gaps = service.gap_groups()
+                diagnostic = build_diagnostic_narrative(summary, providers, gaps)
         except OperationalError:
             return templates.TemplateResponse(
                 request=request,
@@ -104,9 +109,12 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             )
         return templates.TemplateResponse(
             request=request,
-            name="base.html",
+            name="dashboard.html",
             context={
                 "summary": summary,
+                "diagnostic": diagnostic,
+                "recent_probes": probes[:10],
+                "top_gaps": gaps[:5],
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
             },

@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+  <section class="metric-grid" aria-label="严格口径指标">
+    <a class="metric-card" href="/providers">
+      <span>Provider 总数</span><strong>{{ summary.provider_count }}</strong>
+      <small>已登记供应商</small>
+    </a>
+    <a class="metric-card" href="/targets">
+      <span>Target 总数</span><strong>{{ summary.target_count }}</strong>
+      <small>已登记目标</small>
+    </a>
+    <a class="metric-card" href="/targets?coverage_mode=direct&amp;availability=ready">
+      <span>免费直接覆盖</span><strong>{{ summary.free_direct_count }}</strong>
+      <small>免费且可直接访问</small>
+    </a>
+    <a class="metric-card" href="/targets?coverage_mode=indirect">
+      <span>间接发现</span><strong>{{ summary.indirect_count }}</strong>
+      <small>仅用于发现线索</small>
+    </a>
+    <a class="metric-card" href="/gaps">
+      <span>阻塞目标</span><strong>{{ summary.blocked_count }}</strong>
+      <small>尚待凭据、审批或付费</small>
+    </a>
+    <a class="metric-card" href="/probes?probe_type=content&amp;outcome=success">
+      <span>连续三轮成功</span><strong>{{ summary.three_success_count }}</strong>
+      <small>内容探测严格计数</small>
+    </a>
+  </section>
+
+  <section class="panel category-panel" aria-labelledby="category-heading">
+    <div class="section-heading">
+      <div><p class="eyebrow">登记结构</p><h2 id="category-heading">七类来源分布</h2></div>
+      <span class="scope-label">目录口径</span>
+    </div>
+    {% set counts = dict(summary.category_counts) %}
+    <div class="category-list">
+      {% for key, label in (
+        ("social_community", "社交与社区"),
+        ("professional_media", "专业媒体"),
+        ("first_party", "第一方来源"),
+        ("aggregator_search", "聚合与搜索"),
+        ("research_developer", "研究与开发者"),
+        ("newsletter_podcast", "新闻简报与播客"),
+        ("trend_business", "趋势与商业")
+      ) %}
+      {% set count = counts.get(key, 0) %}
+      <div class="category-row">
+        <div class="category-label"><span>{{ label }}</span><strong>{{ count }}</strong></div>
+        <progress value="{{ count }}" max="{{ summary.provider_count if summary.provider_count else 1 }}" aria-label="{{ label }}：{{ count }} 个 Provider">{{ count }}</progress>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="diagnostic-stack" aria-label="确定性诊断">
+    <article class="panel diagnostic-panel">
+      <p class="eyebrow">当前能感知</p>
+      <h2>能力边界</h2>
+      <p>{{ diagnostic.current_capability }}</p>
+    </article>
+    <article class="panel diagnostic-panel diagnostic-warning">
+      <p class="eyebrow">主要盲区</p>
+      <h2>访问缺口</h2>
+      <p>{{ diagnostic.blind_spots }}</p>
+    </article>
+    <article class="panel diagnostic-panel">
+      <p class="eyebrow">建议下一步</p>
+      <h2>解锁顺序</h2>
+      <p>{{ diagnostic.next_steps }}</p>
+    </article>
+  </section>
+
+  <section class="panel table-panel probes-panel" aria-labelledby="probe-heading">
+    <div class="section-heading">
+      <div><p class="eyebrow">最近记录</p><h2 id="probe-heading">最近探测</h2></div>
+      <a href="/probes">查看全部</a>
+    </div>
+    {% if summary.latest_probe_at is none %}
+      <p class="empty-state">暂无探测历史</p>
+    {% elif recent_probes %}
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">对象</th><th scope="col">类型</th><th scope="col">结果</th><th scope="col">时间</th></tr></thead>
+          <tbody>
+          {% for probe in recent_probes %}
+            <tr>
+              <th scope="row"><a href="/{{ 'providers' if probe.probe_type == 'capability' else 'targets' }}/{{ probe.object_id }}">{{ probe.object_name }}</a></th>
+              <td>{{ probe.probe_type_label }}</td>
+              <td><span class="status status-{{ 'healthy' if probe.outcome == 'success' else 'blocked' }}">{{ probe.outcome_label }}</span></td>
+              <td><time datetime="{{ probe.checked_at.isoformat() }}">{{ probe.checked_at.strftime('%m-%d %H:%M') }}</time></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">暂无探测记录</p>
+    {% endif %}
+  </section>
+
+  <section class="panel table-panel gaps-panel" aria-labelledby="gap-heading">
+    <div class="section-heading">
+      <div><p class="eyebrow">待解锁队列</p><h2 id="gap-heading">主要缺口</h2></div>
+      <a href="/gaps">查看全部</a>
+    </div>
+    {% if top_gaps %}
+      <ul class="gap-list">
+      {% for gap in top_gaps %}
+        <li>
+          <div><strong>{{ gap.label }}</strong><span>{{ gap.target_count }} 个目标</span></div>
+          <a class="button-link" href="/gaps#gap-{{ gap.availability }}">查看解锁条件</a>
+        </li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty-state">暂无已登记的访问缺口；目录之外仍可能存在盲区。</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

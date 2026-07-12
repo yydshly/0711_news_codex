@@ -9,11 +9,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from newsradar.web import create_app
-from newsradar.web.viewmodels import DashboardSummary
+from newsradar.web.viewmodels import DashboardSummary, GapGroup, ProbeRow
 
 
 class FakeDashboardService:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
     def summary(self) -> DashboardSummary:
+        self.calls.append("summary")
         return DashboardSummary(
             provider_count=2,
             target_count=3,
@@ -23,6 +27,41 @@ class FakeDashboardService:
             three_success_count=0,
             category_counts=(("first_party", 2),),
             latest_probe_at=datetime(2026, 7, 11, 9, 30),
+        )
+
+    def providers(self):
+        self.calls.append("providers")
+        return []
+
+    def probes(self):
+        self.calls.append("probes")
+        return [
+            ProbeRow(
+                probe_id="content-1",
+                object_id="source-1",
+                object_name="示例内容源",
+                probe_type="content",
+                probe_type_label="内容探测",
+                outcome="success",
+                outcome_label="成功",
+                checked_at=datetime(2026, 7, 11, 9, 30),
+                http_status=200,
+                latency_ms=25.0,
+                completeness=1.0,
+                reason_zh="成功",
+                reason_raw="ok",
+            )
+        ]
+
+    def gap_groups(self):
+        self.calls.append("gap_groups")
+        return (
+            GapGroup(
+                availability="requires_payment",
+                label="需要付费",
+                target_count=1,
+                targets=(),
+            ),
         )
 
 
@@ -57,6 +96,66 @@ def test_root_renders_chinese_read_only_shell(client: TestClient):
     assert "<main" in response.text
     for label in ("总览指挥台", "来源能力", "探测记录", "目标目录", "阻塞与解锁"):
         assert label in response.text
+
+
+def test_dashboard_shows_strict_metrics_and_diagnostic(client: TestClient):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    for text in (
+        "Provider 总数",
+        "Target 总数",
+        "免费直接覆盖",
+        "间接发现",
+        "阻塞目标",
+        "连续三轮成功",
+    ):
+        assert text in response.text
+    for text in ("当前能感知", "主要盲区", "建议下一步"):
+        assert text in response.text
+    for text in (
+        "社交与社区",
+        "专业媒体",
+        "第一方来源",
+        "聚合与搜索",
+        "研究与开发者",
+        "新闻简报与播客",
+        "趋势与商业",
+    ):
+        assert text in response.text
+    assert "示例内容源" in response.text
+    assert "需要付费" in response.text
+    assert 'href="/targets?coverage_mode=direct&amp;availability=ready"' in response.text
+
+
+def test_dashboard_calls_out_missing_probe_history():
+    class NoProbeHistoryService(FakeDashboardService):
+        def summary(self) -> DashboardSummary:
+            summary = super().summary()
+            return DashboardSummary(
+                provider_count=summary.provider_count,
+                target_count=summary.target_count,
+                free_direct_count=summary.free_direct_count,
+                indirect_count=summary.indirect_count,
+                blocked_count=summary.blocked_count,
+                three_success_count=summary.three_success_count,
+                category_counts=summary.category_counts,
+                latest_probe_at=None,
+            )
+
+        def probes(self):
+            self.calls.append("probes")
+            return []
+
+    @contextmanager
+    def no_history_context() -> Iterator[NoProbeHistoryService]:
+        yield NoProbeHistoryService()
+
+    with TestClient(create_app(lambda: no_history_context())) as test_client:
+        response = test_client.get("/")
+
+    assert response.status_code == 200
+    assert "暂无探测历史" in response.text
 
 
 def test_security_headers_are_present(client: TestClient):
