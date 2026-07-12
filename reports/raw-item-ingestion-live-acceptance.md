@@ -76,7 +76,17 @@ success.
 
 ## Remaining acceptance command
 
-After the Worker lease/retry changes are merged, run the bounded command above
-three times against the exact 15 enabled target IDs, record each run ID and
-timestamp in this table, and retain GDELT as a separately reported degraded
-source. Only then may the project claim three complete stable-source rounds.
+The final three complete stable-source rounds ran after the lease/retry change
+with the same bounded command. Database times were 03:54:55-03:55:02,
+03:55:29-03:55:35 and 03:56:01-03:56:08 on 2026-07-12 (UTC-07:00).
+Each of Google News, Techmeme, Bluesky, Hacker News Top, Hacker News Best,
+Mastodon, DeepMind, Hugging Face, OpenAI, arXiv, BBC, Guardian, TechCrunch,
+The Verge and WIRED recorded `succeeded` or `no_change` in all three rounds.
+The accompanying final HN Best worker fetch was run 97 at 03:56:53; it also
+completed successfully. GDELT failed in each complete round and remains
+explicitly excluded from the 15-source stable set.
+
+PostgreSQL ownership drill: acceptance operations 20 and 21 were consumed
+concurrently by workers `pg-acceptance-a` and `pg-acceptance-b`. Both ended
+`succeeded` with `attempt_count=1`, providing live `SKIP LOCKED` ownership
+evidence rather than SQLite-only coverage.
