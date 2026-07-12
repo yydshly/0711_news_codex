@@ -106,12 +106,25 @@ class IngestionService:
             counts = {action: 0 for action in ItemAction}
             repository = RawItemRepository(self.session)
             for item in result.items:
-                written = repository.upsert(fetch_run.id, source.id, item)
+                try:
+                    written = repository.upsert(fetch_run.id, source.id, item)
+                except Exception:
+                    # A malformed provider record must not leave the entire run
+                    # pending or prevent later items from being persisted.
+                    self.session.rollback()
+                    written = repository.record_failure(
+                        fetch_run.id, source.id, item, "item_persistence_failed"
+                    )
                 counts[written.action] += 1
                 # Keep each unit of work bounded; repository uses savepoints for item failures.
                 self.session.commit()
             result = result.model_copy(
                 update={
+                    "outcome": (
+                        FetchOutcome.PARTIAL
+                        if counts[ItemAction.FAILED]
+                        else result.outcome
+                    ),
                     "items_inserted": counts[ItemAction.INSERTED],
                     "items_updated": counts[ItemAction.UPDATED],
                     "items_unchanged": counts[ItemAction.UNCHANGED],

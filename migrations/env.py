@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from configparser import ConfigParser
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 
@@ -12,7 +14,13 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 settings = get_settings()
-if settings.database_url:
+configured_url = config.get_main_option("sqlalchemy.url")
+ini_url = None
+if config.config_file_name:
+    ini = ConfigParser()
+    ini.read(Path(config.config_file_name))
+    ini_url = ini.get(config.config_ini_section, "sqlalchemy.url", fallback=None)
+if settings.database_url and configured_url == ini_url:
     config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata

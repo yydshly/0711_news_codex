@@ -4,8 +4,9 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import Base, RawItemRecord, SourceFetchStateRecord
+from newsradar.db.models import Base, FetchRunRecord, RawItemRecord, SourceFetchStateRecord
 from newsradar.ingestion.fetchers.base import FetchState
+from newsradar.ingestion.repository import RawItemRepository
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.ingestion.service import IngestionService
 from newsradar.sources.repository import SourceRepository
@@ -146,3 +147,27 @@ async def test_lock_is_released_when_persistence_raises(monkeypatch: pytest.Monk
             await service.fetch_source(source)
 
     assert released == [sentinel]
+
+
+@pytest.mark.asyncio
+async def test_service_records_item_write_failure_and_finishes_fetch_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        data = valid_source()
+        data["ingestion"] = {"enabled": True, "approved_at": "2026-07-11"}
+        source = SourceDefinition.model_validate(data)
+        SourceRepository(session).sync([source])
+        session.commit()
+
+        def fail_write(*args, **kwargs):
+            raise RuntimeError("item too large")
+
+        monkeypatch.setattr(RawItemRepository, "upsert", fail_write)
+        summary = await IngestionService(session, ItemFactory()).fetch_source(source)
+
+        assert summary.result.outcome is FetchOutcome.PARTIAL
+        assert summary.result.items_failed == 1
+        assert session.scalar(select(FetchRunRecord.outcome)) == FetchOutcome.PARTIAL.value

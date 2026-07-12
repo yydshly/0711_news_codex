@@ -230,7 +230,7 @@ class RawItemRecord(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_id: Mapped[str] = mapped_column(ForeignKey("source_definitions.id"), nullable=False)
-    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -355,7 +355,7 @@ class FetchRunItemRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     fetch_run_id: Mapped[int] = mapped_column(ForeignKey("fetch_runs.id"), nullable=False)
     raw_item_id: Mapped[int | None] = mapped_column(ForeignKey("raw_items.id"))
-    external_id: Mapped[str | None] = mapped_column(String(255))
+    external_id: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import TEXT, create_engine, inspect, text
 
 
 def test_full_offline_migration_creates_provider_tables_once() -> None:
@@ -109,6 +109,14 @@ def test_raw_item_ingestion_upgrade_preserves_0002_history(tmp_path: Path) -> No
             (("first_seen_run_id",), "fetch_runs"),
             (("last_seen_run_id",), "fetch_runs"),
         }
+        raw_item_columns = {
+            column["name"]: column["type"] for column in inspector.get_columns("raw_items")
+        }
+        assert isinstance(raw_item_columns["external_id"], TEXT)
+        fetch_run_item_columns = {
+            column["name"]: column["type"] for column in inspector.get_columns("fetch_run_items")
+        }
+        assert isinstance(fetch_run_item_columns["external_id"], TEXT)
         payload = connection.execute(
             text("SELECT payload FROM raw_items WHERE external_id = '42'")
         ).scalar_one()

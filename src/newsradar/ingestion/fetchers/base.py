@@ -82,9 +82,14 @@ class HttpPolicy:
                 if size > self.max_response_bytes:
                     raise ValueError("response_too_large")
                 chunks.append(chunk)
+            headers = dict(response.headers)
+            # aiter_bytes() yields decoded content.  A reconstructed response must not
+            # advertise the original wire encoding or compressed content length.
+            headers.pop("content-encoding", None)
+            headers.pop("content-length", None)
             return httpx.Response(
                 response.status_code,
-                headers=response.headers,
+                headers=headers,
                 content=b"".join(chunks),
                 request=request,
                 extensions=response.extensions,
