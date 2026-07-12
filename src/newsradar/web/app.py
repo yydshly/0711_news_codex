@@ -17,6 +17,7 @@ from newsradar.db.session import create_session
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.diagnostics import build_diagnostic_narrative
 from newsradar.web.i18n import zh_label
+from newsradar.web.operation_queries import OperationQueryService
 from newsradar.web.queries import DashboardQueryService
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
@@ -417,6 +418,24 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": latest_probe_at,
+            },
+        )
+
+    @app.get("/operations", response_class=HTMLResponse)
+    def operations(request: Request) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                rows = OperationQueryService(session).list_recent()
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="operations.html",
+            context={
+                "operations": rows,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
             },
         )
 
