@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 import youtube_transcript_api
+from requests import Request
 
 from newsradar.credentials import SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
@@ -151,18 +152,41 @@ def test_default_transcript_uses_temporary_cookie_free_session_without_env_proxy
 
         def fetch(self, video_id: str) -> Transcript:
             assert video_id == "abcdefghijk"
+            received["session"].cookies.set("CONSENT", "YES+consent", domain=".youtube.com")
+            prepared = received["session"].prepare_request(
+                Request("GET", "https://www.youtube.com/watch?v=abcdefghijk")
+            )
+            received["outbound_cookie"] = prepared.headers.get("Cookie")
             return Transcript([Segment()])
 
     monkeypatch.setattr(youtube_transcript_api, "YouTubeTranscriptApi", Api)
-    payload = YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient()))._fetch_transcript(
-        "abcdefghijk"
-    )
+    payload = YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient()))._fetch_transcript("abcdefghijk")
 
     session = received["session"]
     assert session.trust_env is False
     assert not session.cookies
     assert "Cookie" not in session.headers
+    assert received["outbound_cookie"] is None
     assert payload["segments"] == [{"text": "短文本"}]
+
+
+@pytest.mark.asyncio
+async def test_consent_requirement_is_blocked_without_cookie_bypass() -> None:
+    FailedToCreateConsentCookie = type("FailedToCreateConsentCookie", (Exception,), {})
+
+    def consent_page(_: str) -> dict:
+        raise FailedToCreateConsentCookie()
+
+    result = await YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient())).probe_transcript(
+        source(),
+        candidate("youtube-transcript-api"),
+        video_id="abcdefghijk",
+        transcript_client=consent_page,
+    )
+
+    assert result.outcome.value == "blocked"
+    assert result.error_code == "consent_required"
+    assert "Cookie" in result.reason_zh
 
 
 def test_ytdlp_metadata_is_manual_only_and_never_executes_download() -> None:

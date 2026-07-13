@@ -7,6 +7,7 @@ from typing import Any
 
 import feedparser
 from requests import Session
+from requests.cookies import RequestsCookieJar
 
 from newsradar.credentials import CredentialProvider, SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
@@ -16,6 +17,13 @@ from .schema import AcquisitionProbeOutcome, AcquisitionProbeResult, Acquisition
 
 _TEXT_LIMIT = 4000
 _SUMMARY_LIMIT = 2000
+
+
+class _RejectingCookieJar(RequestsCookieJar):
+    """Reject all response and library cookie writes for transcript research."""
+
+    def set_cookie(self, cookie, *args: object, **kwargs: object) -> None:
+        del cookie, args, kwargs
 
 
 def _clip(value: object, limit: int) -> str | None:
@@ -218,6 +226,14 @@ class YouTubeResearchProbe:
             )
         except Exception as exc:
             name = type(exc).__name__
+            if name == "FailedToCreateConsentCookie":
+                return self._result(
+                    source,
+                    candidate,
+                    AcquisitionProbeOutcome.BLOCKED,
+                    "字幕受限：临时无 Cookie 会话无法通过 consent 页面，已停止且未绕过",
+                    "consent_required",
+                )
             if name in {"RequestBlocked", "IpBlocked", "TranscriptsDisabled", "NoTranscriptFound"}:
                 return self._result(
                     source,
@@ -265,7 +281,7 @@ class YouTubeResearchProbe:
 
         session = Session()
         session.trust_env = False
-        session.cookies.clear()
+        session.cookies = _RejectingCookieJar()
         session.headers.pop("Cookie", None)
         try:
             transcript = YouTubeTranscriptApi(http_client=session).fetch(video_id)
