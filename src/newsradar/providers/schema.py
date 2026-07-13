@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
@@ -87,13 +88,20 @@ class ProviderDefinition(StrictModel):
     def require_https(cls, value: HttpUrl) -> HttpUrl:
         if value.scheme != "https":
             raise ValueError("Provider URLs must use HTTPS")
+        parsed = urlsplit(str(value))
+        if parsed.username or parsed.password:
+            raise ValueError("Provider URL 不得内嵌凭据")
         return value
 
     @field_validator("evidence")
     @classmethod
     def require_https_evidence(cls, values: list[HttpUrl]) -> list[HttpUrl]:
-        if any(value.scheme != "https" for value in values):
-            raise ValueError("Provider evidence URLs must use HTTPS")
+        for value in values:
+            if value.scheme != "https":
+                raise ValueError("Provider evidence URLs must use HTTPS")
+            parsed = urlsplit(str(value))
+            if parsed.username or parsed.password:
+                raise ValueError("Provider 证据 URL 不得内嵌凭据")
         return values
 
     @field_validator("required_env")

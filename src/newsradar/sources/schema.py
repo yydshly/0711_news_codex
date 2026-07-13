@@ -100,6 +100,28 @@ class AcquisitionCandidate(StrictModel):
     sample_status: SampleStatus
     decision: AcquisitionDecision
 
+    @field_validator("implementation")
+    @classmethod
+    def reject_prohibited_implementation(cls, value: str) -> str:
+        normalized = value.casefold()
+        prohibited_terms = (
+            "browser-session",
+            "browser_session",
+            "browser session",
+            "captcha",
+            "proxy",
+            "anti-bot",
+            "antibot",
+            "bypass",
+            "验证码",
+            "代理",
+            "反爬",
+            "绕过",
+        )
+        if any(term in normalized for term in prohibited_terms):
+            raise ValueError("候选实现不得使用浏览器会话、验证码、代理或反爬绕过")
+        return value
+
     @field_validator("evidence")
     @classmethod
     def validate_evidence_urls(cls, values: tuple[HttpUrl, ...]) -> tuple[HttpUrl, ...]:
@@ -123,9 +145,11 @@ class AcquisitionCandidate(StrictModel):
 
 class SourceResearchProfile(StrictModel):
     status: ResearchStatus = ResearchStatus.NEEDS_RESEARCH
+    purpose: str | None = None
     wanted_information: tuple[str, ...] = ()
     candidates: tuple[AcquisitionCandidate, ...] = ()
     conclusion: str | None = None
+    risk_conclusion: str | None = None
     no_fallback_reason: str | None = None
     reviewed_at: date | None = None
 
@@ -133,19 +157,25 @@ class SourceResearchProfile(StrictModel):
     def validate_verified_profile(self) -> SourceResearchProfile:
         if self.status != ResearchStatus.VERIFIED:
             return self
+        if not self.purpose or not self.purpose.strip():
+            raise ValueError("已验证研究档案必须说明用途")
+        if not self.risk_conclusion or not self.risk_conclusion.strip():
+            raise ValueError("已验证研究档案必须包含风险结论")
         if not self.wanted_information:
             raise ValueError("已验证研究档案必须说明所需信息")
-        if not any(
-            candidate.decision == AcquisitionDecision.PRIMARY for candidate in self.candidates
-        ):
-            raise ValueError("已验证研究档案必须包含 primary 候选方案")
-        if not any(
-            candidate.sample_status in {SampleStatus.SUCCEEDED, SampleStatus.PARTIAL}
+        primary_candidates = tuple(
+            candidate
             for candidate in self.candidates
+            if candidate.decision == AcquisitionDecision.PRIMARY
+        )
+        if not primary_candidates:
+            raise ValueError("已验证研究档案必须包含 primary 候选方案")
+        if not all(
+            candidate.sample_status in {SampleStatus.SUCCEEDED, SampleStatus.PARTIAL}
+            and candidate.evidence
+            for candidate in primary_candidates
         ):
-            raise ValueError("已验证研究档案必须包含成功或部分成功的样本")
-        if not any(candidate.evidence for candidate in self.candidates):
-            raise ValueError("已验证研究档案必须包含证据 URL")
+            raise ValueError("primary 候选方案必须各自包含成功样本和证据 URL")
         if not any(
             candidate.decision == AcquisitionDecision.FALLBACK for candidate in self.candidates
         ):

@@ -51,6 +51,18 @@ def test_provider_rejects_non_https_evidence() -> None:
         ProviderDefinition.model_validate(data)
 
 
+@pytest.mark.parametrize("field", ["homepage", "docs_url", "terms_url", "evidence"])
+def test_provider_rejects_embedded_url_credentials(field: str) -> None:
+    data = valid_provider()
+    if field == "evidence":
+        data[field] = ["https://user:secret@docs.example.test/api"]
+    else:
+        data[field] = "https://user:secret@docs.example.test/"
+
+    with pytest.raises(ValidationError):
+        ProviderDefinition.model_validate(data)
+
+
 def test_provider_loader_rejects_duplicate_ids(tmp_path: Path) -> None:
     for filename in ("one.yaml", "two.yaml"):
         (tmp_path / filename).write_text(yaml.safe_dump(valid_provider()), encoding="utf-8")
