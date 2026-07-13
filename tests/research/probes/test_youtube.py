@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from requests import Request
 
 from newsradar.credentials import SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
+from newsradar.research.probes import youtube as youtube_module
 from newsradar.research.probes.youtube import YouTubeResearchProbe
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
@@ -168,6 +171,41 @@ def test_default_transcript_uses_temporary_cookie_free_session_without_env_proxy
     assert "Cookie" not in session.headers
     assert received["outbound_cookie"] is None
     assert payload["segments"] == [{"text": "短文本"}]
+
+
+def test_cli_import_does_not_require_transcript_extra() -> None:
+    script = """
+import builtins
+original = builtins.__import__
+def guarded(name, *args, **kwargs):
+    if name == 'requests' or name.startswith('requests.'):
+        raise ImportError('research extra intentionally absent')
+    return original(name, *args, **kwargs)
+builtins.__import__ = guarded
+import newsradar.cli
+print('cli-imported')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "cli-imported"
+
+
+@pytest.mark.asyncio
+async def test_missing_transcript_dependency_is_a_readable_blocked_result(monkeypatch) -> None:
+    def missing_dependency():
+        raise youtube_module._MissingTranscriptDependency()
+
+    monkeypatch.setattr(youtube_module, "_create_transcript_session", missing_dependency)
+    result = await YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient())).probe_transcript(
+        source(), candidate("youtube-transcript-api"), video_id="abcdefghijk"
+    )
+
+    assert result.outcome.value == "blocked"
+    assert result.error_code == "missing_dependency"
+    assert "依赖" in result.reason_zh
 
 
 @pytest.mark.asyncio

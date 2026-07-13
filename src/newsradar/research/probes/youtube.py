@@ -6,8 +6,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
-from requests import Session
-from requests.cookies import RequestsCookieJar
 
 from newsradar.credentials import CredentialProvider, SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
@@ -19,11 +17,27 @@ _TEXT_LIMIT = 4000
 _SUMMARY_LIMIT = 2000
 
 
-class _RejectingCookieJar(RequestsCookieJar):
-    """Reject all response and library cookie writes for transcript research."""
+class _MissingTranscriptDependency(Exception):
+    """The optional transcript package or its HTTP dependency is unavailable."""
 
-    def set_cookie(self, cookie, *args: object, **kwargs: object) -> None:
-        del cookie, args, kwargs
+
+def _create_transcript_session() -> Any:
+    """Create a one-use, proxy-free Session that refuses all Cookie writes."""
+    try:
+        from requests import Session
+        from requests.cookies import RequestsCookieJar
+    except ImportError as exc:
+        raise _MissingTranscriptDependency() from exc
+
+    class RejectingCookieJar(RequestsCookieJar):
+        def set_cookie(self, cookie, *args: object, **kwargs: object) -> None:
+            del cookie, args, kwargs
+
+    session = Session()
+    session.trust_env = False
+    session.cookies = RejectingCookieJar()
+    session.headers.pop("Cookie", None)
+    return session
 
 
 def _clip(value: object, limit: int) -> str | None:
@@ -226,6 +240,14 @@ class YouTubeResearchProbe:
             )
         except Exception as exc:
             name = type(exc).__name__
+            if isinstance(exc, _MissingTranscriptDependency):
+                return self._result(
+                    source,
+                    candidate,
+                    AcquisitionProbeOutcome.BLOCKED,
+                    "缺少字幕研究可选依赖，未发起替代请求",
+                    "missing_dependency",
+                )
             if name == "FailedToCreateConsentCookie":
                 return self._result(
                     source,
@@ -277,13 +299,12 @@ class YouTubeResearchProbe:
         )
 
     def _fetch_transcript(self, video_id: str) -> dict[str, Any]:
-        from youtube_transcript_api import YouTubeTranscriptApi
-
-        session = Session()
-        session.trust_env = False
-        session.cookies = _RejectingCookieJar()
-        session.headers.pop("Cookie", None)
+        session = _create_transcript_session()
         try:
+            try:
+                from youtube_transcript_api import YouTubeTranscriptApi
+            except ImportError as exc:
+                raise _MissingTranscriptDependency() from exc
             transcript = YouTubeTranscriptApi(http_client=session).fetch(video_id)
         finally:
             session.close()
