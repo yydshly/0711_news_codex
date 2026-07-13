@@ -153,12 +153,11 @@ def fetch_sources(
         with create_session() as session:
             repository = SourceRepository(session)
             repository.sync(selected)
+            snapshots = repository.latest_probe_snapshots([source.id for source in selected])
             candidates = []
             excluded: list[tuple[str, str]] = []
             for source in selected:
-                decision = evaluate_trial_eligibility(
-                    source, repository.latest_probe_snapshot(source.id)
-                )
+                decision = evaluate_trial_eligibility(source, snapshots.get(source.id))
                 if decision.eligible:
                     candidates.append(source)
                 else:

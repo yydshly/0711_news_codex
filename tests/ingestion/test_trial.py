@@ -1,3 +1,4 @@
+import math
 from datetime import UTC, datetime
 
 import pytest
@@ -42,6 +43,17 @@ def test_direct_ready_successful_probe_is_trial_eligible() -> None:
     assert decision.reason == "可试用抓取：公开直连且首次探测合格"
 
 
+@pytest.mark.parametrize("completeness", [math.nan, math.inf, -math.inf, -0.01, 1.01])
+def test_trial_rejects_non_finite_or_out_of_range_completeness(completeness: float) -> None:
+    decision = evaluate_trial_eligibility(
+        _source(), _successful_probe(field_completeness=completeness)
+    )
+
+    assert decision.eligible is False
+    assert decision.code == "invalid_field_completeness"
+    assert decision.reason == "不可试用抓取：样本字段完整度必须是 0 到 1 之间的有限值。"
+
+
 def test_credentials_access_method_is_not_trial_eligible() -> None:
     source = _source(
         access_methods=[
@@ -64,9 +76,7 @@ def test_credentials_access_method_is_not_trial_eligible() -> None:
 
 
 def test_indirect_source_is_discovery_only() -> None:
-    decision = evaluate_trial_eligibility(
-        _source(coverage_mode="indirect"), _successful_probe()
-    )
+    decision = evaluate_trial_eligibility(_source(coverage_mode="indirect"), _successful_probe())
 
     assert decision == TrialDecision(False, "discovery_only", "仅用于发现，需回源确认")
 

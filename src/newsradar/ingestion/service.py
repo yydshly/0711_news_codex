@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import FetchRunRecord, SourceAccessMethodRecord, SourceFetchStateRecord
 from newsradar.ingestion.eligibility import evaluate_fetch_eligibility
-from newsradar.ingestion.fetchers.base import FetcherFactory, FetchState
+from newsradar.ingestion.fetchers.base import (
+    FetcherFactory,
+    FetchState,
+    TrialCredentialFreeFetcherRequiredError,
+)
 from newsradar.ingestion.fetchers.credentials import SettingsCredentials
 from newsradar.ingestion.repository import ItemAction, RawItemRepository
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
@@ -90,6 +94,7 @@ class IngestionService:
             return await self._fetch_eligible(
                 source,
                 decision.access_method,
+                credential_free_only=credential_free_only,
                 max_items=max_items,
                 dry_run=dry_run,
                 operation_run_id=operation_run_id,
@@ -103,6 +108,7 @@ class IngestionService:
         source: SourceDefinition,
         method,
         *,
+        credential_free_only: bool,
         max_items: int | None,
         dry_run: bool,
         operation_run_id: int | None,
@@ -111,13 +117,26 @@ class IngestionService:
         limit = min(
             max_items or source.ingestion.max_items_per_run, source.ingestion.max_items_per_run
         )
+        try:
+            fetcher = (
+                self.factory.for_method(method, credential_free_only=True)
+                if credential_free_only
+                else self.factory.for_method(method)
+            )
+        except TrialCredentialFreeFetcherRequiredError as error:
+            result = FetchResult(
+                outcome=FetchOutcome.BLOCKED,
+                error_code=f"eligibility_trial_{error.code}",
+                error_message=error.reason,
+            )
+            return SourceFetchSummary(source.id, result, error_code=result.error_code)
         method_id, state = self._state(source.id, str(method.url))
         # Fetching is intentionally outside every database transaction.
         try:
             if checkpoint is not None:
                 checkpoint("before_network")
             async with asyncio.timeout(self.settings.source_timeout_seconds):
-                result = await self.factory.for_method(method).fetch(source, method, state, limit)
+                result = await fetcher.fetch(source, method, state, limit)
             if checkpoint is not None:
                 checkpoint("after_network")
         except TimeoutError:
@@ -163,9 +182,7 @@ class IngestionService:
             result = result.model_copy(
                 update={
                     "outcome": (
-                        FetchOutcome.PARTIAL
-                        if counts[ItemAction.FAILED]
-                        else result.outcome
+                        FetchOutcome.PARTIAL if counts[ItemAction.FAILED] else result.outcome
                     ),
                     "items_inserted": counts[ItemAction.INSERTED],
                     "items_updated": counts[ItemAction.UPDATED],

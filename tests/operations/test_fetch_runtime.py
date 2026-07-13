@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -36,9 +37,7 @@ def _source(source_id: str = "source-a") -> SourceDefinition:
             "authority_score": 5,
             "poll_interval_minutes": 60,
             "official_identity_url": "https://source-a.test",
-            "access_methods": [
-                {"kind": "rss", "url": "https://source-a.test/feed", "priority": 1}
-            ],
+            "access_methods": [{"kind": "rss", "url": "https://source-a.test/feed", "priority": 1}],
             "expected_fields": ["title", "canonical_url", "published_at"],
             "risk": {
                 "terms": 0,
@@ -401,7 +400,8 @@ def test_trial_fetch_worker_uses_public_method_when_credential_method_has_priori
                 return FetchResult(outcome=FetchOutcome.NO_CHANGE)
 
         class RecordingFactory:
-            def for_method(self, method):
+            def for_method(self, method, *, credential_free_only=False):
+                assert credential_free_only is True
                 selected_methods.append(str(method.url))
                 return RecordingFetcher()
 
@@ -426,3 +426,108 @@ def test_trial_fetch_worker_uses_public_method_when_credential_method_has_priori
             "https://source-a.test/public-feed",
         ]
         assert record is not None
+
+
+@pytest.mark.parametrize(
+    ("host", "path"),
+    [
+        ("www.googleapis.com", "/youtube/v3/search"),
+        ("oauth.reddit.com", "/r/LocalLLaMA/new"),
+    ],
+)
+def test_trial_worker_blocks_special_host_without_constructing_credential_fetcher_or_network(
+    monkeypatch, host: str, path: str
+) -> None:
+    from newsradar.ingestion.fetchers.credentials import EnvironmentCredentials
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+    from newsradar.sources.repository import SourceRepository
+
+    source_data = valid_source()
+    source_data["id"] = f"special-{host.split('.')[0]}"
+    source_data["access_methods"] = [
+        {"kind": "rest_api", "url": f"https://{host}{path}", "priority": 1}
+    ]
+    source = SourceDefinition.model_validate(source_data)
+    with _session() as db:
+        repository = SourceRepository(db)
+        repository.sync([source])
+        now = datetime(2026, 7, 13, tzinfo=UTC)
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="rest_api",
+                access_url=str(source.access_methods[0].url),
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=now,
+                finished_at=now,
+                sample_count=1,
+                field_completeness=1.0,
+                suggested_status="candidate",
+                reason="ok",
+                samples=[
+                    ProbeSample(
+                        external_id="one",
+                        title="First",
+                        canonical_url="https://source-a.test/one",
+                    )
+                ],
+            )
+        )
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH, {"source_id": source.id, "trial": True}
+        )
+
+        def fail_credentials_init(self, *args, **kwargs):
+            raise AssertionError("trial must not construct a credential provider")
+
+        async def fail_network(self, *args, **kwargs):
+            raise AssertionError("trial must not make a network request")
+
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db)
+        )
+        monkeypatch.setattr(EnvironmentCredentials, "__init__", fail_credentials_init)
+        monkeypatch.setattr("newsradar.ingestion.fetchers.base.HttpPolicy.get", fail_network)
+        monkeypatch.setattr("httpx.AsyncClient.post", fail_network)
+        fetcher_module = "youtube" if host == "www.googleapis.com" else "reddit"
+        fetcher_name = "YouTubeFetcher" if fetcher_module == "youtube" else "RedditFetcher"
+        monkeypatch.setattr(
+            f"newsradar.ingestion.fetchers.{fetcher_module}.{fetcher_name}",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("trial must not construct a credential-reading fetcher")
+            ),
+        )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler.production([source])
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert record is not None
+        assert record.status == OperationStatus.PARTIAL
+        assert record.error_code == "eligibility_trial_credentials_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_non_trial_special_host_still_constructs_its_specialized_fetcher() -> None:
+    import httpx
+
+    from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
+    from newsradar.ingestion.fetchers.youtube import YouTubeFetcher
+
+    method = SourceDefinition.model_validate(
+        {
+            **valid_source(),
+            "access_methods": [
+                {
+                    "kind": "rest_api",
+                    "url": "https://www.googleapis.com/youtube/v3/search",
+                    "priority": 1,
+                }
+            ],
+        }
+    ).access_methods[0]
+    async with httpx.AsyncClient() as client:
+        fetcher = FetcherFactory(HttpPolicy(client), credentials=object()).for_method(method)
+
+    assert isinstance(fetcher, YouTubeFetcher)

@@ -47,8 +47,16 @@ def test_trial_fetch_queues_only_eligible_direct_sources(monkeypatch) -> None:
         def sync(self, sources) -> None:
             assert list(sources) == [eligible, ineligible, non_direct]
 
+        def latest_probe_snapshots(self, source_ids: list[str]):
+            assert source_ids == [eligible.id, ineligible.id, non_direct.id]
+            return {
+                source_id: _successful_probe()
+                for source_id in source_ids
+                if source_id != ineligible.id
+            }
+
         def latest_probe_snapshot(self, source_id: str):
-            return _successful_probe() if source_id != ineligible.id else None
+            raise AssertionError("trial CLI must use the batch snapshot query")
 
     class FakeCommands:
         def __init__(self, session) -> None:

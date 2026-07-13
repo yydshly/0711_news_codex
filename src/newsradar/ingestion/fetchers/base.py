@@ -29,6 +29,13 @@ class Fetcher(Protocol):
     ) -> FetchResult: ...
 
 
+class TrialCredentialFreeFetcherRequiredError(ValueError):
+    """Raised when trial mode has no explicitly credential-free fetcher."""
+
+    code = "credentials_not_allowed"
+    reason = "试用抓取仅允许明确声明为免凭据的抓取器。"
+
+
 class HttpPolicy:
     """The single request policy used by ingestion fetchers (and no database handles)."""
 
@@ -144,9 +151,7 @@ def response_result(response: httpx.Response, **values: object) -> FetchResult:
     }
     remaining = response.headers.get("x-ratelimit-remaining")
     values.setdefault("outcome", FetchOutcome.SUCCEEDED)
-    values.setdefault(
-        "retry_after_seconds", parse_retry_after(response.headers.get("retry-after"))
-    )
+    values.setdefault("retry_after_seconds", parse_retry_after(response.headers.get("retry-after")))
     return FetchResult(
         http_status=response.status_code,
         final_url=str(response.url),
@@ -164,7 +169,12 @@ class FetcherFactory:
         self.policy = policy
         self.credentials = credentials
 
-    def for_method(self, method: AccessMethod) -> Fetcher:
+    def for_method(self, method: AccessMethod, *, credential_free_only: bool = False) -> Fetcher:
+        host = (httpx.URL(str(method.url)).host or "").lower()
+        path = httpx.URL(str(method.url)).path
+        if credential_free_only and not self._is_explicitly_credential_free(method, host, path):
+            raise TrialCredentialFreeFetcherRequiredError
+
         from .arxiv import ArxivFetcher
         from .bluesky import BlueskyFetcher
         from .credentials import EnvironmentCredentials
@@ -177,8 +187,6 @@ class FetcherFactory:
         from .rss import RssFetcher
         from .youtube import YouTubeFetcher
 
-        host = (httpx.URL(str(method.url)).host or "").lower()
-        path = httpx.URL(str(method.url)).path
         if host == "hacker-news.firebaseio.com":
             return HackerNewsFetcher(self.policy)
         if host == "api.github.com":
@@ -202,3 +210,22 @@ class FetcherFactory:
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
             return RssFetcher(self.policy)
         raise ValueError(f"unsupported_fetch_method:{method.kind.value}")
+
+    @staticmethod
+    def _is_explicitly_credential_free(method: AccessMethod, host: str, path: str) -> bool:
+        """Allow trial construction only for fetchers which never consult credentials."""
+        if host in {
+            "hacker-news.firebaseio.com",
+            "api.github.com",
+            "export.arxiv.org",
+            "public.api.bsky.app",
+            "api.gdeltproject.org",
+        }:
+            return True
+        if host == "news.google.com" and method.kind is AccessKind.RSS:
+            return True
+        if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
+            return True
+        return method.kind is AccessKind.PUBLIC_API and (
+            path.startswith("/api/v1/accounts/") or path == "/api/v1/timelines/public"
+        )

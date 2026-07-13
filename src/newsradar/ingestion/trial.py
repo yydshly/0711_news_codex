@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 
 from pydantic import BaseModel, ConfigDict
 
@@ -71,6 +72,11 @@ def evaluate_trial_eligibility(
         return _ineligible("probe_not_successful", "不可试用抓取：最新探测未成功。")
     if probe.sample_count <= 0:
         return _ineligible("no_samples", "不可试用抓取：最新探测未获得样本。")
+    if not isfinite(probe.field_completeness) or not 0 <= probe.field_completeness <= 1:
+        return _ineligible(
+            "invalid_field_completeness",
+            "不可试用抓取：样本字段完整度必须是 0 到 1 之间的有限值。",
+        )
     if probe.field_completeness < 0.60:
         return _ineligible("incomplete_fields", "不可试用抓取：样本字段完整度低于 0.60。")
     if not {"title", "canonical_url"}.issubset(probe.sample_fields):
