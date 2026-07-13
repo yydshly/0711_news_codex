@@ -6,6 +6,7 @@ class OperationType(StrEnum):
     SOURCE_SYNC = "source_sync"
     PROVIDER_PROBE = "provider_probe"
     SOURCE_PROBE = "source_probe"
+    SOURCE_REMEDIATION = "source_remediation"
     FETCH = "fetch"
     EVENT_PIPELINE = "event_pipeline"
     EVENT_RECLUSTER = "event_recluster"

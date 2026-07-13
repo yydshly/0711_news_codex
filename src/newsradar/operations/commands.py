@@ -6,6 +6,7 @@ from hashlib import sha256
 from json import dumps
 from time import monotonic, sleep
 
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import OperationRunRecord
@@ -55,6 +56,51 @@ class OperationCommandService:
                 "one_off": one_off,
                 "trial": trial,
                 "deadline_at": deadline_at.isoformat(),
+            },
+            trigger=trigger,
+        )
+        self.session.commit()
+        return record.id
+
+    def enqueue_source_remediation(
+        self,
+        *,
+        source_id: str,
+        candidate_key: str,
+        original_probe_id: int,
+        baseline_at: datetime,
+        trigger: str,
+    ) -> int:
+        if not source_id or not candidate_key or original_probe_id <= 0:
+            raise ValueError("invalid_source_remediation_scope")
+        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+            self.session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('newsradar:source-remediation-enqueue'))"
+                )
+            )
+        active = self.session.scalar(
+            select(OperationRunRecord.id).where(
+                OperationRunRecord.operation_type == OperationType.SOURCE_REMEDIATION.value,
+                OperationRunRecord.status.in_(
+                    [OperationStatus.QUEUED.value, OperationStatus.RUNNING.value]
+                ),
+            )
+        )
+        if active is not None:
+            raise ValueError("active_source_remediation_exists")
+        now = self._utcnow()
+        record = OperationRepository(self.session).enqueue(
+            OperationType.SOURCE_REMEDIATION,
+            {
+                "source_id": source_id,
+                "candidate_key": candidate_key,
+                "original_probe_id": original_probe_id,
+                "baseline_at": baseline_at.isoformat(),
+                "deadline_at": (
+                    now + timedelta(seconds=self._settings.operation_timeout_seconds)
+                ).isoformat(),
             },
             trigger=trigger,
         )
@@ -124,6 +170,7 @@ class OperationCommandService:
         if (
             original is None
             or original.status not in terminal_statuses
+            or original.operation_type == OperationType.SOURCE_REMEDIATION.value
             or not is_retryable_error(original.error_code)
         ):
             raise ValueError("operation is not retryable")
