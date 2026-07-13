@@ -89,7 +89,9 @@ class DashboardQueryService:
         auth = {"none":"无需认证", "api_key":"API Key", "oauth":"OAuth", "approval":"审批", "payment":"付费", "login_cookie":"登录 Cookie"}
         kinds = {"rss":"RSS", "atom":"Atom", "rest_api":"REST API", "public_api":"公开 API", "html":"HTML 网页", "sitemap":"站点地图", "library":"第三方库", "service":"第三方服务", "manual":"人工"}
         samples = {"not_run":"未采样", "succeeded":"已采样", "partial":"部分采样", "failed":"采样失败", "blocked":"采样受限"}
-        latest = {p.candidate_id: p for p in probes}
+        latest = {}
+        for probe in probes:
+            latest.setdefault(probe.candidate_id, probe)
         role_labels={"discovery":"发现","evidence":"证据","engagement":"互动","context":"背景"}
         views = tuple(ResearchCandidateView(key=c.candidate_key, kind=kinds.get(c.kind, "未知"), implementation=c.implementation, officiality=c.officiality, officiality_label=officiality.get(c.officiality, "未知"), authentication=c.authentication, authentication_label=auth.get(c.authentication, "未知"), roles=tuple(role_labels.get(r, "未知") for r in (c.roles or ())), fields=tuple(c.fields or ()), limitations=tuple(c.limitations or ()), evidence=tuple(c.evidence or ()), sample_status=samples.get(c.sample_status, "未知"), decision=c.decision, decision_label=decisions.get(c.decision, "未知"), sample_count=latest.get(c.id).sample_count if latest.get(c.id) else None, latest_probe_at=latest.get(c.id).completed_at if latest.get(c.id) else None, field_completeness=(len(latest.get(c.id).fields_present)/len(c.fields) if latest.get(c.id) and c.fields else None), latest_probe_outcome=latest.get(c.id).outcome if latest.get(c.id) else None, latest_probe_label={"succeeded":"已成功","partial":"部分成功","blocked":"受限","failed":"失败"}.get(latest.get(c.id).outcome, "未知") if latest.get(c.id) else "尚未探测") for c in candidates)
         target_types={"publisher_feed","account","channel","keyword","topic","community","search_query","trend","market"}; coverages={"direct","indirect","catalog_only"}; availabilities={"ready","requires_credentials","requires_approval","requires_payment","manual_only","unavailable"}
