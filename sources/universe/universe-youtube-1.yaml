@@ -49,7 +49,9 @@ research:
     roles: [discovery]
     fields: [video_id, title, channel, published_at, canonical_url]
     limitations: [仅公开频道元数据, 最多五条]
-    evidence: [https://www.youtube.com/feeds/videos.xml]
+    evidence:
+    - https://www.youtube.com/feeds/videos.xml?channel_id=UCXZCJLdBC09xxGZ6gcdrc6A
+    - https://help.openai.com/en/articles/11725090-verifying-communications-from-openai
     reviewed_at: '2026-07-12'
     sample_status: succeeded
     decision: primary

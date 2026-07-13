@@ -41,7 +41,11 @@ class YouTubeResearchProbe:
         self.credentials = credentials or SettingsCredentials()
 
     async def probe(
-        self, source: SourceDefinition, candidate: AcquisitionCandidate, limit: int = 5
+        self,
+        source: SourceDefinition,
+        candidate: AcquisitionCandidate,
+        limit: int = 5,
+        video_ids: tuple[str, ...] = (),
     ) -> AcquisitionProbeResult:
         if candidate.key == "youtube-atom":
             channel_id = next(
@@ -55,9 +59,14 @@ class YouTubeResearchProbe:
             )
             return await self.probe_atom(source, candidate, channel_id=channel_id, limit=limit)
         if candidate.key == "youtube-data-api":
-            return await self.probe_data_api(source, candidate, limit=limit)
+            return await self.probe_data_api(source, candidate, limit=limit, video_ids=video_ids)
         if candidate.key == "youtube-transcript-api":
-            return await self.probe_transcript(source, candidate, video_id="", limit=limit)
+            return await self.probe_transcript(
+                source,
+                candidate,
+                video_id=video_ids[0] if video_ids else "",
+                limit=limit,
+            )
         return self.inspect_ytdlp_metadata(source, candidate, {})
 
     async def probe_atom(
@@ -195,7 +204,7 @@ class YouTubeResearchProbe:
             payload = await asyncio.wait_for(
                 asyncio.to_thread(transcript_client, video_id)
                 if transcript_client
-                else self._fetch_transcript(video_id),
+                else asyncio.to_thread(self._fetch_transcript, video_id),
                 timeout=timeout_seconds,
             )
         except TimeoutError:
@@ -250,7 +259,7 @@ class YouTubeResearchProbe:
             samples=[sample],
         )
 
-    async def _fetch_transcript(self, video_id: str) -> dict[str, Any]:
+    def _fetch_transcript(self, video_id: str) -> dict[str, Any]:
         from youtube_transcript_api import YouTubeTranscriptApi
 
         transcript = YouTubeTranscriptApi().fetch(video_id)

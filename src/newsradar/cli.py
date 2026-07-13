@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import socket
 import time
 from pathlib import Path
@@ -537,9 +538,16 @@ def probe_source_research_candidate(
     source_id: Annotated[str, typer.Argument()],
     candidate_key: Annotated[str, typer.Option("--candidate")],
     limit: Annotated[int, typer.Option(min=1, max=5)] = 5,
+    video_ids: Annotated[list[str] | None, typer.Option("--video-id")] = None,
     root: RootOption = Path("sources"),
 ) -> None:
     """执行有界、只读的研究样本，不修改档案或采集开关。"""
+    bounded_video_ids = tuple(video_ids or ())
+    if len(bounded_video_ids) > 5 or any(
+        re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) is None for video_id in bounded_video_ids
+    ):
+        typer.echo("视频 ID 必须是最多五个、每个 11 位的 YouTube 视频 ID")
+        raise typer.Exit(2)
     source = next((item for item in load_source_tree(root) if item.id == source_id), None)
     if source is None:
         typer.echo(f"未知来源：{source_id}")
@@ -555,10 +563,14 @@ def probe_source_research_candidate(
         raise typer.Exit(2)
 
     async def run_probe():
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=10.0), trust_env=False
+        ) as client:
             from newsradar.ingestion.fetchers.base import HttpPolicy
 
-            return await YouTubeResearchProbe(HttpPolicy(client)).probe(source, candidate, limit)
+            return await YouTubeResearchProbe(HttpPolicy(client)).probe(
+                source, candidate, limit, bounded_video_ids
+            )
 
     result = asyncio.run(run_probe())
     typer.echo(

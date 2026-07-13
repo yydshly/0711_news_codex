@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -106,6 +107,29 @@ async def test_transcript_records_language_kind_and_bounded_text() -> None:
     assert result.samples[0].transcript_kind == "generated"
     assert result.samples[0].text_available is True
     assert len(result.samples[0].text or "") <= 4000
+
+
+@pytest.mark.asyncio
+async def test_default_transcript_fetch_runs_in_a_thread_and_respects_total_timeout(
+    monkeypatch,
+) -> None:
+    probe = YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient()))
+
+    def blocking_fetch(_: str) -> dict:
+        time.sleep(0.2)
+        return {"language": "en", "is_generated": False, "segments": []}
+
+    monkeypatch.setattr(probe, "_fetch_transcript", blocking_fetch)
+    started = time.perf_counter()
+    result = await probe.probe_transcript(
+        source(),
+        candidate("youtube-transcript-api"),
+        video_id="abcdefghijk",
+        timeout_seconds=0.01,
+    )
+
+    assert result.error_code == "timeout"
+    assert time.perf_counter() - started < 0.15
 
 
 def test_ytdlp_metadata_is_manual_only_and_never_executes_download() -> None:

@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from newsradar.cli import app
 from newsradar.settings import Settings
+from newsradar.sources.schema import SourceDefinition
 
 from .test_provider_schema import valid_provider
 from .test_source_schema import valid_source
@@ -116,6 +117,102 @@ def test_research_probe_rejects_an_unknown_candidate_without_network(tmp_path: P
 
     assert result.exit_code == 2
     assert "未知研究候选" in result.stdout
+
+
+def test_research_probe_disables_environment_proxies_and_passes_bounded_video_ids(
+    monkeypatch,
+) -> None:
+    from newsradar.research.probes.schema import (
+        AcquisitionProbeOutcome,
+        AcquisitionProbeResult,
+    )
+
+    data = valid_source()
+    data["id"] = "openai-youtube"
+    data["provider_id"] = "youtube"
+    data["research"] = {
+        "candidates": [
+            {
+                "key": "youtube-data-api",
+                "kind": "api_key_api",
+                "implementation": "youtube-data-api",
+                "officiality": "official",
+                "authentication": "api_key",
+                "roles": ["metadata"],
+                "fields": ["summary"],
+                "limitations": [],
+                "evidence": ["https://developers.google.com/youtube/v3"],
+                "reviewed_at": "2026-07-12",
+                "sample_status": "not_run",
+                "decision": "supplement",
+            }
+        ]
+    }
+    selected = SourceDefinition.model_validate(data)
+    received: dict[str, object] = {}
+
+    class Client:
+        def __init__(self, **kwargs):
+            received.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    async def fake_probe(self, source, candidate, limit, video_ids):
+        received["video_ids"] = video_ids
+        return AcquisitionProbeResult(
+            source_id=source.id,
+            candidate_key=candidate.key,
+            outcome=AcquisitionProbeOutcome.BLOCKED,
+            decision="supplement",
+            reason_zh="缺少凭据",
+        )
+
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [selected])
+    monkeypatch.setattr("newsradar.cli.httpx.AsyncClient", Client)
+    monkeypatch.setattr("newsradar.cli.YouTubeResearchProbe.probe", fake_probe)
+
+    result = runner.invoke(
+        app,
+        [
+            "sources",
+            "research",
+            "probe",
+            "openai-youtube",
+            "--candidate",
+            "youtube-data-api",
+            "--video-id",
+            "abcdefghijk",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert received["trust_env"] is False
+    assert received["video_ids"] == ("abcdefghijk",)
+
+
+def test_research_probe_rejects_unbounded_or_malformed_video_ids(monkeypatch) -> None:
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [])
+
+    result = runner.invoke(
+        app,
+        [
+            "sources",
+            "research",
+            "probe",
+            "openai-youtube",
+            "--candidate",
+            "youtube-data-api",
+            "--video-id",
+            "not-valid",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "视频 ID" in result.stdout
 
 
 def test_research_report_writes_markdown_when_only_warnings(monkeypatch, tmp_path: Path) -> None:
