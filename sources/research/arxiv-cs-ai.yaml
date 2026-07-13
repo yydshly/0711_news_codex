@@ -53,5 +53,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: arxiv-atom-api
+    kind: atom
+    implementation: feedparser
+    officiality: documented_public
+    authentication: none
+    roles: [discovery, metadata, evidence]
+    fields: [title, canonical_url, published_at, author, summary]
+    limitations: [论文为预印本且不等于同行评审结论, 需控制查询频率并过滤标题相关但内容无关的结果]
+    evidence:
+    - https://export.arxiv.org/api/query
+    - https://info.arxiv.org/help/api/index.html
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

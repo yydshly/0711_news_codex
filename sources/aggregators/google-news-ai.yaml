@@ -48,5 +48,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: google-news-search-rss
+    kind: rss
+    implementation: feedparser
+    officiality: third_party_service
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [没有稳定公开 API 承诺，接口和跳转行为可能变化, 只能用于发现且需解析原始发布者]
+    evidence:
+    - https://news.google.com/rss/search
+    - https://support.google.com/googlenews/answer/9005749
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

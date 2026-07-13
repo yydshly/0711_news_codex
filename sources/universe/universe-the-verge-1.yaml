@@ -45,6 +45,25 @@ risk:
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  purpose: 发现 AI 产品、平台政策和消费技术报道，并作为专业媒体交叉确认候选。
+  wanted_information: [title, canonical_url, published_at, summary]
+  conclusion: 已确认 The Verge 公开 Feed 与媒体身份；真实样本、主题噪声和字段完整度仍待验证。
+  risk_conclusion: Feed 可用于发现和上下文，版权正文不在本阶段复制保存；评论观点不作为事实证据。
+  no_fallback_reason: 当前无经审核的免费备用接口；HTML 仅允许后续人工研究，不进入 RawItem。
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: publisher-feed
+    kind: rss
+    implementation: feedparser
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata, evidence]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [综合科技 Feed 需要 AI 主题过滤, 评论与观点内容不作为唯一事实证据]
+    evidence:
+    - https://www.theverge.com/rss/index.xml
+    - https://www.theverge.com/
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

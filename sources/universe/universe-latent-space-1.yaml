@@ -40,6 +40,25 @@ risk:
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  purpose: 发现 AI 工程、模型应用和开发者生态中的专家观点与访谈线索。
+  wanted_information: [title, canonical_url, published_at, summary]
+  conclusion: 已确认具体通讯主页及公开 Feed；真实样本、更新频率和字段完整度仍待验证。
+  risk_conclusion: 通讯与播客观点只用于发现和背景；不使用邮件抓取、登录 Cookie 或付费绕过。
+  no_fallback_reason: 当前只审核公开 Feed；邮件订阅仅记录为人工备用，不进入自动抓取。
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: publisher-feed
+    kind: rss
+    implementation: feedparser
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [专家观点不等于独立事实确认, Feed 可能混合文章与播客条目]
+    evidence:
+    - https://www.latent.space/feed
+    - https://www.latent.space/
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

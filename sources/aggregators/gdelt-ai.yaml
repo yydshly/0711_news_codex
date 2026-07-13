@@ -55,5 +55,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: gdelt-doc-api
+    kind: public_api
+    implementation: httpx
+    officiality: documented_public
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [实体歧义和重复量较高，只能用于发现, 每条信息必须回到原始发布者确认]
+    evidence:
+    - https://api.gdeltproject.org/api/v2/doc/doc
+    - https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

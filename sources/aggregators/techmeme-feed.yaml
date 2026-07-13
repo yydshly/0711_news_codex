@@ -52,5 +52,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: publisher-feed
+    kind: rss
+    implementation: feedparser
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [聚合热度只能用于发现，事实必须回到原始发布者或独立专业媒体确认, 可能存在重复报道]
+    evidence:
+    - https://www.techmeme.com/feed.xml
+    - https://www.techmeme.com/
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

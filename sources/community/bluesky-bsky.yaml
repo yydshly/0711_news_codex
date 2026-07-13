@@ -46,5 +46,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: bluesky-author-feed
+    kind: public_api
+    implementation: httpx
+    officiality: documented_public
+    authentication: none
+    roles: [discovery, metadata, engagement]
+    fields: [title, canonical_url, published_at, author, engagement]
+    limitations: [只覆盖该账号公开帖子，不能代表全网搜索覆盖, 社交互动量只作为热度信号]
+    evidence:
+    - https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed
+    - https://docs.bsky.app/docs/api/app-bsky-feed-get-author-feed
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

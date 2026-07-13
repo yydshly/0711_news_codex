@@ -52,5 +52,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: official-feed
+    kind: rss
+    implementation: feedparser
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata, evidence]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [Feed 可能只提供摘要，正文与修改记录仍需回到官方页面确认]
+    evidence:
+    - https://deepmind.google/blog/rss.xml
+    - https://deepmind.google/blog/
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

@@ -44,5 +44,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: mastodon-account-statuses
+    kind: public_api
+    implementation: httpx
+    officiality: documented_public
+    authentication: none
+    roles: [discovery, metadata, engagement]
+    fields: [title, canonical_url, published_at, author, engagement]
+    limitations: [只覆盖该实例上的公开帖子，实例策略和账号迁移会影响稳定性, 社交互动量只作为热度信号]
+    evidence:
+    - https://mastodon.social/api/v1/accounts/13179/statuses
+    - https://docs.joinmastodon.org/methods/accounts/
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary

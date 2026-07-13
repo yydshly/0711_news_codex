@@ -54,5 +54,19 @@ research:
   - summary
   conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
-  reviewed_at: '2026-07-12'
-  candidates: []
+  reviewed_at: '2026-07-13'
+  candidates:
+  - key: hackernews-public-api
+    kind: public_api
+    implementation: httpx
+    officiality: documented_public
+    authentication: none
+    roles: [discovery, engagement]
+    fields: [title, canonical_url, published_at, author, engagement]
+    limitations: [列表接口只返回 ID，需进行有界的条目详情请求, 用户群偏技术且投票热度不等于事实重要性]
+    evidence:
+    - https://hacker-news.firebaseio.com/v0/beststories.json
+    - https://github.com/HackerNews/API
+    reviewed_at: '2026-07-13'
+    sample_status: not_run
+    decision: primary
