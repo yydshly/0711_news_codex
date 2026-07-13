@@ -75,7 +75,7 @@ class SitemapResearchProbe:
                     candidate,
                 )
             response = await safe_get(self.policy, candidate, target)
-            if reason := blocked_reason(response):
+            if reason := blocked_reason(response, inspect_body=False):
                 return with_http_evidence(
                     probe_result(
                         source,

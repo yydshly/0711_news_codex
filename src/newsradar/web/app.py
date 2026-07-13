@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from datetime import date
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated, Literal, TypeVar
-import logging
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -159,9 +159,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
     templates.env.autoescape = select_autoescape(("html", "xml"), default_for_string=True)
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
-    def database_error_response(
-        request: Request, error: SQLAlchemyError
-    ) -> HTMLResponse:
+    def database_error_response(request: Request, error: SQLAlchemyError) -> HTMLResponse:
         if isinstance(error, OperationalError):
             context = {
                 "error_title": "数据库暂时不可用",
@@ -222,7 +220,18 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             return query_with_timestamp_safely(request, query)
         except Exception:
             logger.exception("research page query failed")
-            response = templates.TemplateResponse(request=request, name="error.html", context={"error_title": "研究页面暂时不可用", "error_message": "研究查询未能完成，请查看服务日志后重试。", "recovery_command": "", "database_status": "研究页面不可用", "database_status_tone": "failed"}, status_code=503)
+            response = templates.TemplateResponse(
+                request=request,
+                name="error.html",
+                context={
+                    "error_title": "研究页面暂时不可用",
+                    "error_message": "研究查询未能完成，请查看服务日志后重试。",
+                    "recovery_command": "",
+                    "database_status": "研究页面不可用",
+                    "database_status_tone": "failed",
+                },
+                status_code=503,
+            )
             return None, response
 
     async def require_safe_action(request: Request) -> dict[str, str]:
@@ -476,25 +485,61 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             return error_response
         assert result is not None
         rows, latest_probe_at = result
-        return templates.TemplateResponse(request=request, name="providers.html", context={"providers": rows, "filters": filters, "category_options": _PROVIDER_CATEGORIES, "availability_options": _AVAILABILITIES, "cost_options": _COST_TIERS, "database_status": "数据库已连接", "database_status_tone": "healthy", "latest_probe_at": latest_probe_at})
+        return templates.TemplateResponse(
+            request=request,
+            name="providers.html",
+            context={
+                "providers": rows,
+                "filters": filters,
+                "category_options": _PROVIDER_CATEGORIES,
+                "availability_options": _AVAILABILITIES,
+                "cost_options": _COST_TIERS,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
+            },
+        )
 
     @app.get("/research", response_class=HTMLResponse)
     def research_dashboard(request: Request) -> HTMLResponse:
-        result, error_response = research_query_safely(request, lambda service: service.research_targets())
+        result, error_response = research_query_safely(
+            request, lambda service: service.research_targets()
+        )
         if error_response is not None:
             return error_response
         targets, latest_probe_at = result or ((), None)
-        return templates.TemplateResponse(request=request, name="research_dashboard.html", context={"targets": targets, "database_status": "数据库已连接", "database_status_tone": "healthy", "latest_probe_at": latest_probe_at})
+        return templates.TemplateResponse(
+            request=request,
+            name="research_dashboard.html",
+            context={
+                "targets": targets,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
+            },
+        )
 
     @app.get("/research/targets/{source_id}", response_class=HTMLResponse)
     def research_target(request: Request, source_id: str) -> HTMLResponse:
-        result, error_response = research_query_safely(request, lambda service: service.research_target(source_id))
+        result, error_response = research_query_safely(
+            request, lambda service: service.research_target(source_id)
+        )
         if error_response is not None:
             return error_response
         detail, latest_probe_at = result or (None, None)
         if detail is None:
             raise HTTPException(status_code=404)
-        return templates.TemplateResponse(request=request, name="research_target.html", context={"target": detail, "database_status": "数据库已连接", "database_status_tone": "healthy", "latest_probe_at": latest_probe_at})
+        return templates.TemplateResponse(
+            request=request,
+            name="research_target.html",
+            context={
+                "target": detail,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
+            },
+        )
+
     @app.get("/providers/{provider_id}", response_class=HTMLResponse)
     def provider_details(request: Request, provider_id: str) -> HTMLResponse:
         result, error_response = query_with_timestamp_safely(

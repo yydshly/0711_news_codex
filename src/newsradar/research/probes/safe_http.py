@@ -95,6 +95,10 @@ async def safe_get(policy: HttpPolicy, candidate: AcquisitionCandidate, url: str
         # defaults and cookies, which is unsafe even when their names look benign.
         request = httpx.Request("GET", current, headers=_PROBE_HEADERS)
         response = await client.send(request, stream=True, follow_redirects=False)
+        # HTTPX accepts upstream Set-Cookie headers into the client jar even when
+        # the standalone request cannot send cookies.  Research probes are
+        # stateless, so discard that response state before any later request.
+        client.cookies.clear()
         if response.is_redirect:
             location = response.headers.get("location")
             await response.aclose()

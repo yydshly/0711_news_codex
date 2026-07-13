@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -11,7 +12,12 @@ from newsradar.credentials import CredentialProvider, SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
-from .schema import AcquisitionProbeOutcome, AcquisitionProbeResult, AcquisitionProbeSample
+from .schema import (
+    AcquisitionProbeOutcome,
+    AcquisitionProbeResult,
+    AcquisitionProbeSample,
+    probe_result,
+)
 
 _TEXT_LIMIT = 4000
 _SUMMARY_LIMIT = 2000
@@ -29,11 +35,17 @@ def _create_transcript_session() -> Any:
     except ImportError as exc:
         raise _MissingTranscriptDependency() from exc
 
+    class BoundedSession(Session):
+        def request(self, *args: object, **kwargs: object):
+            if kwargs.get("timeout") is None:
+                kwargs["timeout"] = (5.0, 10.0)
+            return super().request(*args, **kwargs)
+
     class RejectingCookieJar(RequestsCookieJar):
         def set_cookie(self, cookie, *args: object, **kwargs: object) -> None:
             del cookie, args, kwargs
 
-    session = Session()
+    session = BoundedSession()
     session.trust_env = False
     session.cookies = RejectingCookieJar()
     session.headers.pop("Cookie", None)
@@ -54,6 +66,33 @@ def _timestamp(value: object) -> datetime | None:
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     except ValueError:
         return None
+
+
+async def _run_in_daemon_thread(function: Callable[..., Any], *args: object) -> Any:
+    """Run blocking research without making CLI shutdown wait for a timed-out thread."""
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def finish(succeeded: bool, value: Any) -> None:
+        if future.done():
+            return
+        if succeeded:
+            future.set_result(value)
+        else:
+            future.set_exception(value)
+
+    def run() -> None:
+        try:
+            outcome = (True, function(*args))
+        except BaseException as exc:  # propagate library failures to the async boundary
+            outcome = (False, exc)
+        try:
+            loop.call_soon_threadsafe(finish, *outcome)
+        except RuntimeError:
+            pass  # the timed-out CLI loop has already closed
+
+    threading.Thread(target=run, name="youtube-transcript-probe", daemon=True).start()
+    return await future
 
 
 class YouTubeResearchProbe:
@@ -132,7 +171,7 @@ class YouTubeResearchProbe:
                     external_id=video_id,
                     title=_clip(entry.get("title"), 500),
                     channel=_clip(entry.get("author"), 200),
-                    canonical_url=f"https://www.youtube.com/watch?v={video_id}",
+                    canonical_url=f"https://youtu.be/{video_id}",
                     published_at=_timestamp(entry.get("published")),
                     summary=_clip(entry.get("summary"), _SUMMARY_LIMIT),
                 )
@@ -225,9 +264,9 @@ class YouTubeResearchProbe:
             )
         try:
             payload = await asyncio.wait_for(
-                asyncio.to_thread(transcript_client, video_id)
+                _run_in_daemon_thread(transcript_client, video_id)
                 if transcript_client
-                else asyncio.to_thread(self._fetch_transcript, video_id),
+                else _run_in_daemon_thread(self._fetch_transcript, video_id),
                 timeout=timeout_seconds,
             )
         except TimeoutError:
@@ -340,7 +379,7 @@ class YouTubeResearchProbe:
             external_id=video_id,
             title=_clip(snippet.get("title"), 500),
             channel=_clip(snippet.get("channelTitle"), 200),
-            canonical_url=f"https://www.youtube.com/watch?v={video_id}",
+            canonical_url=f"https://youtu.be/{video_id}",
             published_at=_timestamp(snippet.get("publishedAt")),
             summary=_clip(snippet.get("description"), _SUMMARY_LIMIT),
             engagement={
@@ -366,13 +405,13 @@ class YouTubeResearchProbe:
         metadata: dict[str, str | int | bool | None] | None = None,
         decision: str | None = None,
     ) -> AcquisitionProbeResult:
-        return AcquisitionProbeResult(
-            source_id=source.id,
-            candidate_key=candidate.key,
-            outcome=outcome,
-            decision=decision or candidate.decision.value,
-            reason_zh=reason_zh,
-            error_code=error_code,
-            samples=(samples or [])[:5],
-            metadata=metadata or {},
+        return probe_result(
+            source,
+            candidate,
+            outcome,
+            reason_zh,
+            error_code,
+            decision=decision,
+            samples=samples,
+            metadata=metadata,
         )

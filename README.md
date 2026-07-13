@@ -187,6 +187,52 @@ Pydantic, and invalid JSON gets at most one repair attempt.
 MiniMax 适配器尚未接入 RawItem v1.1。当前抓取、来源健康、资格判断、任务控制和重复候选裁决
 不依赖模型，也不会自动生成新闻摘要或推荐。
 
+## 来源研究 v3
+
+来源研究页把“平台能否访问”和“某个具体来源能否获得所需信息”分开说明：
+
+- **Provider** 是平台级档案，记录认证、审批、费用、条款和平台能力，例如 YouTube、X、
+  Mastodon。
+- **Target** 是具体媒体栏目、账号、频道、社区或查询目标，例如 OpenAI YouTube 频道。
+- **Wanted Information** 是希望从 Target 获得的字段，不代表这些字段已经可以稳定取得。
+- **候选方式** 是针对一个 Target 分别研究的 Atom、API、Sitemap、HTML 或第三方库路径；
+  首选、补充、备用和仅人工方式不会相互冒充。
+
+先执行只读目录审计，再按单个候选执行有界探测：
+
+```powershell
+uv run newsradar sources research validate --root sources --provider-root providers
+uv run newsradar sources research audit --root sources --provider-root providers
+uv run newsradar sources research report --root sources --provider-root providers `
+  --output reports/source-research-v3-matrix.md
+uv run newsradar sources research probe openai-youtube `
+  --candidate youtube-atom --limit 5 --no-persist
+```
+
+本地数据库可用并已同步候选时，可移除 `--no-persist` 保存脱敏探测记录。上述命令只研究
+候选方式，不修改 YAML、不自动启用生产抓取，也不调用 MiniMax。启动本地服务后访问
+`/research` 查看中文总览，进入 `/research/targets/<source-id>` 查看所需信息、候选方式、
+样本、限制、证据和人工结论。
+
+YouTube 的四条路径用途不同：
+
+- **YouTube Atom**：官方、无需认证，负责发现频道公开视频和基础元数据。
+- **YouTube Data API**：官方 API，使用 `YOUTUBE_API_KEY` 补充描述和互动量；无 Key 时明确
+  返回凭据阻塞，不回退到网页或登录态。
+- **youtube-transcript-api**：非官方第三方库，只对人工选定的公开视频读取有界文字样本；
+  字幕关闭、区域限制或库失效都必须可降级。
+- **yt-dlp**：当前仅作为人工元数据研究对象，程序不执行视频或音频下载。
+
+HTML 研究只允许对已经人工确认的 HTTPS 页面执行静态、有限大小的请求，解析 canonical、
+JSON-LD、Open Graph 和语义标签。它不执行 JavaScript，不使用浏览器会话、Cookie、代理、
+验证码绕过，也不会因为一次研究样本就自动成为生产抓取方式。robots 允许访问不等于条款
+允许再利用，最终启用仍需逐来源人工结论。
+
+凭据只保存在 Git 忽略的 `.env`。使用最小权限：YouTube Key 只开放 YouTube Data API 并
+限制调用来源；GitHub Token 只读；Reddit OAuth 使用独立本地应用并可随时撤销。需要 OAuth、
+平台审批或付费的 Provider，网页只显示环境变量名、解锁步骤和风险，不显示值。X、LinkedIn、
+TikTok 等受限平台仍登记在来源地图中，但在获得官方授权前不声称具有直接内容覆盖。
+
 ## Event intelligence v1
 
 Event builds are durable operations: the web route or CLI only queues work, and a Worker publishes

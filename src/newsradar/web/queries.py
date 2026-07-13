@@ -12,12 +12,12 @@ from newsradar.db.models import (
     ProviderDefinitionRecord,
     ProviderProbeRunRecord,
     SourceAccessMethodRecord,
-    SourceDefinitionRecord,
-    SourceProbeRunRecord,
-    SourceRiskAssessmentRecord,
-    SourceResearchProfileRecord,
     SourceAcquisitionCandidateRecord,
     SourceAcquisitionProbeRunRecord,
+    SourceDefinitionRecord,
+    SourceProbeRunRecord,
+    SourceResearchProfileRecord,
+    SourceRiskAssessmentRecord,
 )
 from newsradar.web.i18n import explain_failure, zh_label
 from newsradar.web.viewmodels import (
@@ -28,11 +28,11 @@ from newsradar.web.viewmodels import (
     ProbeRow,
     ProviderDetail,
     ProviderRow,
+    ResearchCandidateView,
+    ResearchTargetView,
     RiskView,
     TargetDetail,
     TargetRow,
-    ResearchCandidateView,
-    ResearchTargetView,
 )
 
 FREE_COST_TIERS = {"free", "free_quota", "freemium"}
@@ -54,19 +54,69 @@ class DashboardQueryService:
 
     def research_targets(self) -> list[ResearchTargetView]:
         """Read-only research catalog, loaded in bounded batches (no per-target queries)."""
-        sources = self._session.scalars(select(SourceDefinitionRecord).order_by(SourceDefinitionRecord.name)).all()
+        sources = self._session.scalars(
+            select(SourceDefinitionRecord).order_by(SourceDefinitionRecord.name)
+        ).all()
         if not sources:
             return []
         ids = [s.id for s in sources]
-        providers = {p.id: p for p in self._session.scalars(select(ProviderDefinitionRecord).where(ProviderDefinitionRecord.id.in_({s.provider_id for s in sources}))).all()}
-        profiles = {p.source_id: p for p in self._session.scalars(select(SourceResearchProfileRecord).where(SourceResearchProfileRecord.source_id.in_(ids))).all()}
-        candidates = self._session.scalars(select(SourceAcquisitionCandidateRecord).where(SourceAcquisitionCandidateRecord.source_id.in_(ids), SourceAcquisitionCandidateRecord.is_current.is_(True)).order_by(SourceAcquisitionCandidateRecord.source_id, SourceAcquisitionCandidateRecord.reviewed_at.desc())).all()
-        probes = self._session.scalars(select(SourceAcquisitionProbeRunRecord).where(SourceAcquisitionProbeRunRecord.candidate_id.in_([c.id for c in candidates])).order_by(SourceAcquisitionProbeRunRecord.completed_at.desc())).all() if candidates else []
-        probes_by_candidate={}
-        for p in probes: probes_by_candidate.setdefault(p.candidate_id, p)
+        providers = {
+            p.id: p
+            for p in self._session.scalars(
+                select(ProviderDefinitionRecord).where(
+                    ProviderDefinitionRecord.id.in_({s.provider_id for s in sources})
+                )
+            ).all()
+        }
+        profiles = {
+            p.source_id: p
+            for p in self._session.scalars(
+                select(SourceResearchProfileRecord).where(
+                    SourceResearchProfileRecord.source_id.in_(ids)
+                )
+            ).all()
+        }
+        candidates = self._session.scalars(
+            select(SourceAcquisitionCandidateRecord)
+            .where(
+                SourceAcquisitionCandidateRecord.source_id.in_(ids),
+                SourceAcquisitionCandidateRecord.is_current.is_(True),
+            )
+            .order_by(
+                SourceAcquisitionCandidateRecord.source_id,
+                SourceAcquisitionCandidateRecord.reviewed_at.desc(),
+            )
+        ).all()
+        probes = (
+            self._session.scalars(
+                select(SourceAcquisitionProbeRunRecord)
+                .where(SourceAcquisitionProbeRunRecord.candidate_id.in_([c.id for c in candidates]))
+                .order_by(SourceAcquisitionProbeRunRecord.completed_at.desc())
+            ).all()
+            if candidates
+            else []
+        )
+        probes_by_candidate = {}
+        for p in probes:
+            probes_by_candidate.setdefault(p.candidate_id, p)
         by_source: dict[str, list[SourceAcquisitionCandidateRecord]] = defaultdict(list)
-        for c in candidates: by_source[c.source_id].append(c)
-        return [self._research_view(s, providers[s.provider_id].name if s.provider_id in providers else s.provider_id, profiles.get(s.id), by_source.get(s.id, []), providers[s.provider_id].availability if s.provider_id in providers else "unknown", [probes_by_candidate[c.id] for c in by_source.get(s.id, []) if c.id in probes_by_candidate]) for s in sources]
+        for c in candidates:
+            by_source[c.source_id].append(c)
+        return [
+            self._research_view(
+                s,
+                providers[s.provider_id].name if s.provider_id in providers else s.provider_id,
+                profiles.get(s.id),
+                by_source.get(s.id, []),
+                providers[s.provider_id].availability if s.provider_id in providers else "unknown",
+                [
+                    probes_by_candidate[c.id]
+                    for c in by_source.get(s.id, [])
+                    if c.id in probes_by_candidate
+                ],
+            )
+            for s in sources
+        ]
 
     def research_target(self, source_id: str) -> ResearchTargetView | None:
         source = self._session.get(SourceDefinitionRecord, source_id)
@@ -74,28 +124,187 @@ class DashboardQueryService:
             return None
         provider = self._session.get(ProviderDefinitionRecord, source.provider_id)
         profile = self._session.get(SourceResearchProfileRecord, source_id)
-        candidates = self._session.scalars(select(SourceAcquisitionCandidateRecord).where(SourceAcquisitionCandidateRecord.source_id == source_id, SourceAcquisitionCandidateRecord.is_current.is_(True)).order_by(SourceAcquisitionCandidateRecord.reviewed_at.desc())).all()
-        probes = self._session.scalars(select(SourceAcquisitionProbeRunRecord).where(SourceAcquisitionProbeRunRecord.candidate_id.in_([c.id for c in candidates])).order_by(SourceAcquisitionProbeRunRecord.completed_at.desc())).all() if candidates else []
-        return self._research_view(source, provider.name if provider else source.provider_id, profile, candidates, provider.availability if provider else "unknown", probes)
+        candidates = self._session.scalars(
+            select(SourceAcquisitionCandidateRecord)
+            .where(
+                SourceAcquisitionCandidateRecord.source_id == source_id,
+                SourceAcquisitionCandidateRecord.is_current.is_(True),
+            )
+            .order_by(SourceAcquisitionCandidateRecord.reviewed_at.desc())
+        ).all()
+        probes = (
+            self._session.scalars(
+                select(SourceAcquisitionProbeRunRecord)
+                .where(SourceAcquisitionProbeRunRecord.candidate_id.in_([c.id for c in candidates]))
+                .order_by(SourceAcquisitionProbeRunRecord.completed_at.desc())
+            ).all()
+            if candidates
+            else []
+        )
+        return self._research_view(
+            source,
+            provider.name if provider else source.provider_id,
+            profile,
+            candidates,
+            provider.availability if provider else "unknown",
+            probes,
+        )
 
     research_dashboard = research_targets
 
     @staticmethod
-    def _research_view(source, provider_name, profile, candidates, provider_availability="unknown", probes=()):
+    def _research_view(
+        source, provider_name, profile, candidates, provider_availability="unknown", probes=()
+    ):
         status = profile.status if profile else "unknown"
-        status_label = {"verified":"已验证", "needs_research":"待研究", "placeholder":"占位", "duplicate":"重复", "retired":"已退役", "unknown":"未知"}.get(status, "未知")
-        officiality = {"official":"官方", "documented_public":"有公开文档", "unofficial_library":"非官方库", "third_party_service":"第三方服务"}
-        decisions = {"primary":"首选", "supplement":"补充", "fallback":"备用", "manual_only":"仅人工", "rejected":"淘汰"}
-        auth = {"none":"无需认证", "api_key":"API Key", "oauth":"OAuth", "approval":"审批", "payment":"付费", "login_cookie":"登录 Cookie"}
-        kinds = {"rss":"RSS", "atom":"Atom", "rest_api":"REST API", "public_api":"公开 API", "html":"HTML 网页", "sitemap":"站点地图", "library":"第三方库", "service":"第三方服务", "manual":"人工"}
-        samples = {"not_run":"未采样", "succeeded":"已采样", "partial":"部分采样", "failed":"采样失败", "blocked":"采样受限"}
+        status_label = {
+            "verified": "已验证",
+            "needs_research": "待研究",
+            "placeholder": "占位",
+            "duplicate": "重复",
+            "retired": "已退役",
+            "unknown": "未知",
+        }.get(status, "未知")
+        officiality = {
+            "official": "官方",
+            "documented_public": "有公开文档",
+            "unofficial_library": "非官方库",
+            "third_party_service": "第三方服务",
+        }
+        decisions = {
+            "primary": "首选",
+            "supplement": "补充",
+            "fallback": "备用",
+            "manual_only": "仅人工",
+            "rejected": "淘汰",
+        }
+        auth = {
+            "none": "无需认证",
+            "api_key": "API Key",
+            "oauth": "OAuth",
+            "approval": "审批",
+            "payment": "付费",
+            "login_cookie": "登录 Cookie",
+        }
+        kinds = {
+            "rss": "RSS",
+            "atom": "Atom",
+            "rest_api": "REST API",
+            "public_api": "公开 API",
+            "html": "HTML 网页",
+            "sitemap": "站点地图",
+            "library": "第三方库",
+            "service": "第三方服务",
+            "manual": "人工",
+        }
+        samples = {
+            "not_run": "未采样",
+            "succeeded": "已采样",
+            "partial": "部分采样",
+            "failed": "采样失败",
+            "blocked": "采样受限",
+        }
         latest = {}
         for probe in probes:
             latest.setdefault(probe.candidate_id, probe)
-        role_labels={"discovery":"发现","evidence":"证据","engagement":"互动","context":"背景"}
-        views = tuple(ResearchCandidateView(key=c.candidate_key, kind=kinds.get(c.kind, "未知"), implementation=c.implementation, officiality=c.officiality, officiality_label=officiality.get(c.officiality, "未知"), authentication=c.authentication, authentication_label=auth.get(c.authentication, "未知"), roles=tuple(role_labels.get(r, "未知") for r in (c.roles or ())), fields=tuple(c.fields or ()), limitations=tuple(c.limitations or ()), evidence=tuple(c.evidence or ()), sample_status=samples.get(c.sample_status, "未知"), decision=c.decision, decision_label=decisions.get(c.decision, "未知"), sample_count=latest.get(c.id).sample_count if latest.get(c.id) else None, latest_probe_at=latest.get(c.id).completed_at if latest.get(c.id) else None, field_completeness=(len(latest.get(c.id).fields_present)/len(c.fields) if latest.get(c.id) and c.fields else None), latest_probe_outcome=latest.get(c.id).outcome if latest.get(c.id) else None, latest_probe_label={"succeeded":"已成功","partial":"部分成功","blocked":"受限","failed":"失败"}.get(latest.get(c.id).outcome, "未知") if latest.get(c.id) else "尚未探测") for c in candidates)
-        target_types={"publisher_feed","account","channel","keyword","topic","community","search_query","trend","market"}; coverages={"direct","indirect","catalog_only"}; availabilities={"ready","requires_credentials","requires_approval","requires_payment","manual_only","unavailable"}
-        return ResearchTargetView(source_id=source.id, name=source.name, provider_name=provider_name, provider_availability_label=zh_label("availability", provider_availability) if provider_availability in availabilities else "未知", target_status_label=zh_label("status", source.status) if source.status in {"candidate","active","degraded","paused","disabled"} else "未知", nature_label=zh_label("nature", source.nature) if source.nature in {"first_party","research","community","professional_media","aggregator","social"} else "未知", target_type_label=zh_label("target_type", source.target_type) if source.target_type in target_types else "未知", coverage_label=zh_label("coverage_mode", source.coverage_mode) if source.coverage_mode in coverages else "未知", availability_label=zh_label("availability", source.availability) if source.availability in availabilities else "未知", research_status=status, research_status_label=status_label, wanted_information=tuple(profile.wanted_information or ()) if profile else (), conclusion=profile.conclusion if profile else None, no_fallback_reason=profile.no_fallback_reason if profile else None, candidates=views)
+        role_labels = {
+            "discovery": "发现",
+            "evidence": "证据",
+            "engagement": "互动",
+            "context": "背景",
+        }
+        views = tuple(
+            ResearchCandidateView(
+                key=c.candidate_key,
+                kind=kinds.get(c.kind, "未知"),
+                implementation=c.implementation,
+                officiality=c.officiality,
+                officiality_label=officiality.get(c.officiality, "未知"),
+                authentication=c.authentication,
+                authentication_label=auth.get(c.authentication, "未知"),
+                roles=tuple(role_labels.get(r, "未知") for r in (c.roles or ())),
+                fields=tuple(c.fields or ()),
+                limitations=tuple(c.limitations or ()),
+                evidence=tuple(c.evidence or ()),
+                sample_status=samples.get(c.sample_status, "未知"),
+                decision=c.decision,
+                decision_label=decisions.get(c.decision, "未知"),
+                sample_count=latest.get(c.id).sample_count if latest.get(c.id) else None,
+                latest_probe_at=latest.get(c.id).completed_at if latest.get(c.id) else None,
+                field_completeness=(
+                    len(latest.get(c.id).fields_present) / len(c.fields)
+                    if latest.get(c.id) and c.fields
+                    else None
+                ),
+                latest_probe_outcome=latest.get(c.id).outcome if latest.get(c.id) else None,
+                latest_probe_label={
+                    "succeeded": "已成功",
+                    "partial": "部分成功",
+                    "blocked": "受限",
+                    "failed": "失败",
+                }.get(latest.get(c.id).outcome, "未知")
+                if latest.get(c.id)
+                else "尚未探测",
+            )
+            for c in candidates
+        )
+        target_types = {
+            "publisher_feed",
+            "account",
+            "channel",
+            "keyword",
+            "topic",
+            "community",
+            "search_query",
+            "trend",
+            "market",
+        }
+        coverages = {"direct", "indirect", "catalog_only"}
+        availabilities = {
+            "ready",
+            "requires_credentials",
+            "requires_approval",
+            "requires_payment",
+            "manual_only",
+            "unavailable",
+        }
+        return ResearchTargetView(
+            source_id=source.id,
+            name=source.name,
+            provider_name=provider_name,
+            provider_availability_label=zh_label("availability", provider_availability)
+            if provider_availability in availabilities
+            else "未知",
+            target_status_label=zh_label("status", source.status)
+            if source.status in {"candidate", "active", "degraded", "paused", "disabled"}
+            else "未知",
+            nature_label=zh_label("nature", source.nature)
+            if source.nature
+            in {
+                "first_party",
+                "research",
+                "community",
+                "professional_media",
+                "aggregator",
+                "social",
+            }
+            else "未知",
+            target_type_label=zh_label("target_type", source.target_type)
+            if source.target_type in target_types
+            else "未知",
+            coverage_label=zh_label("coverage_mode", source.coverage_mode)
+            if source.coverage_mode in coverages
+            else "未知",
+            availability_label=zh_label("availability", source.availability)
+            if source.availability in availabilities
+            else "未知",
+            research_status=status,
+            research_status_label=status_label,
+            wanted_information=tuple(profile.wanted_information or ()) if profile else (),
+            conclusion=profile.conclusion if profile else None,
+            no_fallback_reason=profile.no_fallback_reason if profile else None,
+            candidates=views,
+        )
 
     def summary(self) -> DashboardSummary:
         provider_count = self._session.scalar(select(func.count(ProviderDefinitionRecord.id))) or 0
@@ -110,28 +319,37 @@ class DashboardQueryService:
             .group_by(ProviderDefinitionRecord.category)
             .order_by(ProviderDefinitionRecord.category)
         ).all()
-        free_direct_count = self._session.scalar(
-            select(func.count(SourceDefinitionRecord.id))
-            .join(
-                ProviderDefinitionRecord,
-                ProviderDefinitionRecord.id == SourceDefinitionRecord.provider_id,
+        free_direct_count = (
+            self._session.scalar(
+                select(func.count(SourceDefinitionRecord.id))
+                .join(
+                    ProviderDefinitionRecord,
+                    ProviderDefinitionRecord.id == SourceDefinitionRecord.provider_id,
+                )
+                .where(
+                    SourceDefinitionRecord.coverage_mode == "direct",
+                    SourceDefinitionRecord.availability == "ready",
+                    ProviderDefinitionRecord.cost_tier.in_(FREE_COST_TIERS),
+                )
             )
-            .where(
-                SourceDefinitionRecord.coverage_mode == "direct",
-                SourceDefinitionRecord.availability == "ready",
-                ProviderDefinitionRecord.cost_tier.in_(FREE_COST_TIERS),
+            or 0
+        )
+        indirect_count = (
+            self._session.scalar(
+                select(func.count(SourceDefinitionRecord.id)).where(
+                    SourceDefinitionRecord.coverage_mode == "indirect"
+                )
             )
-        ) or 0
-        indirect_count = self._session.scalar(
-            select(func.count(SourceDefinitionRecord.id)).where(
-                SourceDefinitionRecord.coverage_mode == "indirect"
+            or 0
+        )
+        blocked_count = (
+            self._session.scalar(
+                select(func.count(SourceDefinitionRecord.id)).where(
+                    SourceDefinitionRecord.availability != "ready"
+                )
             )
-        ) or 0
-        blocked_count = self._session.scalar(
-            select(func.count(SourceDefinitionRecord.id)).where(
-                SourceDefinitionRecord.availability != "ready"
-            )
-        ) or 0
+            or 0
+        )
         return DashboardSummary(
             provider_count=provider_count,
             target_count=target_count,
@@ -303,16 +521,13 @@ class DashboardQueryService:
         page_size = min(max(int(filters.get("page_size", 100)), 1), 200)
         branches = []
         if requested_type in (None, "content"):
-            content_statement = (
-                select(
-                    literal("content").label("probe_type"),
-                    SourceProbeRunRecord.id.label("record_id"),
-                    SourceProbeRunRecord.finished_at.label("checked_at"),
-                )
-                .join(
-                    SourceDefinitionRecord,
-                    SourceDefinitionRecord.id == SourceProbeRunRecord.source_id,
-                )
+            content_statement = select(
+                literal("content").label("probe_type"),
+                SourceProbeRunRecord.id.label("record_id"),
+                SourceProbeRunRecord.finished_at.label("checked_at"),
+            ).join(
+                SourceDefinitionRecord,
+                SourceDefinitionRecord.id == SourceProbeRunRecord.source_id,
             )
             content_statement = self._apply_probe_record_filters(
                 content_statement,
@@ -326,16 +541,13 @@ class DashboardQueryService:
                 )
             branches.append(content_statement)
         if requested_type in (None, "capability"):
-            capability_statement = (
-                select(
-                    literal("capability").label("probe_type"),
-                    ProviderProbeRunRecord.id.label("record_id"),
-                    ProviderProbeRunRecord.checked_at.label("checked_at"),
-                )
-                .join(
-                    ProviderDefinitionRecord,
-                    ProviderDefinitionRecord.id == ProviderProbeRunRecord.provider_id,
-                )
+            capability_statement = select(
+                literal("capability").label("probe_type"),
+                ProviderProbeRunRecord.id.label("record_id"),
+                ProviderProbeRunRecord.checked_at.label("checked_at"),
+            ).join(
+                ProviderDefinitionRecord,
+                ProviderDefinitionRecord.id == ProviderProbeRunRecord.provider_id,
             )
             capability_statement = self._apply_probe_record_filters(
                 capability_statement,
@@ -384,9 +596,7 @@ class DashboardQueryService:
             )
         }
         return [
-            content_rows[record_id]
-            if probe_type == "content"
-            else capability_rows[record_id]
+            content_rows[record_id] if probe_type == "content" else capability_rows[record_id]
             for probe_type, record_id in selected
         ]
 
@@ -528,21 +738,18 @@ class DashboardQueryService:
         return rows
 
     def _recent_content_runs(self, per_source_limit: int) -> list[SourceProbeRunRecord]:
-        ranked = (
-            select(
-                SourceProbeRunRecord.id.label("record_id"),
-                func.row_number()
-                .over(
-                    partition_by=SourceProbeRunRecord.source_id,
-                    order_by=(
-                        SourceProbeRunRecord.finished_at.desc(),
-                        SourceProbeRunRecord.id.desc(),
-                    ),
-                )
-                .label("history_rank"),
+        ranked = select(
+            SourceProbeRunRecord.id.label("record_id"),
+            func.row_number()
+            .over(
+                partition_by=SourceProbeRunRecord.source_id,
+                order_by=(
+                    SourceProbeRunRecord.finished_at.desc(),
+                    SourceProbeRunRecord.id.desc(),
+                ),
             )
-            .subquery()
-        )
+            .label("history_rank"),
+        ).subquery()
         return list(
             self._session.scalars(
                 select(SourceProbeRunRecord)
@@ -553,50 +760,42 @@ class DashboardQueryService:
         )
 
     def _three_success_source_ids(self) -> list[str]:
-        ranked = (
-            select(
-                SourceProbeRunRecord.source_id.label("source_id"),
-                SourceProbeRunRecord.outcome.label("outcome"),
-                func.row_number()
-                .over(
-                    partition_by=SourceProbeRunRecord.source_id,
-                    order_by=(
-                        SourceProbeRunRecord.finished_at.desc(),
-                        SourceProbeRunRecord.id.desc(),
-                    ),
-                )
-                .label("history_rank"),
+        ranked = select(
+            SourceProbeRunRecord.source_id.label("source_id"),
+            SourceProbeRunRecord.outcome.label("outcome"),
+            func.row_number()
+            .over(
+                partition_by=SourceProbeRunRecord.source_id,
+                order_by=(
+                    SourceProbeRunRecord.finished_at.desc(),
+                    SourceProbeRunRecord.id.desc(),
+                ),
             )
-            .subquery()
-        )
+            .label("history_rank"),
+        ).subquery()
         return list(
             self._session.scalars(
                 select(ranked.c.source_id)
                 .where(ranked.c.history_rank <= 3)
                 .group_by(ranked.c.source_id)
                 .having(func.count() == 3)
-                .having(
-                    func.sum(case((ranked.c.outcome == "success", 1), else_=0)) == 3
-                )
+                .having(func.sum(case((ranked.c.outcome == "success", 1), else_=0)) == 3)
             )
         )
 
     def _latest_capability_runs(self) -> dict[str, ProviderProbeRunRecord]:
-        ranked = (
-            select(
-                ProviderProbeRunRecord.id.label("record_id"),
-                func.row_number()
-                .over(
-                    partition_by=ProviderProbeRunRecord.provider_id,
-                    order_by=(
-                        ProviderProbeRunRecord.checked_at.desc(),
-                        ProviderProbeRunRecord.id.desc(),
-                    ),
-                )
-                .label("history_rank"),
+        ranked = select(
+            ProviderProbeRunRecord.id.label("record_id"),
+            func.row_number()
+            .over(
+                partition_by=ProviderProbeRunRecord.provider_id,
+                order_by=(
+                    ProviderProbeRunRecord.checked_at.desc(),
+                    ProviderProbeRunRecord.id.desc(),
+                ),
             )
-            .subquery()
-        )
+            .label("history_rank"),
+        ).subquery()
         records = self._session.scalars(
             select(ProviderProbeRunRecord)
             .join(ranked, ProviderProbeRunRecord.id == ranked.c.record_id)
@@ -630,9 +829,7 @@ class DashboardQueryService:
         )
         return {record.source_id: record for record in records}
 
-    def _latest_content_runs(
-        self, source_ids: Sequence[str]
-    ) -> dict[str, SourceProbeRunRecord]:
+    def _latest_content_runs(self, source_ids: Sequence[str]) -> dict[str, SourceProbeRunRecord]:
         if not source_ids:
             return {}
         ranked = (
@@ -681,9 +878,7 @@ class DashboardQueryService:
             reason_raw=run.reason,
             suggested_status=run.suggested_status,
             suggested_status_label=(
-                zh_label("status", run.suggested_status)
-                if run.suggested_status
-                else "未记录"
+                zh_label("status", run.suggested_status) if run.suggested_status else "未记录"
             ),
         )
 

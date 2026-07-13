@@ -187,7 +187,7 @@ def test_research_probe_uses_its_owned_safe_client(monkeypatch) -> None:
     assert calls["closed"] is True
 
 
-def test_research_probe_disables_environment_proxies_and_passes_bounded_video_ids(
+def test_youtube_research_probe_uses_safe_factory_and_passes_bounded_video_ids(
     monkeypatch,
 ) -> None:
     from newsradar.research.probes.schema import (
@@ -219,29 +219,30 @@ def test_research_probe_disables_environment_proxies_and_passes_bounded_video_id
     selected = SourceDefinition.model_validate(data)
     received: dict[str, object] = {}
 
-    class Client:
-        def __init__(self, **kwargs):
-            received.update(kwargs)
-
+    class ProbeContext:
         async def __aenter__(self):
             return self
 
         async def __aexit__(self, *args):
             return None
 
-    async def fake_probe(self, source, candidate, limit, video_ids):
-        received["video_ids"] = video_ids
-        return AcquisitionProbeResult(
-            source_id=source.id,
-            candidate_key=candidate.key,
-            outcome=AcquisitionProbeOutcome.BLOCKED,
-            decision="supplement",
-            reason_zh="缺少凭据",
-        )
+        async def probe(self, source, candidate, limit, video_ids):
+            received["factory_args"] = (source, candidate)
+            received["video_ids"] = video_ids
+            return AcquisitionProbeResult(
+                source_id=source.id,
+                candidate_key=candidate.key,
+                outcome=AcquisitionProbeOutcome.BLOCKED,
+                decision="supplement",
+                reason_zh="缺少凭据",
+            )
+
+    def fake_factory(source, candidate):
+        received["factory_args"] = (source, candidate)
+        return ProbeContext()
 
     monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [selected])
-    monkeypatch.setattr("newsradar.cli.httpx.AsyncClient", Client)
-    monkeypatch.setattr("newsradar.cli.YouTubeResearchProbe.probe", fake_probe)
+    monkeypatch.setattr("newsradar.cli.research_probe_for", fake_factory)
 
     result = runner.invoke(
         app,
@@ -258,7 +259,7 @@ def test_research_probe_disables_environment_proxies_and_passes_bounded_video_id
     )
 
     assert result.exit_code == 0
-    assert received["trust_env"] is False
+    assert received["factory_args"] == (selected, selected.research.candidates[0])
     assert received["video_ids"] == ("abcdefghijk",)
 
 

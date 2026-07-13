@@ -66,7 +66,7 @@ async def test_public_api_records_http_evidence_and_returns_counted_samples() ->
                 "items": [
                     {
                         "id": "one",
-                        "title": "One",
+                        "title": "Sign in metrics are a legitimate article title",
                         "url": "https://example.test/one?token=secret#part",
                     },
                     {"id": "two", "title": "Two"},

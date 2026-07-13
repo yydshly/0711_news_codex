@@ -30,7 +30,6 @@ from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.research.audit import audit_source_catalog
 from newsradar.research.probes.factory import research_probe_for
-from newsradar.research.probes.youtube import YouTubeResearchProbe
 from newsradar.research.reporting import render_research_report
 from newsradar.runtime import RuntimeSupervisor
 from newsradar.settings import get_settings
@@ -562,16 +561,9 @@ def probe_source_research_candidate(
         raise typer.Exit(2)
 
     async def run_probe():
-        if source.provider_id == "youtube":
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(20.0, connect=10.0), trust_env=False
-            ) as client:
-                from newsradar.ingestion.fetchers.base import HttpPolicy
-
-                return await YouTubeResearchProbe(HttpPolicy(client)).probe(
-                    source, candidate, limit, bounded_video_ids
-                )
         async with research_probe_for(source, candidate) as probe:
+            if source.provider_id == "youtube":
+                return await probe.probe(source, candidate, limit, bounded_video_ids)
             return await probe.probe(source, candidate, limit)
 
     result = asyncio.run(run_probe())

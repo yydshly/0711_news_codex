@@ -3,6 +3,7 @@ import pytest
 
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.research.probes.feed import FeedResearchProbe
+from newsradar.research.probes.safe_http import safe_get
 from newsradar.research.probes.schema import (
     AcquisitionProbeOutcome,
     AcquisitionProbeSample,
@@ -62,6 +63,30 @@ def test_sample_canonical_url_removes_query_and_fragment_and_rejects_userinfo() 
     assert sample.canonical_url == "https://example.test/post"
     with pytest.raises(ValueError, match="credentialed_url"):
         AcquisitionProbeSample(canonical_url="https://user:pass@example.test/post")
+
+
+@pytest.mark.asyncio
+async def test_upstream_set_cookie_is_discarded_before_the_next_safe_request() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        headers = {"set-cookie": "tracking=discarded; Path=/"} if len(requests) == 1 else {}
+        return httpx.Response(200, headers=headers, text="ok")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport, trust_env=False, follow_redirects=False
+    ) as client:
+        policy = HttpPolicy(client)
+        source_candidate = candidate("https://example.test/page")
+        await safe_get(policy, source_candidate, "https://example.test/robots.txt")
+        await safe_get(policy, source_candidate, "https://example.test/page")
+
+        assert not client.cookies
+
+    assert len(requests) == 2
+    assert all("Cookie" not in request.headers for request in requests)
 
 
 @pytest.mark.asyncio

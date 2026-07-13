@@ -65,7 +65,9 @@ async def test_atom_extracts_bounded_public_video_metadata() -> None:
     assert result.samples[0].external_id == "video-1"
     assert result.samples[0].title == "安全的标题"
     assert result.samples[0].channel == "OpenAI"
+    assert result.samples[0].canonical_url == "https://youtu.be/video-1"
     assert result.samples[0].published_at.isoformat().startswith("2026-07-11")
+    assert result.sample_count == len(result.samples)
 
 
 @pytest.mark.asyncio
@@ -191,6 +193,37 @@ print('cli-imported')
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "cli-imported"
+
+
+def test_transcript_timeout_does_not_keep_the_cli_process_alive() -> None:
+    script = """
+import asyncio
+import time
+import httpx
+from newsradar.ingestion.fetchers.base import HttpPolicy
+from newsradar.research.probes.youtube import YouTubeResearchProbe
+from tests.research.probes.test_youtube import candidate, source
+
+probe = YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient()))
+probe._fetch_transcript = lambda _: (time.sleep(2), {})[1]
+result = asyncio.run(probe.probe_transcript(
+    source(), candidate('youtube-transcript-api'),
+    video_id='abcdefghijk', timeout_seconds=0.01,
+))
+print(result.error_code)
+"""
+    started = time.perf_counter()
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=1.5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "timeout"
+    assert time.perf_counter() - started < 1.5
 
 
 @pytest.mark.asyncio

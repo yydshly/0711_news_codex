@@ -30,7 +30,7 @@ class FeedResearchProbe:
         response = None
         try:
             response = await safe_get(self.policy, candidate, public_probe_url(candidate))
-            if reason := blocked_reason(response):
+            if reason := blocked_reason(response, inspect_body=False):
                 return with_http_evidence(
                     probe_result(
                         source,

@@ -36,7 +36,7 @@ async def test_feed_reads_at_most_five_public_entries_without_credentials() -> N
     xml = (
         "<rss><channel>"
         + "".join(
-            f"<item><guid>{i}</guid><title>T{i}</title><link>https://example.test/{i}?token=secret#part</link></item>"
+            f"<item><guid>{i}</guid><title>Verify T{i}</title><link>https://example.test/{i}?token=secret#part</link></item>"
             for i in range(7)
         )
         + "</channel></rss>"
