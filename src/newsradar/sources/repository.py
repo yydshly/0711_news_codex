@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
+from urllib.parse import parse_qsl, urlsplit
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import ModelUsage
@@ -20,21 +22,19 @@ from newsradar.db.models import (
     SourceProbeSampleRecord,
     SourceResearchProfileRecord,
     SourceRiskAssessmentRecord,
+    utcnow,
 )
+from newsradar.operations.logging import redact
 from newsradar.sources.probes.base import ProbeResult
 
 from .schema import SourceDefinition, SourceStatus
 
-_SENSITIVE_DETAIL_KEYS = {
-    "authorization",
-    "cookie",
-    "set-cookie",
-    "api_key",
-    "apikey",
-    "token",
-    "secret",
-    "password",
-}
+_SENSITIVE_DETAIL_KEY = re.compile(
+    r"(?i)(authorization|cookie|api[_-]?key|access_token|refresh_token|token|client_secret|secret|password)"
+)
+_SENSITIVE_VALUE = re.compile(
+    r"(?i)\b(access_token|refresh_token|client_secret)\s*[=:]\s*[^\s,&;]+"
+)
 
 
 def _sanitize_research_details(value: object) -> object:
@@ -43,16 +43,19 @@ def _sanitize_research_details(value: object) -> object:
         return {
             str(key): _sanitize_research_details(item)
             for key, item in value.items()
-            if str(key).lower().replace("-", "_") not in _SENSITIVE_DETAIL_KEYS
+            if not _SENSITIVE_DETAIL_KEY.search(str(key))
         }
     if isinstance(value, list):
         return [_sanitize_research_details(item) for item in value]
-    if (
-        isinstance(value, str)
-        and "://" in value
-        and "@" in value.split("://", 1)[1].split("/", 1)[0]
-    ):
-        return "[redacted credential URL]"
+    if isinstance(value, str):
+        parsed = urlsplit(value)
+        if (
+            parsed.username
+            or parsed.password
+            or any(_SENSITIVE_DETAIL_KEY.search(key) for key, _ in parse_qsl(parsed.query))
+        ):
+            return "[redacted credential URL]"
+        return _SENSITIVE_VALUE.sub("[REDACTED]", redact(value))
     return value
 
 
@@ -79,6 +82,7 @@ class SourceRepository:
             payload, definition_hash = canonical_definition(source)
             current = self.session.get(SourceDefinitionRecord, source.id)
             if current is not None and current.definition_hash == definition_hash:
+                self._sync_research_projection(current, source)
                 unchanged += 1
                 continue
 
@@ -140,13 +144,20 @@ class SourceRepository:
                 )
                 current.access_methods.remove(obsolete)
 
-            self.session.add(
-                SourceDefinitionVersion(
-                    source=current,
-                    definition_hash=definition_hash,
-                    definition=payload,
+            version_exists = self.session.scalar(
+                select(SourceDefinitionVersion.id).where(
+                    SourceDefinitionVersion.source_id == source.id,
+                    SourceDefinitionVersion.definition_hash == definition_hash,
                 )
             )
+            if version_exists is None:
+                self.session.add(
+                    SourceDefinitionVersion(
+                        source=current,
+                        definition_hash=definition_hash,
+                        definition=payload,
+                    )
+                )
             self.session.add(
                 SourceRiskAssessmentRecord(
                     source=current,
@@ -201,9 +212,26 @@ class SourceRepository:
             record.sample_status = candidate.sample_status.value
             record.decision = candidate.decision.value
             record.reviewed_at = candidate.reviewed_at
+            record.is_current = True
+            record.removed_at = None
 
         for obsolete in existing.values():
-            self.session.delete(obsolete)
+            obsolete.is_current = False
+            obsolete.removed_at = utcnow()
+
+    def current_acquisition_candidates(
+        self, source_id: str
+    ) -> list[SourceAcquisitionCandidateRecord]:
+        return list(
+            self.session.scalars(
+                select(SourceAcquisitionCandidateRecord)
+                .where(
+                    SourceAcquisitionCandidateRecord.source_id == source_id,
+                    SourceAcquisitionCandidateRecord.is_current.is_(True),
+                )
+                .order_by(SourceAcquisitionCandidateRecord.id)
+            )
+        )
 
     def save_acquisition_probe_run(
         self,

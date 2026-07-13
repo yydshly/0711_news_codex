@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -90,7 +90,55 @@ def test_sync_versions_candidate_changes_and_removes_only_current_projection() -
         session.commit()
 
         assert session.scalar(select(func.count()).select_from(SourceDefinitionVersion)) == 3
-        assert session.scalars(select(SourceAcquisitionCandidateRecord)).all() == []
+        candidate = session.scalar(select(SourceAcquisitionCandidateRecord))
+        assert candidate is not None
+        assert candidate.is_current is False
+
+
+def test_removing_candidate_with_probe_retires_projection_and_reuses_it_on_return() -> None:
+    original = researched_source()
+    removed_data = original.model_dump(mode="json", exclude={"total_risk": True, "risk": {"total"}})
+    removed_data["research"]["status"] = "needs_research"
+    removed_data["research"]["candidates"] = []
+    removed = SourceDefinition.model_validate(removed_data)
+    now = datetime.now(UTC)
+
+    with make_session() as session:
+        repository = SourceRepository(session)
+        repository.sync([original])
+        candidate = session.scalar(select(SourceAcquisitionCandidateRecord))
+        assert candidate is not None
+        repository.save_acquisition_probe_run(
+            candidate_id=candidate.id, started_at=now, completed_at=now, outcome="succeeded"
+        )
+        repository.sync([removed])
+        assert repository.current_acquisition_candidates(original.id) == []
+        repository.sync([original])
+        session.commit()
+
+        current = repository.current_acquisition_candidates(original.id)
+        retained = session.scalar(select(SourceAcquisitionCandidateRecord))
+        run = session.scalar(select(SourceAcquisitionProbeRunRecord))
+        assert [record.id for record in current] == [candidate.id]
+        assert retained is not None and retained.is_current is True
+        assert run is not None and run.candidate_id == candidate.id
+
+
+def test_unchanged_yaml_backfills_research_projection_without_new_version() -> None:
+    source = researched_source()
+    with make_session() as session:
+        repository = SourceRepository(session)
+        repository.sync([source])
+        session.execute(delete(SourceAcquisitionCandidateRecord))
+        session.execute(delete(SourceResearchProfileRecord))
+        session.commit()
+        session.expire_all()
+        repository.sync([source])
+        session.commit()
+
+        assert session.get(SourceResearchProfileRecord, source.id) is not None
+        assert len(repository.current_acquisition_candidates(source.id)) == 1
+        assert session.scalar(select(func.count()).select_from(SourceDefinitionVersion)) == 1
 
 
 def test_candidate_update_preserves_probe_history_and_sanitizes_details() -> None:
@@ -113,6 +161,13 @@ def test_candidate_update_preserves_probe_history_and_sanitizes_details() -> Non
             details={
                 "authorization": "Bearer secret",
                 "url": "https://user:secret@example.test/feed",
+                "nested": {
+                    "access_token": "access-secret",
+                    "refresh_token": "refresh-secret",
+                    "client_secret": "client-secret",
+                    "x-api-key": "api-secret",
+                    "callback": "https://example.test/callback?api_key=query-secret&token=token-secret",
+                },
                 "fields": ["title"],
             },
         )
@@ -126,4 +181,9 @@ def test_candidate_update_preserves_probe_history_and_sanitizes_details() -> Non
         assert updated.limitations == ["No full text"]
         assert run is not None
         assert run.candidate_id == updated.id
-        assert run.details == {"url": "[redacted credential URL]", "fields": ["title"]}
+        assert "secret" not in repr(run.details)
+        assert run.details == {
+            "url": "[redacted credential URL]",
+            "nested": {"callback": "[redacted credential URL]"},
+            "fields": ["title"],
+        }

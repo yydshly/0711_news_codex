@@ -232,6 +232,10 @@ def test_source_research_migration_preserves_existing_source_and_raw_item(tmp_pa
             tuple(constraint["column_names"])
             for constraint in inspector.get_unique_constraints("source_acquisition_candidates")
         } >= {("source_id", "candidate_key")}
+        candidate_columns = {
+            column["name"] for column in inspector.get_columns("source_acquisition_candidates")
+        }
+        assert {"is_current", "removed_at"} <= candidate_columns
 
 
 def test_event_intelligence_migration_creates_event_tables_and_preserves_raw_items(

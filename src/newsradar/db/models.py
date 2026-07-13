@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -146,7 +147,10 @@ class SourceResearchProfileRecord(Base):
 
 class SourceAcquisitionCandidateRecord(Base):
     __tablename__ = "source_acquisition_candidates"
-    __table_args__ = (UniqueConstraint("source_id", "candidate_key"),)
+    __table_args__ = (
+        UniqueConstraint("source_id", "candidate_key"),
+        Index("ix_source_acquisition_candidates_current", "source_id", "is_current"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_id: Mapped[str] = mapped_column(
@@ -164,6 +168,8 @@ class SourceAcquisitionCandidateRecord(Base):
     sample_status: Mapped[str] = mapped_column(String(32), nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     reviewed_at: Mapped[date] = mapped_column(Date, nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     source: Mapped[SourceDefinitionRecord] = relationship(back_populates="acquisition_candidates")
     probe_runs: Mapped[list[SourceAcquisitionProbeRunRecord]] = relationship(
