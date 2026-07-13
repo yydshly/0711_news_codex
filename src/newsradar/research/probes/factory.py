@@ -37,17 +37,17 @@ def research_probe_for(
     resolved = policy or HttpPolicy(client)
     if source.provider_id == "youtube":
         probe = YouTubeResearchProbe(resolved)
-    if candidate.kind in {AcquisitionKind.RSS, AcquisitionKind.ATOM, AcquisitionKind.WEBSUB}:
+    elif candidate.kind in {AcquisitionKind.RSS, AcquisitionKind.ATOM, AcquisitionKind.WEBSUB}:
         probe = FeedResearchProbe(resolved)
-    if candidate.kind in {
+    elif candidate.kind in {
         AcquisitionKind.PUBLIC_API,
         AcquisitionKind.API_KEY_API,
         AcquisitionKind.OAUTH_API,
     }:
         probe = ApiResearchProbe(resolved)
-    if candidate.kind is AcquisitionKind.SITEMAP:
+    elif candidate.kind is AcquisitionKind.SITEMAP:
         probe = SitemapResearchProbe(resolved)
-    if candidate.kind in {
+    elif candidate.kind in {
         AcquisitionKind.HTML,
         AcquisitionKind.JSON_LD,
         AcquisitionKind.EMBEDDED_JSON,

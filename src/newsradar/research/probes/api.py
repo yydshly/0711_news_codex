@@ -4,6 +4,7 @@ from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionAuth, AcquisitionCandidate, SourceDefinition
 
 from .safe_http import UnsafeProbeUrl, safe_get
+from .blocking import blocked_reason
 from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url, with_http_evidence
 
 
@@ -26,7 +27,7 @@ class ApiResearchProbe:
             )
         try:
             response = await safe_get(self.policy, candidate, public_probe_url(candidate))
-            if response.status_code in {401, 403, 429}:
+            if blocked_reason(response):
                 return probe_result(
                     source,
                     candidate,
