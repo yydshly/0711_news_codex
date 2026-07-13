@@ -16,17 +16,50 @@ class _MetadataParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.names: set[str] = set()
+        self.values: dict[str, list[str]] = {
+            "alternate": [],
+            "json_ld": [],
+            "embedded_json": [],
+            "open_graph": [],
+            "article": [],
+        }
+        self._script_type: str | None = None
+        self._script: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
         if tag == "link" and values.get("rel") == "canonical":
             self.names.add("canonical")
+            self.values["canonical"] = [values.get("href", "")]
+        if tag == "link" and "alternate" in values.get("rel", ""):
+            self.values["alternate"].append(values.get("href", ""))
         if tag == "article":
             self.names.add("article")
         if tag == "script" and values.get("type") == "application/ld+json":
             self.names.add("json_ld")
+            self._script_type = "json_ld"
+            self._script = []
+        if tag == "script" and values.get("type") in {"application/json", "application/ld+json"}:
+            self._script_type = (
+                "embedded_json" if values.get("type") == "application/json" else "json_ld"
+            )
+            self._script = []
         if tag == "meta" and str(values.get("property", "")).startswith("og:"):
             self.names.add("open_graph")
+            self.values["open_graph"].append(
+                f"{values.get('property')}={values.get('content', '')}"
+            )
+        if tag == "article":
+            self.values["article"].append(values.get("class", "article"))
+
+    def handle_data(self, data):
+        if self._script_type:
+            self._script.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "script" and self._script_type:
+            self.values[self._script_type].append("".join(self._script)[:4000])
+            self._script_type = None
 
 
 class HtmlResearchProbe:
@@ -49,6 +82,11 @@ class HtmlResearchProbe:
                 "json_ld": "json_ld" in parser.names,
                 "open_graph": "open_graph" in parser.names,
                 "semantic_article": "article" in parser.names,
+                "canonical_url": (parser.values.get("canonical") or [None])[0],
+                "alternate_urls": "|".join(parser.values["alternate"][:5]),
+                "json_ld": "\n".join(parser.values["json_ld"][:2])[:4000],
+                "embedded_json": "\n".join(parser.values["embedded_json"][:2])[:4000],
+                "open_graph_values": "|".join(parser.values["open_graph"][:20])[:4000],
                 "terms_review_required": True,
             },
             decision="manual_only",
