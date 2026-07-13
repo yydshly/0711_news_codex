@@ -24,6 +24,7 @@ from newsradar.db.models import (
     SourceRiskAssessmentRecord,
     utcnow,
 )
+from newsradar.ingestion.trial import ProbeSnapshot
 from newsradar.operations.logging import redact
 from newsradar.sources.probes.base import ProbeResult
 
@@ -325,6 +326,34 @@ class SourceRepository:
             )
         self.session.flush()
         return record
+
+    def latest_probe_snapshot(self, source_id: str) -> ProbeSnapshot | None:
+        """Return the newest completed probe state, or ``None`` when none exists."""
+        probe_run = self.session.scalar(
+            select(SourceProbeRunRecord)
+            .where(SourceProbeRunRecord.source_id == source_id)
+            .order_by(SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc())
+        )
+        if probe_run is None:
+            return None
+
+        sample_fields = frozenset(
+            field
+            for fields in self.session.scalars(
+                select(SourceProbeSampleRecord.fields_present).where(
+                    SourceProbeSampleRecord.probe_run_id == probe_run.id
+                )
+            )
+            for field in fields
+        )
+        metrics = probe_run.metrics
+        return ProbeSnapshot(
+            outcome=probe_run.outcome,
+            sample_count=int(metrics.get("sample_count") or 0),
+            field_completeness=float(metrics.get("field_completeness") or 0.0),
+            sample_fields=sample_fields,
+            finished_at=probe_run.finished_at,
+        )
 
     def save_model_usage(self, usage: ModelUsage) -> ModelUsageRecord:
         record = ModelUsageRecord(
