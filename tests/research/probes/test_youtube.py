@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import requests
 import youtube_transcript_api
 from requests import Request
 
@@ -194,6 +195,24 @@ def test_transcript_session_allows_explicit_network_diagnostic_override(monkeypa
     try:
         assert session.trust_env is False
         assert session.cookies.get_dict() == {}
+    finally:
+        session.close()
+
+
+def test_transcript_session_never_uses_netrc_auth_on_initial_or_redirect_request(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("requests.sessions.get_netrc_auth", lambda _: ("user", "secret"))
+    session = youtube_module._create_transcript_session()
+    try:
+        initial_request = session.prepare_request(Request("GET", "https://initial.example/path"))
+        redirect_request = session.prepare_request(Request("GET", "https://redirect.example/path"))
+        redirect_response = requests.Response()
+        redirect_response.request = initial_request
+        session.rebuild_auth(redirect_request, redirect_response)
+
+        assert "Authorization" not in initial_request.headers
+        assert "Authorization" not in redirect_request.headers
     finally:
         session.close()
 

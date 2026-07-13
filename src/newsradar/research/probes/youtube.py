@@ -42,12 +42,27 @@ def _create_transcript_session() -> Any:
                 kwargs["timeout"] = (5.0, 10.0)
             return super().request(*args, **kwargs)
 
+        def prepare_request(self, request: Any) -> Any:
+            request.auth = self.auth
+            request.headers.pop("Authorization", None)
+            return super().prepare_request(request)
+
+        def rebuild_auth(self, prepared_request: Any, response: Any) -> None:
+            del response
+            prepared_request.headers.pop("Authorization", None)
+
     class RejectingCookieJar(RequestsCookieJar):
         def set_cookie(self, cookie, *args: object, **kwargs: object) -> None:
             del cookie, args, kwargs
 
     session = BoundedSession()
     session.trust_env = get_settings().http_trust_env
+
+    def remove_authorization(request: Any) -> Any:
+        request.headers.pop("Authorization", None)
+        return request
+
+    session.auth = remove_authorization
     session.cookies = RejectingCookieJar()
     session.headers.pop("Cookie", None)
     return session
