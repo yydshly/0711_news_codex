@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import select_autoescape
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
@@ -158,7 +158,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
     def database_error_response(
-        request: Request, error: OperationalError | ProgrammingError
+        request: Request, error: SQLAlchemyError
     ) -> HTMLResponse:
         if isinstance(error, OperationalError):
             context = {
@@ -197,7 +197,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         try:
             with resolved_service_factory() as service:
                 return query(service), None
-        except (OperationalError, ProgrammingError) as error:
+        except SQLAlchemyError as error:
             return None, database_error_response(request, error)
 
     def query_with_timestamp_safely(
