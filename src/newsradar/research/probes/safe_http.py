@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -33,11 +34,12 @@ def _safe_url(url: str, client: httpx.AsyncClient) -> None:
     if type(client._transport).__name__ == "MockTransport":  # noqa: SLF001
         return
     try:
-        value = ipaddress.ip_address(host)
-    except ValueError as exc:
+        addresses = [item[4][0] for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)]
+    except socket.gaierror as exc:
         raise UnsafeProbeUrl() from exc
-    if not value.is_global:
-        raise UnsafeProbeUrl()
+    for address in addresses:
+        if not ipaddress.ip_address(address).is_global:
+            raise UnsafeProbeUrl()
 
 
 def _safe_client(policy: HttpPolicy) -> httpx.AsyncClient:
@@ -55,6 +57,7 @@ def _safe_client(policy: HttpPolicy) -> httpx.AsyncClient:
     if (
         client.trust_env
         or client.follow_redirects
+        or getattr(client, "_mounts", None)
         or any(any(part in k.lower() for part in blocked) for k in client.headers)
     ):
         raise UnsafeProbeUrl()

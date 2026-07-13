@@ -47,14 +47,3 @@ async def test_feed_with_login_auth_is_blocked_before_network() -> None:
         )
     assert result.outcome.value == "blocked"
     assert result.error_code == "authentication_required"
-
-
-@pytest.mark.asyncio
-async def test_real_hostname_is_blocked_when_dns_binding_cannot_be_proven() -> None:
-    source = SourceDefinition.model_validate(valid_source())
-    async with httpx.AsyncClient(trust_env=False) as client:
-        result = await FeedResearchProbe(HttpPolicy(client)).probe(
-            source, candidate("https://example.com/feed")
-        )
-    assert result.outcome.value == "blocked"
-    assert result.error_code == "unsafe_url"
