@@ -4,6 +4,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
+import hashlib
+import httpx
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -98,3 +101,34 @@ def public_probe_url(candidate: AcquisitionCandidate) -> str:
     if parsed.username or parsed.password:
         raise ValueError("credentialed_url")
     return url
+
+
+def with_http_evidence(
+    result: AcquisitionProbeResult, response: httpx.Response, candidate: AcquisitionCandidate
+) -> AcquisitionProbeResult:
+    url = urlsplit(str(response.url))
+    safe_url = urlunsplit((url.scheme, url.netloc, url.path, "", ""))
+    fields = [
+        field
+        for field in candidate.fields
+        if any(getattr(sample, field, None) is not None for sample in result.samples)
+    ]
+    return result.model_copy(
+        update={
+            "http_status": response.status_code,
+            "final_url": safe_url,
+            "cache_control": response.headers.get("cache-control"),
+            "rate_limit_remaining": int(response.headers["x-ratelimit-remaining"])
+            if response.headers.get("x-ratelimit-remaining", "").isdigit()
+            else None,
+            "pagination_detected": bool(result.metadata.get("pagination_detected")),
+            "fields_present": fields,
+            "field_completeness": len(fields) / len(candidate.fields),
+            "schema_fingerprint": hashlib.sha256(
+                "|".join(sorted(candidate.fields)).encode()
+            ).hexdigest()[:32],
+            "latest_published_at": max(
+                (s.published_at for s in result.samples if s.published_at), default=None
+            ),
+        }
+    )

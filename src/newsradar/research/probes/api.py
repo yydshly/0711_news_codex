@@ -4,7 +4,7 @@ from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionAuth, AcquisitionCandidate, SourceDefinition
 
 from .safe_http import UnsafeProbeUrl, safe_get
-from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url
+from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url, with_http_evidence
 
 
 class ApiResearchProbe:
@@ -61,15 +61,19 @@ class ApiResearchProbe:
             if isinstance(payload, list)
             else (payload.get("items", []) if isinstance(payload, dict) else [])
         )
-        return probe_result(
-            source,
+        return with_http_evidence(
+            probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.SUCCEEDED,
+                "已确认公开 API 响应；仍需条款复核",
+                metadata={
+                    "sample_count": min(len(rows) if isinstance(rows, list) else 0, 5),
+                    "pagination_detected": isinstance(payload, dict)
+                    and any(key in payload for key in ("next", "next_page", "nextPageToken")),
+                    "terms_review_required": True,
+                },
+            ),
+            response,
             candidate,
-            AcquisitionProbeOutcome.SUCCEEDED,
-            "已确认公开 API 响应；仍需条款复核",
-            metadata={
-                "sample_count": min(len(rows) if isinstance(rows, list) else 0, 5),
-                "pagination_detected": isinstance(payload, dict)
-                and any(key in payload for key in ("next", "next_page", "nextPageToken")),
-                "terms_review_required": True,
-            },
         )

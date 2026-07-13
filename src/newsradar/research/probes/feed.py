@@ -9,7 +9,13 @@ from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
 from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .blocking import blocked_reason
-from .schema import AcquisitionProbeOutcome, AcquisitionProbeSample, probe_result, public_probe_url
+from .schema import (
+    AcquisitionProbeOutcome,
+    AcquisitionProbeSample,
+    probe_result,
+    public_probe_url,
+    with_http_evidence,
+)
 
 
 class FeedResearchProbe:
@@ -64,14 +70,18 @@ class FeedResearchProbe:
                     published_at=at,
                 )
             )
-        return probe_result(
-            source,
+        return with_http_evidence(
+            probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.SUCCEEDED if samples else AcquisitionProbeOutcome.PARTIAL,
+                "已读取公开订阅元数据；仍需条款复核",
+                samples=samples,
+                metadata={
+                    "terms_review_required": True,
+                    "content_type": response.headers.get("content-type"),
+                },
+            ),
+            response,
             candidate,
-            AcquisitionProbeOutcome.SUCCEEDED if samples else AcquisitionProbeOutcome.PARTIAL,
-            "已读取公开订阅元数据；仍需条款复核",
-            samples=samples,
-            metadata={
-                "terms_review_required": True,
-                "content_type": response.headers.get("content-type"),
-            },
         )

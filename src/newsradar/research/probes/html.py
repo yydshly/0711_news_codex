@@ -9,7 +9,7 @@ from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .robots import allowed as robots_allowed
 from .blocking import blocked_reason
-from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url
+from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url, with_http_evidence
 
 
 class _MetadataParser(HTMLParser):
@@ -155,7 +155,6 @@ class HtmlResearchProbe:
                 "静态页面不可用",
                 type(exc).__name__,
             )
-        result = self.inspect(source, candidate, response.text)
-        return result.model_copy(
-            update={"http_status": response.status_code, "final_url": str(response.url)}
+        return with_http_evidence(
+            self.inspect(source, candidate, response.text), response, candidate
         )

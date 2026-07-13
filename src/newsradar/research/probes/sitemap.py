@@ -9,7 +9,13 @@ from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .robots import allowed as robots_allowed
 from .blocking import blocked_reason
-from .schema import AcquisitionProbeOutcome, AcquisitionProbeSample, probe_result, public_probe_url
+from .schema import (
+    AcquisitionProbeOutcome,
+    AcquisitionProbeSample,
+    probe_result,
+    public_probe_url,
+    with_http_evidence,
+)
 
 
 class SitemapResearchProbe:
@@ -86,11 +92,15 @@ class SitemapResearchProbe:
             : max(0, min(limit, 5))
         ]
         samples = [AcquisitionProbeSample(canonical_url=url[:1000]) for url in urls]
-        return probe_result(
-            source,
+        return with_http_evidence(
+            probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.SUCCEEDED if samples else AcquisitionProbeOutcome.PARTIAL,
+                "已读取站点地图 URL；robots 允许不等于条款批准",
+                samples=samples,
+                metadata={"terms_review_required": True},
+            ),
+            response,
             candidate,
-            AcquisitionProbeOutcome.SUCCEEDED if samples else AcquisitionProbeOutcome.PARTIAL,
-            "已读取站点地图 URL；robots 允许不等于条款批准",
-            samples=samples,
-            metadata={"terms_review_required": True},
         )
