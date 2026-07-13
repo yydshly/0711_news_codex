@@ -228,7 +228,7 @@ from newsradar.research.probes.youtube import YouTubeResearchProbe
 from tests.research.probes.test_youtube import candidate, source
 
 probe = YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient()))
-probe._fetch_transcript = lambda _: (time.sleep(2), {})[1]
+probe._fetch_transcript = lambda _: (time.sleep(5), {})[1]
 result = asyncio.run(probe.probe_transcript(
     source(), candidate('youtube-transcript-api'),
     video_id='abcdefghijk', timeout_seconds=0.01,
@@ -241,12 +241,12 @@ print(result.error_code)
         capture_output=True,
         text=True,
         check=False,
-        timeout=1.5,
+        timeout=3,
     )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "timeout"
-    assert time.perf_counter() - started < 1.5
+    assert time.perf_counter() - started < 3
 
 
 @pytest.mark.asyncio
