@@ -176,6 +176,9 @@ class ResearchCandidateView:
     decision_label: str
     latest_probe_outcome: str | None = None
     latest_probe_label: str = "尚未探测"
+    sample_count: int | None = None
+    latest_probe_at: datetime | None = None
+    field_completeness: float | None = None
 
 @dataclass(frozen=True, slots=True)
 class ResearchTargetView:
