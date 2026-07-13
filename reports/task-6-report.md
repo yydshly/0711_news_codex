@@ -9,8 +9,8 @@
 ## Catalog changes
 
 - Added an explicit `research.status` to every existing YAML Target.
-- Classified 134 `sources/universe` entries as `placeholder`: they are platform/search-layer candidates, not independently confirmed collectible Targets.
-- Classified 32 named Targets as `needs_research`; “named” means a concrete non-placeholder Target with a distinct ID and identity URL, including the two newly added official/regulatory entries. Their identity and configured entry remain visible, while their method samples, terms review, and fallback analysis remain incomplete.
+- Current YAML status counts are `verified=1`, `needs_research=33`, `placeholder=132`, `duplicate=0`, and `retired=0` (166 Target documents total).
+- “Real Target” means the 34 non-placeholder documents (`verified + needs_research`), while “named needs_research” means the 33 concrete but still-unverified documents. The remaining 132 placeholders are platform/search-layer candidates rather than independently confirmed collectible Targets, and do not count as real coverage.
 - Added `anthropic-newsroom`, an official first-party AI-news source with a documented manual-only, no-bypass acquisition boundary.
 - Added `sec-nvidia-filings`, an official SEC EDGAR regulatory-evidence Target for NVIDIA, based on the SEC's documented unauthenticated JSON submissions API and kept disabled pending policy review and a compliant sample.
 
@@ -30,7 +30,7 @@ uv run newsradar sources research report --root sources --provider-root provider
 uv run newsradar sources research report --root sources --provider-root providers --output reports/source-research-v3-matrix.md
 ```
 
-The catalog-completion test includes a real strict `verified` fixture (OpenAI YouTube) and completed with 3 passing cases. Current YAML status counts are: `verified=1`, `needs_research=32`, `placeholder=134`, `duplicate=0`, and `retired=0`. “Named needs_research” counts concrete non-placeholder Targets only; placeholders do not count as real coverage. Validation and report commands completed with warnings only: generic platform targets and duplicated universe identities remain visible rather than being concealed.
+The catalog-completion test includes a real strict `verified` fixture (OpenAI YouTube) and completed with 3 passing cases. Current YAML status counts are `verified=1`, `needs_research=33`, `placeholder=132`, `duplicate=0`, and `retired=0`; therefore real Target coverage is 34 (`verified + needs_research`). “Named needs_research” is not a second counter: it is the same 33 concrete, non-placeholder, unverified documents. Validation and report commands completed with warnings only: generic platform targets and duplicated universe identities remain visible rather than being concealed.
 
 ## Unfinished work
 
