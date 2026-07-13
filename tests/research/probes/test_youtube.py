@@ -9,7 +9,6 @@ import pytest
 import youtube_transcript_api
 from requests import Request
 
-from newsradar.credentials import SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.research.probes import youtube as youtube_module
 from newsradar.research.probes.youtube import YouTubeResearchProbe
@@ -71,10 +70,17 @@ async def test_atom_extracts_bounded_public_video_metadata() -> None:
 
 
 @pytest.mark.asyncio
-async def test_data_api_without_key_is_explicitly_blocked_without_network(monkeypatch) -> None:
-    async with httpx.AsyncClient() as client:
-        probe = YouTubeResearchProbe(HttpPolicy(client), credentials=SettingsCredentials())
-        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+async def test_data_api_without_key_is_explicitly_blocked_without_network() -> None:
+    class MissingCredentials:
+        def require(self, name: str) -> str:
+            raise KeyError(name)
+
+    def reject_network(_: httpx.Request) -> httpx.Response:
+        pytest.fail("missing credentials must block before any network request")
+
+    transport = httpx.MockTransport(reject_network)
+    async with httpx.AsyncClient(transport=transport) as client:
+        probe = YouTubeResearchProbe(HttpPolicy(client), credentials=MissingCredentials())
         result = await probe.probe_data_api(source(), candidate("youtube-data-api"))
     assert result.outcome.value == "blocked"
     assert result.error_code == "missing_credential"

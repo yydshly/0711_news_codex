@@ -137,9 +137,14 @@ async def test_bluesky_probe_normalizes_author_feed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reddit_probe_blocks_without_oauth_credentials(monkeypatch) -> None:
-    monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
-    monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
+async def test_reddit_probe_blocks_without_oauth_credentials() -> None:
+    class MissingCredentials:
+        def require(self, name: str) -> str:
+            raise KeyError(name)
+
+    def reject_network(_: httpx.Request) -> httpx.Response:
+        pytest.fail("missing OAuth credentials must block before any network request")
+
     source = source_with(
         {
             "kind": "rest_api",
@@ -148,9 +153,9 @@ async def test_reddit_probe_blocks_without_oauth_credentials(monkeypatch) -> Non
             "params": {"limit": "5"},
         }
     )
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reject_network)) as client:
         result = (
-            await ProbeFactory(client)
+            await ProbeFactory(client, credentials=MissingCredentials())
             .create(source.access_methods[0])
             .probe(source, source.access_methods[0])
         )
