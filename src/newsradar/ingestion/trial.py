@@ -6,7 +6,16 @@ from math import isfinite
 from pydantic import BaseModel, ConfigDict
 
 from newsradar.providers.schema import Availability, CoverageMode
-from newsradar.sources.schema import AccessKind, SourceDefinition
+from newsradar.sources.schema import AccessKind, AccessMethod, SourceDefinition
+
+_SENSITIVE_TRIAL_HEADER_NAMES = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "set-cookie"}
+)
+
+
+def has_sensitive_trial_headers(method: AccessMethod) -> bool:
+    """Return whether a method carries headers forbidden for trial fetches."""
+    return any(name.lower() in _SENSITIVE_TRIAL_HEADER_NAMES for name in method.headers)
 
 
 class ProbeSnapshot(BaseModel):
@@ -66,8 +75,14 @@ def evaluate_trial_eligibility(
     ]
     if not automatic_methods:
         return _ineligible("no_automatic_method", "不可试用抓取：没有非 HTML 自动访问方式。")
-    if not any(not method.auth_envs for method in automatic_methods):
+    public_methods = [method for method in automatic_methods if not method.auth_envs]
+    if not public_methods:
         return _ineligible("credentials_not_allowed", "试用抓取不使用凭据访问方式。")
+    if not any(not has_sensitive_trial_headers(method) for method in public_methods):
+        return _ineligible(
+            "sensitive_headers_not_allowed",
+            "试用抓取不允许携带认证或 Cookie 请求头。",
+        )
     if probe.outcome != "success":
         return _ineligible("probe_not_successful", "不可试用抓取：最新探测未成功。")
     if probe.sample_count <= 0:

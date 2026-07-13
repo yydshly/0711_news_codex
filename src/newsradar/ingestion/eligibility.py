@@ -4,6 +4,7 @@ from collections.abc import Set
 
 from pydantic import BaseModel, ConfigDict
 
+from newsradar.ingestion.trial import has_sensitive_trial_headers
 from newsradar.providers.schema import Availability, CoverageMode
 from newsradar.sources.schema import AccessKind, AccessMethod, SourceDefinition, SourceStatus
 
@@ -68,6 +69,14 @@ def evaluate_fetch_eligibility(
         automatic_methods = [method for method in automatic_methods if not method.auth_envs]
         if not automatic_methods:
             return _blocked("credentials_not_allowed", "试用抓取不使用凭据访问方式。")
+        automatic_methods = [
+            method for method in automatic_methods if not has_sensitive_trial_headers(method)
+        ]
+        if not automatic_methods:
+            return _blocked(
+                "sensitive_headers_not_allowed",
+                "试用抓取不允许携带认证或 Cookie 请求头。",
+            )
 
     if source.availability == Availability.REQUIRES_CREDENTIALS:
         credential_methods = [method for method in automatic_methods if method.auth_envs]

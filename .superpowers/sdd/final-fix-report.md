@@ -20,6 +20,12 @@
    assertions that credential providers, specialized fetchers, and both GET/POST
    network paths are not reached. Added a non-trial regression ensuring the
    regular specialized YouTube fetcher is still selected.
+5. Trial eligibility now rejects case-insensitive `Authorization`,
+   `Proxy-Authorization`, `Cookie`, and `Set-Cookie` method headers. Trial
+   selection skips a sensitive higher-priority method when a header-safe method
+   exists; otherwise it returns `sensitive_headers_not_allowed` before fetcher
+   construction or network work. The factory repeats this check as a defense in
+   depth boundary.
 
 ## Verification
 

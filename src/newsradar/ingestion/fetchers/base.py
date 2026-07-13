@@ -32,8 +32,14 @@ class Fetcher(Protocol):
 class TrialCredentialFreeFetcherRequiredError(ValueError):
     """Raised when trial mode has no explicitly credential-free fetcher."""
 
-    code = "credentials_not_allowed"
-    reason = "试用抓取仅允许明确声明为免凭据的抓取器。"
+    def __init__(
+        self,
+        code: str = "credentials_not_allowed",
+        reason: str = "试用抓取仅允许明确声明为免凭据的抓取器。",
+    ) -> None:
+        self.code = code
+        self.reason = reason
+        super().__init__(code)
 
 
 class HttpPolicy:
@@ -170,6 +176,14 @@ class FetcherFactory:
         self.credentials = credentials
 
     def for_method(self, method: AccessMethod, *, credential_free_only: bool = False) -> Fetcher:
+        if credential_free_only:
+            from newsradar.ingestion.trial import has_sensitive_trial_headers
+
+            if has_sensitive_trial_headers(method):
+                raise TrialCredentialFreeFetcherRequiredError(
+                    "sensitive_headers_not_allowed",
+                    "试用抓取不允许携带认证或 Cookie 请求头。",
+                )
         host = (httpx.URL(str(method.url)).host or "").lower()
         path = httpx.URL(str(method.url)).path
         if credential_free_only and not self._is_explicitly_credential_free(method, host, path):

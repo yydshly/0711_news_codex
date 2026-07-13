@@ -341,6 +341,70 @@ def test_trial_fetch_worker_blocks_credentials_access_before_creating_fetcher(mo
         assert record.error_code == "eligibility_trial_credentials_not_allowed"
 
 
+def test_trial_fetch_worker_blocks_sensitive_headers_before_creating_fetcher(monkeypatch) -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+    from newsradar.sources.repository import SourceRepository
+
+    source_data = valid_source()
+    source_data["id"] = "sensitive-header-source"
+    source_data["access_methods"] = [
+        {
+            "kind": "rss",
+            "url": "https://source-a.test/feed",
+            "priority": 1,
+            "headers": {"aUtHoRiZaTiOn": "Bearer test"},
+        }
+    ]
+    source = SourceDefinition.model_validate(source_data)
+    with _session() as db:
+        repository = SourceRepository(db)
+        repository.sync([source])
+        now = datetime(2026, 7, 13, tzinfo=UTC)
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="rss",
+                access_url="https://source-a.test/feed",
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=now,
+                finished_at=now,
+                sample_count=1,
+                field_completeness=1.0,
+                suggested_status="candidate",
+                reason="ok",
+                samples=[
+                    ProbeSample(
+                        external_id="one",
+                        title="First",
+                        canonical_url="https://source-a.test/one",
+                    )
+                ],
+            )
+        )
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH, {"source_id": source.id, "trial": True}
+        )
+
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db)
+        )
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.FetcherFactory",
+            lambda policy: (_ for _ in ()).throw(
+                AssertionError("sensitive-header trial must not create a fetcher")
+            ),
+        )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler.production([source])
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert record is not None
+        assert record.status == OperationStatus.PARTIAL
+        assert record.error_code == "eligibility_trial_sensitive_headers_not_allowed"
+
+
 def test_trial_fetch_worker_uses_public_method_when_credential_method_has_priority(
     monkeypatch,
 ) -> None:
@@ -426,6 +490,82 @@ def test_trial_fetch_worker_uses_public_method_when_credential_method_has_priori
             "https://source-a.test/public-feed",
         ]
         assert record is not None
+
+
+def test_trial_fetch_worker_uses_header_safe_method_when_sensitive_method_has_priority(
+    monkeypatch,
+) -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+    from newsradar.sources.repository import SourceRepository
+
+    source_data = valid_source()
+    source_data["id"] = "header-priority-source"
+    source_data["access_methods"] = [
+        {
+            "kind": "rss",
+            "url": "https://source-a.test/sensitive-feed",
+            "priority": 1,
+            "headers": {"Cookie": "test-session"},
+        },
+        {"kind": "rss", "url": "https://source-a.test/public-feed", "priority": 2},
+    ]
+    source = SourceDefinition.model_validate(source_data)
+    with _session() as db:
+        repository = SourceRepository(db)
+        repository.sync([source])
+        now = datetime(2026, 7, 13, tzinfo=UTC)
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="rss",
+                access_url="https://source-a.test/public-feed",
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=now,
+                finished_at=now,
+                sample_count=1,
+                field_completeness=1.0,
+                suggested_status="candidate",
+                reason="ok",
+                samples=[
+                    ProbeSample(
+                        external_id="one",
+                        title="First",
+                        canonical_url="https://source-a.test/one",
+                    )
+                ],
+            )
+        )
+        OperationRepository(db).enqueue(
+            OperationType.FETCH, {"source_id": source.id, "trial": True}
+        )
+        selected_methods: list[str] = []
+
+        class RecordingFetcher:
+            async def fetch(self, source, method, state, limit):
+                selected_methods.append(str(method.url))
+                return FetchResult(outcome=FetchOutcome.NO_CHANGE)
+
+        class RecordingFactory:
+            def for_method(self, method, *, credential_free_only=False):
+                assert credential_free_only is True
+                selected_methods.append(str(method.url))
+                return RecordingFetcher()
+
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db)
+        )
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.FetcherFactory", lambda policy: RecordingFactory()
+        )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler.production([source])
+        )
+
+        assert selected_methods == [
+            "https://source-a.test/public-feed",
+            "https://source-a.test/public-feed",
+        ]
 
 
 @pytest.mark.parametrize(

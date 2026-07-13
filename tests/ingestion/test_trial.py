@@ -75,6 +75,27 @@ def test_credentials_access_method_is_not_trial_eligible() -> None:
     )
 
 
+def test_sensitive_request_headers_are_not_trial_eligible() -> None:
+    source = _source(
+        access_methods=[
+            {
+                "kind": "rss",
+                "url": "https://www.anthropic.com/news/rss.xml",
+                "priority": 1,
+                "headers": {"Authorization": "Bearer test"},
+            }
+        ]
+    )
+
+    decision = evaluate_trial_eligibility(source, _successful_probe())
+
+    assert decision == TrialDecision(
+        False,
+        "sensitive_headers_not_allowed",
+        "试用抓取不允许携带认证或 Cookie 请求头。",
+    )
+
+
 def test_indirect_source_is_discovery_only() -> None:
     decision = evaluate_trial_eligibility(_source(coverage_mode="indirect"), _successful_probe())
 
