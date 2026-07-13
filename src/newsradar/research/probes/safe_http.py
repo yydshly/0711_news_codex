@@ -47,7 +47,7 @@ def network_preflight(candidate: AcquisitionCandidate) -> None:
         raise ProbeAuthenticationRequired()
 
 
-def _safe_url(url: str, client: httpx.AsyncClient) -> None:
+def _safe_url(url: str, client: httpx.AsyncClient, allowed_hosts: frozenset[str]) -> None:
     parsed = urlsplit(url)
     if (
         parsed.scheme != "https"
@@ -58,6 +58,8 @@ def _safe_url(url: str, client: httpx.AsyncClient) -> None:
     ):
         raise UnsafeProbeUrl()
     host = parsed.hostname.lower()
+    if host not in allowed_hosts:
+        raise UnsafeProbeUrl()
     if host == "localhost" or host.endswith(".localhost"):
         raise UnsafeProbeUrl()
     # Unit-test transports never leave the process.
@@ -90,8 +92,14 @@ async def safe_get(policy: HttpPolicy, candidate: AcquisitionCandidate, url: str
     client = _safe_client(policy)
     started = time.perf_counter()
     current = url
+    evidence_host = urlsplit(str(candidate.evidence[0])).hostname
+    if evidence_host is None:
+        raise UnsafeProbeUrl()
+    allowed_hosts = frozenset(
+        {evidence_host.lower(), *candidate.allowed_redirect_hosts}
+    )
     for _ in range(6):
-        _safe_url(current, client)
+        _safe_url(current, client, allowed_hosts)
         # Build a standalone request: AsyncClient.build_request() merges caller
         # defaults and cookies, which is unsafe even when their names look benign.
         request = httpx.Request("GET", current, headers=_PROBE_HEADERS)

@@ -168,6 +168,8 @@ class SourceAcquisitionCandidateRecord(Base):
     sample_status: Mapped[str] = mapped_column(String(32), nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     reviewed_at: Mapped[date] = mapped_column(Date, nullable=False)
+    selector: Mapped[str | None] = mapped_column(String(128))
+    allowed_redirect_hosts: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

@@ -117,6 +117,7 @@ class AcquisitionCandidate(StrictModel):
     sample_status: SampleStatus
     decision: AcquisitionDecision
     selector: str | None = Field(default=None, max_length=128)
+    allowed_redirect_hosts: tuple[str, ...] = ()
 
     @field_validator("selector")
     @classmethod
@@ -130,6 +131,17 @@ class AcquisitionCandidate(StrictModel):
         ):
             raise ValueError("selector must be one simple CSS tag, #id, or .class")
         return value
+
+    @field_validator("allowed_redirect_hosts")
+    @classmethod
+    def validate_allowed_redirect_hosts(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.rstrip(".").lower() for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("allowed_redirect_hosts must not contain duplicates")
+        for value in normalized:
+            if not re.fullmatch(r"[a-z0-9.-]+", value) or ".." in value:
+                raise ValueError("allowed_redirect_hosts must contain hostnames only")
+        return normalized
 
     @field_validator("evidence")
     @classmethod

@@ -190,6 +190,54 @@ def test_candidate_accepts_audited_simple_html_selector(selector: str) -> None:
     assert candidate.selector == selector
 
 
+def test_candidate_normalizes_explicit_redirect_hosts() -> None:
+    candidate = AcquisitionCandidate.model_validate(
+        {
+            "key": "static-html-redirects",
+            "kind": "html",
+            "implementation": "httpx",
+            "officiality": "official",
+            "authentication": "none",
+            "roles": ["metadata"],
+            "fields": ["title"],
+            "limitations": [],
+            "evidence": ["https://example.test/page"],
+            "reviewed_at": "2026-07-13",
+            "sample_status": "not_run",
+            "decision": "manual_only",
+            "selector": "article",
+            "allowed_redirect_hosts": ["CDN.Example.test."],
+        }
+    )
+
+    assert candidate.allowed_redirect_hosts == ("cdn.example.test",)
+
+
+@pytest.mark.parametrize(
+    "host", ["https://cdn.example.test", "cdn.example.test/path", "*.example.test"]
+)
+def test_candidate_rejects_non_hostname_redirect_host(host: str) -> None:
+    with pytest.raises(ValidationError):
+        AcquisitionCandidate.model_validate(
+            {
+                "key": "static-html-redirects",
+                "kind": "html",
+                "implementation": "httpx",
+                "officiality": "official",
+                "authentication": "none",
+                "roles": ["metadata"],
+                "fields": ["title"],
+                "limitations": [],
+                "evidence": ["https://example.test/page"],
+                "reviewed_at": "2026-07-13",
+                "sample_status": "not_run",
+                "decision": "manual_only",
+                "selector": "article",
+                "allowed_redirect_hosts": [host],
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "selector",
     ["article .entry", "div[data-id]", "//article", "javascript:alert(1)"],

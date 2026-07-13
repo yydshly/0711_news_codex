@@ -216,6 +216,8 @@ class SourceRepository:
             record.sample_status = candidate.sample_status.value
             record.decision = candidate.decision.value
             record.reviewed_at = candidate.reviewed_at
+            record.selector = candidate.selector
+            record.allowed_redirect_hosts = list(candidate.allowed_redirect_hosts)
             record.is_current = True
             record.removed_at = None
 

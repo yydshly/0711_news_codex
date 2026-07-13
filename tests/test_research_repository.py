@@ -78,6 +78,33 @@ def test_sync_persists_current_research_projection_and_is_idempotent() -> None:
         )
 
 
+def test_sync_persists_candidate_selector_and_redirect_hosts() -> None:
+    data = researched_source().model_dump(
+        mode="json", exclude={"total_risk": True, "risk": {"total"}}
+    )
+    candidate = data["research"]["candidates"][0]
+    candidate.update(
+        {
+            "kind": "html",
+            "implementation": "httpx",
+            "decision": "manual_only",
+            "selector": "article",
+            "allowed_redirect_hosts": ["cdn.example.test"],
+        }
+    )
+    data["research"]["status"] = "needs_research"
+    source = SourceDefinition.model_validate(data)
+    with make_session() as session:
+        SourceRepository(session).sync([source])
+        session.commit()
+
+        record = session.scalar(select(SourceAcquisitionCandidateRecord))
+
+    assert record is not None
+    assert record.selector == "article"
+    assert record.allowed_redirect_hosts == ["cdn.example.test"]
+
+
 def test_sync_versions_candidate_changes_and_removes_only_current_projection() -> None:
     original = researched_source()
     changed_data = original.model_dump(mode="json", exclude={"total_risk": True, "risk": {"total"}})

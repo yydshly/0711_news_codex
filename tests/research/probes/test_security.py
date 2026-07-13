@@ -3,7 +3,7 @@ import pytest
 
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.research.probes.feed import FeedResearchProbe
-from newsradar.research.probes.safe_http import new_safe_probe_client, safe_get
+from newsradar.research.probes.safe_http import UnsafeProbeUrl, new_safe_probe_client, safe_get
 from newsradar.research.probes.schema import (
     AcquisitionProbeOutcome,
     AcquisitionProbeSample,
@@ -194,6 +194,23 @@ async def test_sensitive_query_in_redirect_location_is_blocked_before_following(
 
     assert result.outcome.value == "blocked"
     assert result.error_code == "unsafe_url"
+    assert requests == ["https://example.test/feed"]
+
+
+@pytest.mark.asyncio
+async def test_unreviewed_cross_domain_redirect_is_blocked_before_following() -> None:
+    requests = []
+
+    async def responder(request):
+        requests.append(str(request.url))
+        return httpx.Response(302, headers={"location": "https://other.example/feed"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(responder), trust_env=False, follow_redirects=False
+    ) as client:
+        with pytest.raises(UnsafeProbeUrl):
+            await safe_get(HttpPolicy(client), candidate("https://example.test/feed"), "https://example.test/feed")
+
     assert requests == ["https://example.test/feed"]
 
 
