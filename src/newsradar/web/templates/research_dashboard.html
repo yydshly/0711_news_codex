@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}来源研究总览 · News Codex{% endblock %}
+{% block header %}<h1>中文来源研究</h1>{% endblock %}
+{% block content %}
+<section class="panel intro-panel"><p class="eyebrow">目录 / 能力探测 / 已获取内容</p><h2>先看来源，再看研究证据</h2><p>本页只读，不会发起网络探测。目录登记不等于已获取内容，能力探测也不等于抓取成功。</p></section>
+<section class="panel table-panel"><h2>Target 研究状态</h2><div class="table-scroll"><table><thead><tr><th>Target</th><th>Provider</th><th>类型</th><th>覆盖</th><th>可用性</th><th>研究结论</th></tr></thead><tbody>{% for target in targets %}<tr><th><a href="/research/targets/{{ target.source_id }}">{{ target.name }}</a></th><td>{{ target.provider_name }}</td><td>{{ target.target_type_label }}</td><td>{{ target.coverage_label }}</td><td>{{ target.availability_label }}</td><td><span class="status status-info">{{ target.research_status_label }}</span></td></tr>{% else %}<tr><td colspan="6">暂无研究记录。</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

@@ -15,6 +15,8 @@ from newsradar.db.models import (
     SourceDefinitionRecord,
     SourceProbeRunRecord,
     SourceRiskAssessmentRecord,
+    SourceResearchProfileRecord,
+    SourceAcquisitionCandidateRecord,
 )
 from newsradar.web.i18n import explain_failure, zh_label
 from newsradar.web.viewmodels import (
@@ -28,6 +30,8 @@ from newsradar.web.viewmodels import (
     RiskView,
     TargetDetail,
     TargetRow,
+    ResearchCandidateView,
+    ResearchTargetView,
 )
 
 FREE_COST_TIERS = {"free", "free_quota", "freemium"}
@@ -46,6 +50,31 @@ _NO_ALTERNATIVE = "无已审核替代路径"
 class DashboardQueryService:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def research_targets(self) -> list[ResearchTargetView]:
+        """Read-only research catalog, loaded in bounded batches (no per-target queries)."""
+        sources = self._session.scalars(select(SourceDefinitionRecord).order_by(SourceDefinitionRecord.name)).all()
+        if not sources:
+            return []
+        ids = [s.id for s in sources]
+        providers = {p.id: p.name for p in self._session.scalars(select(ProviderDefinitionRecord).where(ProviderDefinitionRecord.id.in_({s.provider_id for s in sources}))).all()}
+        profiles = {p.source_id: p for p in self._session.scalars(select(SourceResearchProfileRecord).where(SourceResearchProfileRecord.source_id.in_(ids))).all()}
+        candidates = self._session.scalars(select(SourceAcquisitionCandidateRecord).where(SourceAcquisitionCandidateRecord.source_id.in_(ids), SourceAcquisitionCandidateRecord.is_current.is_(True)).order_by(SourceAcquisitionCandidateRecord.source_id, SourceAcquisitionCandidateRecord.reviewed_at.desc())).all()
+        by_source: dict[str, list[SourceAcquisitionCandidateRecord]] = defaultdict(list)
+        for c in candidates: by_source[c.source_id].append(c)
+        return [self._research_view(s, providers.get(s.provider_id, s.provider_id), profiles.get(s.id), by_source.get(s.id, [])) for s in sources]
+
+    def research_target(self, source_id: str) -> ResearchTargetView | None:
+        return next((v for v in self.research_targets() if v.source_id == source_id), None)
+
+    research_dashboard = research_targets
+
+    @staticmethod
+    def _research_view(source, provider_name, profile, candidates):
+        status = profile.status if profile else "unknown"
+        status_label = {"verified":"已验证", "needs_research":"待研究", "placeholder":"占位", "duplicate":"重复", "retired":"已退役", "unknown":"未记录"}.get(status, status)
+        views = tuple(ResearchCandidateView(key=c.candidate_key, kind=c.kind, implementation=c.implementation, officiality=c.officiality, officiality_label={"official":"官方","third_party":"第三方库","community":"社区"}.get(c.officiality,c.officiality), authentication=c.authentication, authentication_label=zh_label("auth_mode", c.authentication), roles=tuple(c.roles or ()), fields=tuple(c.fields or ()), limitations=tuple(c.limitations or ()), evidence=tuple(c.evidence or ()), sample_status=c.sample_status, decision=c.decision, decision_label={"preferred":"首选","fallback":"备用","blocked":"受限","rejected":"淘汰"}.get(c.decision,c.decision)) for c in candidates)
+        return ResearchTargetView(source_id=source.id, name=source.name, provider_name=provider_name, target_type_label=zh_label("target_type", source.target_type), coverage_label=zh_label("coverage_mode", source.coverage_mode), availability_label=zh_label("availability", source.availability), research_status=status, research_status_label=status_label, wanted_information=tuple(profile.wanted_information or ()) if profile else (), conclusion=profile.conclusion if profile else None, no_fallback_reason=profile.no_fallback_reason if profile else None, candidates=views)
 
     def summary(self) -> DashboardSummary:
         provider_count = self._session.scalar(select(func.count(ProviderDefinitionRecord.id))) or 0
@@ -716,3 +745,7 @@ class DashboardQueryService:
         if isinstance(value, date):
             return datetime.combine(value, time.max if end else time.min)
         raise TypeError("probe date filter must be a date, datetime, ISO date string, or None")
+
+
+# Public name for callers that only need the research read model.
+ResearchQueryService = DashboardQueryService

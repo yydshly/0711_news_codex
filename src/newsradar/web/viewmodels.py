@@ -157,3 +157,37 @@ class GapGroup:
     label: str
     target_count: int
     targets: tuple[GapTarget, ...]
+
+@dataclass(frozen=True, slots=True)
+class ResearchCandidateView:
+    key: str
+    kind: str
+    implementation: str
+    officiality: str
+    officiality_label: str
+    authentication: str
+    authentication_label: str
+    roles: tuple[str, ...]
+    fields: tuple[str, ...]
+    limitations: tuple[str, ...]
+    evidence: tuple[str, ...]
+    sample_status: str
+    decision: str
+    decision_label: str
+    latest_probe_outcome: str | None = None
+    latest_probe_label: str = "尚未探测"
+
+@dataclass(frozen=True, slots=True)
+class ResearchTargetView:
+    source_id: str
+    name: str
+    provider_name: str
+    target_type_label: str
+    coverage_label: str
+    availability_label: str
+    research_status: str
+    research_status_label: str
+    wanted_information: tuple[str, ...]
+    conclusion: str | None
+    no_fallback_reason: str | None
+    candidates: tuple[ResearchCandidateView, ...]
