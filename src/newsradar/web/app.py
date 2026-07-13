@@ -23,6 +23,7 @@ from newsradar.db.models import SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
+from newsradar.settings import get_settings
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.diagnostics import build_diagnostic_narrative
 from newsradar.web.event_queries import EventQueryService
@@ -157,6 +158,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
     )
     templates = Jinja2Templates(directory=_WEB_ROOT / "templates")
     templates.env.autoescape = select_autoescape(("html", "xml"), default_for_string=True)
+    templates.env.globals["http_trust_env"] = get_settings().http_trust_env
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
     def database_error_response(request: Request, error: SQLAlchemyError) -> HTMLResponse:

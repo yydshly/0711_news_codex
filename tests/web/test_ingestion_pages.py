@@ -13,6 +13,7 @@ from newsradar.db.models import (
     RawItemRecord,
     RawItemSnapshotRecord,
 )
+from newsradar.settings import Settings
 from newsradar.web.app import create_app
 
 
@@ -30,6 +31,24 @@ def _client_with_database(monkeypatch, db_session):
 
 def _action_token(page: str) -> str:
     return page.split('name="action_token" value="', 1)[1].split('"', 1)[0]
+
+
+def test_pages_explain_system_network_inheritance_without_proxy_details(
+    monkeypatch, db_session
+):
+    monkeypatch.setattr(
+        "newsradar.web.app.get_settings",
+        lambda: Settings(http_trust_env=True),
+    )
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:secret@127.0.0.1:7890")
+    with _client_with_database(monkeypatch, db_session) as client:
+        page = client.get("/fetch-runs")
+
+    assert page.status_code == 200
+    assert "系统网络继承已启用" in page.text
+    assert "来源探测与后台抓取将遵循本机网络环境" in page.text
+    assert "127.0.0.1:7890" not in page.text
+    assert "user:secret" not in page.text
 
 
 def test_fetch_action_enqueues_once_and_never_fetches_in_request(monkeypatch, db_session):

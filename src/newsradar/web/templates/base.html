@@ -42,6 +42,13 @@
           </div>
           <div class="status-cluster" aria-label="运行状态">
             <span class="status status-{{ database_status_tone | default('info') }}">{{ database_status | default('数据库状态未知') }}</span>
+            <span class="status status-info">
+              {% if http_trust_env %}
+                系统网络继承已启用：来源探测与后台抓取将遵循本机网络环境
+              {% else %}
+                系统网络继承已关闭（排障模式）
+              {% endif %}
+            </span>
             <span class="status status-info">数据最后更新时间：{% if latest_probe_at is defined and latest_probe_at is not none %}{{ latest_probe_at.strftime('%Y-%m-%d %H:%M') }}{% elif latest_probe_at is defined %}暂无探测历史{% else %}不可用{% endif %}</span>
             <span class="status status-info">本机受控操作</span>
           </div>
