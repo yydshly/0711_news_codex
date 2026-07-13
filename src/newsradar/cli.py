@@ -14,6 +14,7 @@ import typer
 from newsradar.db.models import OperationRunRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
+from newsradar.ingestion.trial import evaluate_trial_eligibility
 from newsradar.events.runtime import EventOperationHandler
 from newsradar.local_postgres import (
     LocalPostgresError,
@@ -125,12 +126,19 @@ def fetch_sources(
     root: RootOption = Path("sources"),
     approved: Annotated[bool, typer.Option("--approved")] = True,
     one_off: Annotated[bool, typer.Option("--one-off")] = False,
+    trial: Annotated[bool, typer.Option("--trial")] = False,
     provider: Annotated[str | None, typer.Option()] = None,
     max_items: Annotated[int | None, typer.Option(min=1)] = None,
     dry_run: Annotated[bool, typer.Option()] = False,
     wait: Annotated[bool, typer.Option("--wait/--no-wait")] = True,
 ) -> None:
     """Queue audited source fetches; only a Worker performs network work."""
+    if trial and one_off:
+        typer.echo("--trial cannot be used with --one-off")
+        raise typer.Exit(2)
+    if trial and not approved:
+        typer.echo("--trial cannot be used with --no-approved")
+        raise typer.Exit(2)
     sources = load_source_tree(root)
     selected = [source for source in sources if source_id is None or source.id == source_id]
     if provider:
@@ -141,6 +149,47 @@ def fetch_sources(
     if one_off and source_id is None:
         typer.echo("--one-off requires an explicit source id")
         raise typer.Exit(2)
+    if trial:
+        with create_session() as session:
+            repository = SourceRepository(session)
+            repository.sync(selected)
+            candidates = []
+            excluded: list[tuple[str, str]] = []
+            for source in selected:
+                decision = evaluate_trial_eligibility(
+                    source, repository.latest_probe_snapshot(source.id)
+                )
+                if decision.eligible:
+                    candidates.append(source)
+                else:
+                    excluded.append((source.id, decision.code or "ineligible"))
+            typer.echo(f"Trial candidates: {len(candidates)}")
+            for source_name, code in excluded:
+                typer.echo(f"Trial excluded: {source_name} ({code})")
+            if not candidates:
+                raise typer.Exit(2)
+            commands = OperationCommandService(session)
+            operation_ids = [
+                commands.enqueue_fetch(
+                    source_id=source.id,
+                    provider=provider,
+                    dry_run=dry_run,
+                    max_items=max_items,
+                    trial=True,
+                    trigger="cli",
+                )
+                for source in candidates
+            ]
+            typer.echo(f"Queued operations: {', '.join(map(str, operation_ids))}")
+            if not wait:
+                return
+            terminals = [commands.wait_for_terminal(operation_id) for operation_id in operation_ids]
+            terminal_states = [(operation.id, operation.status) for operation in terminals]
+        for operation_id, status in terminal_states:
+            typer.echo(f"Operation {operation_id}: {status}")
+        if any(status not in {"succeeded", "partial"} for _, status in terminal_states):
+            raise typer.Exit(1)
+        return
     if one_off:
         source = selected[0]
         typer.echo(

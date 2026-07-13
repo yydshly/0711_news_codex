@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from contextlib import nullcontext
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -232,3 +233,34 @@ def test_fetch_worker_passes_audited_scope_to_executor() -> None:
         )
 
         assert scopes == [operation.requested_scope]
+
+
+def test_trial_fetch_worker_blocks_ineligible_latest_probe_before_creating_fetcher(monkeypatch) -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+    from newsradar.sources.repository import SourceRepository
+
+    with _session() as db:
+        source = _source()
+        SourceRepository(db).sync([source])
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH,
+            {"source_id": source.id, "trial": True},
+        )
+        factory_calls: list[object] = []
+
+        def fail_if_fetcher_created(policy):
+            factory_calls.append(policy)
+            raise AssertionError("trial eligibility must be checked before creating a fetcher")
+
+        monkeypatch.setattr("newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db))
+        monkeypatch.setattr("newsradar.operations.fetch_runtime.FetcherFactory", fail_if_fetcher_created)
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler.production([source])
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert factory_calls == []
+        assert record is not None
+        assert record.status == OperationStatus.PARTIAL
+        assert record.error_code == "eligibility_trial_no_probe"

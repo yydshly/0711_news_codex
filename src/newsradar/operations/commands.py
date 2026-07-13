@@ -41,6 +41,7 @@ class OperationCommandService:
         dry_run: bool = False,
         max_items: int | None = None,
         one_off: bool = False,
+        trial: bool = False,
         trigger: str,
     ) -> int:
         deadline_at = self._utcnow() + timedelta(seconds=self._settings.operation_timeout_seconds)
@@ -52,6 +53,7 @@ class OperationCommandService:
                 "dry_run": dry_run,
                 "max_items": max_items,
                 "one_off": one_off,
+                "trial": trial,
                 "deadline_at": deadline_at.isoformat(),
             },
             trigger=trigger,

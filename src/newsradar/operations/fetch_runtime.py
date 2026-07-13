@@ -6,13 +6,15 @@ from typing import Protocol
 
 from newsradar.db.session import create_session
 from newsradar.ingestion.fetchers.base import FetcherFactory, HttpPolicy
-from newsradar.ingestion.schema import FetchOutcome
+from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.ingestion.service import IngestionService, SourceFetchSummary
+from newsradar.ingestion.trial import evaluate_trial_eligibility
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import ErrorCategory, OperationStatus, OperationType
 from newsradar.operations.worker import OperationResult
 from newsradar.sources.schema import SourceDefinition
+from newsradar.sources.repository import SourceRepository
 
 
 class FetchExecutor(Protocol):
@@ -167,12 +169,30 @@ def _execute_production_fetch(
     """Keep the request process outside the web request and every DB transaction."""
 
     async def run() -> SourceFetchSummary:
-        policy = HttpPolicy.default()
-        try:
-            with create_session() as session:
+        with create_session() as session:
+            if bool(requested_scope.get("trial", False)):
+                decision = evaluate_trial_eligibility(
+                    source, SourceRepository(session).latest_probe_snapshot(source.id)
+                )
+                if not decision.eligible:
+                    error_code = f"eligibility_trial_{decision.code or 'ineligible'}"
+                    return SourceFetchSummary(
+                        source.id,
+                        FetchResult(
+                            outcome=FetchOutcome.BLOCKED,
+                            error_code=error_code,
+                            error_message=decision.reason,
+                        ),
+                        error_code=error_code,
+                    )
+            policy = HttpPolicy.default()
+            try:
                 return await IngestionService(session, FetcherFactory(policy)).fetch_source(
                     source,
-                    approved_only=not bool(requested_scope.get("one_off", False)),
+                    approved_only=not bool(
+                        requested_scope.get("one_off", False)
+                        or requested_scope.get("trial", False)
+                    ),
                     max_items=(
                         requested_scope.get("max_items")
                         if isinstance(requested_scope.get("max_items"), int)
@@ -182,7 +202,7 @@ def _execute_production_fetch(
                     operation_run_id=operation_id,
                     checkpoint=checkpoint,
                 )
-        finally:
-            await policy.client.aclose()
+            finally:
+                await policy.client.aclose()
 
     return asyncio.run(run())

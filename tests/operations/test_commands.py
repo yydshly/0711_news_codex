@@ -41,6 +41,7 @@ def test_enqueue_fetch_records_complete_scope() -> None:
             "dry_run": False,
             "max_items": 5,
             "one_off": False,
+            "trial": False,
         }
 
 
