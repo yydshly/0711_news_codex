@@ -23,7 +23,7 @@ access_methods:
   url: https://www.googleapis.com/youtube/v3/videos
   priority: 2
   auth_envs: [YOUTUBE_API_KEY]
-expected_fields: [title, canonical_url, published_at, summary, engagement]
+expected_fields: [title, canonical_url, published_at, summary]
 risk:
   terms: 3
   authentication: 2

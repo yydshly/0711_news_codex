@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from newsradar.providers.schema import Availability, CoverageMode, ProviderCategory
+from newsradar.sources.schema import SourceStatus
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.sources.yaml_loader import load_source_tree
 
@@ -46,3 +47,23 @@ def test_restricted_platforms_are_visible_but_not_claimed_as_direct_ready() -> N
         provider = providers[provider_id]
         assert provider.availability != Availability.READY
         assert provider.unlock_requirements
+
+
+def test_coverage_closure_catalog_facts_are_explicit() -> None:
+    sources = {source.id: source for source in load_source_tree(Path("sources"))}
+
+    youtube = sources["openai-youtube"]
+    assert youtube.expected_fields == [
+        "title",
+        "canonical_url",
+        "published_at",
+        "summary",
+    ]
+    assert "engagement" in youtube.research.wanted_information
+
+    qwen = sources["qwen3-releases"]
+    assert qwen.availability is Availability.UNAVAILABLE
+    assert qwen.status is SourceStatus.DEGRADED
+    assert qwen.unlock_requirements
+    assert "Release" in qwen.unlock_requirements[0]
+    assert str(qwen.official_identity_url) == "https://github.com/QwenLM/Qwen3"

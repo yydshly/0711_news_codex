@@ -1,6 +1,6 @@
 id: qwen3-releases
 name: Qwen3 Releases
-status: candidate
+status: degraded
 nature: first_party
 roles:
 - discovery
@@ -31,12 +31,13 @@ risk:
   - https://docs.github.com/en/rest/releases/releases
 provider_id: github
 target_type: channel
-availability: ready
+availability: unavailable
 coverage_mode: direct
-official_identity_url: https://github.com/
+official_identity_url: https://github.com/QwenLM/Qwen3
 reviewed_at: '2026-07-11'
-unlock_requirements: []
-notes: 'Fallback: no additional audited method.'
+unlock_requirements:
+- Official QwenLM/Qwen3 repository publishes at least one GitHub Release and the content probe succeeds.
+notes: 'Fallback: no automatic fallback. The official releases endpoint currently returns no Release items; wait for an official Release and re-probe. Do not substitute commits, events, HTML, cookies, or browser sessions.'
 
 research:
   status: needs_research
@@ -46,7 +47,7 @@ research:
   - canonical_url
   - published_at
   - summary
-  conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
+  conclusion: Official QwenLM/Qwen3 repository identity is confirmed, but the Releases endpoint currently has no items to fetch; do not treat an HTTP 200 empty array as content coverage.
   risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
   reviewed_at: '2026-07-13'
   candidates:
@@ -62,5 +63,5 @@ research:
     - https://api.github.com/repos/QwenLM/Qwen3/releases
     - https://docs.github.com/en/rest/releases/releases
     reviewed_at: '2026-07-13'
-    sample_status: succeeded
+    sample_status: blocked
     decision: primary

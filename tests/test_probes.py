@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -9,6 +10,7 @@ from newsradar.sources.probes.base import ProbeOutcome
 from newsradar.sources.probes.factory import ProbeFactory
 from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.schema import AccessMethod, SourceDefinition
+from newsradar.sources.yaml_loader import load_source_tree
 
 from .test_source_schema import valid_source
 
@@ -27,6 +29,33 @@ def source_with(method: dict, expected_fields: list[str] | None = None) -> Sourc
     if expected_fields is not None:
         data["expected_fields"] = expected_fields
     return SourceDefinition.model_validate(data)
+
+
+@pytest.mark.asyncio
+async def test_openai_youtube_atom_is_successful_without_engagement_requirement() -> None:
+    sources = {source.id: source for source in load_source_tree(Path("sources"))}
+    source = sources["openai-youtube"]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                "<feed xmlns='http://www.w3.org/2005/Atom'>"
+                "<entry><id>video-1</id><title>OpenAI update</title>"
+                "<link href='https://www.youtube.com/watch?v=video-1'/>"
+                "<published>2026-07-14T00:00:00Z</published>"
+                "<summary>Official video</summary></entry></feed>"
+            ),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProbeFactory(client).create(source.access_methods[0]).probe(
+            source, source.access_methods[0]
+        )
+
+    assert result.outcome is ProbeOutcome.SUCCESS
+    assert result.field_completeness == 1.0
 
 
 @pytest.mark.asyncio
