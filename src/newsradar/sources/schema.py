@@ -21,6 +21,13 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def reject_embedded_url_credentials(value: HttpUrl) -> HttpUrl:
+    parsed = urlsplit(str(value))
+    if parsed.username or parsed.password:
+        raise ValueError("URL 不得内嵌凭据")
+    return value
+
+
 class ResearchStatus(StrEnum):
     VERIFIED = "verified"
     NEEDS_RESEARCH = "needs_research"
@@ -244,8 +251,7 @@ class AccessMethod(StrictModel):
         parsed = urlsplit(str(value))
         if parsed.scheme != "https":
             raise ValueError("Source URLs must use HTTPS")
-        if parsed.username or parsed.password:
-            raise ValueError("Credentials must not be embedded in source URLs")
+        reject_embedded_url_credentials(value)
         host = (parsed.hostname or "").lower()
         if host.endswith(".invalid") or host in {"example.com", "example.org", "example.net"}:
             raise ValueError("Placeholder and .invalid URLs are not audited sources")
@@ -281,6 +287,11 @@ class RiskAssessment(StrictModel):
     operating_cost: int = Field(ge=0, le=5)
     evidence: list[HttpUrl] = Field(default_factory=list)
     hard_block_reason: str | None = None
+
+    @field_validator("evidence")
+    @classmethod
+    def validate_evidence_urls(cls, values: list[HttpUrl]) -> list[HttpUrl]:
+        return [reject_embedded_url_credentials(value) for value in values]
 
     @computed_field
     @property
@@ -331,6 +342,13 @@ class SourceDefinition(StrictModel):
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     research: SourceResearchProfile = Field(default_factory=SourceResearchProfile)
     notes: str | None = None
+
+    @field_validator("official_identity_url")
+    @classmethod
+    def validate_official_identity_url(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is None:
+            return value
+        return reject_embedded_url_credentials(value)
 
     @field_validator("access_methods")
     @classmethod

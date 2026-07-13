@@ -123,6 +123,22 @@ def test_source_definition_rejects_embedded_credentials() -> None:
         SourceDefinition.model_validate(data)
 
 
+def test_source_definition_rejects_embedded_credentials_in_risk_evidence() -> None:
+    data = valid_source()
+    data["risk"]["evidence"] = ["https://user:secret@example.com/terms"]
+
+    with pytest.raises(ValidationError):
+        SourceDefinition.model_validate(data)
+
+
+def test_source_definition_rejects_embedded_credentials_in_official_identity_url() -> None:
+    data = valid_source()
+    data["official_identity_url"] = "https://user:secret@example.com/about"
+
+    with pytest.raises(ValidationError):
+        SourceDefinition.model_validate(data)
+
+
 def test_source_definition_rejects_unknown_fields() -> None:
     data = valid_source()
     data["cookie"] = "secret"
