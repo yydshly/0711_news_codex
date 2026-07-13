@@ -5,7 +5,7 @@ import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -119,9 +119,14 @@ def public_probe_url(candidate: AcquisitionCandidate) -> str:
     parsed = urlsplit(url)
     if parsed.username or parsed.password:
         raise InvalidProbeUrl("credentialed_url")
-    if any(_SENSITIVE_KEY.search(pair.split("=", 1)[0]) for pair in parsed.query.split("&")):
+    if has_sensitive_query(url):
         raise InvalidProbeUrl("sensitive_query")
     return url
+
+
+def has_sensitive_query(url: str) -> bool:
+    """Check decoded query parameter names so percent-encoding cannot bypass the boundary."""
+    return any(_SENSITIVE_KEY.search(key) for key, _ in parse_qsl(urlsplit(url).query))
 
 
 def with_http_evidence(
@@ -139,9 +144,9 @@ def with_http_evidence(
             "http_status": response.status_code,
             "final_url": safe_url,
             "latency_ms": response.extensions.get("research_latency_ms"),
-            "etag": response.headers.get("etag"),
-            "last_modified": response.headers.get("last-modified"),
-            "cache_control": response.headers.get("cache-control"),
+            "etag": sanitize_response_header_value(response.headers.get("etag")),
+            "last_modified": sanitize_response_header_value(response.headers.get("last-modified")),
+            "cache_control": sanitize_response_header_value(response.headers.get("cache-control")),
             "rate_limit_remaining": int(response.headers["x-ratelimit-remaining"])
             if response.headers.get("x-ratelimit-remaining", "").isdigit()
             else None,
@@ -166,6 +171,17 @@ _URL = re.compile(r"https?://[^\s\"'<>]+")
 _SENSITIVE_PAIR = re.compile(
     r"(?i)\b(authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|token|client[_-]?secret|secret|password)\b\s*[:=]\s*[^\s,;&|}]+"
 )
+_UNSAFE_HEADER_VALUE = re.compile(r"(?i)(?:https?://|\b(?:authorization|cookie|bearer|basic)\b)")
+
+
+def sanitize_response_header_value(value: str | None) -> str | None:
+    """Allow bounded operational header values only when they contain no secret-bearing data."""
+    if value is None:
+        return None
+    value = value.strip()
+    if len(value) > 512 or _UNSAFE_HEADER_VALUE.search(value) or _SENSITIVE_PAIR.search(value):
+        return None
+    return value
 
 
 def sanitize_probe_details(value: object) -> object:

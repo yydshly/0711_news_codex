@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import httpx
 from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session
 
@@ -9,6 +10,11 @@ from newsradar.db.models import (
     SourceAcquisitionProbeRunRecord,
     SourceDefinitionVersion,
     SourceResearchProfileRecord,
+)
+from newsradar.research.probes.schema import (
+    AcquisitionProbeOutcome,
+    probe_result,
+    with_http_evidence,
 )
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.schema import SourceDefinition
@@ -187,3 +193,35 @@ def test_candidate_update_preserves_probe_history_and_sanitizes_details() -> Non
             "nested": {"callback": "[redacted credential URL]"},
             "fields": ["title"],
         }
+
+
+def test_probe_run_persistence_does_not_reintroduce_malicious_response_headers() -> None:
+    source = researched_source()
+    candidate = source.research.candidates[0]
+    response = httpx.Response(
+        200,
+        headers={"etag": '"token=secret"', "cache-control": "https://example.test/?token=secret"},
+        request=httpx.Request("GET", "https://example.test/feed"),
+    )
+    result = with_http_evidence(
+        probe_result(source, candidate, AcquisitionProbeOutcome.SUCCEEDED, "ok"),
+        response,
+        candidate,
+    )
+
+    with make_session() as session:
+        repository = SourceRepository(session)
+        repository.sync([source])
+        record = repository.current_acquisition_candidates(source.id)[0]
+        saved = repository.save_acquisition_probe_run(
+            candidate_id=record.id,
+            started_at=result.started_at,
+            completed_at=result.finished_at,
+            outcome=result.outcome.value,
+            details=result.model_dump(mode="json"),
+        )
+        session.commit()
+
+        assert "secret" not in repr(saved.details)
+        assert saved.details["etag"] is None
+        assert saved.details["cache_control"] is None

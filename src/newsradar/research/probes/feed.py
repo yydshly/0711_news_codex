@@ -15,6 +15,7 @@ from .schema import (
     InvalidProbeUrl,
     probe_result,
     public_probe_url,
+    sanitize_response_header_value,
     with_http_evidence,
 )
 
@@ -91,7 +92,9 @@ class FeedResearchProbe:
                 samples=samples,
                 metadata={
                     "terms_review_required": True,
-                    "content_type": response.headers.get("content-type"),
+                    "content_type": sanitize_response_header_value(
+                        response.headers.get("content-type")
+                    ),
                 },
             ),
             response,

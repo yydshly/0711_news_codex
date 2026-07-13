@@ -63,3 +63,11 @@
 - Controlled checks recorded successful bounded `trust_env=False` responses from hnRSS and Python.org without proxy use.
 - Static metadata recursively redacts sensitive nested JSON keys and strips all URL query/fragment values while retaining safe path evidence.
 - `AcquisitionProbeSample` strips canonical URL query/fragment at construction and rejects URL userinfo; probe targets reject credential-bearing query keys before `safe_get`.
+
+## Final security hardening
+
+- `safe_http` now rejects caller-owned `httpx.AsyncClient` instances with a non-empty CookieJar before `build_request` can merge cookies.
+- Sensitive query keys are parsed with `parse_qsl`, so percent-encoded names such as `access%5Ftoken` and `%74oken` are rejected. The same validator runs for every redirect hop before it is followed.
+- Response-derived ETag, Last-Modified, Cache-Control, and feed Content-Type values use a shared bounded header-value sanitizer. URLs, credential-like values, and sensitive `key=value` pairs become `None`; numeric rate-limit remaining is retained.
+- Regression coverage confirms no Cookie request is sent, unsafe redirects stop at the first hop, malicious headers do not survive `model_dump`, and probe-run persistence cannot reintroduce them.
+- Verification: targeted security/repository tests passed; complete research, CLI, schema, repository, and migration test selection passed; `ruff check` and `git diff --check` passed.

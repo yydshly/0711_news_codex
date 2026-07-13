@@ -9,6 +9,8 @@ import httpx
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionAuth, AcquisitionCandidate
 
+from .schema import has_sensitive_query
+
 
 class UnsafeProbeUrl(Exception):
     pass
@@ -25,7 +27,13 @@ def network_preflight(candidate: AcquisitionCandidate) -> None:
 
 def _safe_url(url: str, client: httpx.AsyncClient) -> None:
     parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.username or parsed.password or not parsed.hostname:
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or not parsed.hostname
+        or has_sensitive_query(url)
+    ):
         raise UnsafeProbeUrl()
     host = parsed.hostname.lower()
     if host == "localhost" or host.endswith(".localhost"):
@@ -57,6 +65,7 @@ def _safe_client(policy: HttpPolicy) -> httpx.AsyncClient:
         client.trust_env
         or client.follow_redirects
         or getattr(client, "_mounts", None)
+        or bool(list(client.cookies.jar))
         or any(any(part in k.lower() for part in blocked) for k in client.headers)
     ):
         raise UnsafeProbeUrl()
