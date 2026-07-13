@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import ModelUsage
@@ -329,34 +330,54 @@ class SourceRepository:
 
     def latest_probe_snapshot(self, source_id: str) -> ProbeSnapshot | None:
         """Return the newest completed probe state, or ``None`` when none exists."""
-        probe_run = self.session.scalar(
-            select(SourceProbeRunRecord)
+        return self.latest_probe_snapshots([source_id]).get(source_id)
+
+    def latest_probe_snapshots(self, source_ids: Sequence[str]) -> dict[str, ProbeSnapshot]:
+        """Return newest completed probe state for each requested source in bounded queries."""
+        requested_ids = tuple(dict.fromkeys(source_ids))
+        if not requested_ids:
+            return {}
+        ranked = (
+            select(
+                SourceProbeRunRecord.id.label("probe_run_id"),
+                func.row_number()
+                .over(
+                    partition_by=SourceProbeRunRecord.source_id,
+                    order_by=(
+                        SourceProbeRunRecord.finished_at.desc(),
+                        SourceProbeRunRecord.id.desc(),
+                    ),
+                )
+                .label("history_rank"),
+            )
             .where(
-                SourceProbeRunRecord.source_id == source_id,
+                SourceProbeRunRecord.source_id.in_(requested_ids),
                 SourceProbeRunRecord.finished_at.is_not(None),
             )
-            .order_by(SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc())
+            .subquery()
         )
-        if probe_run is None:
-            return None
-
-        sample_fields = frozenset(
-            field
-            for fields in self.session.scalars(
-                select(SourceProbeSampleRecord.fields_present).where(
-                    SourceProbeSampleRecord.probe_run_id == probe_run.id
-                )
+        probe_runs = self.session.scalars(
+            select(SourceProbeRunRecord)
+            .join(ranked, SourceProbeRunRecord.id == ranked.c.probe_run_id)
+            .where(ranked.c.history_rank == 1)
+        ).all()
+        fields_by_run: dict[int, set[str]] = {}
+        if probe_runs:
+            for probe_run_id, fields in self.session.execute(
+                select(SourceProbeSampleRecord.probe_run_id, SourceProbeSampleRecord.fields_present)
+                .where(SourceProbeSampleRecord.probe_run_id.in_([run.id for run in probe_runs]))
+            ):
+                fields_by_run.setdefault(probe_run_id, set()).update(fields)
+        return {
+            run.source_id: ProbeSnapshot(
+                outcome=run.outcome,
+                sample_count=int(run.metrics.get("sample_count") or 0),
+                field_completeness=float(run.metrics.get("field_completeness") or 0.0),
+                sample_fields=frozenset(fields_by_run.get(run.id, set())),
+                finished_at=run.finished_at,
             )
-            for field in fields
-        )
-        metrics = probe_run.metrics
-        return ProbeSnapshot(
-            outcome=probe_run.outcome,
-            sample_count=int(metrics.get("sample_count") or 0),
-            field_completeness=float(metrics.get("field_completeness") or 0.0),
-            sample_fields=sample_fields,
-            finished_at=probe_run.finished_at,
-        )
+            for run in probe_runs
+        }
 
     def save_model_usage(self, usage: ModelUsage) -> ModelUsageRecord:
         record = ModelUsageRecord(

@@ -269,3 +269,80 @@ def test_repository_uses_the_latest_completed_probe_and_unions_sample_fields() -
         assert snapshot.sample_count == 2
         assert snapshot.sample_fields == frozenset({"title", "canonical_url"})
         assert evaluate_trial_eligibility(source, snapshot).eligible is True
+
+
+def test_repository_reads_latest_completed_snapshots_for_multiple_sources() -> None:
+    first = _source()
+    second = _source(id="anthropic-news-two")
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        repository = SourceRepository(session)
+        repository.sync([first, second])
+        earlier = datetime(2026, 7, 12, tzinfo=UTC)
+        later = datetime(2026, 7, 13, tzinfo=UTC)
+        for source in (first, second):
+            repository.save_probe_result(
+                ProbeResult(
+                    source_id=source.id,
+                    access_kind="rss",
+                    access_url="https://www.anthropic.com/news/rss.xml",
+                    outcome=ProbeOutcome.FAILED,
+                    started_at=earlier,
+                    finished_at=earlier,
+                    sample_count=0,
+                    field_completeness=0.0,
+                    suggested_status="candidate",
+                    reason="failed",
+                )
+            )
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=first.id,
+                access_kind="rss",
+                access_url="https://www.anthropic.com/news/rss.xml",
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=later,
+                finished_at=later,
+                sample_count=2,
+                field_completeness=1.0,
+                samples=[
+                    ProbeSample(external_id="one", title="First"),
+                    ProbeSample(
+                        external_id="two",
+                        canonical_url="https://www.anthropic.com/news/second",
+                    ),
+                ],
+                suggested_status="candidate",
+                reason="ok",
+            )
+        )
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=second.id,
+                access_kind="rss",
+                access_url="https://www.anthropic.com/news/rss.xml",
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=later,
+                finished_at=later,
+                sample_count=1,
+                field_completeness=1.0,
+                samples=[
+                    ProbeSample(
+                        external_id="three",
+                        title="Second source",
+                        canonical_url="https://www.anthropic.com/news/third",
+                    )
+                ],
+                suggested_status="candidate",
+                reason="ok",
+            )
+        )
+
+        snapshots = repository.latest_probe_snapshots([first.id, second.id, "unknown"])
+
+    assert set(snapshots) == {first.id, second.id}
+    assert snapshots[first.id].outcome == snapshots[second.id].outcome == "success"
+    assert snapshots[first.id].sample_fields == frozenset({"title", "canonical_url"})
+    assert snapshots[second.id].sample_fields == frozenset({"title", "canonical_url"})

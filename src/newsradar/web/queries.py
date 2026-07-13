@@ -768,11 +768,7 @@ class DashboardQueryService:
             methods_by_source[method.source_id].append(method)
         risks = self._latest_risks(source_ids)
         repository = SourceRepository(self._session)
-        snapshots = {
-            source.id: snapshot
-            for source in sources
-            if (snapshot := repository.latest_probe_snapshot(source.id)) is not None
-        }
+        snapshots = repository.latest_probe_snapshots(source_ids)
         decisions = {
             source.id: evaluate_trial_eligibility(
                 self._trial_source_definition(

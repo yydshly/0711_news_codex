@@ -96,18 +96,23 @@ def test_dashboard_and_target_catalog_distinguish_trial_coverage(db_session) -> 
         assert sensitive_name not in targets.text
 
 
-def test_trial_dashboard_reads_latest_snapshots_through_source_repository(
+def test_trial_dashboard_reads_latest_snapshots_in_one_repository_batch(
     db_session, monkeypatch
 ) -> None:
-    seen_source_ids: list[str] = []
-    original = SourceRepository.latest_probe_snapshot
+    batches: list[tuple[str, ...]] = []
+    original = SourceRepository.latest_probe_snapshots
 
-    def track_latest_snapshot(self, source_id: str):
-        seen_source_ids.append(source_id)
-        return original(self, source_id)
+    def track_latest_snapshots(self, source_ids):
+        batches.append(tuple(source_ids))
+        return original(self, source_ids)
 
-    monkeypatch.setattr(SourceRepository, "latest_probe_snapshot", track_latest_snapshot)
+    def fail_per_source_snapshot(self, source_id: str):
+        raise AssertionError(f"unexpected per-source probe lookup: {source_id}")
+
+    monkeypatch.setattr(SourceRepository, "latest_probe_snapshots", track_latest_snapshots)
+    monkeypatch.setattr(SourceRepository, "latest_probe_snapshot", fail_per_source_snapshot)
 
     DashboardQueryService(db_session).summary()
 
-    assert set(seen_source_ids) == {"github-openai-python", "search-ai", "x-openai"}
+    assert len(batches) == 1
+    assert set(batches[0]) == {"github-openai-python", "search-ai", "x-openai"}
