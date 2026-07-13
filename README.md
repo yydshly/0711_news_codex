@@ -114,6 +114,43 @@ uv run newsradar sources probe --all --root sources --no-persist `
 YAML is the audited source of truth. Probe history and immutable YAML versions belong in
 PostgreSQL. Probe results never rewrite YAML or automatically activate a source.
 
+## 失败来源修复流程
+
+来源修复台用于处理某个固定 UTC 基线下“原本符合公开试用前置条件、但内容探测失败”的
+Target。它不会扫描全部非成功记录，也不会把仅目录、间接发现、需要凭据或条款硬阻塞的来源
+误算为待修复来源。当前 2026-07-13 基线固定为 27 项；修复前可试用来源为 16，受控验证后为
+37。完整证据见 `reports/source-failure-remediation.md`，原始与修复后基线说明见
+`reports/source-trial-baseline.md`。
+
+先生成不可变清单，再同步人工审核的 YAML，最后逐个排队候选探测：
+
+```powershell
+uv run newsradar sources remediate snapshot `
+  --baseline-at 2026-07-13T11:47:00Z `
+  --output reports/source-failure-remediation.md
+uv run newsradar sources sync --root sources
+uv run newsradar worker --root sources --forever --worker-id source-remediation-runtime
+uv run newsradar sources remediate queue anthropic-sdk-releases github-releases-api `
+  --original-probe-id 38 --baseline-at 2026-07-13T11:47:00Z --wait
+uv run newsradar sources remediate report `
+  --baseline-at 2026-07-13T11:47:00Z --root sources `
+  --output reports/source-failure-remediation.md
+```
+
+`queue` 每次只接受一个 Target 和一个已同步候选；网络请求只由 Worker 执行。Worker 的
+`--root` 必须指向与 `sources sync` 相同的审核目录，否则会明确返回候选不存在。只有分类为
+`network_transient` 的修复操作允许人工执行一次 `sources remediate retry <operation-id>`；
+401/403、429、字段不完整、条款阻塞和未知错误不会自动重试。
+
+默认 `HTTP_TRUST_ENV=true`，HTTP 客户端继承当前进程可见的系统网络环境；项目不保存或展示
+具体代理配置，也不使用代理轮换绕过平台限制。HTML 仍只允许人工审核的静态研究候选，不执行
+JavaScript、不携带 Cookie 或登录态、不生成 RawItem。X、Facebook、Instagram、LinkedIn、
+TikTok 等受限平台在没有官方凭据、审批或付费条件时保持明确阻塞，不回退到登录网页抓取。
+
+启动本地服务后访问 `/remediation` 查看候选方式和最新研究探测；`/probes` 查看内容探测，
+`/operations` 与 `/fetch-runs` 查看 Worker 操作和试用抓取结果。浏览这些页面本身不会发起
+网络抓取。
+
 ## Source Universe v2
 
 Providers describe platform-level access, policy, authentication, cost, and capabilities.
