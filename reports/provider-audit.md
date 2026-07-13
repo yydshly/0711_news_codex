@@ -1,6 +1,6 @@
 # News Codex Source Coverage
 
-Generated: 2026-07-13T04:39:44.493917+00:00
+Generated: 2026-07-13T04:46:02.576615+00:00
 
 | Metric | Count |
 |---|---:|
