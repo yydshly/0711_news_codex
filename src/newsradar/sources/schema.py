@@ -21,6 +21,139 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ResearchStatus(StrEnum):
+    VERIFIED = "verified"
+    NEEDS_RESEARCH = "needs_research"
+    PLACEHOLDER = "placeholder"
+    DUPLICATE = "duplicate"
+    RETIRED = "retired"
+
+
+class AcquisitionKind(StrEnum):
+    RSS = "rss"
+    ATOM = "atom"
+    WEBSUB = "websub"
+    PUBLIC_API = "public_api"
+    API_KEY_API = "api_key_api"
+    OAUTH_API = "oauth_api"
+    SITEMAP = "sitemap"
+    HTML = "html"
+    JSON_LD = "json_ld"
+    EMBEDDED_JSON = "embedded_json"
+    LIBRARY = "library"
+    AGGREGATOR = "aggregator"
+    MANUAL = "manual"
+
+
+class Officiality(StrEnum):
+    OFFICIAL = "official"
+    DOCUMENTED_PUBLIC = "documented_public"
+    UNOFFICIAL_LIBRARY = "unofficial_library"
+    THIRD_PARTY_SERVICE = "third_party_service"
+
+
+class AcquisitionAuth(StrEnum):
+    NONE = "none"
+    API_KEY = "api_key"
+    OAUTH = "oauth"
+    APPROVAL = "approval"
+    PAYMENT = "payment"
+    LOGIN_COOKIE = "login_cookie"
+
+
+class AcquisitionRole(StrEnum):
+    DISCOVERY = "discovery"
+    METADATA = "metadata"
+    CONTENT = "content"
+    ENGAGEMENT = "engagement"
+    TRANSCRIPT = "transcript"
+    EVIDENCE = "evidence"
+
+
+class AcquisitionDecision(StrEnum):
+    PRIMARY = "primary"
+    SUPPLEMENT = "supplement"
+    FALLBACK = "fallback"
+    MANUAL_ONLY = "manual_only"
+    REJECTED = "rejected"
+
+
+class SampleStatus(StrEnum):
+    NOT_RUN = "not_run"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
+class AcquisitionCandidate(StrictModel):
+    key: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    kind: AcquisitionKind
+    implementation: str = Field(min_length=1, max_length=120)
+    officiality: Officiality
+    authentication: AcquisitionAuth
+    roles: tuple[AcquisitionRole, ...] = Field(min_length=1)
+    fields: tuple[str, ...] = Field(min_length=1)
+    limitations: tuple[str, ...]
+    evidence: tuple[HttpUrl, ...] = Field(min_length=1)
+    reviewed_at: date
+    sample_status: SampleStatus
+    decision: AcquisitionDecision
+
+    @field_validator("evidence")
+    @classmethod
+    def validate_evidence_urls(cls, values: tuple[HttpUrl, ...]) -> tuple[HttpUrl, ...]:
+        for value in values:
+            parsed = urlsplit(str(value))
+            if parsed.scheme != "https":
+                raise ValueError("研究证据 URL 必须使用 HTTPS")
+            if parsed.username or parsed.password:
+                raise ValueError("研究证据 URL 不得内嵌凭据")
+        return values
+
+    @model_validator(mode="after")
+    def reject_login_cookie_candidate(self) -> AcquisitionCandidate:
+        if (
+            self.authentication == AcquisitionAuth.LOGIN_COOKIE
+            and self.decision != AcquisitionDecision.REJECTED
+        ):
+            raise ValueError("使用登录 Cookie 的候选方案只能标记为 rejected")
+        return self
+
+
+class SourceResearchProfile(StrictModel):
+    status: ResearchStatus = ResearchStatus.NEEDS_RESEARCH
+    wanted_information: tuple[str, ...] = ()
+    candidates: tuple[AcquisitionCandidate, ...] = ()
+    conclusion: str | None = None
+    no_fallback_reason: str | None = None
+    reviewed_at: date | None = None
+
+    @model_validator(mode="after")
+    def validate_verified_profile(self) -> SourceResearchProfile:
+        if self.status != ResearchStatus.VERIFIED:
+            return self
+        if not self.wanted_information:
+            raise ValueError("已验证研究档案必须说明所需信息")
+        if not any(
+            candidate.decision == AcquisitionDecision.PRIMARY for candidate in self.candidates
+        ):
+            raise ValueError("已验证研究档案必须包含 primary 候选方案")
+        if not any(
+            candidate.sample_status in {SampleStatus.SUCCEEDED, SampleStatus.PARTIAL}
+            for candidate in self.candidates
+        ):
+            raise ValueError("已验证研究档案必须包含成功或部分成功的样本")
+        if not any(candidate.evidence for candidate in self.candidates):
+            raise ValueError("已验证研究档案必须包含证据 URL")
+        if not any(
+            candidate.decision == AcquisitionDecision.FALLBACK for candidate in self.candidates
+        ):
+            if not self.no_fallback_reason or not self.no_fallback_reason.strip():
+                raise ValueError("缺少 fallback 候选方案时必须说明原因")
+        return self
+
+
 class SourceStatus(StrEnum):
     CANDIDATE = "candidate"
     ACTIVE = "active"
@@ -179,6 +312,7 @@ class SourceDefinition(StrictModel):
     expected_fields: list[ExpectedField] = Field(min_length=1)
     risk: RiskAssessment
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
+    research: SourceResearchProfile = Field(default_factory=SourceResearchProfile)
     notes: str | None = None
 
     @field_validator("access_methods")
