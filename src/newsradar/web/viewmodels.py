@@ -182,6 +182,9 @@ class ResearchTargetView:
     source_id: str
     name: str
     provider_name: str
+    provider_availability_label: str
+    target_status_label: str
+    nature_label: str
     target_type_label: str
     coverage_label: str
     availability_label: str

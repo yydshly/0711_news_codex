@@ -57,24 +57,35 @@ class DashboardQueryService:
         if not sources:
             return []
         ids = [s.id for s in sources]
-        providers = {p.id: p.name for p in self._session.scalars(select(ProviderDefinitionRecord).where(ProviderDefinitionRecord.id.in_({s.provider_id for s in sources}))).all()}
+        providers = {p.id: p for p in self._session.scalars(select(ProviderDefinitionRecord).where(ProviderDefinitionRecord.id.in_({s.provider_id for s in sources}))).all()}
         profiles = {p.source_id: p for p in self._session.scalars(select(SourceResearchProfileRecord).where(SourceResearchProfileRecord.source_id.in_(ids))).all()}
         candidates = self._session.scalars(select(SourceAcquisitionCandidateRecord).where(SourceAcquisitionCandidateRecord.source_id.in_(ids), SourceAcquisitionCandidateRecord.is_current.is_(True)).order_by(SourceAcquisitionCandidateRecord.source_id, SourceAcquisitionCandidateRecord.reviewed_at.desc())).all()
         by_source: dict[str, list[SourceAcquisitionCandidateRecord]] = defaultdict(list)
         for c in candidates: by_source[c.source_id].append(c)
-        return [self._research_view(s, providers.get(s.provider_id, s.provider_id), profiles.get(s.id), by_source.get(s.id, [])) for s in sources]
+        return [self._research_view(s, providers[s.provider_id].name if s.provider_id in providers else s.provider_id, profiles.get(s.id), by_source.get(s.id, []), providers[s.provider_id].availability if s.provider_id in providers else "unknown") for s in sources]
 
     def research_target(self, source_id: str) -> ResearchTargetView | None:
-        return next((v for v in self.research_targets() if v.source_id == source_id), None)
+        source = self._session.get(SourceDefinitionRecord, source_id)
+        if source is None:
+            return None
+        provider = self._session.get(ProviderDefinitionRecord, source.provider_id)
+        profile = self._session.get(SourceResearchProfileRecord, source_id)
+        candidates = self._session.scalars(select(SourceAcquisitionCandidateRecord).where(SourceAcquisitionCandidateRecord.source_id == source_id, SourceAcquisitionCandidateRecord.is_current.is_(True)).order_by(SourceAcquisitionCandidateRecord.reviewed_at.desc())).all()
+        return self._research_view(source, provider.name if provider else source.provider_id, profile, candidates, provider.availability if provider else "unknown")
 
     research_dashboard = research_targets
 
     @staticmethod
-    def _research_view(source, provider_name, profile, candidates):
+    def _research_view(source, provider_name, profile, candidates, provider_availability="unknown"):
         status = profile.status if profile else "unknown"
-        status_label = {"verified":"已验证", "needs_research":"待研究", "placeholder":"占位", "duplicate":"重复", "retired":"已退役", "unknown":"未记录"}.get(status, status)
-        views = tuple(ResearchCandidateView(key=c.candidate_key, kind=c.kind, implementation=c.implementation, officiality=c.officiality, officiality_label={"official":"官方","third_party":"第三方库","community":"社区"}.get(c.officiality,c.officiality), authentication=c.authentication, authentication_label=zh_label("auth_mode", c.authentication), roles=tuple(c.roles or ()), fields=tuple(c.fields or ()), limitations=tuple(c.limitations or ()), evidence=tuple(c.evidence or ()), sample_status=c.sample_status, decision=c.decision, decision_label={"preferred":"首选","fallback":"备用","blocked":"受限","rejected":"淘汰"}.get(c.decision,c.decision)) for c in candidates)
-        return ResearchTargetView(source_id=source.id, name=source.name, provider_name=provider_name, target_type_label=zh_label("target_type", source.target_type), coverage_label=zh_label("coverage_mode", source.coverage_mode), availability_label=zh_label("availability", source.availability), research_status=status, research_status_label=status_label, wanted_information=tuple(profile.wanted_information or ()) if profile else (), conclusion=profile.conclusion if profile else None, no_fallback_reason=profile.no_fallback_reason if profile else None, candidates=views)
+        status_label = {"verified":"已验证", "needs_research":"待研究", "placeholder":"占位", "duplicate":"重复", "retired":"已退役", "unknown":"未知"}.get(status, "未知")
+        officiality = {"official":"官方", "documented_public":"有公开文档", "unofficial_library":"非官方库", "third_party_service":"第三方服务"}
+        decisions = {"primary":"首选", "supplement":"补充", "fallback":"备用", "manual_only":"仅人工", "rejected":"淘汰"}
+        auth = {"none":"无需认证", "api_key":"API Key", "oauth":"OAuth", "approval":"审批", "payment":"付费", "login_cookie":"登录 Cookie"}
+        kinds = {"rss":"RSS", "atom":"Atom", "rest_api":"REST API", "public_api":"公开 API", "html":"HTML 网页", "sitemap":"站点地图", "library":"第三方库", "service":"第三方服务", "manual":"人工"}
+        samples = {"not_run":"未采样", "success":"已采样", "failed":"采样失败", "blocked":"采样受限"}
+        views = tuple(ResearchCandidateView(key=c.candidate_key, kind=kinds.get(c.kind, "未知"), implementation=c.implementation, officiality=c.officiality, officiality_label=officiality.get(c.officiality, "未知"), authentication=c.authentication, authentication_label=auth.get(c.authentication, "未知"), roles=tuple(c.roles or ()), fields=tuple(c.fields or ()), limitations=tuple(c.limitations or ()), evidence=tuple(c.evidence or ()), sample_status=samples.get(c.sample_status, "未知"), decision=c.decision, decision_label=decisions.get(c.decision, "未知")) for c in candidates)
+        return ResearchTargetView(source_id=source.id, name=source.name, provider_name=provider_name, provider_availability_label=zh_label("availability", provider_availability) if provider_availability in {"ready","requires_credentials","requires_approval","requires_payment","manual_only","unavailable"} else "未知", target_status_label=zh_label("status", source.status) if source.status in {"candidate","active","degraded","paused","disabled"} else "未知", nature_label=zh_label("nature", source.nature) if source.nature in {"first_party","research","community","professional_media","aggregator","social"} else "未知", target_type_label=zh_label("target_type", source.target_type), coverage_label=zh_label("coverage_mode", source.coverage_mode), availability_label=zh_label("availability", source.availability), research_status=status, research_status_label=status_label, wanted_information=tuple(profile.wanted_information or ()) if profile else (), conclusion=profile.conclusion if profile else None, no_fallback_reason=profile.no_fallback_reason if profile else None, candidates=views)
 
     def summary(self) -> DashboardSummary:
         provider_count = self._session.scalar(select(func.count(ProviderDefinitionRecord.id))) or 0

@@ -473,16 +473,18 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         result, error_response = query_with_timestamp_safely(request, lambda service: service.research_targets())
         if error_response is not None:
             return error_response
-        return templates.TemplateResponse(request=request, name="research_dashboard.html", context={"targets": result or (), "database_status": "数据库已连接", "database_status_tone": "healthy", "latest_probe_at": None})
+        targets, latest_probe_at = result or ((), None)
+        return templates.TemplateResponse(request=request, name="research_dashboard.html", context={"targets": targets, "database_status": "数据库已连接", "database_status_tone": "healthy", "latest_probe_at": latest_probe_at})
 
     @app.get("/research/targets/{source_id}", response_class=HTMLResponse)
     def research_target(request: Request, source_id: str) -> HTMLResponse:
         result, error_response = query_with_timestamp_safely(request, lambda service: service.research_target(source_id))
         if error_response is not None:
             return error_response
-        if result is None:
+        detail, latest_probe_at = result or (None, None)
+        if detail is None:
             raise HTTPException(status_code=404)
-        return templates.TemplateResponse(request=request, name="research_target.html", context={"target": result, "database_status": "数据库已连接", "database_status_tone": "healthy", "latest_probe_at": None})
+        return templates.TemplateResponse(request=request, name="research_target.html", context={"target": detail, "database_status": "数据库已连接", "database_status_tone": "healthy", "latest_probe_at": latest_probe_at})
     @app.get("/providers/{provider_id}", response_class=HTMLResponse)
     def provider_details(request: Request, provider_id: str) -> HTMLResponse:
         result, error_response = query_with_timestamp_safely(
