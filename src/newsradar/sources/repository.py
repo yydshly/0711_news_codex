@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -55,6 +55,8 @@ def _sanitize_research_details(value: object) -> object:
             or any(_SENSITIVE_DETAIL_KEY.search(key) for key, _ in parse_qsl(parsed.query))
         ):
             return "[redacted credential URL]"
+        if parsed.scheme and parsed.netloc:
+            value = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
         return _SENSITIVE_VALUE.sub("[REDACTED]", redact(value))
     return value
 

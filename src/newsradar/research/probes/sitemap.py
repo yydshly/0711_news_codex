@@ -6,9 +6,9 @@ from xml.etree import ElementTree
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
-from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
-from .robots import allowed as robots_allowed
 from .blocking import blocked_reason
+from .robots import allowed as robots_allowed
+from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .schema import (
     AcquisitionProbeOutcome,
     AcquisitionProbeSample,
@@ -31,36 +31,60 @@ class SitemapResearchProbe:
         try:
             robot_response = await safe_get(self.policy, candidate, robots)
             if robot_response.status_code >= 500:
-                return probe_result(
-                    source,
+                return with_http_evidence(
+                    probe_result(
+                        source,
+                        candidate,
+                        AcquisitionProbeOutcome.BLOCKED,
+                        "robots.txt 服务不可达，已停止自动内容探测",
+                        "robots_unavailable",
+                        metadata={"terms_review_required": True},
+                        blocked_condition="robots",
+                    ),
+                    robot_response,
                     candidate,
-                    AcquisitionProbeOutcome.BLOCKED,
-                    "robots.txt 服务不可达，已停止自动内容探测",
-                    "robots_unavailable",
-                    metadata={"terms_review_required": True},
                 )
             if robot_response.status_code == 401 or robot_response.status_code == 403:
-                return probe_result(
-                    source,
+                return with_http_evidence(
+                    probe_result(
+                        source,
+                        candidate,
+                        AcquisitionProbeOutcome.BLOCKED,
+                        "robots 规则拒绝访问",
+                        "robots_denied",
+                        metadata={"terms_review_required": True, "blocked_condition": "robots"},
+                        blocked_condition="robots",
+                    ),
+                    robot_response,
                     candidate,
-                    AcquisitionProbeOutcome.BLOCKED,
-                    "robots 规则拒绝访问",
-                    "robots_denied",
-                    metadata={"terms_review_required": True},
                 )
             if not robots_allowed(robot_response.text, parts.path):
-                return probe_result(
-                    source,
+                return with_http_evidence(
+                    probe_result(
+                        source,
+                        candidate,
+                        AcquisitionProbeOutcome.BLOCKED,
+                        "robots 规则禁止目标路径",
+                        "robots_denied",
+                        metadata={"terms_review_required": True, "blocked_condition": "robots"},
+                        blocked_condition="robots",
+                    ),
+                    robot_response,
                     candidate,
-                    AcquisitionProbeOutcome.BLOCKED,
-                    "robots 规则禁止目标路径",
-                    "robots_denied",
-                    metadata={"terms_review_required": True, "blocked_condition": "robots"},
                 )
             response = await safe_get(self.policy, candidate, target)
             if reason := blocked_reason(response):
-                return probe_result(
-                    source, candidate, AcquisitionProbeOutcome.BLOCKED, reason, "access_blocked"
+                return with_http_evidence(
+                    probe_result(
+                        source,
+                        candidate,
+                        AcquisitionProbeOutcome.BLOCKED,
+                        reason,
+                        "access_blocked",
+                        blocked_condition="access",
+                    ),
+                    response,
+                    candidate,
                 )
             response.raise_for_status()
             root = ElementTree.fromstring(response.content)

@@ -37,3 +37,7 @@ async def test_robots_server_error_blocks_sitemap_content_probe() -> None:
         result = await SitemapResearchProbe(HttpPolicy(client)).probe(source, candidate)
     assert result.outcome.value == "blocked"
     assert result.error_code == "robots_unavailable"
+    assert result.http_status == 503
+    assert result.final_url == "https://example.test/robots.txt"
+    assert result.blocked_condition == "robots"
+    assert result.latency_ms is not None

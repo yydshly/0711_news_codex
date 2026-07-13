@@ -31,3 +31,49 @@ async def test_oauth_api_is_blocked_without_sending_authorization() -> None:
         result = await ApiResearchProbe(HttpPolicy(client)).probe(source, candidate)
     assert result.outcome.value == "blocked"
     assert result.error_code == "credential_required"
+
+
+@pytest.mark.asyncio
+async def test_public_api_records_http_evidence_and_returns_counted_samples() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    candidate = AcquisitionCandidate.model_validate(
+        {
+            "key": "public-api",
+            "kind": "public_api",
+            "implementation": "httpx",
+            "officiality": "official",
+            "authentication": "none",
+            "roles": ["metadata"],
+            "fields": ["title"],
+            "limitations": [],
+            "evidence": ["https://example.test/api?token=never-persist"],
+            "reviewed_at": "2026-07-12",
+            "sample_status": "not_run",
+            "decision": "manual_only",
+        }
+    )
+
+    async def responder(request):
+        return httpx.Response(
+            200,
+            headers={
+                "etag": '"version-1"',
+                "last-modified": "Sun, 12 Jul 2026 12:00:00 GMT",
+                "cache-control": "max-age=60",
+                "x-ratelimit-remaining": "7",
+            },
+            json={"items": [{"id": "one", "title": "One"}, {"id": "two", "title": "Two"}]},
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(responder), trust_env=False
+    ) as client:
+        result = await ApiResearchProbe(HttpPolicy(client)).probe(source, candidate)
+
+    assert result.http_status == 200
+    assert result.final_url == "https://example.test/api"
+    assert result.etag == '"version-1"'
+    assert result.last_modified == "Sun, 12 Jul 2026 12:00:00 GMT"
+    assert result.latency_ms is not None
+    assert result.rate_limit_remaining == 7
+    assert result.sample_count == len(result.samples) == 2

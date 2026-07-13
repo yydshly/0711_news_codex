@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import time
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -66,6 +67,7 @@ async def safe_get(policy: HttpPolicy, candidate: AcquisitionCandidate, url: str
     """A bounded no-credential GET with explicit validated redirect hops."""
     network_preflight(candidate)
     client = _safe_client(policy)
+    started = time.perf_counter()
     current = url
     for _ in range(6):
         _safe_url(current, client)
@@ -88,9 +90,14 @@ async def safe_get(policy: HttpPolicy, candidate: AcquisitionCandidate, url: str
                 chunks.append(chunk)
             return httpx.Response(
                 response.status_code,
-                headers=response.headers,
+                headers={
+                    key: value
+                    for key, value in response.headers.items()
+                    if key.lower() not in {"content-encoding", "content-length"}
+                },
                 content=b"".join(chunks),
                 request=request,
+                extensions={"research_latency_ms": (time.perf_counter() - started) * 1000},
             )
         finally:
             await response.aclose()

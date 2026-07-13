@@ -598,7 +598,7 @@ def probe_source_research_candidate(
                     started_at=result.started_at,
                     completed_at=result.finished_at,
                     outcome=result.outcome.value,
-                    sample_count=len(result.samples),
+                    sample_count=result.sample_count,
                     http_status=result.http_status,
                     latency_ms=result.latency_ms,
                     fields_present=result.fields_present,

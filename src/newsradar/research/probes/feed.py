@@ -7,8 +7,8 @@ import feedparser
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
-from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .blocking import blocked_reason
+from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .schema import (
     AcquisitionProbeOutcome,
     AcquisitionProbeSample,
@@ -28,8 +28,17 @@ class FeedResearchProbe:
         try:
             response = await safe_get(self.policy, candidate, public_probe_url(candidate))
             if reason := blocked_reason(response):
-                return probe_result(
-                    source, candidate, AcquisitionProbeOutcome.BLOCKED, reason, "access_blocked"
+                return with_http_evidence(
+                    probe_result(
+                        source,
+                        candidate,
+                        AcquisitionProbeOutcome.BLOCKED,
+                        reason,
+                        "access_blocked",
+                        blocked_condition="access",
+                    ),
+                    response,
+                    candidate,
                 )
             response.raise_for_status()
             parsed = feedparser.parse(response.content)
