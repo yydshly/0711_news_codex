@@ -75,6 +75,92 @@ def test_html_metadata_recursively_redacts_sensitive_nested_json_and_url_parts()
     assert "https://api.example/item" in rendered
 
 
+def test_html_probe_extracts_only_explicit_audited_selector_text_and_redacts_it() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    candidate = AcquisitionCandidate.model_validate(
+        {
+            "key": "static-html",
+            "kind": "html",
+            "implementation": "httpx",
+            "officiality": "official",
+            "authentication": "none",
+            "roles": ["metadata"],
+            "fields": ["title"],
+            "limitations": [],
+            "evidence": ["https://example.test/page"],
+            "reviewed_at": "2026-07-12",
+            "sample_status": "not_run",
+            "decision": "manual_only",
+            "selector": ".release",
+        }
+    )
+
+    result = HtmlResearchProbe().inspect(
+        source,
+        candidate,
+        '<p class="release">Safe https://example.test/a?token=leak</p>'
+        '<p class="other">Must not be extracted</p>',
+    )
+
+    assert result.metadata["selector"] == ".release"
+    assert result.metadata["selector_text"] == "Safe https://example.test/a"
+    assert "Must not be extracted" not in str(result.metadata)
+
+
+def test_html_probe_reports_no_selector_result_without_audited_selector() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    candidate = AcquisitionCandidate.model_validate(
+        {
+            "key": "static-html",
+            "kind": "html",
+            "implementation": "httpx",
+            "officiality": "official",
+            "authentication": "none",
+            "roles": ["metadata"],
+            "fields": ["title"],
+            "limitations": [],
+            "evidence": ["https://example.test/page"],
+            "reviewed_at": "2026-07-12",
+            "sample_status": "not_run",
+            "decision": "manual_only",
+        }
+    )
+
+    result = HtmlResearchProbe().inspect(source, candidate, '<p class="release">Safe</p>')
+
+    assert "selector" not in result.metadata
+    assert "selector_text" not in result.metadata
+
+
+def test_html_selector_never_returns_javascript_text() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    candidate = AcquisitionCandidate.model_validate(
+        {
+            "key": "static-html",
+            "kind": "html",
+            "implementation": "httpx",
+            "officiality": "official",
+            "authentication": "none",
+            "roles": ["metadata"],
+            "fields": ["title"],
+            "limitations": [],
+            "evidence": ["https://example.test/page"],
+            "reviewed_at": "2026-07-12",
+            "sample_status": "not_run",
+            "decision": "manual_only",
+            "selector": ".release",
+        }
+    )
+
+    result = HtmlResearchProbe().inspect(
+        source,
+        candidate,
+        '<div class="release">Visible<script>window.leak = "secret"</script></div>',
+    )
+
+    assert result.metadata["selector_text"] == "Visible"
+
+
 @pytest.mark.asyncio
 async def test_html_probe_reads_a_gzip_encoded_static_page_once() -> None:
     source = SourceDefinition.model_validate(valid_source())

@@ -21,8 +21,12 @@ from .schema import (
 
 
 class _MetadataParser(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, selector: str | None = None) -> None:
         super().__init__()
+        self.selector = selector
+        self._selector_stack: list[bool] = []
+        self.selector_text: list[str] = []
+        self._excluded_text_depth = 0
         self.names: set[str] = set()
         self.values: dict[str, list[str]] = {
             "alternate": [],
@@ -36,6 +40,9 @@ class _MetadataParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
+        self._selector_stack.append(self._matches_selector(tag, values))
+        if tag in {"script", "style"}:
+            self._excluded_text_depth += 1
         if tag == "link" and values.get("rel") == "canonical":
             self.names.add("canonical")
             self.values["canonical"] = [values.get("href", "")]
@@ -61,6 +68,8 @@ class _MetadataParser(HTMLParser):
             self.values["article"].append(values.get("class", "article"))
 
     def handle_data(self, data):
+        if any(self._selector_stack) and not self._excluded_text_depth:
+            self.selector_text.append(data)
         if self._script_type:
             self._script.append(data)
 
@@ -68,6 +77,19 @@ class _MetadataParser(HTMLParser):
         if tag == "script" and self._script_type:
             self.values[self._script_type].append("".join(self._script)[:4000])
             self._script_type = None
+        if self._selector_stack:
+            self._selector_stack.pop()
+        if tag in {"script", "style"} and self._excluded_text_depth:
+            self._excluded_text_depth -= 1
+
+    def _matches_selector(self, tag: str, attrs: dict[str, str | None]) -> bool:
+        if self.selector is None:
+            return False
+        if self.selector.startswith("#"):
+            return attrs.get("id") == self.selector[1:]
+        if self.selector.startswith("."):
+            return self.selector[1:] in (attrs.get("class") or "").split()
+        return tag == self.selector
 
 
 class HtmlResearchProbe:
@@ -77,7 +99,7 @@ class HtmlResearchProbe:
         self.policy = policy
 
     def inspect(self, source: SourceDefinition, candidate: AcquisitionCandidate, html: str):
-        parser = _MetadataParser()
+        parser = _MetadataParser(candidate.selector)
         parser.feed(html[:2_000_000])
 
         def sanitized_json(values: list[str]) -> str:
@@ -93,24 +115,29 @@ class HtmlResearchProbe:
             ]
             return "\n".join(rendered)[:4000]
 
+        metadata = {
+            "static_only": True,
+            "canonical": "canonical" in parser.names,
+            "has_json_ld": "json_ld" in parser.names,
+            "open_graph": "open_graph" in parser.names,
+            "semantic_article": "article" in parser.names,
+            "canonical_url": (parser.values.get("canonical") or [None])[0],
+            "alternate_urls": "|".join(parser.values["alternate"][:5]),
+            "json_ld": sanitized_json(parser.values["json_ld"]),
+            "embedded_json": sanitized_json(parser.values["embedded_json"]),
+            "open_graph_values": "|".join(parser.values["open_graph"][:20])[:4000],
+            "terms_review_required": True,
+        }
+        if candidate.selector is not None:
+            metadata["selector"] = candidate.selector
+            metadata["selector_text"] = " ".join(parser.selector_text).strip()[:4000]
+
         return probe_result(
             source,
             candidate,
             AcquisitionProbeOutcome.PARTIAL,
             "仅解析静态 HTML 元数据；未执行 JavaScript 或浏览器会话",
-            metadata={
-                "static_only": True,
-                "canonical": "canonical" in parser.names,
-                "has_json_ld": "json_ld" in parser.names,
-                "open_graph": "open_graph" in parser.names,
-                "semantic_article": "article" in parser.names,
-                "canonical_url": (parser.values.get("canonical") or [None])[0],
-                "alternate_urls": "|".join(parser.values["alternate"][:5]),
-                "json_ld": sanitized_json(parser.values["json_ld"]),
-                "embedded_json": sanitized_json(parser.values["embedded_json"]),
-                "open_graph_values": "|".join(parser.values["open_graph"][:20])[:4000],
-                "terms_review_required": True,
-            },
+            metadata=metadata,
             decision="manual_only",
         )
 

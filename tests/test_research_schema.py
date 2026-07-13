@@ -164,6 +164,57 @@ def test_candidate_rejects_embedded_url_credentials() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "selector",
+    ["article", "#release-notes", ".entry"],
+)
+def test_candidate_accepts_audited_simple_html_selector(selector: str) -> None:
+    candidate = AcquisitionCandidate.model_validate(
+        {
+            "key": "static-html",
+            "kind": "html",
+            "implementation": "httpx",
+            "officiality": "official",
+            "authentication": "none",
+            "roles": ["metadata"],
+            "fields": ["title"],
+            "limitations": [],
+            "evidence": ["https://example.test/page"],
+            "reviewed_at": "2026-07-12",
+            "sample_status": "not_run",
+            "decision": "manual_only",
+            "selector": selector,
+        }
+    )
+
+    assert candidate.selector == selector
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["article .entry", "div[data-id]", "//article", "javascript:alert(1)"],
+)
+def test_candidate_rejects_unsafe_html_selector(selector: str) -> None:
+    with pytest.raises(ValidationError):
+        AcquisitionCandidate.model_validate(
+            {
+                "key": "static-html",
+                "kind": "html",
+                "implementation": "httpx",
+                "officiality": "official",
+                "authentication": "none",
+                "roles": ["metadata"],
+                "fields": ["title"],
+                "limitations": [],
+                "evidence": ["https://example.test/page"],
+                "reviewed_at": "2026-07-12",
+                "sample_status": "not_run",
+                "decision": "manual_only",
+                "selector": selector,
+            }
+        )
+
+
 def test_verified_source_requires_a_fallback_or_documented_reason() -> None:
     payload = legacy_source_payload() | {
         "research": {

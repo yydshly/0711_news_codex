@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import overload
+
 import httpx
 
 from newsradar.ingestion.fetchers.base import HttpPolicy
@@ -27,15 +29,46 @@ class OwnedResearchProbe:
         if self._client:
             await self._client.aclose()
 
+    async def __aenter__(self) -> OwnedResearchProbe:
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        await self.aclose()
+
+
+@overload
+def research_probe_for(
+    candidate: AcquisitionCandidate, policy: HttpPolicy | None = None
+) -> OwnedResearchProbe: ...
+
+
+@overload
+def research_probe_for(
+    source: SourceDefinition,
+    candidate: AcquisitionCandidate,
+    policy: HttpPolicy | None = None,
+) -> OwnedResearchProbe: ...
+
 
 def research_probe_for(
-    source: SourceDefinition, candidate: AcquisitionCandidate, policy: HttpPolicy | None = None
-) -> ResearchProbe:
+    source_or_candidate: SourceDefinition | AcquisitionCandidate,
+    candidate: AcquisitionCandidate | None = None,
+    policy: HttpPolicy | None = None,
+) -> OwnedResearchProbe:
     """Select a bounded read-only probe; acquisition categories remain distinct."""
+    if isinstance(source_or_candidate, AcquisitionCandidate):
+        if candidate is not None:
+            raise TypeError("candidate-only research_probe_for accepts no second candidate")
+        source = None
+        candidate = source_or_candidate
+    else:
+        source = source_or_candidate
+        if candidate is None:
+            raise TypeError("source-aware research_probe_for requires a candidate")
     owned = policy is None
     client = httpx.AsyncClient(timeout=httpx.Timeout(20), trust_env=False) if owned else None
     resolved = policy or HttpPolicy(client)
-    if source.provider_id == "youtube":
+    if source is not None and source.provider_id == "youtube":
         probe = YouTubeResearchProbe(resolved)
     elif candidate.kind in {AcquisitionKind.RSS, AcquisitionKind.ATOM, AcquisitionKind.WEBSUB}:
         probe = FeedResearchProbe(resolved)

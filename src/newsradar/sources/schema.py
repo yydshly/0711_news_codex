@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from enum import StrEnum
 from urllib.parse import urlsplit
@@ -115,6 +116,20 @@ class AcquisitionCandidate(StrictModel):
     reviewed_at: date
     sample_status: SampleStatus
     decision: AcquisitionDecision
+    selector: str | None = Field(default=None, max_length=128)
+
+    @field_validator("selector")
+    @classmethod
+    def validate_static_html_selector(cls, value: str | None) -> str | None:
+        """Allow only an auditable, single static CSS selector token."""
+        if value is None:
+            return value
+        if not re.fullmatch(
+            r"(?:[A-Za-z][A-Za-z0-9-]*|#[A-Za-z][A-Za-z0-9_-]*|\.[A-Za-z][A-Za-z0-9_-]*)",
+            value,
+        ):
+            raise ValueError("selector must be one simple CSS tag, #id, or .class")
+        return value
 
     @field_validator("evidence")
     @classmethod
