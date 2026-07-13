@@ -570,7 +570,7 @@ def probe_source_research_candidate(
                 return await YouTubeResearchProbe(HttpPolicy(client)).probe(
                     source, candidate, limit, bounded_video_ids
                 )
-            probe = research_probe_for(candidate, HttpPolicy(client))
+            probe = research_probe_for(source, candidate, HttpPolicy(client))
             return await probe.probe(source, candidate, limit)
 
     result = asyncio.run(run_probe())

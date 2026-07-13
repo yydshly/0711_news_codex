@@ -7,6 +7,7 @@ import feedparser
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
+from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .schema import AcquisitionProbeOutcome, AcquisitionProbeSample, probe_result, public_probe_url
 
 
@@ -18,9 +19,25 @@ class FeedResearchProbe:
         self, source: SourceDefinition, candidate: AcquisitionCandidate, limit: int = 5
     ):
         try:
-            response = await self.policy.get(public_probe_url(candidate), headers={})
+            response = await safe_get(self.policy, candidate, public_probe_url(candidate))
             response.raise_for_status()
             parsed = feedparser.parse(response.content)
+        except ProbeAuthenticationRequired:
+            return probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.BLOCKED,
+                "需要认证或批准，未发起请求",
+                "authentication_required",
+            )
+        except UnsafeProbeUrl:
+            return probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.BLOCKED,
+                "目标地址不满足安全网络边界",
+                "unsafe_url",
+            )
         except Exception as exc:
             return probe_result(
                 source,

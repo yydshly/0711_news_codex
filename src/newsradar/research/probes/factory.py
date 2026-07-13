@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 
 from newsradar.ingestion.fetchers.base import HttpPolicy
-from newsradar.sources.schema import AcquisitionCandidate, AcquisitionKind
+from newsradar.sources.schema import AcquisitionCandidate, AcquisitionKind, SourceDefinition
 
 from .api import ApiResearchProbe
 from .feed import FeedResearchProbe
@@ -15,11 +15,11 @@ from .youtube import YouTubeResearchProbe
 
 
 def research_probe_for(
-    candidate: AcquisitionCandidate, policy: HttpPolicy | None = None
+    source: SourceDefinition, candidate: AcquisitionCandidate, policy: HttpPolicy | None = None
 ) -> ResearchProbe:
     """Select a bounded read-only probe; acquisition categories remain distinct."""
     resolved = policy or HttpPolicy(httpx.AsyncClient(timeout=httpx.Timeout(20), trust_env=False))
-    if candidate.key.startswith("youtube-") or candidate.key == "yt-dlp-metadata":
+    if source.provider_id == "youtube":
         return YouTubeResearchProbe(resolved)
     if candidate.kind in {AcquisitionKind.RSS, AcquisitionKind.ATOM, AcquisitionKind.WEBSUB}:
         return FeedResearchProbe(resolved)

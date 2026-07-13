@@ -3,6 +3,7 @@ from __future__ import annotations
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionAuth, AcquisitionCandidate, SourceDefinition
 
+from .safe_http import UnsafeProbeUrl, safe_get
 from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url
 
 
@@ -24,7 +25,7 @@ class ApiResearchProbe:
                 metadata={"terms_review_required": True},
             )
         try:
-            response = await self.policy.get(public_probe_url(candidate), headers={})
+            response = await safe_get(self.policy, candidate, public_probe_url(candidate))
             if response.status_code in {401, 403, 429}:
                 return probe_result(
                     source,
@@ -35,6 +36,14 @@ class ApiResearchProbe:
                     metadata={"terms_review_required": True},
                 )
             response.raise_for_status()
+        except UnsafeProbeUrl:
+            return probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.BLOCKED,
+                "目标地址不满足安全网络边界",
+                "unsafe_url",
+            )
         except Exception as exc:
             return probe_result(
                 source,
