@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
+from requests import Session
 
 from newsradar.credentials import CredentialProvider, SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
@@ -222,14 +223,14 @@ class YouTubeResearchProbe:
                     source,
                     candidate,
                     AcquisitionProbeOutcome.PARTIAL,
-                    "字幕暂不可用，可降级为仅元数据研究",
+                    "字幕暂不可用；临时无 Cookie 会话可降级为仅元数据研究",
                     name,
                 )
             return self._result(
                 source,
                 candidate,
                 AcquisitionProbeOutcome.PARTIAL,
-                "字幕库不可用，可降级为仅元数据研究",
+                "字幕库不可用；临时无 Cookie 会话可降级为仅元数据研究",
                 name,
             )
         if not isinstance(payload, dict):
@@ -255,14 +256,21 @@ class YouTubeResearchProbe:
             source,
             candidate,
             AcquisitionProbeOutcome.SUCCEEDED,
-            "已读取有限字幕文本",
+            "已读取有限字幕文本（临时无 Cookie 会话）",
             samples=[sample],
         )
 
     def _fetch_transcript(self, video_id: str) -> dict[str, Any]:
         from youtube_transcript_api import YouTubeTranscriptApi
 
-        transcript = YouTubeTranscriptApi().fetch(video_id)
+        session = Session()
+        session.trust_env = False
+        session.cookies.clear()
+        session.headers.pop("Cookie", None)
+        try:
+            transcript = YouTubeTranscriptApi(http_client=session).fetch(video_id)
+        finally:
+            session.close()
         return {
             "language": getattr(transcript, "language_code", None),
             "is_generated": getattr(transcript, "is_generated", False),

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import youtube_transcript_api
 
 from newsradar.credentials import SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
@@ -130,6 +131,38 @@ async def test_default_transcript_fetch_runs_in_a_thread_and_respects_total_time
 
     assert result.error_code == "timeout"
     assert time.perf_counter() - started < 0.15
+
+
+def test_default_transcript_uses_temporary_cookie_free_session_without_env_proxy(
+    monkeypatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    class Transcript(list):
+        language_code = "en"
+        is_generated = False
+
+    class Segment:
+        text = "短文本"
+
+    class Api:
+        def __init__(self, *, http_client) -> None:
+            received["session"] = http_client
+
+        def fetch(self, video_id: str) -> Transcript:
+            assert video_id == "abcdefghijk"
+            return Transcript([Segment()])
+
+    monkeypatch.setattr(youtube_transcript_api, "YouTubeTranscriptApi", Api)
+    payload = YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient()))._fetch_transcript(
+        "abcdefghijk"
+    )
+
+    session = received["session"]
+    assert session.trust_env is False
+    assert not session.cookies
+    assert "Cookie" not in session.headers
+    assert payload["segments"] == [{"text": "短文本"}]
 
 
 def test_ytdlp_metadata_is_manual_only_and_never_executes_download() -> None:
