@@ -8,6 +8,7 @@ from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
 from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .robots import allowed as robots_allowed
+from .blocking import blocked_reason
 from .schema import AcquisitionProbeOutcome, AcquisitionProbeSample, probe_result, public_probe_url
 
 
@@ -51,6 +52,10 @@ class SitemapResearchProbe:
                     metadata={"terms_review_required": True, "blocked_condition": "robots"},
                 )
             response = await safe_get(self.policy, candidate, target)
+            if reason := blocked_reason(response):
+                return probe_result(
+                    source, candidate, AcquisitionProbeOutcome.BLOCKED, reason, "access_blocked"
+                )
             response.raise_for_status()
             root = ElementTree.fromstring(response.content)
         except ProbeAuthenticationRequired:
