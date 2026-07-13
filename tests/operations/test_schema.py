@@ -17,6 +17,7 @@ def test_operation_enums_match_the_runtime_contract() -> None:
         "source_sync",
         "provider_probe",
         "source_probe",
+        "source_remediation",
         "fetch",
         "event_pipeline",
         "event_recluster",

@@ -69,3 +69,28 @@ def test_generic_retry_rejects_source_remediation_operation() -> None:
 
         with pytest.raises(ValueError, match="operation is not retryable"):
             commands.retry(operation_id, trigger="cli")
+
+
+def test_source_remediation_allows_one_explicit_retry_for_network_transient() -> None:
+    with make_session() as session:
+        commands = OperationCommandService(session)
+        operation_id = commands.enqueue_source_remediation(
+            source_id="alpha",
+            candidate_key="official-rss",
+            original_probe_id=17,
+            baseline_at=datetime(2026, 7, 13, tzinfo=UTC),
+            trigger="cli",
+        )
+        operation = session.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        operation.status = "failed"
+        operation.result_summary = {"category": "network_transient"}
+        session.commit()
+
+        retry_id = commands.retry_source_remediation(operation_id, trigger="cli")
+        retry = session.get(OperationRunRecord, retry_id)
+
+        assert retry is not None
+        assert retry.requested_scope["retry_of_operation_id"] == operation_id
+        with pytest.raises(ValueError, match="source_remediation_retry_not_allowed"):
+            commands.retry_source_remediation(operation_id, trigger="cli")

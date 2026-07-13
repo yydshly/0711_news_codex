@@ -11,6 +11,13 @@ NONRETRYABLE_ERROR_CODES = frozenset(
         "missing_credentials",
         "missing_credential",
         "policy_blocked",
+        "invalid_source_remediation_scope",
+        "unknown_acquisition_candidate",
+        "candidate_requires_credentials",
+        "candidate_rejected",
+        "original_probe_not_found",
+        "candidate_projection_not_found",
+        "remediation_probe_failed",
     }
 )
 

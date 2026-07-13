@@ -29,6 +29,7 @@ from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
+from newsradar.remediation.runtime import SourceRemediationHandler
 from newsradar.research.audit import audit_source_catalog
 from newsradar.research.probes.factory import research_probe_for
 from newsradar.research.reporting import render_research_report
@@ -273,6 +274,7 @@ def run_worker(
     handler = OperationRouter(
         {
             "fetch": FetchOperationHandler.production(sources),
+            "source_remediation": SourceRemediationHandler.production(sources, create_session),
             "event_pipeline": EventOperationHandler.production(create_session),
             "event_recluster": EventOperationHandler.production(create_session),
             "event_enrich": EventOperationHandler.production(create_session),

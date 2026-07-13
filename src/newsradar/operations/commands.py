@@ -70,6 +70,7 @@ class OperationCommandService:
         original_probe_id: int,
         baseline_at: datetime,
         trigger: str,
+        retry_of_operation_id: int | None = None,
     ) -> int:
         if not source_id or not candidate_key or original_probe_id <= 0:
             raise ValueError("invalid_source_remediation_scope")
@@ -101,11 +102,51 @@ class OperationCommandService:
                 "deadline_at": (
                     now + timedelta(seconds=self._settings.operation_timeout_seconds)
                 ).isoformat(),
+                **(
+                    {"retry_of_operation_id": retry_of_operation_id}
+                    if retry_of_operation_id is not None
+                    else {}
+                ),
             },
             trigger=trigger,
         )
         self.session.commit()
         return record.id
+
+    def retry_source_remediation(self, operation_id: int, *, trigger: str) -> int:
+        """Permit one deliberately requested retry, only for transport failures."""
+        original = self.session.get(OperationRunRecord, operation_id)
+        terminal_statuses = {item.value for item in OperationStatus.terminal()}
+        category = (
+            original.result_summary.get("category")
+            if original is not None and isinstance(original.result_summary, dict)
+            else None
+        )
+        existing_retry = any(
+            record.requested_scope.get("retry_of_operation_id") == operation_id
+            for record in self.session.scalars(
+                select(OperationRunRecord).where(
+                    OperationRunRecord.operation_type == OperationType.SOURCE_REMEDIATION.value
+                )
+            )
+        )
+        if (
+            original is None
+            or original.operation_type != OperationType.SOURCE_REMEDIATION.value
+            or original.status not in terminal_statuses
+            or category != "network_transient"
+            or existing_retry
+        ):
+            raise ValueError("source_remediation_retry_not_allowed")
+        scope = original.requested_scope
+        return self.enqueue_source_remediation(
+            source_id=str(scope.get("source_id", "")),
+            candidate_key=str(scope.get("candidate_key", "")),
+            original_probe_id=int(scope.get("original_probe_id", 0)),
+            baseline_at=datetime.fromisoformat(str(scope.get("baseline_at"))),
+            trigger=trigger,
+            retry_of_operation_id=operation_id,
+        )
 
     def enqueue_event_pipeline(self, *, window_hours: int, trigger: str) -> int:
         if window_hours <= 0:
