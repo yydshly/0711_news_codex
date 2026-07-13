@@ -331,7 +331,10 @@ class SourceRepository:
         """Return the newest completed probe state, or ``None`` when none exists."""
         probe_run = self.session.scalar(
             select(SourceProbeRunRecord)
-            .where(SourceProbeRunRecord.source_id == source_id)
+            .where(
+                SourceProbeRunRecord.source_id == source_id,
+                SourceProbeRunRecord.finished_at.is_not(None),
+            )
             .order_by(SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc())
         )
         if probe_run is None:

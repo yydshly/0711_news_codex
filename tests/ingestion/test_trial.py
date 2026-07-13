@@ -55,22 +55,101 @@ def test_catalog_only_source_has_a_distinct_reason() -> None:
         _source(coverage_mode="catalog_only"), _successful_probe()
     )
 
-    assert decision.code == "catalog_only"
+    assert decision == TrialDecision(False, "catalog_only", "仅目录收录，不提供试用抓取。")
 
 
 @pytest.mark.parametrize(
-    "probe",
+    ("source", "probe", "expected"),
     [
-        _successful_probe(sample_fields=frozenset({"title"})),
-        _successful_probe(field_completeness=0.59),
+        (
+            _source(),
+            None,
+            TrialDecision(False, "no_probe", "不可试用抓取：尚无完成的探测记录。"),
+        ),
+        (
+            _source(availability="requires_credentials"),
+            _successful_probe(),
+            TrialDecision(False, "not_ready", "不可试用抓取：来源当前未就绪。"),
+        ),
+        (
+            _source(
+                risk={
+                    "terms": 1,
+                    "authentication": 0,
+                    "stability": 2,
+                    "data_quality": 1,
+                    "operating_cost": 0,
+                    "hard_block_reason": "terms prohibit automation",
+                }
+            ),
+            _successful_probe(),
+            TrialDecision(
+                False,
+                "hard_blocked",
+                "不可试用抓取：来源存在条款或合规硬性阻塞。",
+            ),
+        ),
+        (
+            _source(
+                access_methods=[
+                    {
+                        "kind": "html",
+                        "url": "https://www.anthropic.com/news",
+                        "priority": 1,
+                        "requires_manual_approval": True,
+                    }
+                ]
+            ),
+            _successful_probe(),
+            TrialDecision(
+                False,
+                "no_automatic_method",
+                "不可试用抓取：没有非 HTML 自动访问方式。",
+            ),
+        ),
+        (
+            _source(),
+            _successful_probe(outcome="failed"),
+            TrialDecision(False, "probe_not_successful", "不可试用抓取：最新探测未成功。"),
+        ),
+        (
+            _source(),
+            _successful_probe(sample_count=0),
+            TrialDecision(False, "no_samples", "不可试用抓取：最新探测未获得样本。"),
+        ),
+        (
+            _source(),
+            _successful_probe(sample_count=-1),
+            TrialDecision(False, "no_samples", "不可试用抓取：最新探测未获得样本。"),
+        ),
+        (
+            _source(),
+            _successful_probe(field_completeness=0.59),
+            TrialDecision(
+                False,
+                "incomplete_fields",
+                "不可试用抓取：样本字段完整度低于 0.60。",
+            ),
+        ),
+        (
+            _source(),
+            _successful_probe(sample_fields=frozenset({"title"})),
+            TrialDecision(
+                False,
+                "missing_required_fields",
+                "不可试用抓取：样本缺少 title 或 canonical_url。",
+            ),
+        ),
     ],
 )
-def test_probe_without_required_fields_or_completeness_is_not_eligible(
-    probe: ProbeSnapshot,
+def test_ineligible_trial_conditions_have_stable_decisions(
+    source: SourceDefinition,
+    probe: ProbeSnapshot | None,
+    expected: TrialDecision,
 ) -> None:
-    decision = evaluate_trial_eligibility(_source(), probe)
+    decision = evaluate_trial_eligibility(source, probe)
 
-    assert decision.eligible is False
+    assert decision == expected
 
 
 def test_repository_reads_the_latest_probe_snapshot() -> None:
@@ -113,3 +192,59 @@ def test_repository_reads_the_latest_probe_snapshot() -> None:
         assert snapshot.field_completeness == 1.0
         assert snapshot.sample_fields == frozenset({"title", "canonical_url"})
         assert snapshot.finished_at == finished_at.replace(tzinfo=None)
+
+
+def test_repository_uses_the_latest_completed_probe_and_unions_sample_fields() -> None:
+    source = _source()
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        repository = SourceRepository(session)
+        repository.sync([source])
+        assert repository.latest_probe_snapshot(source.id) is None
+
+        earlier = datetime(2026, 7, 12, tzinfo=UTC)
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="rss",
+                access_url="https://www.anthropic.com/news/rss.xml",
+                outcome=ProbeOutcome.FAILED,
+                started_at=earlier,
+                finished_at=earlier,
+                sample_count=0,
+                field_completeness=0.0,
+                suggested_status="candidate",
+                reason="failed",
+            )
+        )
+        later = datetime(2026, 7, 13, tzinfo=UTC)
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="rss",
+                access_url="https://www.anthropic.com/news/rss.xml",
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=later,
+                finished_at=later,
+                sample_count=2,
+                field_completeness=1.0,
+                samples=[
+                    ProbeSample(external_id="one", title="First"),
+                    ProbeSample(
+                        external_id="two",
+                        canonical_url="https://www.anthropic.com/news/second",
+                    ),
+                ],
+                suggested_status="candidate",
+                reason="ok",
+            )
+        )
+
+        snapshot = repository.latest_probe_snapshot(source.id)
+        assert snapshot is not None
+        assert snapshot.outcome == "success"
+        assert snapshot.sample_count == 2
+        assert snapshot.sample_fields == frozenset({"title", "canonical_url"})
+        assert evaluate_trial_eligibility(source, snapshot).eligible is True

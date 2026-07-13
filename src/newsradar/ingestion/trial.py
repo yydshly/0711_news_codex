@@ -67,7 +67,7 @@ def evaluate_trial_eligibility(
         return _ineligible("no_automatic_method", "不可试用抓取：没有非 HTML 自动访问方式。")
     if probe.outcome != "success":
         return _ineligible("probe_not_successful", "不可试用抓取：最新探测未成功。")
-    if probe.sample_count == 0:
+    if probe.sample_count <= 0:
         return _ineligible("no_samples", "不可试用抓取：最新探测未获得样本。")
     if probe.field_completeness < 0.60:
         return _ineligible("incomplete_fields", "不可试用抓取：样本字段完整度低于 0.60。")
