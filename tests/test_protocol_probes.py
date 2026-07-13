@@ -5,6 +5,7 @@ import pytest
 
 from newsradar.sources.probes.base import ProbeOutcome
 from newsradar.sources.probes.factory import ProbeFactory
+from newsradar.sources.probes.protocols import synthetic_response
 
 from .test_probes import source_with
 
@@ -15,6 +16,21 @@ class Credentials:
 
     def require(self, name: str) -> str:
         return self.values[name]
+
+
+def test_synthetic_response_drops_wire_encoding_headers() -> None:
+    request = httpx.Request("GET", "https://public.api.bsky.app/feed")
+    original = httpx.Response(
+        200,
+        headers={"content-encoding": "gzip", "content-length": "999"},
+        request=request,
+    )
+
+    response = synthetic_response(original, {"items": []})
+
+    assert "content-encoding" not in response.headers
+    assert response.headers["content-length"] != "999"
+    assert response.json() == {"items": []}
 
 
 @pytest.mark.asyncio

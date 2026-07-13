@@ -13,10 +13,15 @@ from .json_api import JsonApiProbe
 
 def synthetic_response(original: httpx.Response, payload: object) -> httpx.Response:
     safe_request = httpx.Request("GET", str(original.request.url.copy_remove_param("key")))
+    headers = {
+        key: value
+        for key, value in original.headers.items()
+        if key.lower() not in {"content-encoding", "content-length"}
+    }
     return httpx.Response(
         original.status_code,
         content=json.dumps(payload).encode(),
-        headers=original.headers,
+        headers=headers,
         request=safe_request,
     )
 
