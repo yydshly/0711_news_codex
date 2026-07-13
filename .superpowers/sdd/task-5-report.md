@@ -71,3 +71,11 @@
 - Response-derived ETag, Last-Modified, Cache-Control, and feed Content-Type values use a shared bounded header-value sanitizer. URLs, credential-like values, and sensitive `key=value` pairs become `None`; numeric rate-limit remaining is retained.
 - Regression coverage confirms no Cookie request is sent, unsafe redirects stop at the first hop, malicious headers do not survive `model_dump`, and probe-run persistence cannot reintroduce them.
 - Verification: targeted security/repository tests passed; complete research, CLI, schema, repository, and migration test selection passed; `ruff check` and `git diff --check` passed.
+
+## Final boundary corrections
+
+- `has_sensitive_query` now calls `parse_qsl(..., keep_blank_values=True)`, so bare `?token`, `?token=`, and percent-encoded sensitive parameter names are blocked before the initial request and before every redirect hop.
+- Live probe traffic is limited to a fixed User-Agent and Accept allowlist by constructing a standalone `httpx.Request`; caller defaults (including arbitrary `X-Context` and `X-Foo` values) are never merged into probe requests.
+- Research factory-owned probes use a registered, closable `trust_env=False` / no-redirect client. Caller clients and transports are rejected for live network work unless they use `MockTransport` for isolated tests; this closes the `AsyncHTTPTransport(proxy=...)` bypass without relying on HTTPX private mount inspection.
+- The non-YouTube research CLI path now enters the factory-owned probe context, so it uses and closes that safe client rather than supplying its command-level client.
+- Regression tests cover blank/encoded sensitive parameters, redirect locations, default-header non-inheritance, and a caller-supplied proxy transport.

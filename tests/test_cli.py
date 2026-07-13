@@ -119,6 +119,74 @@ def test_research_probe_rejects_an_unknown_candidate_without_network(tmp_path: P
     assert "未知研究候选" in result.stdout
 
 
+def test_research_probe_uses_its_owned_safe_client(monkeypatch) -> None:
+    from newsradar.research.probes.schema import AcquisitionProbeOutcome, AcquisitionProbeResult
+
+    data = valid_source()
+    data["research"] = {
+        "candidates": [
+            {
+                "key": "safe-feed",
+                "kind": "rss",
+                "implementation": "feedparser",
+                "officiality": "official",
+                "authentication": "none",
+                "roles": ["discovery"],
+                "fields": ["title"],
+                "limitations": [],
+                "evidence": ["https://example.test/feed"],
+                "reviewed_at": "2026-07-12",
+                "sample_status": "not_run",
+                "decision": "supplement",
+            }
+        ]
+    }
+    source = SourceDefinition.model_validate(data)
+    calls: dict[str, object] = {}
+
+    class Probe:
+        async def __aenter__(self):
+            calls["entered"] = True
+            return self
+
+        async def __aexit__(self, *args):
+            calls["closed"] = True
+
+        async def probe(self, source, candidate, limit):
+            return AcquisitionProbeResult(
+                source_id=source.id,
+                candidate_key=candidate.key,
+                outcome=AcquisitionProbeOutcome.PARTIAL,
+                decision="supplement",
+                reason_zh="ok",
+            )
+
+    def fake_factory(*args):
+        calls["factory_args"] = args
+        return Probe()
+
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [source])
+    monkeypatch.setattr("newsradar.cli.research_probe_for", fake_factory)
+
+    result = runner.invoke(
+        app,
+        [
+            "sources",
+            "research",
+            "probe",
+            "anthropic-news",
+            "--candidate",
+            "safe-feed",
+            "--no-persist",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["factory_args"] == (source, source.research.candidates[0])
+    assert calls["entered"] is True
+    assert calls["closed"] is True
+
+
 def test_research_probe_disables_environment_proxies_and_passes_bounded_video_ids(
     monkeypatch,
 ) -> None:

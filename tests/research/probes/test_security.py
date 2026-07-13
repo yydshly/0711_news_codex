@@ -66,7 +66,15 @@ def test_sample_canonical_url_removes_query_and_fragment_and_rejects_userinfo() 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "query", ["api_key=secret", "auth=secret", "access%5Ftoken=secret", "%74oken=secret"],
+    "query",
+    [
+        "api_key=secret",
+        "auth=secret",
+        "access%5Ftoken=secret",
+        "%74oken=secret",
+        "token",
+        "token=",
+    ],
 )
 async def test_sensitive_query_is_blocked_before_any_probe_request(query: str) -> None:
     source = SourceDefinition.model_validate(valid_source())
@@ -120,6 +128,68 @@ async def test_sensitive_query_in_redirect_location_is_blocked_before_following(
     assert result.outcome.value == "blocked"
     assert result.error_code == "unsafe_url"
     assert requests == ["https://example.test/feed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("location", ["/next?token", "/next?token=", "/next?%74oken=secret"])
+async def test_sensitive_query_in_every_redirect_form_stops_before_next_request(
+    location: str,
+) -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    requests = []
+
+    async def responder(request):
+        requests.append(str(request.url))
+        return httpx.Response(302, headers={"location": location})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(responder), trust_env=False
+    ) as client:
+        result = await FeedResearchProbe(HttpPolicy(client)).probe(
+            source, candidate("https://example.test/feed")
+        )
+
+    assert result.outcome.value == "blocked"
+    assert result.error_code == "unsafe_url"
+    assert requests == ["https://example.test/feed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["X-Context", "X-Foo"])
+async def test_probe_request_does_not_inherit_caller_default_headers(name: str) -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    requests = []
+
+    async def responder(request):
+        requests.append(request)
+        return httpx.Response(200, text="<rss><channel /></rss>")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(responder), trust_env=False, headers={name: "Bearer secret"}
+    ) as client:
+        result = await FeedResearchProbe(HttpPolicy(client)).probe(
+            source, candidate("https://example.test/feed")
+        )
+
+    assert result.outcome.value == "partial"
+    assert requests[0].headers.get(name) is None
+    assert requests[0].headers["user-agent"] == "NewsCodexResearchProbe/0.1"
+    assert requests[0].headers["accept"] == (
+        "application/json, application/feed+json, application/xml, text/xml"
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_async_http_transport_proxy_is_rejected_before_request() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    transport = httpx.AsyncHTTPTransport(proxy="http://127.0.0.1:9")
+    async with httpx.AsyncClient(transport=transport, trust_env=False) as client:
+        result = await FeedResearchProbe(HttpPolicy(client)).probe(
+            source, candidate("https://example.test/feed")
+        )
+
+    assert result.outcome.value == "blocked"
+    assert result.error_code == "unsafe_url"
 
 
 def test_malicious_response_headers_are_absent_from_result_dump() -> None:

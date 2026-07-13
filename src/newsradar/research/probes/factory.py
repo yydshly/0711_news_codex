@@ -11,6 +11,7 @@ from .api import ApiResearchProbe
 from .feed import FeedResearchProbe
 from .html import HtmlResearchProbe
 from .library import LibraryResearchProbe
+from .safe_http import new_safe_probe_client
 from .schema import ResearchProbe
 from .sitemap import SitemapResearchProbe
 from .youtube import YouTubeResearchProbe
@@ -66,7 +67,7 @@ def research_probe_for(
         if candidate is None:
             raise TypeError("source-aware research_probe_for requires a candidate")
     owned = policy is None
-    client = httpx.AsyncClient(timeout=httpx.Timeout(20), trust_env=False) if owned else None
+    client = new_safe_probe_client() if owned else None
     resolved = policy or HttpPolicy(client)
     if source is not None and source.provider_id == "youtube":
         probe = YouTubeResearchProbe(resolved)

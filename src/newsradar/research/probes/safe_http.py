@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import time
 from urllib.parse import urljoin, urlsplit
+from weakref import WeakSet
 
 import httpx
 
@@ -18,6 +19,25 @@ class UnsafeProbeUrl(Exception):
 
 class ProbeAuthenticationRequired(Exception):
     pass
+
+
+_PROBE_HEADERS = {
+    "User-Agent": "NewsCodexResearchProbe/0.1",
+    "Accept": "application/json, application/feed+json, application/xml, text/xml",
+}
+_OWNED_SAFE_CLIENTS: WeakSet[httpx.AsyncClient] = WeakSet()
+
+
+def new_safe_probe_client() -> httpx.AsyncClient:
+    """Create the only network client trusted for a live research probe."""
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(20),
+        trust_env=False,
+        follow_redirects=False,
+        headers=_PROBE_HEADERS,
+    )
+    _OWNED_SAFE_CLIENTS.add(client)
+    return client
 
 
 def network_preflight(candidate: AcquisitionCandidate) -> None:
@@ -51,22 +71,13 @@ def _safe_url(url: str, client: httpx.AsyncClient) -> None:
 
 def _safe_client(policy: HttpPolicy) -> httpx.AsyncClient:
     client = policy.client
-    blocked = (
-        "cookie",
-        "authorization",
-        "authentication",
-        "api-key",
-        "api_key",
-        "token",
-        "secret",
-        "credential",
-    )
+    is_mock_transport = type(client._transport).__name__ == "MockTransport"  # noqa: SLF001
     if (
         client.trust_env
         or client.follow_redirects
         or getattr(client, "_mounts", None)
         or bool(list(client.cookies.jar))
-        or any(any(part in k.lower() for part in blocked) for k in client.headers)
+        or (client not in _OWNED_SAFE_CLIENTS and not is_mock_transport)
     ):
         raise UnsafeProbeUrl()
     return client
@@ -80,7 +91,9 @@ async def safe_get(policy: HttpPolicy, candidate: AcquisitionCandidate, url: str
     current = url
     for _ in range(6):
         _safe_url(current, client)
-        request = client.build_request("GET", current, headers={})
+        # Build a standalone request: AsyncClient.build_request() merges caller
+        # defaults and cookies, which is unsafe even when their names look benign.
+        request = httpx.Request("GET", current, headers=_PROBE_HEADERS)
         response = await client.send(request, stream=True, follow_redirects=False)
         if response.is_redirect:
             location = response.headers.get("location")

@@ -126,7 +126,10 @@ def public_probe_url(candidate: AcquisitionCandidate) -> str:
 
 def has_sensitive_query(url: str) -> bool:
     """Check decoded query parameter names so percent-encoding cannot bypass the boundary."""
-    return any(_SENSITIVE_KEY.search(key) for key, _ in parse_qsl(urlsplit(url).query))
+    return any(
+        _SENSITIVE_KEY.search(key)
+        for key, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True)
+    )
 
 
 def with_http_evidence(

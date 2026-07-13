@@ -562,16 +562,16 @@ def probe_source_research_candidate(
         raise typer.Exit(2)
 
     async def run_probe():
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(20.0, connect=10.0), trust_env=False
-        ) as client:
-            from newsradar.ingestion.fetchers.base import HttpPolicy
+        if source.provider_id == "youtube":
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(20.0, connect=10.0), trust_env=False
+            ) as client:
+                from newsradar.ingestion.fetchers.base import HttpPolicy
 
-            if source.provider_id == "youtube":
                 return await YouTubeResearchProbe(HttpPolicy(client)).probe(
                     source, candidate, limit, bounded_video_ids
                 )
-            probe = research_probe_for(source, candidate, HttpPolicy(client))
+        async with research_probe_for(source, candidate) as probe:
             return await probe.probe(source, candidate, limit)
 
     result = asyncio.run(run_probe())
