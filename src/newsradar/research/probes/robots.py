@@ -21,12 +21,18 @@ def allowed(text: str, path: str, user_agent: str = "newsradar-research") -> boo
             rules.append((key == "allow", value))
     if agents or rules:
         groups.append((agents, rules))
-    candidates = [
-        rule
+    matching = [
+        (
+            max(
+                (len(agent) for agent in group if agent == "*" or agent in user_agent.lower()),
+                default=0,
+            ),
+            rules,
+        )
         for group, rules in groups
-        if "*" in group or any(a in user_agent.lower() for a in group)
-        for rule in rules
+        if any(agent == "*" or agent in user_agent.lower() for agent in group)
     ]
+    candidates = max(matching, key=lambda item: item[0])[1] if matching else []
     matches = [
         (allow, rule)
         for allow, rule in candidates
