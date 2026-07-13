@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session
 
@@ -25,5 +27,23 @@ def create_database_engine(settings: Settings | None = None) -> Engine:
     return engine
 
 
+@lru_cache(maxsize=8)
+def _cached_database_engine(
+    database_url: str | None, db_lock_timeout_seconds: float
+) -> Engine:
+    """Keep one bounded connection pool per database configuration and process."""
+    return create_database_engine(
+        Settings(
+            database_url=database_url,
+            db_lock_timeout_seconds=db_lock_timeout_seconds,
+        )
+    )
+
+
 def create_session(settings: Settings | None = None) -> Session:
-    return Session(create_database_engine(settings))
+    resolved = settings or get_settings()
+    engine = _cached_database_engine(
+        resolved.database_url,
+        resolved.db_lock_timeout_seconds,
+    )
+    return Session(engine)

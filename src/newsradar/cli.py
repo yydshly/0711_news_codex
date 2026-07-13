@@ -5,7 +5,7 @@ import os
 import re
 import socket
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -68,6 +68,16 @@ RootOption = Annotated[
 ProviderRootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
 ]
+
+
+def _parse_utc_baseline(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise typer.BadParameter("必须使用带时区的 ISO 8601 时间") from None
+    if parsed.tzinfo is None:
+        raise typer.BadParameter("必须包含时区，例如 2026-07-13T00:00:00+00:00")
+    return parsed.astimezone(UTC)
 
 
 def _run_db_action(action: str) -> None:
@@ -530,17 +540,15 @@ def report_sources(
 
 @remediate_app.command("snapshot")
 def snapshot_source_remediation(
-    baseline_at: Annotated[datetime, typer.Option("--baseline-at")],
+    baseline_at: Annotated[str, typer.Option("--baseline-at")],
     output: Annotated[Path, typer.Option("--output")] = Path(
         "reports/source-failure-remediation.md"
     ),
 ) -> None:
     """Write a read-only, immutable failure manifest for one UTC baseline."""
-    if baseline_at.tzinfo is None:
-        typer.echo("--baseline-at 必须包含时区，例如 2026-07-13T00:00:00+00:00")
-        raise typer.Exit(2)
+    parsed_baseline = _parse_utc_baseline(baseline_at)
     with create_session() as session:
-        manifest = RemediationRepository(session).manifest(baseline_at)
+        manifest = RemediationRepository(session).manifest(parsed_baseline)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_remediation_report(manifest), encoding="utf-8")
     typer.echo(f"已写入 {len(manifest.entries)} 个失败来源的修复清单：{output}")
@@ -548,7 +556,7 @@ def snapshot_source_remediation(
 
 @remediate_app.command("report")
 def report_source_remediation(
-    baseline_at: Annotated[datetime, typer.Option("--baseline-at")],
+    baseline_at: Annotated[str, typer.Option("--baseline-at")],
     output: Annotated[Path, typer.Option("--output")] = Path(
         "reports/source-failure-remediation.md"
     ),
@@ -562,13 +570,11 @@ def queue_source_remediation(
     source_id: Annotated[str, typer.Argument()],
     candidate_key: Annotated[str, typer.Argument()],
     original_probe_id: Annotated[int, typer.Option("--original-probe-id", min=1)],
-    baseline_at: Annotated[datetime, typer.Option("--baseline-at")],
+    baseline_at: Annotated[str, typer.Option("--baseline-at")],
     wait: Annotated[bool, typer.Option("--wait/--no-wait")] = False,
 ) -> None:
     """Queue exactly one audited candidate; only Worker performs network I/O."""
-    if baseline_at.tzinfo is None:
-        typer.echo("--baseline-at 必须包含时区，例如 2026-07-13T00:00:00+00:00")
-        raise typer.Exit(2)
+    parsed_baseline = _parse_utc_baseline(baseline_at)
     with create_session() as session:
         commands = OperationCommandService(session)
         try:
@@ -576,7 +582,7 @@ def queue_source_remediation(
                 source_id=source_id,
                 candidate_key=candidate_key,
                 original_probe_id=original_probe_id,
-                baseline_at=baseline_at,
+                baseline_at=parsed_baseline,
                 trigger="cli",
             )
         except ValueError as error:

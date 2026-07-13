@@ -42,3 +42,24 @@ def test_postgres_engine_sets_bounded_lock_timeout(monkeypatch) -> None:
     assert len(listeners) == 1
     listeners[0](Connection(), None)  # type: ignore[operator]
     assert commands == ["SET lock_timeout = '5s'"]
+
+
+def test_create_session_reuses_one_engine_for_the_same_database(monkeypatch) -> None:
+    engines: list[object] = []
+
+    def create_engine(settings):
+        engine = object()
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(session_module, "create_database_engine", create_engine)
+    monkeypatch.setattr(session_module, "Session", lambda engine: engine)
+    session_module._cached_database_engine.cache_clear()
+    settings = Settings(database_url="sqlite+pysqlite:///newsradar.db")
+
+    first = session_module.create_session(settings)
+    second = session_module.create_session(settings)
+
+    assert first is second
+    assert len(engines) == 1
+    session_module._cached_database_engine.cache_clear()
