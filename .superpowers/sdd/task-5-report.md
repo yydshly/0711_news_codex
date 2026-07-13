@@ -40,3 +40,7 @@ Follow-up verification: `uv run pytest tests/research/probes/test_security.py te
 - No migration was required: the existing acquisition probe-run table already has HTTP, latency, fields, latest-date, fingerprint, error, and sanitized-details columns. Existing migration preservation tests pass.
 
 Final verification: `uv run pytest tests/research/probes tests/test_cli.py tests/test_research_repository.py tests/test_migrations.py -q` passed (56 tests).
+
+## Local audited-hostname scope adjustment
+
+The prior hostname fail-closed policy was removed. For this single-user, manually audited YAML catalogue, HTTPS hostnames are allowed after DNS resolution confirms every answer is globally routable; HTTPS, userinfo, localhost/private/link-local/reserved addresses, proxies, sensitive client headers, cookies, credentials, redirects and bounded streaming protections remain enforced. A live arXiv RSS attempt was safely blocked in this environment because its resolver returned a non-global address; no request was sent.
