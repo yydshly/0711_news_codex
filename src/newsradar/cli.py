@@ -29,6 +29,7 @@ from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.research.audit import audit_source_catalog
+from newsradar.research.probes.factory import research_probe_for
 from newsradar.research.probes.youtube import YouTubeResearchProbe
 from newsradar.research.reporting import render_research_report
 from newsradar.runtime import RuntimeSupervisor
@@ -539,6 +540,7 @@ def probe_source_research_candidate(
     candidate_key: Annotated[str, typer.Option("--candidate")],
     limit: Annotated[int, typer.Option(min=1, max=5)] = 5,
     video_ids: Annotated[list[str] | None, typer.Option("--video-id")] = None,
+    persist: Annotated[bool, typer.Option("--persist/--no-persist")] = True,
     root: RootOption = Path("sources"),
 ) -> None:
     """执行有界、只读的研究样本，不修改档案或采集开关。"""
@@ -558,25 +560,50 @@ def probe_source_research_candidate(
     if candidate is None:
         typer.echo(f"未知研究候选：{candidate_key}")
         raise typer.Exit(2)
-    if source.provider_id != "youtube":
-        typer.echo("当前仅支持 YouTube 研究样本")
-        raise typer.Exit(2)
-
     async def run_probe():
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(20.0, connect=10.0), trust_env=False
         ) as client:
             from newsradar.ingestion.fetchers.base import HttpPolicy
 
-            return await YouTubeResearchProbe(HttpPolicy(client)).probe(
-                source, candidate, limit, bounded_video_ids
-            )
+            if source.provider_id == "youtube":
+                return await YouTubeResearchProbe(HttpPolicy(client)).probe(
+                    source, candidate, limit, bounded_video_ids
+                )
+            probe = research_probe_for(candidate, HttpPolicy(client))
+            return await probe.probe(source, candidate, limit)
 
     result = asyncio.run(run_probe())
     typer.echo(
         f"{source.id}/{candidate.key}: {result.outcome.value} "
         f"样本={len(result.samples)} 说明={result.reason_zh}"
     )
+    if persist:
+        try:
+            with create_session() as session:
+                repository = SourceRepository(session)
+                record = next(
+                    (
+                        row
+                        for row in repository.current_acquisition_candidates(source.id)
+                        if row.candidate_key == candidate.key
+                    ),
+                    None,
+                )
+                if record is None:
+                    raise RuntimeError("candidate_not_synced")
+                repository.save_acquisition_probe_run(
+                    candidate_id=record.id,
+                    started_at=result.started_at,
+                    completed_at=result.finished_at,
+                    outcome=result.outcome.value,
+                    sample_count=len(result.samples),
+                    error_code=result.error_code,
+                    details=result.model_dump(mode="json"),
+                )
+                session.commit()
+        except Exception:
+            typer.echo("探测结果未持久化（数据库不可用）；可使用 --no-persist 输出内存报告")
     if result.error_code:
         typer.echo(f"代码：{result.error_code}")
 

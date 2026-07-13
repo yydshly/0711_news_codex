@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,3 +52,36 @@ class ResearchProbe(Protocol):
     async def probe(
         self, source: SourceDefinition, candidate: AcquisitionCandidate, limit: int = 5
     ) -> AcquisitionProbeResult: ...
+
+
+def probe_result(
+    source: SourceDefinition,
+    candidate: AcquisitionCandidate,
+    outcome: AcquisitionProbeOutcome,
+    reason_zh: str,
+    error_code: str | None = None,
+    *,
+    samples: list[AcquisitionProbeSample] | None = None,
+    metadata: dict[str, str | int | bool | None] | None = None,
+    decision: str | None = None,
+) -> AcquisitionProbeResult:
+    """Build a uniformly bounded, credential-free research result."""
+    return AcquisitionProbeResult(
+        source_id=source.id,
+        candidate_key=candidate.key,
+        outcome=outcome,
+        decision=decision or candidate.decision.value,
+        reason_zh=reason_zh,
+        error_code=error_code,
+        samples=(samples or [])[:5],
+        metadata=metadata or {},
+    )
+
+
+def public_probe_url(candidate: AcquisitionCandidate) -> str:
+    """Evidence URL is the only generic probe target; never accepts embedded auth."""
+    url = str(candidate.evidence[0])
+    parsed = urlsplit(url)
+    if parsed.username or parsed.password:
+        raise ValueError("credentialed_url")
+    return url
