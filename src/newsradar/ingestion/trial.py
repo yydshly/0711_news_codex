@@ -65,6 +65,8 @@ def evaluate_trial_eligibility(
     ]
     if not automatic_methods:
         return _ineligible("no_automatic_method", "不可试用抓取：没有非 HTML 自动访问方式。")
+    if not any(not method.auth_envs for method in automatic_methods):
+        return _ineligible("credentials_not_allowed", "试用抓取不使用凭据访问方式。")
     if probe.outcome != "success":
         return _ineligible("probe_not_successful", "不可试用抓取：最新探测未成功。")
     if probe.sample_count <= 0:

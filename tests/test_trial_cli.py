@@ -8,7 +8,6 @@ from newsradar.ingestion.trial import ProbeSnapshot
 from newsradar.sources.schema import SourceDefinition
 from tests.test_source_schema import valid_source
 
-
 runner = CliRunner()
 
 
@@ -59,7 +58,9 @@ def test_trial_fetch_queues_only_eligible_direct_sources(monkeypatch) -> None:
             queued.append(kwargs)
             return 41
 
-    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [eligible, ineligible, non_direct])
+    monkeypatch.setattr(
+        "newsradar.cli.load_source_tree", lambda root: [eligible, ineligible, non_direct]
+    )
     monkeypatch.setattr("newsradar.cli.SourceRepository", FakeSourceRepository)
     monkeypatch.setattr("newsradar.cli.OperationCommandService", FakeCommands)
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
@@ -87,3 +88,10 @@ def test_trial_fetch_rejects_one_off() -> None:
 
     assert result.exit_code == 2
     assert "--trial cannot be used with --one-off" in result.stdout
+
+
+def test_trial_fetch_rejects_no_approved() -> None:
+    result = runner.invoke(app, ["fetch", "--trial", "--no-approved"])
+
+    assert result.exit_code == 2
+    assert "--trial cannot be used with --no-approved" in result.stdout

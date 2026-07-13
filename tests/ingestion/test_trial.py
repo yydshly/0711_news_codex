@@ -42,6 +42,27 @@ def test_direct_ready_successful_probe_is_trial_eligible() -> None:
     assert decision.reason == "可试用抓取：公开直连且首次探测合格"
 
 
+def test_credentials_access_method_is_not_trial_eligible() -> None:
+    source = _source(
+        access_methods=[
+            {
+                "kind": "rss",
+                "url": "https://www.anthropic.com/news/rss.xml",
+                "priority": 1,
+                "auth_envs": ["TRIAL_TEST_TOKEN"],
+            }
+        ]
+    )
+
+    decision = evaluate_trial_eligibility(source, _successful_probe())
+
+    assert decision == TrialDecision(
+        False,
+        "credentials_not_allowed",
+        "试用抓取不使用凭据访问方式。",
+    )
+
+
 def test_indirect_source_is_discovery_only() -> None:
     decision = evaluate_trial_eligibility(
         _source(coverage_mode="indirect"), _successful_probe()

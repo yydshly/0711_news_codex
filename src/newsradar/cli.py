@@ -14,8 +14,8 @@ import typer
 from newsradar.db.models import OperationRunRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
-from newsradar.ingestion.trial import evaluate_trial_eligibility
 from newsradar.events.runtime import EventOperationHandler
+from newsradar.ingestion.trial import evaluate_trial_eligibility
 from newsradar.local_postgres import (
     LocalPostgresError,
     build_local_postgres_manager,
@@ -124,7 +124,7 @@ def run_web(
 def fetch_sources(
     source_id: Annotated[str | None, typer.Argument()] = None,
     root: RootOption = Path("sources"),
-    approved: Annotated[bool, typer.Option("--approved")] = True,
+    approved: Annotated[bool, typer.Option("--approved/--no-approved")] = True,
     one_off: Annotated[bool, typer.Option("--one-off")] = False,
     trial: Annotated[bool, typer.Option("--trial")] = False,
     provider: Annotated[str | None, typer.Option()] = None,

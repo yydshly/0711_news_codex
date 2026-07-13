@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -12,7 +12,9 @@ from newsradar.ingestion.service import SourceFetchSummary
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.operations.worker import Worker
+from newsradar.sources.probes.base import ProbeOutcome, ProbeResult, ProbeSample
 from newsradar.sources.schema import SourceDefinition
+from tests.test_source_schema import valid_source
 
 
 def _session() -> Session:
@@ -235,7 +237,9 @@ def test_fetch_worker_passes_audited_scope_to_executor() -> None:
         assert scopes == [operation.requested_scope]
 
 
-def test_trial_fetch_worker_blocks_ineligible_latest_probe_before_creating_fetcher(monkeypatch) -> None:
+def test_trial_fetch_worker_blocks_ineligible_latest_probe_before_creating_fetcher(
+    monkeypatch,
+) -> None:
     from newsradar.operations.fetch_runtime import FetchOperationHandler
     from newsradar.sources.repository import SourceRepository
 
@@ -252,8 +256,12 @@ def test_trial_fetch_worker_blocks_ineligible_latest_probe_before_creating_fetch
             factory_calls.append(policy)
             raise AssertionError("trial eligibility must be checked before creating a fetcher")
 
-        monkeypatch.setattr("newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db))
-        monkeypatch.setattr("newsradar.operations.fetch_runtime.FetcherFactory", fail_if_fetcher_created)
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db)
+        )
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.FetcherFactory", fail_if_fetcher_created
+        )
 
         Worker(OperationRepository(db), "worker-a").run_once(
             FetchOperationHandler.production([source])
@@ -264,3 +272,71 @@ def test_trial_fetch_worker_blocks_ineligible_latest_probe_before_creating_fetch
         assert record is not None
         assert record.status == OperationStatus.PARTIAL
         assert record.error_code == "eligibility_trial_no_probe"
+
+
+def test_trial_fetch_worker_blocks_credentials_access_before_creating_fetcher(monkeypatch) -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+    from newsradar.sources.repository import SourceRepository
+
+    source_data = valid_source()
+    source_data["id"] = "source-a"
+    source_data["access_methods"] = [
+        {
+            "kind": "rss",
+            "url": "https://source-a.test/feed",
+            "priority": 1,
+            "auth_envs": ["TRIAL_TEST_TOKEN"],
+        }
+    ]
+    source = SourceDefinition.model_validate(source_data)
+    with _session() as db:
+        repository = SourceRepository(db)
+        repository.sync([source])
+        now = datetime(2026, 7, 13, tzinfo=UTC)
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="rss",
+                access_url="https://source-a.test/feed",
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=now,
+                finished_at=now,
+                sample_count=1,
+                field_completeness=1.0,
+                suggested_status="candidate",
+                reason="ok",
+                samples=[
+                    ProbeSample(
+                        external_id="one",
+                        title="First",
+                        canonical_url="https://source-a.test/one",
+                    )
+                ],
+            )
+        )
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH,
+            {"source_id": source.id, "trial": True},
+        )
+        factory_calls: list[object] = []
+
+        def fail_if_fetcher_created(policy):
+            factory_calls.append(policy)
+            raise AssertionError("credentials trial source must not create a fetcher")
+
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db)
+        )
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.FetcherFactory", fail_if_fetcher_created
+        )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler.production([source])
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert factory_calls == []
+        assert record is not None
+        assert record.status == OperationStatus.PARTIAL
+        assert record.error_code == "eligibility_trial_credentials_not_allowed"
