@@ -560,6 +560,7 @@ def probe_source_research_candidate(
     if candidate is None:
         typer.echo(f"未知研究候选：{candidate_key}")
         raise typer.Exit(2)
+
     async def run_probe():
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(20.0, connect=10.0), trust_env=False
@@ -598,6 +599,11 @@ def probe_source_research_candidate(
                     completed_at=result.finished_at,
                     outcome=result.outcome.value,
                     sample_count=len(result.samples),
+                    http_status=result.http_status,
+                    latency_ms=result.latency_ms,
+                    fields_present=result.fields_present,
+                    latest_published_at=result.latest_published_at,
+                    schema_fingerprint=result.schema_fingerprint,
                     error_code=result.error_code,
                     details=result.model_dump(mode="json"),
                 )

@@ -36,5 +36,5 @@ def research_probe_for(
         AcquisitionKind.JSON_LD,
         AcquisitionKind.EMBEDDED_JSON,
     }:
-        return HtmlResearchProbe()
+        return HtmlResearchProbe(resolved)
     return LibraryResearchProbe(resolved)

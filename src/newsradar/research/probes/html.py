@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from html.parser import HTMLParser
+from urllib.parse import urlsplit, urlunsplit
 
+from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
-from .schema import AcquisitionProbeOutcome, probe_result
+from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
+from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url
 
 
 class _MetadataParser(HTMLParser):
@@ -26,6 +29,9 @@ class _MetadataParser(HTMLParser):
 
 class HtmlResearchProbe:
     """Static inspection only.  It deliberately contains no HTTP/browser/JS capability."""
+
+    def __init__(self, policy: HttpPolicy | None = None) -> None:
+        self.policy = policy
 
     def inspect(self, source: SourceDefinition, candidate: AcquisitionCandidate, html: str):
         parser = _MetadataParser()
@@ -50,4 +56,57 @@ class HtmlResearchProbe:
         self, source: SourceDefinition, candidate: AcquisitionCandidate, limit: int = 5
     ):
         del limit
-        return self.inspect(source, candidate, "")
+        if self.policy is None:
+            return self.inspect(source, candidate, "")
+        target = public_probe_url(candidate)
+        parts = urlsplit(target)
+        robots = urlunsplit((parts.scheme, parts.netloc, "/robots.txt", "", ""))
+        try:
+            robot = await safe_get(self.policy, candidate, robots)
+            if robot.status_code >= 500:
+                return probe_result(
+                    source,
+                    candidate,
+                    AcquisitionProbeOutcome.BLOCKED,
+                    "robots.txt 不可达",
+                    "robots_unavailable",
+                    blocked_condition="robots",
+                )
+            response = await safe_get(self.policy, candidate, target)
+            if response.status_code in {401, 403}:
+                return probe_result(
+                    source,
+                    candidate,
+                    AcquisitionProbeOutcome.BLOCKED,
+                    "页面需要登录或浏览器会话",
+                    "access_blocked",
+                )
+            response.raise_for_status()
+        except ProbeAuthenticationRequired:
+            return probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.BLOCKED,
+                "需要认证或批准",
+                "authentication_required",
+            )
+        except UnsafeProbeUrl:
+            return probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.BLOCKED,
+                "目标地址不满足安全网络边界",
+                "unsafe_url",
+            )
+        except Exception as exc:
+            return probe_result(
+                source,
+                candidate,
+                AcquisitionProbeOutcome.FAILED,
+                "静态页面不可用",
+                type(exc).__name__,
+            )
+        result = self.inspect(source, candidate, response.text)
+        return result.model_copy(
+            update={"http_status": response.status_code, "final_url": str(response.url)}
+        )

@@ -32,3 +32,11 @@ The generic probe target is deliberately the candidate's reviewed evidence URL, 
 - Factory selection now uses `source.provider_id == "youtube"`, rather than a candidate-key prefix.
 
 Follow-up verification: `uv run pytest tests/research/probes/test_security.py tests/research/probes/test_feed.py tests/research/probes/test_sitemap.py -q` passed (4 tests).
+
+## Final evidence and static HTML follow-up
+
+- HTML/JSON-LD/embedded-JSON candidates now use the same bounded `safe_get` path for reviewed static pages and `robots.txt`; no JavaScript, browser, cookies, credentials, or production fetcher was added.
+- The probe result now exposes HTTP status/final URL/latency/cache/rate-limit/latest timestamp/fields/completeness/schema/pagination/block condition evidence. CLI maps the persisted columns directly while retaining sanitized details.
+- No migration was required: the existing acquisition probe-run table already has HTTP, latency, fields, latest-date, fingerprint, error, and sanitized-details columns. Existing migration preservation tests pass.
+
+Final verification: `uv run pytest tests/research/probes tests/test_cli.py tests/test_research_repository.py tests/test_migrations.py -q` passed (56 tests).

@@ -46,6 +46,17 @@ class AcquisitionProbeResult(BaseModel):
     metadata: dict[str, str | int | bool | None] = Field(default_factory=dict)
     reason_zh: str
     error_code: str | None = None
+    http_status: int | None = None
+    final_url: str | None = None
+    latency_ms: float | None = None
+    latest_published_at: datetime | None = None
+    fields_present: list[str] = Field(default_factory=list)
+    field_completeness: float | None = None
+    schema_fingerprint: str | None = None
+    pagination_detected: bool | None = None
+    cache_control: str | None = None
+    rate_limit_remaining: int | None = None
+    blocked_condition: str | None = None
 
 
 class ResearchProbe(Protocol):
@@ -64,6 +75,7 @@ def probe_result(
     samples: list[AcquisitionProbeSample] | None = None,
     metadata: dict[str, str | int | bool | None] | None = None,
     decision: str | None = None,
+    **evidence: object,
 ) -> AcquisitionProbeResult:
     """Build a uniformly bounded, credential-free research result."""
     return AcquisitionProbeResult(
@@ -75,6 +87,7 @@ def probe_result(
         error_code=error_code,
         samples=(samples or [])[:5],
         metadata=metadata or {},
+        **evidence,
     )
 
 
