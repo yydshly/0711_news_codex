@@ -35,7 +35,7 @@
     {% if targets %}
     <div class="table-scroll" role="region" aria-label="Target 列表" tabindex="0">
       <table>
-        <thead><tr><th scope="col">名称</th><th scope="col">Provider</th><th scope="col">类型</th><th scope="col">角色</th><th scope="col">覆盖</th><th scope="col">可用性</th><th scope="col">首选协议</th><th scope="col">风险</th><th scope="col">最新内容时间</th><th scope="col">最新内容探测结果</th></tr></thead>
+        <thead><tr><th scope="col">名称</th><th scope="col">Provider</th><th scope="col">类型</th><th scope="col">角色</th><th scope="col">覆盖</th><th scope="col">可用性</th><th scope="col">试用状态</th><th scope="col">试用说明</th><th scope="col">首选协议</th><th scope="col">风险</th><th scope="col">最新内容时间</th><th scope="col">最新内容探测结果</th></tr></thead>
         <tbody>
         {% for target in targets %}
           <tr>
@@ -45,6 +45,8 @@
             <td>{{ target.role_labels | join('、') if target.role_labels else '未记录' }}</td>
             <td>{{ target.coverage_label }}</td>
             <td><span class="status status-{{ 'healthy' if target.availability == 'ready' else 'blocked' }}">{{ target.availability_label }}</span></td>
+            <td><span class="status status-{{ 'healthy' if target.trial_label == '可试用抓取' else 'blocked' }}">{{ target.trial_label }}</span></td>
+            <td>{{ target.trial_reason }}</td>
             <td>{{ target.access_label }}</td>
             <td>{{ target.risk_total if target.risk_total is not none else '未评估' }}</td>
             <td>{% if target.latest_content_at %}<time datetime="{{ target.latest_content_at.isoformat() }}">{{ target.latest_content_at.strftime('%Y-%m-%d %H:%M') }}</time>{% else %}尚未探测{% endif %}</td>

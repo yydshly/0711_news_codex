@@ -19,6 +19,9 @@ from newsradar.db.models import (
     SourceResearchProfileRecord,
     SourceRiskAssessmentRecord,
 )
+from newsradar.ingestion.trial import ProbeSnapshot, TrialDecision, evaluate_trial_eligibility
+from newsradar.sources.repository import SourceRepository
+from newsradar.sources.schema import AccessMethod, RiskAssessment, SourceDefinition
 from newsradar.web.i18n import explain_failure, zh_label
 from newsradar.web.viewmodels import (
     AccessMethodView,
@@ -308,7 +311,9 @@ class DashboardQueryService:
 
     def summary(self) -> DashboardSummary:
         provider_count = self._session.scalar(select(func.count(ProviderDefinitionRecord.id))) or 0
-        target_count = self._session.scalar(select(func.count(SourceDefinitionRecord.id))) or 0
+        sources = self._session.scalars(select(SourceDefinitionRecord)).all()
+        target_count = len(sources)
+        trial_decisions, snapshots = self._trial_decisions(sources)
         runs = self._recent_content_runs(3)
         runs_by_source: dict[str, list[SourceProbeRunRecord]] = defaultdict(list)
         for run in runs:
@@ -363,6 +368,15 @@ class DashboardQueryService:
             ),
             category_counts=tuple(category_counts),
             latest_probe_at=self.latest_probe_at(),
+            explored_count=len(snapshots),
+            trial_eligible_count=sum(decision.eligible for decision in trial_decisions.values()),
+            discovery_only_count=sum(
+                decision.code == "discovery_only" for decision in trial_decisions.values()
+            ),
+            restricted_count=sum(
+                source.availability != "ready" or source.coverage_mode == "catalog_only"
+                for source in sources
+            ),
         )
 
     def latest_probe_at(self) -> datetime | None:
@@ -706,11 +720,13 @@ class DashboardQueryService:
         }
         risks = self._latest_risks(source_ids)
         latest_runs = self._latest_content_runs(source_ids)
+        trial_decisions, _ = self._trial_decisions(records)
         rows = []
         for source in records:
             method = methods.get(source.id)
             risk = risks.get(source.id)
             latest = latest_runs.get(source.id)
+            trial = trial_decisions[source.id]
             rows.append(
                 TargetRow(
                     source_id=source.id,
@@ -733,9 +749,74 @@ class DashboardQueryService:
                     ),
                     roles=tuple(source.roles),
                     role_labels=tuple(zh_label("role", role) for role in source.roles),
+                    trial_label=self._trial_label(trial),
+                    trial_reason=trial.reason,
                 )
             )
         return rows
+
+    def _trial_decisions(
+        self, sources: Sequence[SourceDefinitionRecord]
+    ) -> tuple[dict[str, TrialDecision], dict[str, ProbeSnapshot]]:
+        if not sources:
+            return {}, {}
+        source_ids = [source.id for source in sources]
+        methods_by_source: dict[str, list[SourceAccessMethodRecord]] = defaultdict(list)
+        for method in self._session.scalars(
+            select(SourceAccessMethodRecord).where(SourceAccessMethodRecord.source_id.in_(source_ids))
+        ):
+            methods_by_source[method.source_id].append(method)
+        risks = self._latest_risks(source_ids)
+        repository = SourceRepository(self._session)
+        snapshots = {
+            source.id: snapshot
+            for source in sources
+            if (snapshot := repository.latest_probe_snapshot(source.id)) is not None
+        }
+        decisions = {
+            source.id: evaluate_trial_eligibility(
+                self._trial_source_definition(
+                    source, methods_by_source.get(source.id, []), risks.get(source.id)
+                ),
+                snapshots.get(source.id),
+            )
+            for source in sources
+        }
+        return decisions, snapshots
+
+    @staticmethod
+    def _trial_source_definition(
+        source: SourceDefinitionRecord,
+        methods: Sequence[SourceAccessMethodRecord],
+        risk: SourceRiskAssessmentRecord | None,
+    ) -> SourceDefinition:
+        return SourceDefinition.model_construct(
+            coverage_mode=source.coverage_mode,
+            availability=source.availability,
+            access_methods=[
+                AccessMethod.model_construct(
+                    kind=method.kind,
+                    requires_manual_approval=method.requires_manual_approval,
+                    auth_envs=tuple(
+                        method.auth_envs or ([method.auth_env] if method.auth_env else [])
+                    ),
+                )
+                for method in methods
+            ],
+            risk=RiskAssessment.model_construct(
+                hard_block_reason=risk.hard_block_reason if risk else None
+            ),
+        )
+
+    @staticmethod
+    def _trial_label(decision: TrialDecision) -> str:
+        if decision.eligible:
+            return "可试用抓取"
+        if decision.code == "discovery_only":
+            return "仅发现"
+        if decision.code == "catalog_only":
+            return "受限目录"
+        return "不可试用"
 
     def _recent_content_runs(self, per_source_limit: int) -> list[SourceProbeRunRecord]:
         ranked = select(

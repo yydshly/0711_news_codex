@@ -33,6 +33,28 @@
       <span>连续三轮成功</span><strong>{{ summary.three_success_count }}</strong>
       <small>内容探测严格计数</small>
     </a>
+    <a class="metric-card" href="/targets">
+      <span>已探索</span><strong>{{ summary.explored_count }}</strong>
+      <small>已有最新探测记录的 Target</small>
+    </a>
+    <a class="metric-card" href="/targets">
+      <span>可试用抓取</span><strong>{{ summary.trial_eligible_count }}</strong>
+      <small>公开直连且首次探测合格</small>
+    </a>
+    <a class="metric-card" href="/targets?coverage_mode=indirect">
+      <span>仅发现</span><strong>{{ summary.discovery_only_count }}</strong>
+      <small>用于发现线索，需回源确认</small>
+    </a>
+    <a class="metric-card" href="/gaps">
+      <span>受限目录</span><strong>{{ summary.restricted_count }}</strong>
+      <small>未就绪或仅目录收录的 Target</small>
+    </a>
+  </section>
+
+  <section class="panel intro-panel" aria-labelledby="trial-explanation-heading">
+    <p class="eyebrow">试用范围</p>
+    <h2 id="trial-explanation-heading">试用资格说明</h2>
+    <p>试用可抓取表示首次探测合格，不等于长期稳定或事实确认。</p>
   </section>
 
   <section class="panel category-panel" aria-labelledby="category-heading">

@@ -14,6 +14,10 @@ class DashboardSummary:
     three_success_count: int
     category_counts: tuple[tuple[str, int], ...]
     latest_probe_at: datetime | None
+    explored_count: int = 0
+    trial_eligible_count: int = 0
+    discovery_only_count: int = 0
+    restricted_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +61,8 @@ class TargetRow:
     latest_outcome_label: str
     roles: tuple[str, ...] = ()
     role_labels: tuple[str, ...] = ()
+    trial_label: str = "尚未评估"
+    trial_reason: str = "尚未评估试用资格"
 
 
 @dataclass(frozen=True, slots=True)
