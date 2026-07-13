@@ -271,7 +271,9 @@ def build_events(
 ) -> None:
     with create_session() as session:
         commands = OperationCommandService(session)
-        operation_id = commands.enqueue_event_pipeline(window_hours=hours, trigger="cli")
+        operation_id = commands.enqueue_event_pipeline(
+            window_hours=hours, trigger="cli"
+        )
         typer.echo(f"Queued event pipeline as operation {operation_id}")
         if not wait:
             return

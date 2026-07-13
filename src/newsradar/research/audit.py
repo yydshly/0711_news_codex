@@ -45,6 +45,7 @@ class ResearchAuditReport:
     provider_count: int
     target_count: int
     status_counts: Mapping[str, int]
+    category_counts: Mapping[str, int]
     method_counts: Mapping[str, int]
     findings: tuple[AuditFinding, ...]
     targets: tuple[ResearchTargetSnapshot, ...] = ()
@@ -91,6 +92,7 @@ def audit_source_catalog(
     """审计已载入的 YAML 定义；不执行网络、数据库或配置写入。"""
     provider_by_id = {provider.id: provider for provider in providers}
     status_counts = Counter(source.research.status.value for source in sources)
+    category_counts = Counter(source.nature.value for source in sources)
     method_counts = Counter(
         candidate.kind.value for source in sources for candidate in source.research.candidates
     )
@@ -226,6 +228,7 @@ def audit_source_catalog(
             source.research.status not in _NON_COVERAGE_STATUSES for source in sources
         ),
         status_counts=MappingProxyType(dict(sorted(status_counts.items()))),
+        category_counts=MappingProxyType(dict(sorted(category_counts.items()))),
         method_counts=MappingProxyType(dict(sorted(method_counts.items()))),
         findings=tuple(findings),
         targets=tuple(_snapshot(source) for source in sources),

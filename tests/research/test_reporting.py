@@ -20,6 +20,7 @@ def test_report_is_chinese_and_lists_research_details() -> None:
     assert "收集公开资讯" in rendered
     assert "所需信息" in rendered
     assert "首选" in rendered
+    assert "## 来源类别统计" in rendered
 
 
 def test_report_lists_target_findings_as_incomplete_items() -> None:

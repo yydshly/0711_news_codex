@@ -137,3 +137,12 @@ def test_audit_counts_api_html_library_and_aggregator_separately() -> None:
     report = audit_source_catalog((), sources)
 
     assert report.method_counts == {kind: 1 for kind in kinds}
+
+
+def test_audit_counts_sources_by_nature() -> None:
+    professional = _source(nature="professional_media")
+    research = _source(id="research-source", nature="research")
+
+    report = audit_source_catalog((), (professional, research))
+
+    assert report.category_counts == {"professional_media": 1, "research": 1}

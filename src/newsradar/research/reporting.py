@@ -24,6 +24,14 @@ _METHOD_NAMES = {
     "aggregator": "聚合方法",
     "manual": "人工方式",
 }
+_CATEGORY_NAMES = {
+    "first_party": "第一方",
+    "research": "研究机构",
+    "community": "社区",
+    "professional_media": "专业媒体",
+    "aggregator": "聚合来源",
+    "social": "社交平台",
+}
 _DECISION_NAMES = {
     "primary": "首选",
     "supplement": "补充",
@@ -49,6 +57,14 @@ def render_research_report(report: ResearchAuditReport) -> str:
     )
     for status in ("placeholder", "duplicate", "retired", "needs_research", "verified"):
         lines.append(f"| {_STATUS_NAMES[status]} | {report.status_counts.get(status, 0)} |")
+    lines.extend(["", "## 来源类别统计", "", "| 类别 | 数量 |", "| --- | ---: |"])
+    if report.category_counts:
+        lines.extend(
+            f"| {_CATEGORY_NAMES.get(category, category)} | {count} |"
+            for category, count in report.category_counts.items()
+        )
+    else:
+        lines.append("| 暂无来源类别 | 0 |")
     lines.extend(["", "## 候选方式统计", "", "| 方式 | 数量 |", "| --- | ---: |"])
     if report.method_counts:
         lines.extend(
