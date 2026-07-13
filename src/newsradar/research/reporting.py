@@ -33,6 +33,7 @@ _CATEGORY_NAMES = {
     "social": "社交平台",
 }
 _DECISION_NAMES = {
+    "pending": "\u5f85\u7814\u7a76",
     "primary": "首选",
     "supplement": "补充",
     "fallback": "备选",
@@ -98,7 +99,7 @@ def render_research_report(report: ResearchAuditReport) -> str:
                 ["", "| 决策 | 方式 | 信息 | 样本 | 限制 |", "| --- | --- | --- | --- | --- |"]
             )
             for candidate in source.candidates:
-                decision = _DECISION_NAMES[candidate.decision]
+                decision = _DECISION_NAMES.get(candidate.decision, candidate.decision)
                 method = _METHOD_NAMES.get(candidate.kind, candidate.kind)
                 fields = "、".join(candidate.fields)
                 sample = _SAMPLE_STATUS_NAMES[candidate.sample_status]

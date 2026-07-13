@@ -36,3 +36,30 @@ def test_placeholder_targets_do_not_count_as_real_coverage() -> None:
         for status, count in report.status_counts.items()
         if status in {"verified", "needs_research"}
     )
+
+
+def test_catalog_has_a_strictly_evidenced_verified_fixture() -> None:
+    verified = [
+        source
+        for source in load_source_tree(SOURCE_ROOT)
+        if source.research.status.value == "verified"
+    ]
+
+    assert verified
+    for source in verified:
+        research = source.research
+        primary = [
+            candidate
+            for candidate in research.candidates
+            if candidate.decision.value == "primary"
+        ]
+        assert research.purpose and research.conclusion and research.risk_conclusion
+        assert research.wanted_information
+        assert primary
+        assert all(
+            candidate.sample_status.value in {"succeeded", "partial"} and candidate.evidence
+            for candidate in primary
+        )
+        assert any(candidate.decision.value == "fallback" for candidate in research.candidates) or (
+            research.no_fallback_reason and research.no_fallback_reason.strip()
+        )

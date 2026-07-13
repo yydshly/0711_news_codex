@@ -51,3 +51,12 @@ def test_report_lists_target_findings_as_incomplete_items() -> None:
     rendered = render_research_report(report)
 
     assert "- 未完成项：需要人工复核" in rendered
+
+
+def test_needs_research_target_renders_pending_configured_access_methods() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+
+    rendered = render_research_report(audit_source_catalog((), (source,)))
+
+    assert "\u5f85\u7814\u7a76" in rendered
+    assert "RSS" in rendered

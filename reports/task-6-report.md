@@ -10,7 +10,7 @@
 
 - Added an explicit `research.status` to every existing YAML Target.
 - Classified 134 `sources/universe` entries as `placeholder`: they are platform/search-layer candidates, not independently confirmed collectible Targets.
-- Classified 30 previously executable named Targets as `needs_research`; their identity and configured entry remain visible, while their method samples, terms review, and fallback analysis remain incomplete.
+- Classified 32 named Targets as `needs_research`; “named” means a concrete non-placeholder Target with a distinct ID and identity URL, including the two newly added official/regulatory entries. Their identity and configured entry remain visible, while their method samples, terms review, and fallback analysis remain incomplete.
 - Added `anthropic-newsroom`, an official first-party AI-news source with a documented manual-only, no-bypass acquisition boundary.
 - Added `sec-nvidia-filings`, an official SEC EDGAR regulatory-evidence Target for NVIDIA, based on the SEC's documented unauthenticated JSON submissions API and kept disabled pending policy review and a compliant sample.
 
@@ -30,7 +30,7 @@ uv run newsradar sources research report --root sources --provider-root provider
 uv run newsradar sources research report --root sources --provider-root providers --output reports/source-research-v3-matrix.md
 ```
 
-The catalog-completion test passed (2 passed). The validation and report commands completed with warnings only: generic platform targets and duplicated universe identities are intentionally visible, while the 31 named Targets are recorded as `needs_research` rather than fabricated as verified coverage.
+The catalog-completion test includes a real strict `verified` fixture (OpenAI YouTube) and completed with 3 passing cases. Current YAML status counts are: `verified=1`, `needs_research=32`, `placeholder=134`, `duplicate=0`, and `retired=0`. “Named needs_research” counts concrete non-placeholder Targets only; placeholders do not count as real coverage. Validation and report commands completed with warnings only: generic platform targets and duplicated universe identities remain visible rather than being concealed.
 
 ## Unfinished work
 

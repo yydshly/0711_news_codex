@@ -65,6 +65,41 @@ def _normalized_url(value: object) -> str:
 
 
 def _snapshot(source: SourceDefinition) -> ResearchTargetSnapshot:
+    candidates = tuple(
+        ResearchCandidateSnapshot(
+            decision=candidate.decision.value,
+            kind=candidate.kind.value,
+            fields=tuple(candidate.fields),
+            sample_status=candidate.sample_status.value,
+            limitations=tuple(candidate.limitations),
+        )
+        for candidate in source.research.candidates
+    )
+    if not candidates and source.research.status == ResearchStatus.NEEDS_RESEARCH:
+        candidates = tuple(
+            ResearchCandidateSnapshot(
+                decision="pending",
+                kind=method.kind.value,
+                fields=tuple(field.value for field in source.expected_fields),
+                sample_status="not_run",
+                limitations=(
+                    (
+                        "Pending research: configured access lacks independent samples, terms, "
+                        "and fallback review; it is not verified."
+                    ),
+                    *(
+                        (f"Credentials: {', '.join(method.auth_envs)}",)
+                        if method.auth_envs
+                        else ()
+                    ),
+                    (
+                        f"Risk total: {source.total_risk}; "
+                        f"ingestion.enabled={source.ingestion.enabled}"
+                    ),
+                ),
+            )
+            for method in source.access_methods
+        )
     return ResearchTargetSnapshot(
         id=source.id,
         name=source.name,
@@ -72,16 +107,7 @@ def _snapshot(source: SourceDefinition) -> ResearchTargetSnapshot:
         purpose=source.research.purpose,
         wanted_information=tuple(source.research.wanted_information),
         risk_conclusion=source.research.risk_conclusion,
-        candidates=tuple(
-            ResearchCandidateSnapshot(
-                decision=candidate.decision.value,
-                kind=candidate.kind.value,
-                fields=tuple(candidate.fields),
-                sample_status=candidate.sample_status.value,
-                limitations=tuple(candidate.limitations),
-            )
-            for candidate in source.research.candidates
-        ),
+        candidates=candidates,
     )
 
 

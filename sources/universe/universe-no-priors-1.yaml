@@ -29,6 +29,58 @@ risk:
 notes: 'Fallback: no additional audited method until the official channel ID is confirmed.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
+  status: needs_research
+  purpose: 在确认官方频道 ID 后，从公开 Atom 订阅源发现节目视频。
+  wanted_information: [video_id, title, channel, published_at, summary, engagement, transcript_excerpt]
+  risk_conclusion: 不以频道网页、Cookie、登录态、代理或反爬绕过确认频道；未确认 ID 时保持待研究。
+  no_fallback_reason: 无安全网页回退；必须先确认频道 ID。
   reviewed_at: '2026-07-12'
+  candidates:
+  - key: youtube-atom
+    kind: atom
+    implementation: youtube-channel-feed
+    officiality: official
+    authentication: none
+    roles: [discovery]
+    fields: [video_id, title, channel, published_at, canonical_url]
+    limitations: [需要已确认频道 ID, 最多五条]
+    evidence: [https://www.youtube.com/feeds/videos.xml]
+    reviewed_at: '2026-07-12'
+    sample_status: not_run
+    decision: primary
+  - key: youtube-data-api
+    kind: api_key_api
+    implementation: youtube-data-api
+    officiality: official
+    authentication: api_key
+    roles: [metadata, engagement]
+    fields: [summary, engagement]
+    limitations: [仅读取 YOUTUBE_API_KEY, 无 Key 时阻断]
+    evidence: [https://developers.google.com/youtube/v3/docs/videos/list]
+    reviewed_at: '2026-07-12'
+    sample_status: not_run
+    decision: supplement
+  - key: youtube-transcript-api
+    kind: library
+    implementation: youtube-transcript-api
+    officiality: unofficial_library
+    authentication: none
+    roles: [transcript]
+    fields: [language, transcript_excerpt]
+    limitations: [非官方库, 可读降级]
+    evidence: [https://pypi.org/project/youtube-transcript-api/]
+    reviewed_at: '2026-07-12'
+    sample_status: not_run
+    decision: supplement
+  - key: yt-dlp-metadata
+    kind: manual
+    implementation: manual-review
+    officiality: unofficial_library
+    authentication: none
+    roles: [evidence]
+    fields: [version, license, maintenance]
+    limitations: [仅元数据记录, 禁止执行媒体下载]
+    evidence: [https://github.com/yt-dlp/yt-dlp]
+    reviewed_at: '2026-07-12'
+    sample_status: not_run
+    decision: manual_only

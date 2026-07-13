@@ -5,12 +5,12 @@
 | 指标 | 数量 |
 | --- | ---: |
 | Provider 总数 | 67 |
-| 真实 Target | 32 |
-| 占位 | 134 |
+| 真实 Target | 34 |
+| 占位 | 132 |
 | 重复 | 0 |
 | 退役 | 0 |
-| 待研究 | 32 |
-| 已验证 | 0 |
+| 待研究 | 33 |
+| 已验证 | 1 |
 
 ## 来源类别统计
 
@@ -27,7 +27,11 @@
 
 | 方式 | 数量 |
 | --- | ---: |
+| API Key API | 2 |
+| Atom | 2 |
 | HTML | 1 |
+| 第三方库 | 2 |
+| 人工方式 | 2 |
 | 公开 API | 1 |
 
 ## Target 研究明细
@@ -52,6 +56,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
+
 ### arXiv cs.AI（`arxiv-cs-ai`）
 
 - 状态：待研究
@@ -59,6 +67,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | Atom | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=True |
 
 ### arXiv cs.CL（`arxiv-cs-cl`）
 
@@ -68,6 +80,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | Atom | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
+
 ### arXiv cs.DC（`arxiv-cs-dc`）
 
 - 状态：待研究
@@ -75,6 +91,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | Atom | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
 
 ### arXiv cs.LG（`arxiv-cs-lg`）
 
@@ -84,6 +104,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | Atom | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
+
 ### arXiv cs.SE（`arxiv-cs-se`）
 
 - 状态：待研究
@@ -91,6 +115,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | Atom | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
 
 ### Bluesky official account feed（`bluesky-bsky`）
 
@@ -100,6 +128,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：待补充研究
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | 公开 API | title、canonical_url、published_at、author、engagement、content | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 6; ingestion.enabled=True |
+
 ### NVIDIA CUDA Python Releases（`cuda-python-releases`）
 
 - 状态：待研究
@@ -107,6 +139,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
 
 ### Google DeepMind Blog（`deepmind-blog`）
 
@@ -116,6 +152,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | RSS | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 3; ingestion.enabled=True |
+
 ### DeepSeek V3 Releases（`deepseek-v3-releases`）
 
 - 状态：待研究
@@ -123,6 +163,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 5; ingestion.enabled=False |
 
 ### GDELT AI Discovery（`gdelt-ai`）
 
@@ -132,6 +176,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | 公开 API | title、canonical_url、published_at | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 11; ingestion.enabled=False |
+
 ### Gemini CLI Releases（`gemini-cli-releases`）
 
 - 状态：待研究
@@ -139,6 +187,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
 
 ### Google AI Blog（`google-ai-blog`）
 
@@ -148,6 +200,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | RSS | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 3; ingestion.enabled=False |
+
 ### Google News AI discovery（`google-news-ai`）
 
 - 状态：待研究
@@ -155,6 +211,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | RSS | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 10; ingestion.enabled=True |
 
 ### Hacker News Best Stories（`hackernews-best`）
 
@@ -164,6 +224,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | 公开 API | title、canonical_url、published_at、author、engagement | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 5; ingestion.enabled=True |
+
 ### Hacker News New Stories（`hackernews-new`）
 
 - 状态：待研究
@@ -171,6 +235,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | 公开 API | title、canonical_url、published_at、author、engagement | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 5; ingestion.enabled=False |
 
 ### Hacker News Top Stories（`hackernews-top`）
 
@@ -180,6 +248,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | 公开 API | title、canonical_url、published_at、author、engagement | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 5; ingestion.enabled=True |
+
 ### Hugging Face Blog（`huggingface-blog`）
 
 - 状态：待研究
@@ -187,6 +259,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：待补充研究
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | RSS | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 3; ingestion.enabled=True |
 
 ### Mastodon official account statuses（`mastodon-mastodon`）
 
@@ -196,6 +272,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：待补充研究
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | 公开 API | title、canonical_url、published_at、author、engagement、content | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 7; ingestion.enabled=True |
+
 ### Microsoft Research（`microsoft-research`）
 
 - 状态：待研究
@@ -203,6 +283,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：待补充研究
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | RSS | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 3; ingestion.enabled=False |
 
 ### Mistral Common Releases（`mistral-common-releases`）
 
@@ -212,6 +296,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
+
 ### NVIDIA Developer Blog（`nvidia-developer-blog`）
 
 - 状态：待研究
@@ -219,6 +307,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | Atom | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 3; ingestion.enabled=False |
 
 ### OpenAI News（`openai-news`）
 
@@ -228,6 +320,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | RSS | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 3; ingestion.enabled=True |
+
 ### OpenAI Python SDK Releases（`openai-python-releases`）
 
 - 状态：待研究
@@ -236,13 +332,24 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
+
 ### OpenAI YouTube（`openai-youtube`）
 
-- 状态：占位
-- 用途：未填写
-- 所需信息：未填写
-- 风险：未填写
+- 状态：已验证
+- 用途：发现 OpenAI 官方频道的视频，并以官方 API 补充描述和互动数据。
+- 所需信息：video_id、title、channel、published_at、summary、engagement、transcript_excerpt
+- 风险：Atom 是无认证的官方发现路径；API Key 仅用于官方 API；不使用 Cookie、登录态、网页会话、代理或反爬绕过。
 - 未完成项：无
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 首选 | Atom | video_id、title、channel、published_at、canonical_url | 成功 | 仅公开频道元数据；最多五条 |
+| 补充 | API Key API | summary、engagement | 受阻 | 仅读取 YOUTUBE_API_KEY；无 Key 时明确阻断 |
+| 补充 | 第三方库 | language、transcript_excerpt | 未运行 | 非官方库；有总体超时；可读降级 |
+| 仅人工 | 人工方式 | version、license、maintenance | 部分成功 | 仅元数据记录；禁止执行媒体下载 |
 
 ### Qwen3 Releases（`qwen3-releases`）
 
@@ -252,6 +359,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 5; ingestion.enabled=False |
+
 ### Reddit Artificial（`reddit-artificial`）
 
 - 状态：待研究
@@ -259,6 +370,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、engagement | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Credentials: REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET；Risk total: 12; ingestion.enabled=False |
 
 ### Reddit LocalLLaMA（`reddit-localllama`）
 
@@ -268,6 +383,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、engagement | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Credentials: REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET；Risk total: 12; ingestion.enabled=False |
+
 ### Reddit MachineLearning（`reddit-machinelearning`）
 
 - 状态：待研究
@@ -275,6 +394,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、engagement | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Credentials: REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET；Risk total: 12; ingestion.enabled=False |
 
 ### SEC EDGAR NVIDIA Filings（`sec-nvidia-filings`）
 
@@ -296,6 +419,10 @@
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
 
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | RSS | title、canonical_url、published_at、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 9; ingestion.enabled=True |
+
 ### Hugging Face Transformers Releases（`transformers-releases`）
 
 - 状态：待研究
@@ -303,6 +430,10 @@
 - 所需信息：title、canonical_url、published_at、summary
 - 风险：Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
 - 未完成项：Target URL 与 Provider 首页相同，可能只是通用平台页而非具体目标。；同一 Provider 下存在相同 official_identity_url 的重复候选 Target。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 待研究 | rest_api | title、canonical_url、published_at、author、summary | 未运行 | Pending research: configured access lacks independent samples, terms, and fallback review; it is not verified.；Risk total: 4; ingestion.enabled=False |
 
 ### AI Snake Oil primary（`universe-ai-snake-oil-1`）
 
@@ -914,11 +1045,18 @@
 
 ### No Priors primary（`universe-no-priors-1`）
 
-- 状态：占位
-- 用途：未填写
-- 所需信息：未填写
-- 风险：未填写
+- 状态：待研究
+- 用途：在确认官方频道 ID 后，从公开 Atom 订阅源发现节目视频。
+- 所需信息：video_id、title、channel、published_at、summary、engagement、transcript_excerpt
+- 风险：不以频道网页、Cookie、登录态、代理或反爬绕过确认频道；未确认 ID 时保持待研究。
 - 未完成项：universe-*-1/2 命名仅提示可能的占位 Target，未自动改变研究状态。
+
+| 决策 | 方式 | 信息 | 样本 | 限制 |
+| --- | --- | --- | --- | --- |
+| 首选 | Atom | video_id、title、channel、published_at、canonical_url | 未运行 | 需要已确认频道 ID；最多五条 |
+| 补充 | API Key API | summary、engagement | 未运行 | 仅读取 YOUTUBE_API_KEY；无 Key 时阻断 |
+| 补充 | 第三方库 | language、transcript_excerpt | 未运行 | 非官方库；可读降级 |
+| 仅人工 | 人工方式 | version、license、maintenance | 未运行 | 仅元数据记录；禁止执行媒体下载 |
 
 ### No Priors AI discovery（`universe-no-priors-2`）
 
@@ -1849,3 +1987,4 @@
 - [提示] `research_incomplete`：该 Target 尚待完成研究，不计入已验证覆盖。（arxiv-cs-dc）
 - [提示] `research_incomplete`：该 Target 尚待完成研究，不计入已验证覆盖。（arxiv-cs-lg）
 - [提示] `research_incomplete`：该 Target 尚待完成研究，不计入已验证覆盖。（arxiv-cs-se）
+- [提示] `research_incomplete`：该 Target 尚待完成研究，不计入已验证覆盖。（universe-no-priors-1）
