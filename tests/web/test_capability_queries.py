@@ -271,6 +271,39 @@ def test_capability_overview_uses_catalog_truth_and_runtime_facts(db_session):
     assert any(gap.key == "catalog_drift" for gap in view.gaps)
 
 
+def test_capability_overview_reflects_new_fetchrun_and_rawitem_without_new_projection(
+    db_session,
+):
+    _seed_outputs(db_session)
+    service = CapabilityQueryService(db_session)
+    before = service.build(_catalog(), minimax_configured=False, now=NOW)
+
+    db_session.add(
+        FetchRunRecord(
+            source_id="search-ai",
+            started_at=NOW,
+            finished_at=NOW,
+            outcome="succeeded",
+        )
+    )
+    db_session.add(
+        RawItemRecord(
+            source_id="search-ai",
+            external_id="closure-item",
+            canonical_url="https://example.com/closure-item",
+            payload={},
+            title="收口试抓条目",
+            fetched_at=NOW,
+        )
+    )
+    db_session.commit()
+
+    after = service.build(_catalog(), minimax_configured=False, now=NOW)
+
+    assert after.fetched_source_count == before.fetched_source_count + 1
+    assert after.raw_item_count == before.raw_item_count + 1
+
+
 def test_capability_overview_does_not_expose_sensitive_configuration(db_session):
     view = CapabilityQueryService(db_session).build(_catalog(), minimax_configured=False, now=NOW)
 
