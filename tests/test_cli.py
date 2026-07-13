@@ -96,6 +96,28 @@ def test_research_audit_returns_nonzero_for_errors(monkeypatch) -> None:
     assert "研究缺失" in result.stdout
 
 
+def test_research_probe_rejects_an_unknown_candidate_without_network(tmp_path: Path) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+
+    result = runner.invoke(
+        app,
+        [
+            "sources",
+            "research",
+            "probe",
+            "anthropic-news",
+            "--candidate",
+            "missing-candidate",
+            "--root",
+            str(root),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "未知研究候选" in result.stdout
+
+
 def test_research_report_writes_markdown_when_only_warnings(monkeypatch, tmp_path: Path) -> None:
     from newsradar.research.audit import AuditFinding, ResearchAuditReport
 

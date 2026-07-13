@@ -28,6 +28,7 @@ from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.research.audit import audit_source_catalog
+from newsradar.research.probes.youtube import YouTubeResearchProbe
 from newsradar.research.reporting import render_research_report
 from newsradar.runtime import RuntimeSupervisor
 from newsradar.settings import get_settings
@@ -271,9 +272,7 @@ def build_events(
 ) -> None:
     with create_session() as session:
         commands = OperationCommandService(session)
-        operation_id = commands.enqueue_event_pipeline(
-            window_hours=hours, trigger="cli"
-        )
+        operation_id = commands.enqueue_event_pipeline(window_hours=hours, trigger="cli")
         typer.echo(f"Queued event pipeline as operation {operation_id}")
         if not wait:
             return
@@ -531,6 +530,43 @@ def report_source_research(
     typer.echo(f"已写入来源研究报告：{output}")
     if errors:
         raise typer.Exit(1)
+
+
+@research_app.command("probe")
+def probe_source_research_candidate(
+    source_id: Annotated[str, typer.Argument()],
+    candidate_key: Annotated[str, typer.Option("--candidate")],
+    limit: Annotated[int, typer.Option(min=1, max=5)] = 5,
+    root: RootOption = Path("sources"),
+) -> None:
+    """执行有界、只读的研究样本，不修改档案或采集开关。"""
+    source = next((item for item in load_source_tree(root) if item.id == source_id), None)
+    if source is None:
+        typer.echo(f"未知来源：{source_id}")
+        raise typer.Exit(2)
+    candidate = next(
+        (item for item in source.research.candidates if item.key == candidate_key), None
+    )
+    if candidate is None:
+        typer.echo(f"未知研究候选：{candidate_key}")
+        raise typer.Exit(2)
+    if source.provider_id != "youtube":
+        typer.echo("当前仅支持 YouTube 研究样本")
+        raise typer.Exit(2)
+
+    async def run_probe():
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0)) as client:
+            from newsradar.ingestion.fetchers.base import HttpPolicy
+
+            return await YouTubeResearchProbe(HttpPolicy(client)).probe(source, candidate, limit)
+
+    result = asyncio.run(run_probe())
+    typer.echo(
+        f"{source.id}/{candidate.key}: {result.outcome.value} "
+        f"样本={len(result.samples)} 说明={result.reason_zh}"
+    )
+    if result.error_code:
+        typer.echo(f"代码：{result.error_code}")
 
 
 @sources_app.command("coverage")

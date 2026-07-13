@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/">
+ <entry><yt:videoId>video-1</yt:videoId><title>安全的标题</title><published>2026-07-11T12:00:00+00:00</published><author><name>OpenAI</name></author><media:group><media:description>简短介绍</media:description></media:group></entry>
+</feed>
