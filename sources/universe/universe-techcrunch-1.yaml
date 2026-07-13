@@ -65,5 +65,5 @@ research:
     - https://techcrunch.com/feed/
     - https://techcrunch.com/
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

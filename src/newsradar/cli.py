@@ -560,9 +560,18 @@ def report_source_remediation(
     output: Annotated[Path, typer.Option("--output")] = Path(
         "reports/source-failure-remediation.md"
     ),
+    root: RootOption = Path("sources"),
 ) -> None:
     """Regenerate the read-only remediation report for the given baseline."""
-    snapshot_source_remediation(baseline_at=baseline_at, output=output)
+    parsed_baseline = _parse_utc_baseline(baseline_at)
+    sources = load_source_tree(root)
+    with create_session() as session:
+        manifest = RemediationRepository(session).enriched_manifest(
+            parsed_baseline, sources, before_trial_count=16
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_remediation_report(manifest), encoding="utf-8")
+    typer.echo(f"已写入 {len(manifest.entries)} 个失败来源的最终修复报告：{output}")
 
 
 @remediate_app.command("queue")

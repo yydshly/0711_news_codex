@@ -3,7 +3,12 @@ from datetime import UTC, datetime
 
 def test_report_contains_each_entry_without_query_or_fragment():
     from newsradar.remediation.reporting import render_remediation_report
-    from newsradar.remediation.schema import FailureCategory, RemediationEntry, RemediationManifest
+    from newsradar.remediation.schema import (
+        FailureCategory,
+        RemediationEntry,
+        RemediationEvidence,
+        RemediationManifest,
+    )
 
     manifest = RemediationManifest(
         baseline_at=datetime(2026, 7, 13, tzinfo=UTC),
@@ -17,8 +22,26 @@ def test_report_contains_each_entry_without_query_or_fragment():
                 reason_zh="端点可能已变化",
                 next_action_zh="检查官方 RSS 或 API",
                 access_url="https://example.test/feed?token=secret#fragment",
+                evidence=RemediationEvidence(
+                    candidate_key="official-feed",
+                    candidate_kind="rss",
+                    acquisition_outcome="succeeded",
+                    acquisition_sample_count=5,
+                    content_outcome="success",
+                    content_sample_count=5,
+                    field_completeness=1.0,
+                    trial_eligible=True,
+                    trial_reason_zh="公开直连且样本合格",
+                    fetch_outcome="succeeded",
+                    fetch_items_received=5,
+                    fetch_items_inserted=5,
+                    html_research_status="不涉及（RSS/API 主路径）",
+                    final_conclusion_zh="试用抓取已验证",
+                ),
             ),
         ),
+        before_trial_count=16,
+        after_trial_count=37,
     )
 
     report = render_remediation_report(manifest)
@@ -28,3 +51,9 @@ def test_report_contains_each_entry_without_query_or_fragment():
     assert "https://example.test/feed" in report
     assert "token=secret" not in report
     assert "#fragment" not in report
+    assert "修复前可试用来源：16" in report
+    assert "修复后可试用来源：37" in report
+    assert "official-feed / rss" in report
+    assert "succeeded / 5 条" in report
+    assert "success / 5 条 / 100%" in report
+    assert "试用抓取已验证" in report

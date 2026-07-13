@@ -72,6 +72,31 @@ async def test_atom_extracts_bounded_public_video_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_atom_candidate_uses_official_channel_id_access_parameter() -> None:
+    xml = (FIXTURES / "youtube_atom.xml").read_text(encoding="utf-8")
+    data = valid_source()
+    data["access_methods"][0].update(
+        {
+            "kind": "atom",
+            "url": "https://www.youtube.com/feeds/videos.xml",
+            "params": {"channel_id": "UCXZCJLdBC09xxGZ6gcdrc6A"},
+        }
+    )
+    youtube_source = SourceDefinition.model_validate(data)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["channel_id"] == "UCXZCJLdBC09xxGZ6gcdrc6A"
+        return httpx.Response(200, text=xml)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await YouTubeResearchProbe(HttpPolicy(client)).probe(
+            youtube_source, candidate("youtube-atom")
+        )
+
+    assert result.outcome.value == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_data_api_without_key_is_explicitly_blocked_without_network() -> None:
     class MissingCredentials:
         def require(self, name: str) -> str:

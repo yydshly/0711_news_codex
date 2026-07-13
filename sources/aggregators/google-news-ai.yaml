@@ -59,8 +59,8 @@ research:
     fields: [title, canonical_url, published_at, summary]
     limitations: [没有稳定公开 API 承诺，接口和跳转行为可能变化, 只能用于发现且需解析原始发布者]
     evidence:
-    - https://news.google.com/rss/search
+    - https://news.google.com/rss/search?q=artificial%20intelligence&hl=en-US&gl=US&ceid=US:en
     - https://support.google.com/googlenews/answer/9005749
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

@@ -18,7 +18,7 @@ access_methods:
 - kind: atom
   url: https://www.youtube.com/feeds/videos.xml
   priority: 1
-  params: {channelId: UCXZCJLdBC09xxGZ6gcdrc6A}
+  params: {channel_id: UCXZCJLdBC09xxGZ6gcdrc6A}
 - kind: rest_api
   url: https://www.googleapis.com/youtube/v3/videos
   priority: 2

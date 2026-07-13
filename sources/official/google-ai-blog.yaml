@@ -62,5 +62,5 @@ research:
     - https://blog.google/innovation-and-ai/technology/ai/rss/
     - https://blog.google/technology/ai/
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

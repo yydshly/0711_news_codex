@@ -66,8 +66,8 @@ research:
     fields: [title, canonical_url, published_at, summary]
     limitations: [实体歧义和重复量较高，只能用于发现, 每条信息必须回到原始发布者确认]
     evidence:
-    - https://api.gdeltproject.org/api/v2/doc/doc
+    - https://api.gdeltproject.org/api/v2/doc/doc?query=artificial%20intelligence&mode=artlist&maxrecords=5&format=json
     - https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: blocked
     decision: primary

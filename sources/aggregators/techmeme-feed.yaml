@@ -66,5 +66,5 @@ research:
     - https://www.techmeme.com/feed.xml
     - https://www.techmeme.com/
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

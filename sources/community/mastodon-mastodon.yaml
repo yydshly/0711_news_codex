@@ -58,5 +58,5 @@ research:
     - https://mastodon.social/api/v1/accounts/13179/statuses
     - https://docs.joinmastodon.org/methods/accounts/
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

@@ -15,6 +15,27 @@ class FailureCategory(StrEnum):
     UNKNOWN = "unknown"
 
 
+class RemediationEvidence(BaseModel):
+    """Latest bounded evidence for one immutable baseline Target."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_key: str | None = None
+    candidate_kind: str | None = None
+    acquisition_outcome: str | None = None
+    acquisition_sample_count: int | None = None
+    content_outcome: str | None = None
+    content_sample_count: int | None = None
+    field_completeness: float | None = None
+    trial_eligible: bool | None = None
+    trial_reason_zh: str | None = None
+    fetch_outcome: str | None = None
+    fetch_items_received: int | None = None
+    fetch_items_inserted: int | None = None
+    html_research_status: str = "不涉及（RSS/API 主路径）"
+    final_conclusion_zh: str | None = None
+
+
 class RemediationEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -26,6 +47,7 @@ class RemediationEntry(BaseModel):
     reason_zh: str
     next_action_zh: str
     access_url: str | None = None
+    evidence: RemediationEvidence | None = None
 
 
 class RemediationManifest(BaseModel):
@@ -33,3 +55,5 @@ class RemediationManifest(BaseModel):
 
     baseline_at: datetime
     entries: tuple[RemediationEntry, ...]
+    before_trial_count: int | None = None
+    after_trial_count: int | None = None

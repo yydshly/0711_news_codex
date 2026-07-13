@@ -67,5 +67,5 @@ research:
     - https://openai.com/news/rss.xml
     - https://openai.com/news/
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

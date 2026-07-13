@@ -175,6 +175,6 @@ def _result_category(result: AcquisitionProbeResult) -> str:
     code = (result.error_code or "").lower()
     if result.http_status is not None and result.http_status >= 500:
         return "network_transient"
-    if any(marker in code for marker in ("timeout", "dns", "tls", "network", "connection")):
+    if any(marker in code for marker in ("timeout", "dns", "tls", "network", "connect")):
         return "network_transient"
     return "unknown"

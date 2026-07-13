@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import Select, case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
@@ -49,6 +50,14 @@ _GAP_ORDER = (
 )
 _NO_PROBE_LABEL = "尚未探测"
 _NO_ALTERNATIVE = "无已审核替代路径"
+
+
+def _public_evidence_url(value: str) -> str:
+    """Expose only the stable public URL component in browser-facing evidence."""
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return value
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
 class DashboardQueryService:
@@ -228,7 +237,7 @@ class DashboardQueryService:
                 roles=tuple(role_labels.get(r, "未知") for r in (c.roles or ())),
                 fields=tuple(c.fields or ()),
                 limitations=tuple(c.limitations or ()),
-                evidence=tuple(c.evidence or ()),
+                evidence=tuple(_public_evidence_url(value) for value in (c.evidence or ())),
                 sample_status=samples.get(c.sample_status, "未知"),
                 decision=c.decision,
                 decision_label=decisions.get(c.decision, "未知"),
@@ -448,7 +457,7 @@ class DashboardQueryService:
             auth_label=zh_label("auth_mode", provider.auth_mode),
             capabilities=tuple(provider.capabilities),
             required_env=tuple(provider.required_env),
-            evidence=tuple(provider.evidence),
+            evidence=tuple(_public_evidence_url(value) for value in provider.evidence),
             unlock_requirements=tuple(provider.unlock_requirements),
             notes=provider.notes,
             targets=target_rows,
@@ -652,7 +661,9 @@ class DashboardQueryService:
                     unlock_requirements=tuple(
                         source.unlock_requirements or provider.unlock_requirements
                     ),
-                    evidence=tuple(dict.fromkeys(evidence)),
+                    evidence=tuple(
+                        dict.fromkeys(_public_evidence_url(value) for value in evidence)
+                    ),
                 )
             )
         return tuple(
@@ -1003,7 +1014,7 @@ class DashboardQueryService:
             data_quality=record.data_quality,
             operating_cost=record.operating_cost,
             total=record.total,
-            evidence=tuple(record.evidence),
+            evidence=tuple(_public_evidence_url(value) for value in record.evidence),
             hard_block_reason=record.hard_block_reason,
             assessed_at=record.assessed_at,
         )

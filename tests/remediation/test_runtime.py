@@ -146,3 +146,19 @@ def test_remediation_requiring_credentials_does_not_open_a_network_probe() -> No
     assert result.status == OperationStatus.FAILED
     assert result.error_code == "candidate_requires_credentials"
     assert calls == []
+
+
+def test_connect_error_is_classified_as_network_transient() -> None:
+    from newsradar.remediation.runtime import _result_category
+
+    source = _source()
+    candidate = source.research.candidates[0]
+    result = probe_result(
+        source,
+        candidate,
+        AcquisitionProbeOutcome.FAILED,
+        "公开接口暂时无法连接。",
+        "ConnectError",
+    )
+
+    assert _result_category(result) == "network_transient"

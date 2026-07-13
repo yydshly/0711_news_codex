@@ -2,7 +2,7 @@
 
 ## 执行范围与口径
 
-本报告记录 2026-07-13 的一次真实批量初探。依次完成了 Provider/Source
+本报告记录 2026-07-13 的一次真实批量初探，以及同日完成的 27 项失败来源修复批次。依次完成了 Provider/Source
 校验、同步和 `sources probe --all --persist`；每个来源仅使用该批次的最新已完成
 探测记录判定试用资格，未为改善结果重试受限或失败来源。所有数字均由持久化数据库
 中的本次探测结果和来源定义汇总得出；未记录请求头、密钥、Cookie、代理或连接串。
@@ -16,7 +16,8 @@
 | --- | ---: |
 | Target 总数 | 166 |
 | 已探索（有最新完成探测） | 166 |
-| 试用可抓取 | 16 |
+| 修复前试用可抓取 | 16 |
+| 修复后试用可抓取 | 37 |
 | 仅发现 | 53 |
 | 受限目录 | 70 |
 
@@ -35,11 +36,11 @@
 
 | 判定 | 数量 | 当前阻塞原因 | 后续解锁步骤 |
 | --- | ---: | --- | --- |
-| 可试用抓取 | 16 | 无 | 仅在受控试用操作中继续使用；仍需后续稳定性审计。 |
+| 可试用抓取 | 37 | 无 | 仅在受控试用操作中继续使用；仍需后续稳定性审计。 |
 | 仅目录收录 | 65 | `catalog_only`：仅保留目录/发现价值，不提供试用抓取。 | 获得并审计合规的公开直连自动访问方式后，单独评估覆盖模式。 |
 | 仅发现 | 53 | `discovery_only`：间接来源只用于发现线索，需回溯原始来源。 | 为可公开访问的原始来源建立独立、可审计的 direct Target，再重新探测。 |
 | 当前未就绪 | 5 | `not_ready`：需要凭据、审批或其他就绪条件。 | 在获得授权且完成访问方式审计后，再进行独立受控探测；不在本批次重试。 |
-| 探测未成功 | 27 | `probe_not_successful`：本次连接、HTTP 或解析结果未成功。 | 保留本次失败证据；待网络/端点条件变更后按独立审计流程复测。 |
+| 探测未成功 | 6 | `probe_not_successful`：最新内容探测仍为受限、字段不足或没有样本。 | 保留真实证据；满足复查窗口或字段条件后再按独立审计流程复测。 |
 
 受限目录数量按产品口径计算：`availability != ready` 或 `coverage_mode = catalog_only`，
 故与试用判定表不是互斥分区以外的额外来源。
@@ -67,6 +68,26 @@
 | `universe-techmeme-1` | Techmeme primary | RSS | 100% | 5 | 2026-07-13 11:46:55Z | 总风险 6；可受控试用。 |
 | `universe-venturebeat-1` | VentureBeat primary | RSS | 100% | 5 | 2026-07-13 11:46:54Z | 总风险 4；可受控试用。 |
 | `universe-wired-1` | WIRED primary | RSS | 100% | 5 | 2026-07-13 11:46:54Z | 总风险 4；可受控试用。 |
+
+## 修复批次新增的 21 个试用来源
+
+27 个基线失败 Target 均完成具体候选登记；研究候选层得到 26 项成功、1 项 GDELT
+HTTP 429 受限。随后执行内容探测与资格重算，新增 21 个可试用来源，使全目录可试用
+数量从 16 增至 37。21 个来源均通过 Worker 串行执行最多 5 条的试用抓取，操作
+209–229 全部 `succeeded`，单个来源没有阻塞后续来源。
+
+新增来源为：`anthropic-sdk-releases`、`arxiv-cs-ai`、`arxiv-cs-dc`、
+`arxiv-cs-se`、`bluesky-bsky`、`deepseek-v3-releases`、`google-ai-blog`、
+`google-news-ai`、`hackernews-best`、`hackernews-new`、`hackernews-top`、
+`mistral-common-releases`、`nvidia-developer-blog`、`openai-news`、
+`openai-python-releases`、`techmeme-feed`、`universe-ai-snake-oil-1`、
+`universe-ars-technica-1`、`universe-latent-space-1`、`universe-techcrunch-1`、
+`universe-the-verge-1`。
+
+仍未进入试用的 6 项为：GDELT（429）、DeepMind（85% degraded）、Hugging Face
+（75% degraded）、Mastodon（43% degraded）、OpenAI YouTube（80% degraded）和
+Qwen3 Releases（当前 0 条 Release）。逐项样本、字段、试用和抓取结论见
+`reports/source-failure-remediation.md`。
 
 ## 受控试用抓取
 

@@ -62,5 +62,5 @@ research:
     - https://developer.nvidia.com/blog/feed/
     - https://developer.nvidia.com/blog/
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

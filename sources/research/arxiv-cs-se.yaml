@@ -60,8 +60,8 @@ research:
     fields: [title, canonical_url, published_at, author, summary]
     limitations: [论文为预印本且不等于同行评审结论, 需控制查询频率并过滤标题相关但内容无关的结果]
     evidence:
-    - https://export.arxiv.org/api/query
+    - https://export.arxiv.org/api/query?search_query=cat:cs.SE&sortBy=submittedDate&sortOrder=descending&max_results=5
     - https://info.arxiv.org/help/api/index.html
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary

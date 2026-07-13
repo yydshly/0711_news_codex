@@ -55,10 +55,12 @@ research:
     authentication: none
     roles: [discovery, metadata]
     fields: [title, canonical_url, published_at, summary]
-    limitations: [观点内容只用于发现与背景，成为事实前需独立确认, Feed 可能仅提供摘要]
+    limitations: [观点内容只用于发现与背景，成为事实前需独立确认, 原域名当前跳转到 Normal Technology]
     evidence:
     - https://www.aisnakeoil.com/feed
     - https://www.aisnakeoil.com/
+    - https://www.normaltech.ai/feed
     reviewed_at: '2026-07-13'
-    sample_status: not_run
+    sample_status: succeeded
     decision: primary
+    allowed_redirect_hosts: [www.normaltech.ai]

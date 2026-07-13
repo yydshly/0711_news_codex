@@ -131,7 +131,7 @@ class YouTubeResearchProbe:
                     str(value)
                     for method in source.access_methods
                     for key, value in method.params.items()
-                    if key == "channelId"
+                    if key in {"channelId", "channel_id"}
                 ),
                 "",
             )
