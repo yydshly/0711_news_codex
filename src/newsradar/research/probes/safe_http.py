@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ipaddress
-import socket
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -30,26 +29,33 @@ def _safe_url(url: str, client: httpx.AsyncClient) -> None:
     host = parsed.hostname.lower()
     if host == "localhost" or host.endswith(".localhost"):
         raise UnsafeProbeUrl()
-    # Unit-test transports never leave the process; real transports always resolve DNS.
+    # Unit-test transports never leave the process.
     if type(client._transport).__name__ == "MockTransport":  # noqa: SLF001
         return
     try:
-        addresses = [item[4][0] for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)]
-    except socket.gaierror as exc:
+        value = ipaddress.ip_address(host)
+    except ValueError as exc:
         raise UnsafeProbeUrl() from exc
-    for address in addresses:
-        value = ipaddress.ip_address(address)
-        if not value.is_global:
-            raise UnsafeProbeUrl()
+    if not value.is_global:
+        raise UnsafeProbeUrl()
 
 
 def _safe_client(policy: HttpPolicy) -> httpx.AsyncClient:
     client = policy.client
-    blocked = {"cookie", "authorization", "proxy-authorization"}
+    blocked = (
+        "cookie",
+        "authorization",
+        "authentication",
+        "api-key",
+        "api_key",
+        "token",
+        "secret",
+        "credential",
+    )
     if (
         client.trust_env
         or client.follow_redirects
-        or any(k.lower() in blocked for k in client.headers)
+        or any(any(part in k.lower() for part in blocked) for k in client.headers)
     ):
         raise UnsafeProbeUrl()
     return client
