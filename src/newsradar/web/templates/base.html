@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}总览指挥台 · News Codex{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') ~ '?v=20260713-1' }}">
+    <title>{% block title %}项目能力总览 · News Codex{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') ~ '?v=20260714-1' }}">
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -21,7 +21,7 @@
           <a href="/"{% if request.url.path == '/' %} aria-current="page"{% endif %}>事件情报</a>
           <a href="/events"{% if request.url.path.startswith('/events') %} aria-current="page"{% endif %}>全部事件</a>
           <a href="/emerging"{% if request.url.path.startswith('/emerging') %} aria-current="page"{% endif %}>新兴线索</a>
-          <a href="/sources"{% if request.url.path == '/sources' %} aria-current="page"{% endif %}>来源看板</a>
+          <a href="/sources"{% if request.url.path == '/sources' %} aria-current="page"{% endif %}>项目能力</a>
           <a href="/providers"{% if request.url.path.startswith('/providers') %} aria-current="page"{% endif %}>来源能力</a>
           <a href="/probes"{% if request.url.path.startswith('/probes') %} aria-current="page"{% endif %}>探测记录</a>
           <a href="/targets"{% if request.url.path.startswith('/targets') %} aria-current="page"{% endif %}>目标目录</a>

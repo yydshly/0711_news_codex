@@ -25,7 +25,7 @@ from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic
 from newsradar.operations.commands import OperationCommandService
 from newsradar.settings import get_settings
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
-from newsradar.web.diagnostics import build_diagnostic_narrative
+from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.event_queries import EventQueryService
 from newsradar.web.i18n import zh_label
 from newsradar.web.item_queries import ItemQueryService
@@ -40,6 +40,7 @@ from newsradar.web.security import (
 )
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
+CatalogFactory = Callable[[], CatalogSnapshot]
 _WEB_ROOT = Path(__file__).resolve().parent
 logger = logging.getLogger(__name__)
 _UNDEFINED_TABLE_SQLSTATE = "42P01"
@@ -147,8 +148,12 @@ def _is_undefined_table(error: ProgrammingError) -> bool:
     return sqlstate == _UNDEFINED_TABLE_SQLSTATE
 
 
-def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
+def create_app(
+    service_factory: ServiceFactory | None = None,
+    catalog_factory: CatalogFactory | None = None,
+) -> FastAPI:
     resolved_service_factory = service_factory or _dashboard_service_context
+    resolved_catalog_factory = catalog_factory or load_catalog_snapshot
     app = FastAPI(title="News Codex 来源感知台", docs_url=None, redoc_url=None)
     app.add_middleware(
         SessionMiddleware,
@@ -276,29 +281,23 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
 
     def source_dashboard(request: Request) -> HTMLResponse:
         def load_dashboard(service: DashboardQueryService):
-            summary = service.summary()
-            providers = service.providers()
-            probes = service.probes({"page": 1, "page_size": 10})
-            gaps = service.gap_groups()
-            diagnostic = build_diagnostic_narrative(summary, providers, gaps)
-            return summary, diagnostic, probes, gaps
+            return service.capability_overview(
+                resolved_catalog_factory(),
+                minimax_configured=bool(get_settings().minimax_api_key),
+            )
 
         dashboard, error_response = query_service_safely(request, load_dashboard)
         if error_response is not None:
             return error_response
         assert dashboard is not None
-        summary, diagnostic, probes, gaps = dashboard
         return templates.TemplateResponse(
             request=request,
-            name="dashboard.html",
+            name="capability_overview.html",
             context={
-                "summary": summary,
-                "diagnostic": diagnostic,
-                "recent_probes": probes[:10],
-                "top_gaps": gaps[:5],
+                "capability": dashboard,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
-                "latest_probe_at": summary.latest_probe_at,
+                "latest_probe_at": dashboard.latest_probe_at,
             },
         )
 

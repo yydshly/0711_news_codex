@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}项目能力总览 · News Codex{% endblock %}
+{% block header %}<h1>项目能力总览</h1>{% endblock %}
+
+{% block content %}
+<div class="capability-page">
+  <section class="panel capability-hero" aria-labelledby="capability-conclusion-heading">
+    <p class="eyebrow">当前能获得什么</p>
+    <h2 id="capability-conclusion-heading">当前目录已从 {{ capability.fetched_source_count }} 个来源获取 {{ capability.raw_item_count }} 条 RawItem；数据库现有 {{ capability.event_count }} 个历史事件</h2>
+    <div class="conclusion-grid">
+      <p><strong>已经具备：</strong>来源目录、内容探测、受控抓取、原始信息归一化和事件聚合已形成可追溯链路。</p>
+      <p><strong>不能混淆：</strong>{{ capability.target_count }} 个已登记 Target 不等于全部可抓取；事件也不等于已经完成事实确认或中文模型增强。</p>
+      <p><strong>当前重点：</strong>继续缩小就绪目标与实际抓取来源的差距，并处理目录漂移、模型与实体能力缺口。</p>
+    </div>
+    <p class="metric-note">本页只读；抓取、取消、重试和重复候选裁决会写入数据库，并由 Worker 执行。</p>
+  </section>
+
+  <section class="panel capability-pipeline-panel" aria-labelledby="pipeline-heading">
+    <div class="section-heading">
+      <div><p class="eyebrow">端到端口径</p><h2 id="pipeline-heading">能力流水线</h2></div>
+      <span class="scope-label">点击节点查看现有详情</span>
+    </div>
+    <ol class="capability-pipeline">
+      {% for stage in capability.stages %}
+      <li class="pipeline-stage pipeline-{{ stage.tone }}">
+        <a href="{{ stage.href }}">
+          <span>{{ stage.label }}</span>
+          <strong>{{ stage.count }}</strong>
+          <small>{{ stage.detail }}</small>
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  <section class="capability-card-grid" aria-label="分层能力指标">
+    <article class="panel capability-card">
+      <div class="section-heading"><div><p class="eyebrow">Catalog</p><h2>来源目录</h2></div><a href="/targets">查看目标</a></div>
+      <dl class="capability-metrics">
+        <div><dt>有效 Provider</dt><dd>{{ capability.provider_count }}</dd></div>
+        <div><dt>YAML Target</dt><dd>{{ capability.target_count }}</dd></div>
+        <div><dt>直接覆盖</dt><dd>{{ capability.direct_target_count }}</dd></div>
+        <div><dt>就绪直连</dt><dd>{{ capability.ready_direct_target_count }}</dd></div>
+        <div><dt>仅发现</dt><dd>{{ capability.indirect_target_count }}</dd></div>
+        <div><dt>受限目录</dt><dd>{{ capability.catalog_only_target_count }}</dd></div>
+      </dl>
+      <p class="metric-note">{% if capability.catalog_readable %}目录真相来自 {{ capability.provider_file_count }} 个 Provider YAML 与 {{ capability.target_count }} 个 Target YAML。{% else %}YAML 目录不可读，当前临时显示数据库快照。{% endif %}</p>
+    </article>
+
+    <article class="panel capability-card">
+      <div class="section-heading"><div><p class="eyebrow">Probe & Fetch</p><h2>探测与抓取</h2></div><a href="/probes">查看探测</a></div>
+      {% set probe_counts = dict(capability.latest_probe_counts) %}
+      {% set fetch_counts = dict(capability.fetch_outcome_counts) %}
+      <dl class="capability-metrics">
+        <div><dt>已探索</dt><dd>{{ capability.target_count - probe_counts.get('unprobed', 0) }}</dd></div>
+        <div><dt>最新探测成功</dt><dd>{{ probe_counts.get('success', 0) }}</dd></div>
+        <div><dt>尚未探测</dt><dd>{{ probe_counts.get('unprobed', 0) }}</dd></div>
+        <div><dt>可试用抓取</dt><dd>{{ capability.trial_eligible_count }}</dd></div>
+        <div><dt>实际抓取来源</dt><dd>{{ capability.fetched_source_count }}</dd></div>
+        <div><dt>抓取成功</dt><dd>{{ fetch_counts.get('succeeded', 0) }}</dd></div>
+        <div><dt>内容无变化</dt><dd>{{ fetch_counts.get('no_change', 0) }}</dd></div>
+      </dl>
+      <p class="metric-note">试用可抓取表示首次探测合格，不等于长期稳定或事实确认。“实际抓取来源”只统计至少存在一次 succeeded 或 no_change FetchRun 的当前 Target。</p>
+    </article>
+
+    <article class="panel capability-card">
+      <div class="section-heading"><div><p class="eyebrow">Outputs</p><h2>信息产出</h2></div><a href="/items">查看条目</a></div>
+      <dl class="capability-metrics">
+        <div><dt>RawItem</dt><dd>{{ capability.raw_item_count }}</dd></div>
+        <div><dt>产出来源</dt><dd>{{ capability.raw_source_count }}</dd></div>
+        <div><dt>数据库历史事件</dt><dd>{{ capability.event_count }}</dd></div>
+        <div><dt>已确认事件</dt><dd>{{ capability.confirmed_event_count }}</dd></div>
+        <div><dt>新兴线索</dt><dd>{{ capability.emerging_event_count }}</dd></div>
+      </dl>
+      <p class="metric-note">RawItem 只统计当前 YAML Target；事件统计数据库全部历史结果，两者不是同一范围的转化率。</p>
+    </article>
+
+    <article class="panel capability-card">
+      <div class="section-heading"><div><p class="eyebrow">AI & Runtime</p><h2>AI 与运行活动</h2></div><a href="/system">查看系统</a></div>
+      <dl class="capability-metrics">
+        <div><dt>MiniMax 配置</dt><dd class="text-value">{{ '已配置' if capability.minimax_configured else '未配置' }}</dd></div>
+        <div><dt>模型调用记录</dt><dd>{{ capability.model_usage_count }}</dd></div>
+        <div><dt>事件模型处理</dt><dd>{{ capability.event_model_run_count }}</dd></div>
+        <div><dt>实体</dt><dd>{{ capability.entity_count }}</dd></div>
+        <div><dt>近期任务活动</dt><dd>{{ capability.recent_worker_activity_count }}</dd></div>
+      </dl>
+      <p class="metric-note">近期任务活动来自 Worker 在持有任务期间写入的心跳，不代表操作系统进程一定存活。</p>
+    </article>
+  </section>
+
+  <section class="capability-preview-grid" aria-labelledby="results-heading">
+    <h2 id="results-heading" class="visually-hidden">当前成果</h2>
+    <article class="panel table-panel">
+      <div class="section-heading"><div><p class="eyebrow">当前成果</p><h2>最近 RawItem</h2></div><a href="/items">查看全部</a></div>
+      {% if capability.recent_items %}
+      <ul class="result-list">
+        {% for item in capability.recent_items %}
+        <li><a href="/items/{{ item.item_id }}">{{ item.title }}</a><span>{{ item.source_id }}{% if item.published_at %} · {{ item.published_at.strftime('%m-%d %H:%M') }}{% endif %}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="empty-state">尚未产出 RawItem。</p>{% endif %}
+    </article>
+    <article class="panel table-panel">
+      <div class="section-heading"><div><p class="eyebrow">当前成果</p><h2>最近历史事件</h2></div><a href="/events">查看全部</a></div>
+      {% if capability.recent_events %}
+      <ul class="result-list">
+        {% for event in capability.recent_events %}
+        <li><a href="/events/{{ event.event_id }}">{{ event.title }}</a><span>{{ '已确认' if event.status == 'confirmed' else '新兴线索' }} · 热度 {{ '%.1f' | format(event.heat) }}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="empty-state">尚未产出事件。</p>{% endif %}
+    </article>
+  </section>
+
+  <section class="panel capability-gaps" aria-labelledby="capability-gaps-heading">
+    <div class="section-heading"><div><p class="eyebrow">下一步依据</p><h2 id="capability-gaps-heading">主要缺口</h2></div><a href="/operations">查看运行记录</a></div>
+    {% if capability.gaps %}
+    <div class="gap-cards">
+      {% for gap in capability.gaps %}
+      <article class="gap-card gap-{{ gap.tone }}"><h3>{{ gap.title }}</h3><p>{{ gap.meaning }}</p><a href="{{ gap.href }}">去对应页面查看</a></article>
+      {% endfor %}
+    </div>
+    {% else %}<p class="empty-state">当前确定性指标没有发现阻断缺口。</p>{% endif %}
+  </section>
+
+  <section class="panel capability-glossary" aria-labelledby="glossary-heading">
+    <p class="eyebrow">指标说明</p><h2 id="glossary-heading">这些数字分别代表什么</h2>
+    <dl class="glossary-grid">
+      <div><dt>Provider</dt><dd>平台或服务，例如 GitHub、YouTube。</dd></div>
+      <div><dt>Target</dt><dd>平台内的具体账号、频道、仓库、订阅源或查询。</dd></div>
+      <div><dt>探测成功</dt><dd>最新一次探测获得合格样本，不代表长期稳定。</dd></div>
+      <div><dt>可试用</dt><dd>满足公开直连、无凭据和字段规则，可进入受控试抓。</dd></div>
+      <div><dt>实际抓取来源</dt><dd>至少完成过一次真实 FetchRun 的当前 Target。</dd></div>
+      <div><dt>RawItem</dt><dd>尚未汇总成事件的规范化原始信息。</dd></div>
+      <div><dt>事件</dt><dd>由一条或多条 RawItem 聚合出的线索或确认事件。</dd></div>
+    </dl>
+  </section>
+</div>
+{% endblock %}

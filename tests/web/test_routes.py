@@ -10,6 +10,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from newsradar.web import create_app
+from newsradar.web.capability_queries import (
+    CapabilityEventPreview,
+    CapabilityGap,
+    CapabilityOverviewView,
+    CapabilityPreviewItem,
+    CapabilityStage,
+    CatalogSnapshot,
+)
 from newsradar.web.viewmodels import (
     AccessMethodView,
     DashboardSummary,
@@ -32,6 +40,75 @@ class FakeDashboardService:
         self.probe_filters: dict[str, object] | None = None
         self.content_completeness: float | None = 1.0
         self.has_content_probes = True
+
+    def capability_overview(self, catalog, *, minimax_configured, now=None):
+        self.calls.append("capability_overview")
+        return CapabilityOverviewView(
+            catalog_readable=True,
+            provider_file_count=2,
+            provider_count=3,
+            target_count=3,
+            db_target_count=4,
+            direct_target_count=2,
+            ready_direct_target_count=1,
+            indirect_target_count=1,
+            catalog_only_target_count=0,
+            db_only_target_ids=("legacy-source",),
+            catalog_only_db_target_ids=(),
+            latest_probe_counts=(("success", 1), ("unprobed", 2)),
+            latest_probe_at=datetime(2026, 7, 11, 9, 30),
+            trial_eligible_count=1,
+            fetched_source_count=1,
+            fetch_outcome_counts=(("succeeded", 1),),
+            raw_item_count=1,
+            raw_source_count=1,
+            raw_first_at=datetime(2026, 7, 11, 8, 30),
+            raw_latest_at=datetime(2026, 7, 11, 9, 30),
+            recent_items=(
+                CapabilityPreviewItem(
+                    7,
+                    "github-openai-python",
+                    "OpenAI 发布新版本",
+                    datetime(2026, 7, 11, 9, 30),
+                ),
+            ),
+            event_count=1,
+            confirmed_event_count=1,
+            emerging_event_count=0,
+            recent_events=(
+                CapabilityEventPreview(
+                    9,
+                    "OpenAI 发布新版本",
+                    "confirmed",
+                    8.5,
+                    datetime(2026, 7, 11, 9, 35),
+                ),
+            ),
+            minimax_configured=False,
+            model_usage_count=0,
+            event_model_run_count=0,
+            entity_count=0,
+            recent_worker_activity_count=1,
+            operation_status_counts=(("failed", 1), ("succeeded", 2)),
+            stages=(
+                CapabilityStage("平台目录", 3, "已登记平台", "/providers"),
+                CapabilityStage("具体目标", 3, "已登记目标", "/targets"),
+                CapabilityStage("探测成功", 1, "获得样本", "/probes"),
+                CapabilityStage("可试用", 1, "符合规则", "/targets"),
+                CapabilityStage("实际抓取来源", 1, "完成抓取", "/fetch-runs"),
+                CapabilityStage("RawItem", 1, "原始信息", "/items"),
+                CapabilityStage("事件", 1, "聚合线索", "/events"),
+                CapabilityStage("MiniMax 增强", 0, "尚未运行", "/system", "warning"),
+            ),
+            gaps=(
+                CapabilityGap(
+                    "catalog_drift",
+                    "YAML 与数据库存在目录漂移",
+                    "数据库额外 1 项。",
+                    "/targets",
+                ),
+            ),
+        )
 
     def summary(self) -> DashboardSummary:
         self.calls.append("summary")
@@ -287,7 +364,7 @@ def test_root_renders_chinese_operational_shell(client: TestClient):
     response = client.get("/sources")
 
     assert response.status_code == 200
-    assert "总览指挥台" in response.text
+    assert "项目能力总览" in response.text
     assert "浏览页面不会发起网络抓取" in response.text
     assert "抓取、取消、重试和重复候选裁决会写入数据库" in response.text
     assert "只读本机模式" not in response.text
@@ -295,41 +372,43 @@ def test_root_renders_chinese_operational_shell(client: TestClient):
     assert "<aside" in response.text
     assert "<nav" in response.text
     assert "<main" in response.text
-    for label in ("总览指挥台", "来源能力", "探测记录", "目标目录", "阻塞与解锁"):
+    for label in ("项目能力", "来源能力", "探测记录", "目标目录", "阻塞与解锁"):
         assert label in response.text
     assert "数据最后更新时间" in response.text
     assert "2026-07-11 09:30" in response.text
 
 
-def test_dashboard_shows_strict_metrics_and_diagnostic(client: TestClient):
+def test_dashboard_shows_end_to_end_capability_and_real_outputs(client: TestClient):
     response = client.get("/sources")
 
     assert response.status_code == 200
     for text in (
-        "Provider 总数",
-        "Target 总数",
-        "免费直接覆盖",
-        "间接发现",
-        "阻塞目标",
-        "连续三轮成功",
+        "平台目录",
+        "具体目标",
+        "探测成功",
+        "可试用",
+        "实际抓取来源",
+        "RawItem",
+        "事件",
+        "MiniMax 增强",
     ):
         assert text in response.text
-    for text in ("当前能感知", "主要盲区", "建议下一步"):
+    for text in ("当前能获得什么", "能力流水线", "当前成果", "主要缺口", "指标说明"):
         assert text in response.text
-    for text in (
-        "社交与社区",
-        "专业媒体",
-        "第一方来源",
-        "聚合与搜索",
-        "研究与开发者",
-        "新闻简报与播客",
-        "趋势与商业",
-    ):
+    for text in ("OpenAI 发布新版本", "YAML 与数据库存在目录漂移"):
         assert text in response.text
-    assert "示例内容源" in response.text
-    assert "需要付费" in response.text
-    assert 'href="/targets?free_direct=true"' in response.text
-    assert 'href="/targets?three_success=true"' in response.text
+    assert 'href="/items/7"' in response.text
+    assert 'href="/events/9"' in response.text
+    assert "数据库现有 1 个历史事件" in response.text
+    assert "聚合为 1 个事件" not in response.text
+
+
+def test_capability_dashboard_never_exposes_sensitive_values(client: TestClient):
+    response = client.get("/sources")
+
+    assert response.status_code == 200
+    for value in ("MINIMAX_API_KEY", "DATABASE_URL", "Authorization", "Cookie"):
+        assert value not in response.text
 
 
 def test_dashboard_metric_counts_equal_real_target_drilldowns(db_session):
@@ -339,36 +418,38 @@ def test_dashboard_metric_counts_equal_real_target_drilldowns(db_session):
     def real_service_context():
         yield DashboardQueryService(db_session)
 
-    with TestClient(create_app(lambda: real_service_context())) as real_client:
+    catalog = CatalogSnapshot(
+        readable=True,
+        provider_file_count=2,
+        provider_ids=frozenset({"github", "x"}),
+        target_ids=frozenset({"github-openai-python", "search-ai", "x-openai"}),
+        direct_target_ids=frozenset({"github-openai-python", "x-openai"}),
+        ready_direct_target_ids=frozenset({"github-openai-python"}),
+        indirect_target_ids=frozenset({"search-ai"}),
+        catalog_only_target_ids=frozenset(),
+    )
+    with TestClient(create_app(lambda: real_service_context(), lambda: catalog)) as real_client:
         dashboard = real_client.get("/sources")
         free_direct = real_client.get("/targets?free_direct=true")
         three_success = real_client.get("/targets?three_success=true")
 
     assert dashboard.status_code == free_direct.status_code == three_success.status_code == 200
-    assert "免费直接覆盖</span><strong>1</strong>" in dashboard.text
-    assert "连续三轮成功</span><strong>1</strong>" in dashboard.text
+    assert "就绪直连</dt><dd>1</dd>" in dashboard.text
+    assert "最新探测成功</dt><dd>1</dd>" in dashboard.text
     assert 'Target 列表</h2></div><span class="scope-label">1 条' in free_direct.text
     assert 'Target 列表</h2></div><span class="scope-label">1 条' in three_success.text
 
 
 def test_dashboard_calls_out_missing_probe_history():
     class NoProbeHistoryService(FakeDashboardService):
-        def summary(self) -> DashboardSummary:
-            summary = super().summary()
-            return DashboardSummary(
-                provider_count=summary.provider_count,
-                target_count=summary.target_count,
-                free_direct_count=summary.free_direct_count,
-                indirect_count=summary.indirect_count,
-                blocked_count=summary.blocked_count,
-                three_success_count=summary.three_success_count,
-                category_counts=summary.category_counts,
+        def capability_overview(self, catalog, *, minimax_configured, now=None):
+            return replace(
+                super().capability_overview(
+                    catalog, minimax_configured=minimax_configured, now=now
+                ),
                 latest_probe_at=None,
+                latest_probe_counts=(("unprobed", 3),),
             )
-
-        def probes(self, filters=None):
-            self.calls.append("probes")
-            return []
 
     @contextmanager
     def no_history_context() -> Iterator[NoProbeHistoryService]:
@@ -495,7 +576,7 @@ def test_static_shell_assets_preserve_accessible_navigation(client: TestClient):
     assert shell.status_code == 200
     assert css.status_code == 200
     assert javascript.status_code == 200
-    assert 'href="http://testserver/static/styles.css?v=20260713-1"' in shell.text
+    assert 'href="http://testserver/static/styles.css?v=20260714-1"' in shell.text
     assert ":focus-visible" in css.text
     assert "@media (max-width: 760px)" in css.text
     assert "aria-expanded" in javascript.text

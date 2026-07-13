@@ -25,6 +25,11 @@ from newsradar.ingestion.trial import ProbeSnapshot, TrialDecision, evaluate_tri
 from newsradar.remediation.repository import RemediationRepository
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.schema import AccessMethod, RiskAssessment, SourceDefinition
+from newsradar.web.capability_queries import (
+    CapabilityOverviewView,
+    CapabilityQueryService,
+    CatalogSnapshot,
+)
 from newsradar.web.i18n import explain_failure, zh_label
 from newsradar.web.viewmodels import (
     AccessMethodView,
@@ -72,6 +77,19 @@ def _public_evidence_url(value: str) -> str | None:
 class DashboardQueryService:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def capability_overview(
+        self,
+        catalog: CatalogSnapshot,
+        *,
+        minimax_configured: bool,
+        now: datetime | None = None,
+    ) -> CapabilityOverviewView:
+        return CapabilityQueryService(self._session).build(
+            catalog,
+            minimax_configured=minimax_configured,
+            now=now,
+        )
 
     def research_targets(self) -> list[ResearchTargetView]:
         """Read-only research catalog, loaded in bounded batches (no per-target queries)."""
