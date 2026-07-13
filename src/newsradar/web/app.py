@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated, Literal, TypeVar
+import logging
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -39,6 +40,7 @@ from newsradar.web.security import (
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
 _WEB_ROOT = Path(__file__).resolve().parent
+logger = logging.getLogger(__name__)
 _UNDEFINED_TABLE_SQLSTATE = "42P01"
 
 ProviderCategory = Literal[
@@ -214,6 +216,14 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         tokens.append(token)
         request.session["tokens"] = tokens
         return token
+
+    def research_query_safely(request: Request, query):
+        try:
+            return query_with_timestamp_safely(request, query)
+        except Exception:
+            logger.exception("research page query failed")
+            response = templates.TemplateResponse(request=request, name="error.html", context={"error_title": "研究页面暂时不可用", "error_message": "研究查询未能完成，请查看服务日志后重试。", "recovery_command": "", "database_status": "研究页面不可用", "database_status_tone": "failed"}, status_code=503)
+            return None, response
 
     async def require_safe_action(request: Request) -> dict[str, str]:
         try:
@@ -470,7 +480,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
 
     @app.get("/research", response_class=HTMLResponse)
     def research_dashboard(request: Request) -> HTMLResponse:
-        result, error_response = query_with_timestamp_safely(request, lambda service: service.research_targets())
+        result, error_response = research_query_safely(request, lambda service: service.research_targets())
         if error_response is not None:
             return error_response
         targets, latest_probe_at = result or ((), None)
@@ -478,7 +488,7 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
 
     @app.get("/research/targets/{source_id}", response_class=HTMLResponse)
     def research_target(request: Request, source_id: str) -> HTMLResponse:
-        result, error_response = query_with_timestamp_safely(request, lambda service: service.research_target(source_id))
+        result, error_response = research_query_safely(request, lambda service: service.research_target(source_id))
         if error_response is not None:
             return error_response
         detail, latest_probe_at = result or (None, None)
