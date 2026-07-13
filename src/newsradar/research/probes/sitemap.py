@@ -7,6 +7,7 @@ from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
 from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
+from .robots import allowed as robots_allowed
 from .schema import AcquisitionProbeOutcome, AcquisitionProbeSample, probe_result, public_probe_url
 
 
@@ -40,8 +41,7 @@ class SitemapResearchProbe:
                     "robots_denied",
                     metadata={"terms_review_required": True},
                 )
-            disallow = _robots_disallow_all(robot_response.text)
-            if disallow and parts.path.startswith(disallow):
+            if not robots_allowed(robot_response.text, parts.path):
                 return probe_result(
                     source,
                     candidate,
@@ -89,14 +89,3 @@ class SitemapResearchProbe:
             samples=samples,
             metadata={"terms_review_required": True},
         )
-
-
-def _robots_disallow_all(text: str) -> str | None:
-    active = False
-    for raw in text.splitlines():
-        key, _, value = raw.partition(":")
-        if key.strip().lower() == "user-agent":
-            active = value.strip() == "*"
-        elif active and key.strip().lower() == "disallow" and value.strip():
-            return value.strip()
-    return None

@@ -7,6 +7,7 @@ from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
 from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
+from .robots import allowed as robots_allowed
 from .schema import AcquisitionProbeOutcome, probe_result, public_probe_url
 
 
@@ -70,6 +71,15 @@ class HtmlResearchProbe:
                     AcquisitionProbeOutcome.BLOCKED,
                     "robots.txt 不可达",
                     "robots_unavailable",
+                    blocked_condition="robots",
+                )
+            if robot.status_code in {401, 403} or not robots_allowed(robot.text, parts.path):
+                return probe_result(
+                    source,
+                    candidate,
+                    AcquisitionProbeOutcome.BLOCKED,
+                    "robots 规则禁止目标路径",
+                    "robots_denied",
                     blocked_condition="robots",
                 )
             response = await safe_get(self.policy, candidate, target)
