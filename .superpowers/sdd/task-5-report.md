@@ -46,3 +46,5 @@ Final verification: `uv run pytest tests/research/probes tests/test_cli.py tests
 The prior hostname fail-closed policy was removed. For this single-user, manually audited YAML catalogue, HTTPS hostnames are allowed after DNS resolution confirms every answer is globally routable; HTTPS, userinfo, localhost/private/link-local/reserved addresses, proxies, sensitive client headers, cookies, credentials, redirects and bounded streaming protections remain enforced. A live arXiv RSS attempt was safely blocked in this environment because its resolver returned a non-global address; no request was sent.
 
 This was further aligned with the confirmed local YAML scope: hostname DNS is no longer pre-gated. Explicit unsafe IP literals and malformed/credentialed URLs remain blocked, while actual hostname DNS/network errors are returned by the bounded HTTP request as readable probe failures.
+
+Real controlled network verification (2026-07-12): `https://hnrss.org/frontpage` returned HTTP 200 / 15,751 bytes and `https://www.python.org/` returned HTTP 200 / 52,637 bytes through `safe_get` with `trust_env=False`, explicit redirect handling, and the 2 MB cap.
