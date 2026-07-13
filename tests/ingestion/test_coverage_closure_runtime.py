@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import Base, FetchRunRecord, OperationRunRecord, RawItemRecord
 from newsradar.ingestion.coverage_closure_runtime import (
+    COVERAGE_CLOSURE_TRIGGER,
     ClosureOperation,
     CoverageClosureService,
 )
@@ -207,3 +208,8 @@ def test_wait_continues_after_missing_and_timeout_operations() -> None:
         ("timed-out", "timed_out"),
         ("completed", "succeeded"),
     ]
+
+
+def test_coverage_closure_trigger_fits_durable_operation_column() -> None:
+    assert COVERAGE_CLOSURE_TRIGGER == "coverage-closure"
+    assert len(COVERAGE_CLOSURE_TRIGGER) <= 16

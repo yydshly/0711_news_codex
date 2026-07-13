@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from newsradar.providers.schema import Availability, CoverageMode, ProviderCategory
-from newsradar.sources.schema import SourceStatus
 from newsradar.providers.yaml_loader import load_provider_tree
+from newsradar.sources.schema import SourceStatus
 from newsradar.sources.yaml_loader import load_source_tree
 
 

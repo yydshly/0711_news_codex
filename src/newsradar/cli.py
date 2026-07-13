@@ -26,7 +26,10 @@ from newsradar.ingestion.coverage_closure_reporting import (
     CatalogAdjustment,
     render_coverage_closure_report,
 )
-from newsradar.ingestion.coverage_closure_runtime import CoverageClosureService
+from newsradar.ingestion.coverage_closure_runtime import (
+    COVERAGE_CLOSURE_TRIGGER,
+    CoverageClosureService,
+)
 from newsradar.ingestion.trial import evaluate_trial_eligibility
 from newsradar.local_postgres import (
     LocalPostgresError,
@@ -630,7 +633,7 @@ def close_source_coverage(
         operations = service.enqueue(
             before,
             max_items=max_items,
-            trigger="cli:coverage-closure-v1",
+            trigger=COVERAGE_CLOSURE_TRIGGER,
         )
         for operation in operations:
             if operation.operation_id:

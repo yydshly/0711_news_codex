@@ -117,7 +117,7 @@ def test_close_coverage_execute_wait_writes_report_after_all_terminals(
         def enqueue(self, plan, *, max_items, trigger):
             calls.append("enqueue")
             assert max_items == 5
-            assert trigger == "cli:coverage-closure-v1"
+            assert trigger == "coverage-closure"
             return (ClosureOperation("queueable-a", 11), ClosureOperation("queueable-b", 12))
 
         def wait(self, operations):

@@ -18,6 +18,7 @@ _COVERED_OUTCOMES = frozenset({"succeeded", "no_change"})
 _ACTIVE_OPERATION_STATUSES = frozenset(
     {OperationStatus.QUEUED.value, OperationStatus.RUNNING.value}
 )
+COVERAGE_CLOSURE_TRIGGER = "coverage-closure"
 
 
 class _OperationCommands(Protocol):
