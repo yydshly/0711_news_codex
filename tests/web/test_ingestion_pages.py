@@ -51,6 +51,21 @@ def test_pages_explain_system_network_inheritance_without_proxy_details(
     assert "user:secret" not in page.text
 
 
+def test_pages_explain_when_system_network_inheritance_is_disabled(
+    monkeypatch, db_session
+):
+    monkeypatch.setattr(
+        "newsradar.web.app.get_settings",
+        lambda: Settings(http_trust_env=False),
+    )
+    with _client_with_database(monkeypatch, db_session) as client:
+        page = client.get("/fetch-runs")
+
+    assert page.status_code == 200
+    assert "系统网络继承已关闭（排障模式）" in page.text
+    assert "来源探测与后台抓取将遵循本机网络环境" not in page.text
+
+
 def test_fetch_action_enqueues_once_and_never_fetches_in_request(monkeypatch, db_session):
     with _client_with_database(monkeypatch, db_session) as client:
         page = client.get("/operations")
