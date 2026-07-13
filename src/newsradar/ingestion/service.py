@@ -57,6 +57,7 @@ class IngestionService:
         source: SourceDefinition,
         *,
         approved_only: bool = False,
+        credential_free_only: bool = False,
         max_items: int | None = None,
         dry_run: bool = False,
         operation_run_id: int | None = None,
@@ -67,6 +68,7 @@ class IngestionService:
             approved_only=approved_only,
             configured_env=self.configured_env,
             hard_block_reason=None,
+            credential_free_only=credential_free_only,
         )
         if not decision.allowed or decision.access_method is None:
             result = FetchResult(

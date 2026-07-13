@@ -13,8 +13,8 @@ from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import ErrorCategory, OperationStatus, OperationType
 from newsradar.operations.worker import OperationResult
-from newsradar.sources.schema import SourceDefinition
 from newsradar.sources.repository import SourceRepository
+from newsradar.sources.schema import SourceDefinition
 
 
 class FetchExecutor(Protocol):
@@ -193,6 +193,7 @@ def _execute_production_fetch(
                         requested_scope.get("one_off", False)
                         or requested_scope.get("trial", False)
                     ),
+                    credential_free_only=bool(requested_scope.get("trial", False)),
                     max_items=(
                         requested_scope.get("max_items")
                         if isinstance(requested_scope.get("max_items"), int)

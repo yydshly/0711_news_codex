@@ -29,6 +29,7 @@ def evaluate_fetch_eligibility(
     approved_only: bool,
     configured_env: Set[str],
     hard_block_reason: str | None,
+    credential_free_only: bool = False,
 ) -> EligibilityDecision:
     """Evaluate only supplied source state; this function has no external side effects."""
     if hard_block_reason or source.risk.hard_block_reason:
@@ -62,6 +63,11 @@ def evaluate_fetch_eligibility(
                 "禁止抓取：仅提供需要人工审批的访问方式。",
             )
         return _blocked("html_only", "禁止抓取：仅提供 HTML 访问方式。")
+
+    if credential_free_only:
+        automatic_methods = [method for method in automatic_methods if not method.auth_envs]
+        if not automatic_methods:
+            return _blocked("credentials_not_allowed", "试用抓取不使用凭据访问方式。")
 
     if source.availability == Availability.REQUIRES_CREDENTIALS:
         credential_methods = [method for method in automatic_methods if method.auth_envs]
