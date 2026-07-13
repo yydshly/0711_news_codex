@@ -11,6 +11,7 @@
 
 | 时间（UTC） | 命令 | 退出码 | 关键结果 / 错误分类 | 样本数 |
 | --- | --- | --- | --- | --- |
+| 2026-07-13T08:30:56Z | `uv run alembic current`（60 秒有界超时） | timeout | `database_unavailable` | 不适用 |
 | 2026-07-13T08:26:04Z | `uv run newsradar sources validate --root sources` | 0 | 已校验 166 个来源 | 166 |
 | 2026-07-13T08:26:06Z | `uv run newsradar sources research probe openai-youtube --candidate youtube-atom --limit 5 --persist` | 0 | 已读取公开 Atom 元数据；持久化未完成，`database_unavailable` | 5 |
 | 2026-07-13T08:26:08Z | `uv run newsradar sources probe openai-news --persist` | 1 | `database_unavailable` | 未记录 |
@@ -19,7 +20,8 @@
 | 2026-07-13T08:26:19Z | `uv run newsradar sources probe hackernews-top --no-persist` | 0 | 成功解析，完整度 100%，保持 `candidate` | 5 |
 | 2026-07-13T08:26:41Z | `uv run newsradar sources probe arxiv-ai --persist` | 2 | `source_not_found` | 0 |
 | 2026-07-13T08:26:42Z | `uv run newsradar sources probe hacker-news-topstories --persist` | 2 | `source_not_found` | 0 |
-| 2026-07-13T08:26:44Z | 本地只读页面响应检查（`/fetch-runs`、`/research`） | 0 | 两页均为 200，包含中文网络状态文本，未发现代理地址形式的值 | 不适用 |
+| 2026-07-13T08:30:35Z | `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8766/fetch-runs -TimeoutSec 10` | 0 | HTTP 200 | 不适用 |
+| 2026-07-13T08:30:35Z | `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8766/research -TimeoutSec 10` | 0 | HTTP 200 | 不适用 |
 
 ## 来源探测结果
 
@@ -41,7 +43,7 @@
 
 ## 网页验收
 
-- 可审计证据见上表最后一行：本地 `/fetch-runs` 与 `/research` 均返回 200，且响应包含中文系统网络状态文本。
+- 可审计证据见上表最后两行：本地 `127.0.0.1` 的 `/fetch-runs` 与 `/research` 均以独立命令重新检查并返回 200；此前的只读响应检查确认两页包含中文系统网络状态文本。
 - 页面响应中未发现代理地址形式的值；未收集或展示任何代理、VPN、凭据或 Cookie。
 - 自动化浏览器运行时不可用，故未能进行人工浏览器可视化复核；上述仅为本地只读响应检查。
 
