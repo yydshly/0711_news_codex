@@ -1,60 +1,41 @@
-# Main runtime ownership migration
+# 主分支运行时归属迁移设计
 
-## Goal
+## 目标
 
-Move News Codex's local PostgreSQL data directory from the preserved
-`feature/local-postgresql-runtime` worktree to `main/.local/postgres`, so the
-merged application can run without depending on that feature worktree.
+将 News Codex 当前正在使用的本地 PostgreSQL 数据目录从保留的
+`feature/raw-item-ingestion` 工作树复制到 `main/.local/postgres`，使合并后的主分支不再依赖该功能工作树才能运行。
 
-## Scope and invariants
+## 范围与不变量
 
-- The existing database contents and the source worktree remain intact.
-- No secret, database URL, API key, or cookie is written to Git or reports.
-- The migration is local-only and has a brief planned database-service outage.
-- `main/.env` remains ignored by Git and continues to point to the same local
-  database endpoint after the cutover.
-- No source fetch, model call, event publication, or schema change is part of
-  this migration.
+- 既有数据库内容以及两个保留运行工作树均保持完整。
+- Git 和报告中不得写入密钥、完整数据库 URL、API Key 或 Cookie。
+- 迁移仅发生在本机，允许一次短暂且可预期的数据库服务中断。
+- `main/.env` 保持被 Git 忽略，切换后仍指向同一个本机数据库端点。
+- 本迁移不包含来源抓取、模型调用、事件发布或数据库 Schema 变更。
 
-## Chosen approach: copy and take ownership
+## 选定方案：复制后由主分支接管
 
-The current `main` and preserved-worktree configurations point to the same
-local PostgreSQL endpoint. The data directory is therefore copied only after
-the existing service has stopped cleanly. The source directory is never moved,
-renamed, or deleted.
+当前 `main` 与保留工作树的配置指向同一主机、端口和数据库名。只有在旧服务干净停止后才复制数据目录；来源目录永不移动、重命名或删除。
 
-### Steps
+## 流程
 
-1. Preflight: verify `main/.local/postgres` is absent, the preserved data
-   directory exists, both configurations target the same host/port/database,
-   and the current database is at Alembic head.
-2. Record a manifest of the source directory (file count, byte count, and a
-   bounded checksum manifest) outside Git.
-3. Stop the existing local PostgreSQL service through its owning worktree;
-   wait until port 55432 no longer listens.
-4. Copy the source data directory to `main/.local/postgres` with metadata and
-   hidden files preserved. Verify destination manifest equivalence before any
-   startup.
-5. Start PostgreSQL from `main`, then run `alembic current`, `alembic check`,
-   and read-only table/count checks.
-6. Restart the `main` web and Worker runtime, then verify a reader page and a
-   bounded Worker operation without using MiniMax.
+1. 前置检查：确认 `main/.local/postgres` 尚不存在、活跃数据目录存在、两份配置指向同一端点，且当前数据库处于 Alembic 迁移头。
+2. 在 Git 外记录来源目录文件数、总字节数、稳定校验清单，以及来源、任务、RawItem、Event 的只读计数。
+3. 通过拥有活跃目录的工作树停止 PostgreSQL，并确认端口 `55432` 不再监听。
+4. 将来源数据目录复制到 `main/.local/postgres`，保留元数据和隐藏文件；启动前必须验证目标稳定清单完全一致。
+5. 从 `main` 启动 PostgreSQL，执行 `alembic current`、`alembic check` 和只读表计数校验。
+6. 重新启动 `main` 的 Web 与 Worker，验证读页面和确定性本机运行状态，不使用 MiniMax。
 
-## Failure handling and rollback
+## 失败处理与回滚
 
-- Any preflight, copy, checksum, startup, or migration failure stops the
-  cutover before the original data is altered.
-- If the `main` service cannot start or validation fails, stop it, leave its
-  copied directory for diagnosis, and restart the preserved service from the
-  unchanged original worktree.
-- The original worktree, `.env`, `.local/postgres`, reports, and untracked
-  review artifacts are explicitly retained.
+- 任一前置检查、复制、校验、启动或迁移检查失败时，停止切换，不修改原始数据。
+- 若 `main` 无法启动或验证失败，停止主分支副本，保留副本用于诊断，并从未改动的保留工作树重新启动旧服务。
+- 原工作树、`.env`、`.local/postgres`、报告和未提交审查材料均显式保留。
 
-## Acceptance criteria
+## 验收条件
 
-- `main/.local/postgres` exists and validates against the source manifest.
-- `main` owns the process listening on port 55432.
-- Alembic reports `20260712_0008 (head)` and no pending upgrade operations.
-- Existing source registry, operation, RawItem, and Event counts match the
-  pre-cutover baseline.
-- The local web UI and Worker run from `main` without error markers.
+- `main/.local/postgres` 存在，且稳定清单与来源一致。
+- `main` 拥有监听端口 `55432` 的 PostgreSQL 进程。
+- Alembic 显示 `20260712_0008 (head)`，且没有待生成迁移。
+- 来源目录、任务、RawItem 和 Event 的计数与切换前基线一致。
+- 本地 Web 和 Worker 从 `main` 运行，日志中没有错误标记。
