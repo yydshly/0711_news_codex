@@ -5,6 +5,7 @@ import os
 import re
 import socket
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -29,6 +30,8 @@ from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
+from newsradar.remediation.reporting import render_remediation_report
+from newsradar.remediation.repository import RemediationRepository
 from newsradar.remediation.runtime import SourceRemediationHandler
 from newsradar.research.audit import audit_source_catalog
 from newsradar.research.probes.factory import research_probe_for
@@ -45,9 +48,11 @@ app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
 research_app = typer.Typer(help="只读来源研究审计")
 providers_app = typer.Typer(help="Validate, sync, probe, and report source providers")
+remediate_app = typer.Typer(help="Read and run bounded source remediation")
 db_app = typer.Typer(help="Manage the project-local PostgreSQL runtime")
 app.add_typer(sources_app, name="sources")
 sources_app.add_typer(research_app, name="research")
+sources_app.add_typer(remediate_app, name="remediate")
 app.add_typer(providers_app, name="providers")
 app.add_typer(db_app, name="db")
 operations_app = typer.Typer(help="Inspect and retry durable operations")
@@ -521,6 +526,89 @@ def report_sources(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_source_report(sources), encoding="utf-8")
     typer.echo(f"Wrote source report to {output}")
+
+
+@remediate_app.command("snapshot")
+def snapshot_source_remediation(
+    baseline_at: Annotated[datetime, typer.Option("--baseline-at")],
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        "reports/source-failure-remediation.md"
+    ),
+) -> None:
+    """Write a read-only, immutable failure manifest for one UTC baseline."""
+    if baseline_at.tzinfo is None:
+        typer.echo("--baseline-at 必须包含时区，例如 2026-07-13T00:00:00+00:00")
+        raise typer.Exit(2)
+    with create_session() as session:
+        manifest = RemediationRepository(session).manifest(baseline_at)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_remediation_report(manifest), encoding="utf-8")
+    typer.echo(f"已写入 {len(manifest.entries)} 个失败来源的修复清单：{output}")
+
+
+@remediate_app.command("report")
+def report_source_remediation(
+    baseline_at: Annotated[datetime, typer.Option("--baseline-at")],
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        "reports/source-failure-remediation.md"
+    ),
+) -> None:
+    """Regenerate the read-only remediation report for the given baseline."""
+    snapshot_source_remediation(baseline_at=baseline_at, output=output)
+
+
+@remediate_app.command("queue")
+def queue_source_remediation(
+    source_id: Annotated[str, typer.Argument()],
+    candidate_key: Annotated[str, typer.Argument()],
+    original_probe_id: Annotated[int, typer.Option("--original-probe-id", min=1)],
+    baseline_at: Annotated[datetime, typer.Option("--baseline-at")],
+    wait: Annotated[bool, typer.Option("--wait/--no-wait")] = False,
+) -> None:
+    """Queue exactly one audited candidate; only Worker performs network I/O."""
+    if baseline_at.tzinfo is None:
+        typer.echo("--baseline-at 必须包含时区，例如 2026-07-13T00:00:00+00:00")
+        raise typer.Exit(2)
+    with create_session() as session:
+        commands = OperationCommandService(session)
+        try:
+            operation_id = commands.enqueue_source_remediation(
+                source_id=source_id,
+                candidate_key=candidate_key,
+                original_probe_id=original_probe_id,
+                baseline_at=baseline_at,
+                trigger="cli",
+            )
+        except ValueError as error:
+            typer.echo(str(error))
+            raise typer.Exit(2) from None
+        typer.echo(f"已排队来源修复操作：{operation_id}")
+        if wait:
+            terminal = commands.wait_for_terminal(operation_id)
+            typer.echo(f"操作 {operation_id}：{terminal.status}")
+            if terminal.status not in {"succeeded", "partial"}:
+                raise typer.Exit(1)
+
+
+@remediate_app.command("retry")
+def retry_source_remediation(
+    operation_id: Annotated[int, typer.Argument(min=1)],
+    wait: Annotated[bool, typer.Option("--wait/--no-wait")] = False,
+) -> None:
+    """Explicitly retry one eligible transient remediation, at most once."""
+    with create_session() as session:
+        commands = OperationCommandService(session)
+        try:
+            retry_id = commands.retry_source_remediation(operation_id, trigger="cli")
+        except ValueError as error:
+            typer.echo(str(error))
+            raise typer.Exit(2) from None
+        typer.echo(f"已排队一次性修复重试：{retry_id}")
+        if wait:
+            terminal = commands.wait_for_terminal(retry_id)
+            typer.echo(f"操作 {retry_id}：{terminal.status}")
+            if terminal.status not in {"succeeded", "partial"}:
+                raise typer.Exit(1)
 
 
 def _research_report(root: Path, provider_root: Path):

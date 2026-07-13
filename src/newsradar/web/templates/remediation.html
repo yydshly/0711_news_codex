@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}来源修复台 · News Codex{% endblock %}
+{% block header %}<h1>来源修复台</h1>{% endblock %}
+
+{% block content %}
+<section class="panel intro-panel">
+  <p class="eyebrow">只读审计视图</p>
+  <h2>失败来源的候选获取方式</h2>
+  <p>本页只展示审核结论和最近研究探测；不会发起网络抓取，也不会启用来源。</p>
+</section>
+<section class="panel table-panel">
+  <div class="table-scroll" role="region" aria-label="来源修复候选" tabindex="0">
+    <table>
+      <thead><tr><th>来源</th><th>候选方式</th><th>获取类型</th><th>认证</th><th>最近结果</th><th>结论</th></tr></thead>
+      <tbody>
+      {% for target in targets %}
+        {% for candidate in target.candidates %}
+        <tr>
+          <td><a href="/research/targets/{{ target.source_id }}">{{ target.name }}</a></td>
+          <td>{{ candidate.key }}</td><td>{{ candidate.kind }}</td>
+          <td>{{ candidate.authentication_label }}</td><td>{{ candidate.latest_probe_label }}</td>
+          <td>{{ candidate.decision_label }}</td>
+        </tr>
+        {% else %}
+        <tr><td><a href="/research/targets/{{ target.source_id }}">{{ target.name }}</a></td><td colspan="5">尚未登记候选获取方式</td></tr>
+        {% endfor %}
+      {% else %}
+        <tr><td colspan="6">暂无已同步的来源研究记录。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

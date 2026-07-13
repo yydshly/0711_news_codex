@@ -521,6 +521,26 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
             },
         )
 
+    @app.get("/remediation", response_class=HTMLResponse)
+    def remediation_console(request: Request) -> HTMLResponse:
+        """Read-only view of candidates used to repair failed source probes."""
+        result, error_response = research_query_safely(
+            request, lambda service: service.research_targets()
+        )
+        if error_response is not None:
+            return error_response
+        targets, latest_probe_at = result or ([], None)
+        return templates.TemplateResponse(
+            request=request,
+            name="remediation.html",
+            context={
+                "targets": targets,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": latest_probe_at,
+            },
+        )
+
     @app.get("/research/targets/{source_id}", response_class=HTMLResponse)
     def research_target(request: Request, source_id: str) -> HTMLResponse:
         result, error_response = research_query_safely(

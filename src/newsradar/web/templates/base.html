@@ -31,6 +31,7 @@
           <a href="/items"{% if request.url.path.startswith('/items') %} aria-current="page"{% endif %}>原始条目</a>
           <a href="/duplicates"{% if request.url.path.startswith('/duplicates') %} aria-current="page"{% endif %}>重复候选</a>
           <a href="/system"{% if request.url.path.startswith('/system') %} aria-current="page"{% endif %}>系统健康</a>
+          <a href="/remediation"{% if request.url.path.startswith('/remediation') %} aria-current="page"{% endif %}>来源修复台</a>
         </nav>
         <p class="scope-note">浏览页面不会发起网络抓取。受控操作会写入本地数据库，并由 Worker 执行网络任务。</p>
       </aside>
