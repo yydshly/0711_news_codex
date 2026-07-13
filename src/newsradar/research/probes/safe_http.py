@@ -8,6 +8,7 @@ from weakref import WeakSet
 import httpx
 
 from newsradar.ingestion.fetchers.base import HttpPolicy
+from newsradar.settings import get_settings
 from newsradar.sources.schema import AcquisitionAuth, AcquisitionCandidate
 
 from .schema import has_sensitive_query
@@ -30,9 +31,10 @@ _OWNED_SAFE_CLIENTS: WeakSet[httpx.AsyncClient] = WeakSet()
 
 def new_safe_probe_client() -> httpx.AsyncClient:
     """Create the only network client trusted for a live research probe."""
+    settings = get_settings()
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(20),
-        trust_env=False,
+        trust_env=settings.http_trust_env,
         follow_redirects=False,
         headers=_PROBE_HEADERS,
     )
@@ -73,9 +75,8 @@ def _safe_client(policy: HttpPolicy) -> httpx.AsyncClient:
     client = policy.client
     is_mock_transport = type(client._transport).__name__ == "MockTransport"  # noqa: SLF001
     if (
-        client.trust_env
+        (client.trust_env and client not in _OWNED_SAFE_CLIENTS)
         or client.follow_redirects
-        or getattr(client, "_mounts", None)
         or bool(list(client.cookies.jar))
         or (client not in _OWNED_SAFE_CLIENTS and not is_mock_transport)
     ):

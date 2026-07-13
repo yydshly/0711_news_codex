@@ -57,7 +57,14 @@ class HttpPolicy:
             connect=settings.http_connect_timeout_seconds,
             read=settings.http_read_timeout_seconds,
         )
-        return cls(httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True))
+        return cls(
+            httpx.AsyncClient(
+                limits=limits,
+                timeout=timeout,
+                follow_redirects=True,
+                trust_env=settings.http_trust_env,
+            )
+        )
 
     async def get(self, url: str, **kwargs: object) -> httpx.Response:
         host = httpx.URL(url).host or ""

@@ -10,6 +10,7 @@ import feedparser
 
 from newsradar.credentials import CredentialProvider, SettingsCredentials
 from newsradar.ingestion.fetchers.base import HttpPolicy
+from newsradar.settings import get_settings
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
 from .schema import (
@@ -28,7 +29,7 @@ class _MissingTranscriptDependency(Exception):
 
 
 def _create_transcript_session() -> Any:
-    """Create a one-use, proxy-free Session that refuses all Cookie writes."""
+    """Create a one-use, bounded Session that refuses all Cookie writes."""
     try:
         from requests import Session
         from requests.cookies import RequestsCookieJar
@@ -46,7 +47,7 @@ def _create_transcript_session() -> Any:
             del cookie, args, kwargs
 
     session = BoundedSession()
-    session.trust_env = False
+    session.trust_env = get_settings().http_trust_env
     session.cookies = RejectingCookieJar()
     session.headers.pop("Cookie", None)
     return session

@@ -3,7 +3,7 @@ import pytest
 
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.research.probes.feed import FeedResearchProbe
-from newsradar.research.probes.safe_http import safe_get
+from newsradar.research.probes.safe_http import new_safe_probe_client, safe_get
 from newsradar.research.probes.schema import (
     AcquisitionProbeOutcome,
     AcquisitionProbeSample,
@@ -132,6 +132,48 @@ async def test_cookie_jar_is_blocked_before_building_a_probe_request() -> None:
     assert result.outcome.value == "blocked"
     assert result.error_code == "unsafe_url"
     assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_manual_client_with_trust_env_is_rejected_before_request() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    requests = []
+
+    async def responder(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text="<rss><channel /></rss>")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(responder), trust_env=True, follow_redirects=False
+    ) as client:
+        result = await FeedResearchProbe(HttpPolicy(client)).probe(
+            source, candidate("https://example.test/feed")
+        )
+
+    assert result.outcome.value == "blocked"
+    assert result.error_code == "unsafe_url"
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_factory_client_with_trust_env_uses_safe_mock_transport_path() -> None:
+    client = new_safe_probe_client()
+    requests = []
+
+    async def responder(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text="ok")
+
+    client._transport = httpx.MockTransport(responder)  # noqa: SLF001
+    try:
+        response = await safe_get(
+            HttpPolicy(client), candidate("https://example.test/feed"), "https://example.test/feed"
+        )
+    finally:
+        await client.aclose()
+
+    assert response.status_code == 200
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     reddit_client_id: SecretStr | None = None
     reddit_client_secret: SecretStr | None = None
     youtube_api_key: SecretStr | None = None
+    http_trust_env: bool = True
     http_connect_timeout_seconds: float = 10
     http_read_timeout_seconds: float = 30
     http_request_timeout_seconds: float = 45

@@ -12,6 +12,7 @@ from requests import Request
 from newsradar.ingestion.fetchers.base import HttpPolicy
 from newsradar.research.probes import youtube as youtube_module
 from newsradar.research.probes.youtube import YouTubeResearchProbe
+from newsradar.settings import Settings
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
 from ...test_source_schema import valid_source
@@ -145,7 +146,7 @@ async def test_default_transcript_fetch_runs_in_a_thread_and_respects_total_time
     assert time.perf_counter() - started < 0.15
 
 
-def test_default_transcript_uses_temporary_cookie_free_session_without_env_proxy(
+def test_default_transcript_uses_temporary_cookie_free_session_with_system_network(
     monkeypatch,
 ) -> None:
     received: dict[str, object] = {}
@@ -171,14 +172,30 @@ def test_default_transcript_uses_temporary_cookie_free_session_without_env_proxy
             return Transcript([Segment()])
 
     monkeypatch.setattr(youtube_transcript_api, "YouTubeTranscriptApi", Api)
+    monkeypatch.setattr(
+        youtube_module, "get_settings", lambda: Settings(http_trust_env=True)
+    )
     payload = YouTubeResearchProbe(HttpPolicy(httpx.AsyncClient()))._fetch_transcript("abcdefghijk")
 
     session = received["session"]
-    assert session.trust_env is False
+    assert session.trust_env is True
     assert not session.cookies
     assert "Cookie" not in session.headers
     assert received["outbound_cookie"] is None
     assert payload["segments"] == [{"text": "短文本"}]
+
+
+def test_transcript_session_allows_explicit_network_diagnostic_override(monkeypatch) -> None:
+    monkeypatch.setattr(
+        youtube_module, "get_settings", lambda: Settings(http_trust_env=False)
+    )
+
+    session = youtube_module._create_transcript_session()
+    try:
+        assert session.trust_env is False
+        assert session.cookies.get_dict() == {}
+    finally:
+        session.close()
 
 
 def test_cli_import_does_not_require_transcript_extra() -> None:
