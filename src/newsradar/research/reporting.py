@@ -58,29 +58,34 @@ def render_research_report(report: ResearchAuditReport) -> str:
     else:
         lines.append("| 暂无候选方式 | 0 |")
     lines.extend(["", "## Target 研究明细", ""])
-    for source in sorted(report.sources, key=lambda item: item.id):
-        research = source.research
-        incomplete = "待补充研究" if research.status.value == "needs_research" else "无"
+    findings_by_source: dict[str, list[str]] = {}
+    for finding in report.findings:
+        if finding.source_id and finding.severity in {"error", "warning"}:
+            findings_by_source.setdefault(finding.source_id, []).append(finding.message_zh)
+    for source in sorted(report.targets, key=lambda item: item.id):
+        incomplete = findings_by_source.get(source.id, [])
+        if not incomplete and source.status == "needs_research":
+            incomplete = ["待补充研究"]
         lines.extend(
             (
                 f"### {source.name}（`{source.id}`）",
                 "",
-                f"- 状态：{_STATUS_NAMES[research.status.value]}",
-                f"- 用途：{research.purpose or '未填写'}",
-                f"- 所需信息：{'、'.join(research.wanted_information) or '未填写'}",
-                f"- 风险：{research.risk_conclusion or '未填写'}",
-                f"- 未完成项：{incomplete}",
+                f"- 状态：{_STATUS_NAMES[source.status]}",
+                f"- 用途：{source.purpose or '未填写'}",
+                f"- 所需信息：{'、'.join(source.wanted_information) or '未填写'}",
+                f"- 风险：{source.risk_conclusion or '未填写'}",
+                f"- 未完成项：{'；'.join(incomplete) or '无'}",
             )
         )
-        if research.candidates:
+        if source.candidates:
             lines.extend(
                 ["", "| 决策 | 方式 | 信息 | 样本 | 限制 |", "| --- | --- | --- | --- | --- |"]
             )
-            for candidate in research.candidates:
-                decision = _DECISION_NAMES[candidate.decision.value]
-                method = _METHOD_NAMES.get(candidate.kind.value, candidate.kind.value)
+            for candidate in source.candidates:
+                decision = _DECISION_NAMES[candidate.decision]
+                method = _METHOD_NAMES.get(candidate.kind, candidate.kind)
                 fields = "、".join(candidate.fields)
-                sample = _SAMPLE_STATUS_NAMES[candidate.sample_status.value]
+                sample = _SAMPLE_STATUS_NAMES[candidate.sample_status]
                 limitations = "；".join(candidate.limitations) or "无"
                 lines.append(f"| {decision} | {method} | {fields} | {sample} | {limitations} |")
         lines.append("")

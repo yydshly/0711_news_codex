@@ -20,3 +20,33 @@ def test_report_is_chinese_and_lists_research_details() -> None:
     assert "收集公开资讯" in rendered
     assert "所需信息" in rendered
     assert "首选" in rendered
+
+
+def test_report_lists_target_findings_as_incomplete_items() -> None:
+    source = SourceDefinition.model_validate(
+        valid_source()
+        | {
+            "research": _verified_research(),
+            "provider_id": "missing-provider",
+        }
+    )
+    report = audit_source_catalog((), (source,))
+    report = report.__class__(
+        **{
+            **report.__dict__,
+            "findings": report.findings
+            + (
+                __import__("newsradar.research.audit", fromlist=["AuditFinding"]).AuditFinding(
+                    code="review_warning",
+                    severity="warning",
+                    source_id=source.id,
+                    provider_id=None,
+                    message_zh="需要人工复核",
+                ),
+            ),
+        }
+    )
+
+    rendered = render_research_report(report)
+
+    assert "- 未完成项：需要人工复核" in rendered

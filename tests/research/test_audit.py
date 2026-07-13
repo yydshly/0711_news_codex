@@ -115,3 +115,25 @@ def test_audit_counts_only_verified_targets_as_real_coverage_and_separates_metho
         "retired": 1,
     }
     assert report.method_counts == {"public_api": 1}
+
+
+def test_audit_report_keeps_immutable_target_snapshots() -> None:
+    source = _source(research=_verified_research())
+    report = audit_source_catalog((), (source,))
+
+    object.__setattr__(source, "name", "已被篡改")
+
+    assert report.targets[0].name != "已被篡改"
+    assert report.targets[0].id == "anthropic-news"
+
+
+def test_audit_counts_api_html_library_and_aggregator_separately() -> None:
+    kinds = ("public_api", "html", "library", "aggregator")
+    sources = tuple(
+        _source(id=f"source-{index}", research=_verified_research(kind))
+        for index, kind in enumerate(kinds, start=1)
+    )
+
+    report = audit_source_catalog((), sources)
+
+    assert report.method_counts == {kind: 1 for kind in kinds}

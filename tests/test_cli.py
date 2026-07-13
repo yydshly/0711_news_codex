@@ -75,6 +75,48 @@ def test_research_audit_commands_are_read_only_and_chinese(tmp_path: Path) -> No
     assert "待研究" in audit.stdout
 
 
+def test_research_audit_returns_nonzero_for_errors(monkeypatch) -> None:
+    from newsradar.research.audit import AuditFinding, ResearchAuditReport
+
+    monkeypatch.setattr(
+        "newsradar.cli._research_report",
+        lambda *_: ResearchAuditReport(
+            provider_count=0,
+            target_count=0,
+            status_counts={},
+            method_counts={},
+            findings=(AuditFinding("bad", "error", "source", None, "研究缺失"),),
+        ),
+    )
+
+    result = runner.invoke(app, ["sources", "research", "audit"])
+
+    assert result.exit_code == 1
+    assert "研究缺失" in result.stdout
+
+
+def test_research_report_writes_markdown_when_only_warnings(monkeypatch, tmp_path: Path) -> None:
+    from newsradar.research.audit import AuditFinding, ResearchAuditReport
+
+    monkeypatch.setattr(
+        "newsradar.cli._research_report",
+        lambda *_: ResearchAuditReport(
+            provider_count=0,
+            target_count=0,
+            status_counts={},
+            method_counts={},
+            findings=(AuditFinding("warn", "warning", "source", None, "需要复核"),),
+        ),
+    )
+    output = tmp_path / "research.md"
+
+    result = runner.invoke(app, ["sources", "research", "report", "--output", str(output)])
+
+    assert result.exit_code == 0
+    assert output.exists()
+    assert "需要复核" in output.read_text(encoding="utf-8")
+
+
 def test_probe_command_rejects_unknown_source(tmp_path: Path) -> None:
     root = tmp_path / "sources"
     write_source(root)

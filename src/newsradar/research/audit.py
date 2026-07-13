@@ -21,13 +21,33 @@ class AuditFinding:
 
 
 @dataclass(frozen=True)
+class ResearchCandidateSnapshot:
+    decision: str
+    kind: str
+    fields: tuple[str, ...]
+    sample_status: str
+    limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResearchTargetSnapshot:
+    id: str
+    name: str
+    status: str
+    purpose: str | None
+    wanted_information: tuple[str, ...]
+    risk_conclusion: str | None
+    candidates: tuple[ResearchCandidateSnapshot, ...]
+
+
+@dataclass(frozen=True)
 class ResearchAuditReport:
     provider_count: int
     target_count: int
     status_counts: Mapping[str, int]
     method_counts: Mapping[str, int]
     findings: tuple[AuditFinding, ...]
-    sources: tuple[SourceDefinition, ...] = ()
+    targets: tuple[ResearchTargetSnapshot, ...] = ()
 
 
 _NON_COVERAGE_STATUSES = {
@@ -41,6 +61,27 @@ def _normalized_url(value: object) -> str:
     parsed = urlsplit(str(value))
     path = parsed.path.rstrip("/")
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.query, ""))
+
+
+def _snapshot(source: SourceDefinition) -> ResearchTargetSnapshot:
+    return ResearchTargetSnapshot(
+        id=source.id,
+        name=source.name,
+        status=source.research.status.value,
+        purpose=source.research.purpose,
+        wanted_information=tuple(source.research.wanted_information),
+        risk_conclusion=source.research.risk_conclusion,
+        candidates=tuple(
+            ResearchCandidateSnapshot(
+                decision=candidate.decision.value,
+                kind=candidate.kind.value,
+                fields=tuple(candidate.fields),
+                sample_status=candidate.sample_status.value,
+                limitations=tuple(candidate.limitations),
+            )
+            for candidate in source.research.candidates
+        ),
+    )
 
 
 def audit_source_catalog(
@@ -187,5 +228,5 @@ def audit_source_catalog(
         status_counts=MappingProxyType(dict(sorted(status_counts.items()))),
         method_counts=MappingProxyType(dict(sorted(method_counts.items()))),
         findings=tuple(findings),
-        sources=sources,
+        targets=tuple(_snapshot(source) for source in sources),
     )
