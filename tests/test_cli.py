@@ -38,6 +38,43 @@ def test_report_command_writes_markdown(tmp_path: Path) -> None:
     assert "Anthropic News" in output.read_text(encoding="utf-8")
 
 
+def test_research_audit_commands_are_read_only_and_chinese(tmp_path: Path) -> None:
+    source_root = tmp_path / "sources"
+    provider_root = tmp_path / "providers"
+    write_source(source_root)
+    provider_root.mkdir()
+
+    validate = runner.invoke(
+        app,
+        [
+            "sources",
+            "research",
+            "validate",
+            "--root",
+            str(source_root),
+            "--provider-root",
+            str(provider_root),
+        ],
+    )
+    audit = runner.invoke(
+        app,
+        [
+            "sources",
+            "research",
+            "audit",
+            "--root",
+            str(source_root),
+            "--provider-root",
+            str(provider_root),
+        ],
+    )
+
+    assert validate.exit_code == 0
+    assert "研究审计" in validate.stdout
+    assert audit.exit_code == 0
+    assert "待研究" in audit.stdout
+
+
 def test_probe_command_rejects_unknown_source(tmp_path: Path) -> None:
     root = tmp_path / "sources"
     write_source(root)

@@ -27,6 +27,8 @@ from newsradar.providers.probes import probe_providers
 from newsradar.providers.reporting import render_coverage_report
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
+from newsradar.research.audit import audit_source_catalog
+from newsradar.research.reporting import render_research_report
 from newsradar.runtime import RuntimeSupervisor
 from newsradar.settings import get_settings
 from newsradar.sources.probes.factory import ProbeFactory
@@ -37,9 +39,11 @@ from newsradar.sources.yaml_loader import load_source_tree
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
+research_app = typer.Typer(help="只读来源研究审计")
 providers_app = typer.Typer(help="Validate, sync, probe, and report source providers")
 db_app = typer.Typer(help="Manage the project-local PostgreSQL runtime")
 app.add_typer(sources_app, name="sources")
+sources_app.add_typer(research_app, name="research")
 app.add_typer(providers_app, name="providers")
 app.add_typer(db_app, name="db")
 operations_app = typer.Typer(help="Inspect and retry durable operations")
@@ -267,9 +271,7 @@ def build_events(
 ) -> None:
     with create_session() as session:
         commands = OperationCommandService(session)
-        operation_id = commands.enqueue_event_pipeline(
-            window_hours=hours, trigger="cli"
-        )
+        operation_id = commands.enqueue_event_pipeline(window_hours=hours, trigger="cli")
         typer.echo(f"Queued event pipeline as operation {operation_id}")
         if not wait:
             return
@@ -467,6 +469,66 @@ def report_sources(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_source_report(sources), encoding="utf-8")
     typer.echo(f"Wrote source report to {output}")
+
+
+def _research_report(root: Path, provider_root: Path):
+    return audit_source_catalog(
+        tuple(load_provider_tree(provider_root)), tuple(load_source_tree(root))
+    )
+
+
+def _echo_research_findings(report) -> int:
+    labels = {"error": "错误", "warning": "警告", "info": "提示"}
+    for finding in report.findings:
+        typer.echo(f"[{labels[finding.severity]}] {finding.code}: {finding.message_zh}")
+    return sum(finding.severity == "error" for finding in report.findings)
+
+
+@research_app.command("validate")
+def validate_source_research(
+    root: RootOption = Path("sources"),
+    provider_root: Annotated[
+        Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
+    ] = Path("providers"),
+) -> None:
+    report = _research_report(root, provider_root)
+    errors = _echo_research_findings(report)
+    typer.echo(f"研究审计完成：{report.target_count} 个真实 Target，{errors} 个错误。")
+    if errors:
+        raise typer.Exit(1)
+
+
+@research_app.command("audit")
+def audit_source_research(
+    root: RootOption = Path("sources"),
+    provider_root: Annotated[
+        Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
+    ] = Path("providers"),
+) -> None:
+    report = _research_report(root, provider_root)
+    errors = _echo_research_findings(report)
+    pending = report.status_counts.get("needs_research", 0)
+    verified = report.status_counts.get("verified", 0)
+    typer.echo(f"研究审计：待研究 {pending} 个，已验证 {verified} 个。")
+    if errors:
+        raise typer.Exit(1)
+
+
+@research_app.command("report")
+def report_source_research(
+    root: RootOption = Path("sources"),
+    provider_root: Annotated[
+        Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
+    ] = Path("providers"),
+    output: Annotated[Path, typer.Option("--output")] = Path("reports/source-research-v3.md"),
+) -> None:
+    report = _research_report(root, provider_root)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_research_report(report), encoding="utf-8")
+    errors = _echo_research_findings(report)
+    typer.echo(f"已写入来源研究报告：{output}")
+    if errors:
+        raise typer.Exit(1)
 
 
 @sources_app.command("coverage")
