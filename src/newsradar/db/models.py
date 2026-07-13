@@ -59,6 +59,12 @@ class SourceDefinitionRecord(Base):
     risks: Mapped[list[SourceRiskAssessmentRecord]] = relationship(
         cascade="all, delete-orphan", back_populates="source"
     )
+    research_profile: Mapped[SourceResearchProfileRecord | None] = relationship(
+        cascade="all, delete-orphan", back_populates="source", uselist=False
+    )
+    acquisition_candidates: Mapped[list[SourceAcquisitionCandidateRecord]] = relationship(
+        cascade="all, delete-orphan", back_populates="source"
+    )
 
 
 class ProviderDefinitionRecord(Base):
@@ -121,6 +127,72 @@ class SourceDefinitionVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     source: Mapped[SourceDefinitionRecord] = relationship(back_populates="versions")
+
+
+class SourceResearchProfileRecord(Base):
+    __tablename__ = "source_research_profiles"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_definitions.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    wanted_information: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    conclusion: Mapped[str | None] = mapped_column(Text)
+    no_fallback_reason: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[date | None] = mapped_column(Date)
+
+    source: Mapped[SourceDefinitionRecord] = relationship(back_populates="research_profile")
+
+
+class SourceAcquisitionCandidateRecord(Base):
+    __tablename__ = "source_acquisition_candidates"
+    __table_args__ = (UniqueConstraint("source_id", "candidate_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_definitions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    implementation: Mapped[str] = mapped_column(String(64), nullable=False)
+    officiality: Mapped[str] = mapped_column(String(32), nullable=False)
+    authentication: Mapped[str] = mapped_column(String(32), nullable=False)
+    roles: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    fields: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    limitations: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    evidence: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    sample_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    reviewed_at: Mapped[date] = mapped_column(Date, nullable=False)
+
+    source: Mapped[SourceDefinitionRecord] = relationship(back_populates="acquisition_candidates")
+    probe_runs: Mapped[list[SourceAcquisitionProbeRunRecord]] = relationship(
+        back_populates="candidate"
+    )
+
+
+class SourceAcquisitionProbeRunRecord(Base):
+    __tablename__ = "source_acquisition_probe_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("source_acquisition_candidates.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[float | None] = mapped_column(Float)
+    fields_present: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    sample_count: Mapped[int | None] = mapped_column(Integer)
+    latest_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    schema_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+    candidate: Mapped[SourceAcquisitionCandidateRecord] = relationship(back_populates="probe_runs")
 
 
 class SourceAccessMethodRecord(Base):

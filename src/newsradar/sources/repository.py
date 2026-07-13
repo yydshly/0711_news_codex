@@ -11,16 +11,49 @@ from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     ModelUsageRecord,
     SourceAccessMethodRecord,
+    SourceAcquisitionCandidateRecord,
+    SourceAcquisitionProbeRunRecord,
     SourceDefinitionRecord,
     SourceDefinitionVersion,
     SourceFetchStateRecord,
     SourceProbeRunRecord,
     SourceProbeSampleRecord,
+    SourceResearchProfileRecord,
     SourceRiskAssessmentRecord,
 )
 from newsradar.sources.probes.base import ProbeResult
 
 from .schema import SourceDefinition, SourceStatus
+
+_SENSITIVE_DETAIL_KEYS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+}
+
+
+def _sanitize_research_details(value: object) -> object:
+    """Drop credentials before persisting exploratory probe diagnostics."""
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_research_details(item)
+            for key, item in value.items()
+            if str(key).lower().replace("-", "_") not in _SENSITIVE_DETAIL_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_research_details(item) for item in value]
+    if (
+        isinstance(value, str)
+        and "://" in value
+        and "@" in value.split("://", 1)[1].split("/", 1)[0]
+    ):
+        return "[redacted credential URL]"
+    return value
 
 
 @dataclass(frozen=True)
@@ -84,6 +117,8 @@ class SourceRepository:
             current.notes = source.notes
             current.definition_hash = definition_hash
 
+            self._sync_research_projection(current, source)
+
             for method in source.access_methods:
                 record = existing_methods.pop(method.priority, None)
                 if record is None:
@@ -128,6 +163,81 @@ class SourceRepository:
 
         self.session.flush()
         return SyncResult(created=created, updated=updated, unchanged=unchanged)
+
+    def sync_source(self, source: SourceDefinition) -> SyncResult:
+        """Synchronize one YAML source without committing the caller's transaction."""
+        return self.sync([source])
+
+    def _sync_research_projection(
+        self, current: SourceDefinitionRecord, source: SourceDefinition
+    ) -> None:
+        research = source.research
+        profile = current.research_profile
+        if profile is None:
+            profile = SourceResearchProfileRecord(source=current)
+            self.session.add(profile)
+        profile.status = research.status.value
+        profile.wanted_information = list(research.wanted_information)
+        profile.conclusion = research.conclusion
+        profile.no_fallback_reason = research.no_fallback_reason
+        profile.reviewed_at = research.reviewed_at
+
+        existing = {
+            candidate.candidate_key: candidate for candidate in current.acquisition_candidates
+        }
+        for candidate in research.candidates:
+            record = existing.pop(candidate.key, None)
+            if record is None:
+                record = SourceAcquisitionCandidateRecord(candidate_key=candidate.key)
+                current.acquisition_candidates.append(record)
+            record.kind = candidate.kind.value
+            record.implementation = candidate.implementation.value
+            record.officiality = candidate.officiality.value
+            record.authentication = candidate.authentication.value
+            record.roles = [role.value for role in candidate.roles]
+            record.fields = list(candidate.fields)
+            record.limitations = list(candidate.limitations)
+            record.evidence = [str(url) for url in candidate.evidence]
+            record.sample_status = candidate.sample_status.value
+            record.decision = candidate.decision.value
+            record.reviewed_at = candidate.reviewed_at
+
+        for obsolete in existing.values():
+            self.session.delete(obsolete)
+
+    def save_acquisition_probe_run(
+        self,
+        *,
+        candidate_id: int,
+        started_at,
+        completed_at,
+        outcome: str,
+        http_status: int | None = None,
+        latency_ms: float | None = None,
+        fields_present: list[str] | None = None,
+        sample_count: int | None = None,
+        latest_published_at=None,
+        schema_fingerprint: str | None = None,
+        error_code: str | None = None,
+        details: dict | None = None,
+    ) -> SourceAcquisitionProbeRunRecord:
+        record = SourceAcquisitionProbeRunRecord(
+            candidate_id=candidate_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            outcome=outcome,
+            http_status=http_status,
+            latency_ms=latency_ms,
+            fields_present=fields_present or [],
+            sample_count=sample_count,
+            latest_published_at=latest_published_at,
+            schema_fingerprint=schema_fingerprint,
+            error_code=error_code,
+            details=_sanitize_research_details(details or {}),
+        )
+        self.session.add(record)
+        self.session.flush()
+        return record
 
     def save_probe_result(self, result: ProbeResult) -> SourceProbeRunRecord:
         metrics = {
