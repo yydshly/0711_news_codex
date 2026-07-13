@@ -8,7 +8,7 @@ from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from newsradar.sources.schema import AcquisitionCandidate, SourceDefinition
 
@@ -18,6 +18,10 @@ class AcquisitionProbeOutcome(StrEnum):
     PARTIAL = "partial"
     BLOCKED = "blocked"
     FAILED = "failed"
+
+
+class InvalidProbeUrl(ValueError):
+    """A probe target violates the public, credential-free request boundary."""
 
 
 class AcquisitionProbeSample(BaseModel):
@@ -34,6 +38,16 @@ class AcquisitionProbeSample(BaseModel):
     transcript_kind: str | None = Field(default=None, max_length=32)
     text_available: bool | None = None
     text: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("canonical_url")
+    @classmethod
+    def canonical_url_is_public(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if parsed.username or parsed.password:
+            raise ValueError("credentialed_url")
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
 class AcquisitionProbeResult(BaseModel):
@@ -104,7 +118,9 @@ def public_probe_url(candidate: AcquisitionCandidate) -> str:
     url = str(candidate.evidence[0])
     parsed = urlsplit(url)
     if parsed.username or parsed.password:
-        raise ValueError("credentialed_url")
+        raise InvalidProbeUrl("credentialed_url")
+    if any(_SENSITIVE_KEY.search(pair.split("=", 1)[0]) for pair in parsed.query.split("&")):
+        raise InvalidProbeUrl("sensitive_query")
     return url
 
 
@@ -144,7 +160,7 @@ def with_http_evidence(
 
 
 _SENSITIVE_KEY = re.compile(
-    r"(?i)(authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|token|client[_-]?secret|secret|password)"
+    r"(?i)(authorization|authentication|auth|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|token|client[_-]?secret|secret|password)"
 )
 _URL = re.compile(r"https?://[^\s\"'<>]+")
 _SENSITIVE_PAIR = re.compile(

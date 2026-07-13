@@ -24,13 +24,17 @@ def allowed(text: str, path: str, user_agent: str = "newsradar-research") -> boo
     matching = [
         (
             max(
-                (len(agent) for agent in group if agent == "*" or agent in user_agent.lower()),
+                (
+                    len(agent)
+                    for agent in group
+                    if agent == "*" or user_agent.lower().startswith(agent)
+                ),
                 default=0,
             ),
             rules,
         )
         for group, rules in groups
-        if any(agent == "*" or agent in user_agent.lower() for agent in group)
+        if any(agent == "*" or user_agent.lower().startswith(agent) for agent in group)
     ]
     candidates = max(matching, key=lambda item: item[0])[1] if matching else []
     matches = [

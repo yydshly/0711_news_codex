@@ -8,6 +8,7 @@ from .safe_http import UnsafeProbeUrl, safe_get
 from .schema import (
     AcquisitionProbeOutcome,
     AcquisitionProbeSample,
+    InvalidProbeUrl,
     probe_result,
     public_probe_url,
     with_http_evidence,
@@ -31,6 +32,7 @@ class ApiResearchProbe:
                 "credential_required",
                 metadata={"terms_review_required": True},
             )
+        response = None
         try:
             response = await safe_get(self.policy, candidate, public_probe_url(candidate))
             if blocked_reason(response):
@@ -48,7 +50,8 @@ class ApiResearchProbe:
                     candidate,
                 )
             response.raise_for_status()
-        except UnsafeProbeUrl:
+            payload = response.json()
+        except (UnsafeProbeUrl, InvalidProbeUrl):
             return probe_result(
                 source,
                 candidate,
@@ -57,17 +60,14 @@ class ApiResearchProbe:
                 "unsafe_url",
             )
         except Exception as exc:
-            return probe_result(
+            result = probe_result(
                 source,
                 candidate,
                 AcquisitionProbeOutcome.FAILED,
                 "公开 API 不可用",
                 type(exc).__name__,
             )
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = None
+            return with_http_evidence(result, response, candidate) if response else result
         rows = (
             payload
             if isinstance(payload, list)

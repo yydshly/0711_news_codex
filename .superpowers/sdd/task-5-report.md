@@ -48,3 +48,20 @@ The prior hostname fail-closed policy was removed. For this single-user, manuall
 This was further aligned with the confirmed local YAML scope: hostname DNS is no longer pre-gated. Explicit unsafe IP literals and malformed/credentialed URLs remain blocked, while actual hostname DNS/network errors are returned by the bounded HTTP request as readable probe failures.
 
 Real controlled network verification (2026-07-12): `https://hnrss.org/frontpage` returned HTTP 200 / 15,751 bytes and `https://www.python.org/` returned HTTP 200 / 52,637 bytes through `safe_get` with `trust_env=False`, explicit redirect handling, and the 2 MB cap.
+
+## Evidence consistency and recursive static-metadata sanitization follow-up
+
+- Added RED/GREEN coverage for API HTTP evidence, result/API sample-count consistency, robots early-return evidence, recursive JSON-LD/embedded JSON/OpenGraph URL sanitization, and gzip-encoded static HTML.
+- `AcquisitionProbeResult` now carries `sample_count`, ETag, Last-Modified, and measured bounded-request latency. HTTP-backed success and access/robots blocked results carry sanitized final URL, response status, cache/rate-limit evidence, field summary, latest timestamp, pagination, fingerprint, and Chinese reason. CLI persists the result's own `sample_count` rather than recomputing an independent value.
+- Static HTML metadata decodes JSON before recursive sanitization, removes sensitive nested keys, and strips every URL query and fragment while retaining scheme/host/path. Repository detail persistence also strips URL query/fragment; credential-bearing URLs continue to use the existing full-redaction marker.
+- Fixed a real controlled HTML regression: `safe_get` consumes decoded streaming bytes, so reconstructed responses now remove stale `Content-Encoding`/`Content-Length` headers and cannot be decoded twice.
+
+Verification (2026-07-12): `uv run ruff check src/newsradar/research/probes src/newsradar/cli.py src/newsradar/sources/repository.py tests/research/probes` passed. `uv run pytest tests/research/probes tests/test_cli.py tests/test_research_repository.py tests/test_migrations.py -q` passed. Real `trust_env=False` probe checks: hnRSS succeeded (HTTP 200, one bounded sample); Python.org static HTML completed partial (HTTP 200) with no JavaScript/browser/credentials.
+
+## Final security closeout
+
+- `AcquisitionProbeSample` now strips every canonical URL query/fragment at model construction and rejects URL userinfo, covering feed/API/Sitemap sample persistence and model dumps.
+- Probe targets reject credential-bearing query keys before `safe_get`; HTTP/parse failure paths preserve already-received response evidence through `with_http_evidence`.
+- Robots user-agent matching now follows token-prefix semantics, and HTML robots early blocks retain `terms_review_required` like Sitemap.
+
+Verification (2026-07-12): `python -m ruff check src/newsradar/research/probes tests/research/probes` and `python -m pytest tests/research/probes tests/test_cli.py tests/test_research_repository.py tests/test_migrations.py -q` passed (71 tests). A real `trust_env=False` Django RSS probe (`https://www.djangoproject.com/rss/weblog/`) succeeded with HTTP 200 and one bounded sample.

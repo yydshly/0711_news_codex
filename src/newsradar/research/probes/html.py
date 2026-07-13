@@ -12,6 +12,7 @@ from .robots import allowed as robots_allowed
 from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .schema import (
     AcquisitionProbeOutcome,
+    InvalidProbeUrl,
     probe_result,
     public_probe_url,
     sanitize_probe_details,
@@ -119,10 +120,11 @@ class HtmlResearchProbe:
         del limit
         if self.policy is None:
             return self.inspect(source, candidate, "")
-        target = public_probe_url(candidate)
-        parts = urlsplit(target)
-        robots = urlunsplit((parts.scheme, parts.netloc, "/robots.txt", "", ""))
+        response = None
         try:
+            target = public_probe_url(candidate)
+            parts = urlsplit(target)
+            robots = urlunsplit((parts.scheme, parts.netloc, "/robots.txt", "", ""))
             robot = await safe_get(self.policy, candidate, robots)
             if robot.status_code >= 500:
                 return with_http_evidence(
@@ -132,6 +134,7 @@ class HtmlResearchProbe:
                         AcquisitionProbeOutcome.BLOCKED,
                         "robots.txt 不可达",
                         "robots_unavailable",
+                        metadata={"terms_review_required": True},
                         blocked_condition="robots",
                     ),
                     robot,
@@ -145,6 +148,7 @@ class HtmlResearchProbe:
                         AcquisitionProbeOutcome.BLOCKED,
                         "robots 规则禁止目标路径",
                         "robots_denied",
+                        metadata={"terms_review_required": True},
                         blocked_condition="robots",
                     ),
                     robot,
@@ -165,6 +169,9 @@ class HtmlResearchProbe:
                     candidate,
                 )
             response.raise_for_status()
+            return with_http_evidence(
+                self.inspect(source, candidate, response.text), response, candidate
+            )
         except ProbeAuthenticationRequired:
             return probe_result(
                 source,
@@ -173,7 +180,7 @@ class HtmlResearchProbe:
                 "需要认证或批准",
                 "authentication_required",
             )
-        except UnsafeProbeUrl:
+        except (UnsafeProbeUrl, InvalidProbeUrl):
             return probe_result(
                 source,
                 candidate,
@@ -182,13 +189,11 @@ class HtmlResearchProbe:
                 "unsafe_url",
             )
         except Exception as exc:
-            return probe_result(
+            result = probe_result(
                 source,
                 candidate,
                 AcquisitionProbeOutcome.FAILED,
                 "静态页面不可用",
                 type(exc).__name__,
             )
-        return with_http_evidence(
-            self.inspect(source, candidate, response.text), response, candidate
-        )
+            return with_http_evidence(result, response, candidate) if response else result

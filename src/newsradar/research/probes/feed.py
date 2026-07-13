@@ -12,6 +12,7 @@ from .safe_http import ProbeAuthenticationRequired, UnsafeProbeUrl, safe_get
 from .schema import (
     AcquisitionProbeOutcome,
     AcquisitionProbeSample,
+    InvalidProbeUrl,
     probe_result,
     public_probe_url,
     with_http_evidence,
@@ -25,6 +26,7 @@ class FeedResearchProbe:
     async def probe(
         self, source: SourceDefinition, candidate: AcquisitionCandidate, limit: int = 5
     ):
+        response = None
         try:
             response = await safe_get(self.policy, candidate, public_probe_url(candidate))
             if reason := blocked_reason(response):
@@ -50,7 +52,7 @@ class FeedResearchProbe:
                 "需要认证或批准，未发起请求",
                 "authentication_required",
             )
-        except UnsafeProbeUrl:
+        except (UnsafeProbeUrl, InvalidProbeUrl):
             return probe_result(
                 source,
                 candidate,
@@ -59,13 +61,14 @@ class FeedResearchProbe:
                 "unsafe_url",
             )
         except Exception as exc:
-            return probe_result(
+            result = probe_result(
                 source,
                 candidate,
                 AcquisitionProbeOutcome.FAILED,
                 "公开订阅源不可用",
                 type(exc).__name__,
             )
+            return with_http_evidence(result, response, candidate) if response else result
         samples = []
         for entry in parsed.entries[: max(0, min(limit, 5))]:
             published = entry.get("published_parsed")
