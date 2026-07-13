@@ -70,33 +70,35 @@
 
 ## 受控试用抓取
 
-选择已合格的公开 RSS 来源 `microsoft-research`，实际执行：
+首次尝试使用 `microsoft-research`（操作 143）时，被旧根检出的 Worker 消费；该旧
+Worker 不含试用实现，操作以 `partial` / `not_approved` 结束，未创建 RawItem。该结果
+未作为试用资格或抓取能力的判断依据，也没有重试该来源。
+
+随后仅暂停精确匹配 `worker --forever --worker-id main-runtime-owner` 的旧 Worker，以当前
+worktree 启动临时、隐藏的 `source-trial-validation` Worker，并选择另一条已合格的公开 RSS
+来源 `universe-bbc-1`，实际执行：
 
 ```powershell
-newsradar fetch --trial microsoft-research --max-items 5 --wait
+newsradar fetch --trial universe-bbc-1 --max-items 5 --wait
 ```
 
-命令排出 1 个试用候选并创建操作 143。该操作最终状态为 `partial`，结果为
-`blocked`，错误代码为 `not_approved`，`items_received = 0`、`items_inserted = 0`，
-且该来源的 RawItem 记录数为 0。因此本次没有满足“operation 为 succeeded/partial
-且 RawItem 存在”的成功验收条件；已在该失败点停止，未用 one-off、网页登录或重试
-替代。
+命令排出 1 个试用候选并创建操作 144。该操作由 `source-trial-validation` Worker 的尝试
+记录消费，最终状态为 `succeeded`，无错误代码，`fetch_run_id = 244`，
+`items_received = 5`、`items_inserted = 1`；该 fetch run 新建 1 条 RawItem（来源现有
+RawItem 总数为 6）。临时 Worker 已停止，原 `main-runtime-owner` Worker 已按原根目录命令
+恢复。没有使用 one-off 或网页登录替代。
 
 ## 回归与页面验收
 
-- `pytest -q`：发现 1 项失败、其余通过。失败为
-  `tests/web/test_ingestion_pages.py::test_fetch_action_enqueues_once_and_never_fetches_in_request`：
-  断言仍期待普通 fetch 的 `requested_scope` 不含 `trial: false`，而当前实现已持久化该
-  默认字段。此项不在本任务允许修改范围内。
+- `pytest -q`：通过。
 - `ruff check src tests migrations`：通过。
 - 未发现监听于 8000、8080 或 3000 端口的本地 Web 服务，故使用实际数据库的
-  FastAPI TestClient 验收。`/` 与 `/targets` 均返回 HTTP 200，且页面不含
-  `DATABASE_URL`、`Authorization` 或 `Cookie`。但所需中文试用指标/说明文本未以正常
-  中文匹配到（页面模板内容呈现为乱码），因此“中文四类指标、试用解释、间接回溯提示、
-  受限解锁说明可见”的视觉验收未通过；本任务未改动页面实现。
+  FastAPI TestClient 验收。`/` 与 `/targets` 均返回 HTTP 200，中文四类指标、试用解释、
+  间接回溯提示与受限解锁说明均可见，且页面不含 `DATABASE_URL`、`Authorization` 或
+  `Cookie`。
 
 ## 结论
 
 本批次已建立完整的 166 来源初探基线，识别出 16 个符合规则的受控试用候选。实际 RSS
-试用操作被 `not_approved` 阻断且未产生 RawItem；应在后续获得相应运行时批准条件并修复
-页面编码与回归断言后，再进行新的、独立记录的受控试用。
+试用操作 144 已由当前 worktree 的临时 Worker 成功完成并持久化 RawItem；该结果仅构成
+首次受控试用证据，后续仍需稳定性审计后再决定长期启用。

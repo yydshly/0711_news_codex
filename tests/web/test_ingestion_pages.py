@@ -97,6 +97,7 @@ def test_fetch_action_enqueues_once_and_never_fetches_in_request(monkeypatch, db
         "one_off": False,
         "provider": None,
         "source_id": "github-openai-python",
+        "trial": False,
     }
     assert operations[0].trigger == "web"
 
