@@ -86,10 +86,19 @@ class SampleStatus(StrEnum):
     FAILED = "failed"
 
 
+class AcquisitionImplementation(StrEnum):
+    FEEDPARSER = "feedparser"
+    HTTPX = "httpx"
+    YOUTUBE_CHANNEL_FEED = "youtube-channel-feed"
+    YOUTUBE_DATA_API = "youtube-data-api"
+    YOUTUBE_TRANSCRIPT_API = "youtube-transcript-api"
+    MANUAL_REVIEW = "manual-review"
+
+
 class AcquisitionCandidate(StrictModel):
     key: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     kind: AcquisitionKind
-    implementation: str = Field(min_length=1, max_length=120)
+    implementation: AcquisitionImplementation
     officiality: Officiality
     authentication: AcquisitionAuth
     roles: tuple[AcquisitionRole, ...] = Field(min_length=1)
@@ -99,28 +108,6 @@ class AcquisitionCandidate(StrictModel):
     reviewed_at: date
     sample_status: SampleStatus
     decision: AcquisitionDecision
-
-    @field_validator("implementation")
-    @classmethod
-    def reject_prohibited_implementation(cls, value: str) -> str:
-        normalized = value.casefold()
-        prohibited_terms = (
-            "browser-session",
-            "browser_session",
-            "browser session",
-            "captcha",
-            "proxy",
-            "anti-bot",
-            "antibot",
-            "bypass",
-            "验证码",
-            "代理",
-            "反爬",
-            "绕过",
-        )
-        if any(term in normalized for term in prohibited_terms):
-            raise ValueError("候选实现不得使用浏览器会话、验证码、代理或反爬绕过")
-        return value
 
     @field_validator("evidence")
     @classmethod

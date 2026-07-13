@@ -90,7 +90,7 @@ class ProviderDefinition(StrictModel):
             raise ValueError("Provider URLs must use HTTPS")
         parsed = urlsplit(str(value))
         if parsed.username or parsed.password:
-            raise ValueError("Provider URL 不得内嵌凭据")
+            raise ValueError("提供方 URL 不得内嵌凭据")
         return value
 
     @field_validator("evidence")
@@ -101,7 +101,7 @@ class ProviderDefinition(StrictModel):
                 raise ValueError("Provider evidence URLs must use HTTPS")
             parsed = urlsplit(str(value))
             if parsed.username or parsed.password:
-                raise ValueError("Provider 证据 URL 不得内嵌凭据")
+                raise ValueError("提供方证据 URL 不得内嵌凭据")
         return values
 
     @field_validator("required_env")

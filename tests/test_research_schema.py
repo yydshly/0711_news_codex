@@ -92,6 +92,58 @@ def test_candidate_rejects_browser_session_implementation() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "implementation",
+    [
+        "selenium",
+        "playwright",
+        "puppeteer",
+        "cloudflare-clearance",
+        "socks5-proxy",
+        "unreviewed-client",
+    ],
+)
+def test_candidate_rejects_non_whitelisted_implementation(implementation: str) -> None:
+    with pytest.raises(ValidationError):
+        AcquisitionCandidate.model_validate(
+            {
+                "key": "unsafe-client",
+                "kind": "html",
+                "implementation": implementation,
+                "officiality": "official",
+                "authentication": "none",
+                "roles": ["content"],
+                "fields": ["content"],
+                "limitations": [],
+                "evidence": ["https://example.test/terms"],
+                "reviewed_at": "2026-07-12",
+                "sample_status": "blocked",
+                "decision": "rejected",
+            }
+        )
+
+
+def test_candidate_accepts_whitelisted_safe_implementation() -> None:
+    candidate = AcquisitionCandidate.model_validate(
+        {
+            "key": "official-feed",
+            "kind": "rss",
+            "implementation": "feedparser",
+            "officiality": "official",
+            "authentication": "none",
+            "roles": ["content"],
+            "fields": ["content"],
+            "limitations": [],
+            "evidence": ["https://example.test/feed-docs"],
+            "reviewed_at": "2026-07-12",
+            "sample_status": "succeeded",
+            "decision": "primary",
+        }
+    )
+
+    assert candidate.implementation == "feedparser"
+
+
 def test_candidate_rejects_embedded_url_credentials() -> None:
     with pytest.raises(ValidationError):
         AcquisitionCandidate.model_validate(
