@@ -188,6 +188,12 @@ class SourceAcquisitionProbeRunRecord(Base):
         nullable=False,
         index=True,
     )
+    operation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="SET NULL"), index=True
+    )
+    original_probe_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_probe_runs.id", ondelete="SET NULL"), index=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -198,6 +204,8 @@ class SourceAcquisitionProbeRunRecord(Base):
     latest_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     schema_fingerprint: Mapped[str | None] = mapped_column(String(64))
     error_code: Mapped[str | None] = mapped_column(String(64))
+    retry_after_seconds: Mapped[float | None] = mapped_column(Float)
+    earliest_recheck_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     candidate: Mapped[SourceAcquisitionCandidateRecord] = relationship(back_populates="probe_runs")
@@ -243,6 +251,9 @@ class SourceProbeRunRecord(Base):
     __tablename__ = "source_probe_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    remediation_acquisition_probe_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_acquisition_probe_runs.id", ondelete="SET NULL"), index=True
+    )
     source_id: Mapped[str] = mapped_column(ForeignKey("source_definitions.id"), nullable=False)
     access_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     access_url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -270,6 +281,46 @@ class SourceProbeSampleRecord(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fields_present: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     sample_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class SourceRemediationBatchRecord(Base):
+    __tablename__ = "source_remediation_batches"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    baseline_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, unique=True
+    )
+    before_trial_count: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SourceRemediationMemberRecord(Base):
+    __tablename__ = "source_remediation_members"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "source_id"),
+        UniqueConstraint("batch_id", "original_probe_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("source_remediation_batches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_definitions.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_probe_id: Mapped[int] = mapped_column(
+        ForeignKey("source_probe_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    original_finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_zh: Mapped[str] = mapped_column(Text, nullable=False)
+    next_action_zh: Mapped[str] = mapped_column(Text, nullable=False)
+    access_url: Mapped[str | None] = mapped_column(Text)
 
 
 class FetchRunRecord(Base):

@@ -16,11 +16,13 @@ from newsradar.db.models import (
     SourceAcquisitionCandidateRecord,
     SourceAcquisitionProbeRunRecord,
     SourceDefinitionRecord,
+    SourceDefinitionVersion,
     SourceProbeRunRecord,
     SourceResearchProfileRecord,
     SourceRiskAssessmentRecord,
 )
 from newsradar.ingestion.trial import ProbeSnapshot, TrialDecision, evaluate_trial_eligibility
+from newsradar.remediation.repository import RemediationRepository
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.schema import AccessMethod, RiskAssessment, SourceDefinition
 from newsradar.web.i18n import explain_failure, zh_label
@@ -32,6 +34,8 @@ from newsradar.web.viewmodels import (
     ProbeRow,
     ProviderDetail,
     ProviderRow,
+    RemediationDashboardView,
+    RemediationRowView,
     ResearchCandidateView,
     ResearchTargetView,
     RiskView,
@@ -52,11 +56,16 @@ _NO_PROBE_LABEL = "尚未探测"
 _NO_ALTERNATIVE = "无已审核替代路径"
 
 
-def _public_evidence_url(value: str) -> str:
+def _public_evidence_url(value: str) -> str | None:
     """Expose only the stable public URL component in browser-facing evidence."""
     parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return value
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
@@ -129,6 +138,167 @@ class DashboardQueryService:
             )
             for s in sources
         ]
+
+    def remediation_dashboard(
+        self,
+        *,
+        category: str | None = None,
+        provider_id: str | None = None,
+        conclusion: str | None = None,
+    ) -> RemediationDashboardView:
+        """Return only the newest immutable remediation batch and its linked evidence."""
+        repository = RemediationRepository(self._session)
+        frozen = repository.latest_frozen_manifest()
+        if frozen is None:
+            return RemediationDashboardView(
+                baseline_at=None,
+                total=0,
+                reviewed_count=0,
+                verifiable_count=0,
+                html_count=0,
+                policy_or_unknown_count=0,
+                category_counts=(),
+                providers=(),
+                rows=(),
+            )
+        source_ids = [entry.source_id for entry in frozen.entries]
+        source_records = {
+            record.id: record
+            for record in self._session.scalars(
+                select(SourceDefinitionRecord).where(SourceDefinitionRecord.id.in_(source_ids))
+            )
+        }
+        versions = self._session.scalars(
+            select(SourceDefinitionVersion).where(SourceDefinitionVersion.source_id.in_(source_ids))
+        ).all()
+        definitions = []
+        for version in versions:
+            if (
+                version.source_id not in source_records
+                or version.definition_hash != source_records[version.source_id].definition_hash
+            ):
+                continue
+            payload = dict(version.definition)
+            risk = dict(payload.get("risk") or {})
+            risk.pop("total", None)
+            payload["risk"] = risk
+            definitions.append(SourceDefinition.model_validate(payload))
+        manifest = repository.enriched_manifest(frozen.baseline_at, definitions)
+        provider_ids = {
+            source_records[entry.source_id].provider_id
+            for entry in manifest.entries
+            if entry.source_id in source_records
+        }
+        provider_names = {
+            record.id: record.name
+            for record in self._session.scalars(
+                select(ProviderDefinitionRecord).where(
+                    ProviderDefinitionRecord.id.in_(provider_ids)
+                )
+            )
+        }
+        category_labels = {
+            "network_transient": "网络暂态",
+            "rate_limited": "触发限流",
+            "endpoint_changed": "端点变化",
+            "content_incomplete": "内容不完整",
+            "authentication_or_policy": "认证或政策限制",
+            "unknown": "原因待确认",
+        }
+        rows: list[RemediationRowView] = []
+        for entry in manifest.entries:
+            evidence = entry.evidence
+            source_record = source_records.get(entry.source_id)
+            current_provider = source_record.provider_id if source_record is not None else "unknown"
+            conclusion_key = self._remediation_conclusion_key(entry.category.value, evidence)
+            rows.append(
+                RemediationRowView(
+                    source_id=entry.source_id,
+                    source_name=entry.source_name,
+                    provider_id=current_provider,
+                    provider_name=provider_names.get(current_provider, current_provider),
+                    original_probe_id=entry.original_probe_id,
+                    category=entry.category.value,
+                    category_label=category_labels[entry.category.value],
+                    reason_zh=entry.reason_zh,
+                    next_action_zh=entry.next_action_zh,
+                    candidate_key=evidence.candidate_key if evidence else None,
+                    candidate_kind=evidence.candidate_kind if evidence else None,
+                    acquisition_label=self._remediation_acquisition_label(evidence),
+                    content_label=self._remediation_content_label(evidence),
+                    conclusion=(
+                        evidence.final_conclusion_zh
+                        if evidence and evidence.final_conclusion_zh
+                        else entry.next_action_zh
+                    ),
+                    conclusion_key=conclusion_key,
+                )
+            )
+        counts = {key: 0 for key in category_labels}
+        for row in rows:
+            counts[row.category] += 1
+        all_rows = tuple(rows)
+        filtered = tuple(
+            row
+            for row in all_rows
+            if (not category or row.category == category)
+            and (not provider_id or row.provider_id == provider_id)
+            and (not conclusion or row.conclusion_key == conclusion)
+        )
+        providers = tuple(
+            sorted({(row.provider_id, row.provider_name) for row in all_rows}, key=lambda x: x[1])
+        )
+        return RemediationDashboardView(
+            baseline_at=manifest.baseline_at,
+            total=len(all_rows),
+            reviewed_count=sum(row.candidate_key is not None for row in all_rows),
+            verifiable_count=sum(
+                row.candidate_kind in {"rss", "atom", "rest_api", "public_api", "sitemap"}
+                and row.acquisition_label.startswith("succeeded")
+                for row in all_rows
+            ),
+            html_count=sum(row.candidate_kind == "html" for row in all_rows),
+            policy_or_unknown_count=sum(
+                row.category in {"authentication_or_policy", "unknown"} for row in all_rows
+            ),
+            category_counts=tuple(
+                (key, label, counts[key]) for key, label in category_labels.items()
+            ),
+            providers=providers,
+            rows=filtered,
+        )
+
+    @staticmethod
+    def _remediation_conclusion_key(category: str, evidence) -> str:
+        if evidence is not None and evidence.fetch_outcome in {"succeeded", "no_change"}:
+            return "verified"
+        if category in {"authentication_or_policy", "rate_limited"} or (
+            evidence is not None and evidence.acquisition_outcome == "blocked"
+        ):
+            return "blocked"
+        return "pending"
+
+    @staticmethod
+    def _remediation_acquisition_label(evidence) -> str:
+        if evidence is None or evidence.acquisition_outcome is None:
+            return "尚未运行"
+        status = (
+            f" / HTTP {evidence.acquisition_http_status}"
+            if evidence.acquisition_http_status is not None
+            else ""
+        )
+        return f"{evidence.acquisition_outcome}{status}"
+
+    @staticmethod
+    def _remediation_content_label(evidence) -> str:
+        if evidence is None or evidence.content_outcome is None:
+            return "尚未运行"
+        completeness = (
+            f" / {evidence.field_completeness:.0%}"
+            if evidence.field_completeness is not None
+            else ""
+        )
+        return f"{evidence.content_outcome}{completeness}"
 
     def research_target(self, source_id: str) -> ResearchTargetView | None:
         source = self._session.get(SourceDefinitionRecord, source_id)
@@ -237,7 +407,11 @@ class DashboardQueryService:
                 roles=tuple(role_labels.get(r, "未知") for r in (c.roles or ())),
                 fields=tuple(c.fields or ()),
                 limitations=tuple(c.limitations or ()),
-                evidence=tuple(_public_evidence_url(value) for value in (c.evidence or ())),
+                evidence=tuple(
+                    safe
+                    for value in (c.evidence or ())
+                    if (safe := _public_evidence_url(value)) is not None
+                ),
                 sample_status=samples.get(c.sample_status, "未知"),
                 decision=c.decision,
                 decision_label=decisions.get(c.decision, "未知"),
@@ -457,7 +631,11 @@ class DashboardQueryService:
             auth_label=zh_label("auth_mode", provider.auth_mode),
             capabilities=tuple(provider.capabilities),
             required_env=tuple(provider.required_env),
-            evidence=tuple(_public_evidence_url(value) for value in provider.evidence),
+            evidence=tuple(
+                safe
+                for value in provider.evidence
+                if (safe := _public_evidence_url(value)) is not None
+            ),
             unlock_requirements=tuple(provider.unlock_requirements),
             notes=provider.notes,
             targets=target_rows,
@@ -662,7 +840,11 @@ class DashboardQueryService:
                         source.unlock_requirements or provider.unlock_requirements
                     ),
                     evidence=tuple(
-                        dict.fromkeys(_public_evidence_url(value) for value in evidence)
+                        dict.fromkeys(
+                            safe
+                            for value in evidence
+                            if (safe := _public_evidence_url(value)) is not None
+                        )
                     ),
                 )
             )
@@ -774,7 +956,9 @@ class DashboardQueryService:
         source_ids = [source.id for source in sources]
         methods_by_source: dict[str, list[SourceAccessMethodRecord]] = defaultdict(list)
         for method in self._session.scalars(
-            select(SourceAccessMethodRecord).where(SourceAccessMethodRecord.source_id.in_(source_ids))
+            select(SourceAccessMethodRecord).where(
+                SourceAccessMethodRecord.source_id.in_(source_ids)
+            )
         ):
             methods_by_source[method.source_id].append(method)
         risks = self._latest_risks(source_ids)
@@ -1014,7 +1198,11 @@ class DashboardQueryService:
             data_quality=record.data_quality,
             operating_cost=record.operating_cost,
             total=record.total,
-            evidence=tuple(_public_evidence_url(value) for value in record.evidence),
+            evidence=tuple(
+                safe
+                for value in record.evidence
+                if (safe := _public_evidence_url(value)) is not None
+            ),
             hard_block_reason=record.hard_block_reason,
             assessed_at=record.assessed_at,
         )

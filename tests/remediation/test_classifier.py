@@ -12,8 +12,17 @@ import pytest
         (404, "http_404", {}, "endpoint_changed"),
         (503, "http_503", {}, "network_transient"),
         (None, "timeout", {}, "network_transient"),
+        (None, "ConnectError", {}, "network_transient"),
+        (None, "dns_error", {}, "network_transient"),
+        (None, "tls_error", {}, "network_transient"),
         (None, "invalid_payload", {}, "endpoint_changed"),
         (200, None, {"sample_count": 0, "field_completeness": 0.0}, "content_incomplete"),
+        (
+            200,
+            None,
+            {"sample_count": 5, "missing_required_fields": ["title"]},
+            "content_incomplete",
+        ),
         (None, "unrecognized", {}, "unknown"),
     ],
 )

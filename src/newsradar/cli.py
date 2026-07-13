@@ -12,7 +12,12 @@ from typing import Annotated
 import httpx
 import typer
 
-from newsradar.db.models import OperationRunRecord
+from newsradar.db.models import (
+    OperationRunRecord,
+    SourceAcquisitionCandidateRecord,
+    SourceAcquisitionProbeRunRecord,
+    SourceProbeRunRecord,
+)
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.events.runtime import EventOperationHandler
@@ -147,6 +152,9 @@ def fetch_sources(
     max_items: Annotated[int | None, typer.Option(min=1)] = None,
     dry_run: Annotated[bool, typer.Option()] = False,
     wait: Annotated[bool, typer.Option("--wait/--no-wait")] = True,
+    remediation_content_probe_id: Annotated[
+        int | None, typer.Option("--remediation-content-probe-id", min=1)
+    ] = None,
 ) -> None:
     """Queue audited source fetches; only a Worker performs network work."""
     if trial and one_off:
@@ -154,6 +162,9 @@ def fetch_sources(
         raise typer.Exit(2)
     if trial and not approved:
         typer.echo("--trial cannot be used with --no-approved")
+        raise typer.Exit(2)
+    if remediation_content_probe_id is not None and (not trial or source_id is None):
+        typer.echo("Remediation content linkage requires --trial and one explicit source")
         raise typer.Exit(2)
     sources = load_source_tree(root)
     selected = [source for source in sources if source_id is None or source.id == source_id]
@@ -167,6 +178,15 @@ def fetch_sources(
         raise typer.Exit(2)
     if trial:
         with create_session() as session:
+            if remediation_content_probe_id is not None:
+                content_probe = session.get(SourceProbeRunRecord, remediation_content_probe_id)
+                if (
+                    content_probe is None
+                    or content_probe.source_id != source_id
+                    or content_probe.remediation_acquisition_probe_id is None
+                ):
+                    typer.echo("Remediation content probe is not linked to this source")
+                    raise typer.Exit(2)
             repository = SourceRepository(session)
             repository.sync(selected)
             snapshots = repository.latest_probe_snapshots([source.id for source in selected])
@@ -191,6 +211,11 @@ def fetch_sources(
                     dry_run=dry_run,
                     max_items=max_items,
                     trial=True,
+                    **(
+                        {"remediation_content_probe_id": remediation_content_probe_id}
+                        if remediation_content_probe_id is not None
+                        else {}
+                    ),
                     trigger="cli",
                 )
                 for source in candidates
@@ -481,7 +506,9 @@ def sync_sources(root: RootOption = Path("sources")) -> None:
     )
 
 
-async def _probe_sources(selected, persist: bool):
+async def _probe_sources(
+    selected, persist: bool, remediation_acquisition_probe_id: int | None = None
+):
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         results = await ProbeRunner(ProbeFactory(client)).probe_all(selected)
@@ -490,7 +517,10 @@ async def _probe_sources(selected, persist: bool):
             repository = SourceRepository(session)
             repository.sync(selected)
             for result in results.values():
-                repository.save_probe_result(result)
+                repository.save_probe_result(
+                    result,
+                    remediation_acquisition_probe_id=remediation_acquisition_probe_id,
+                )
             session.commit()
     return results
 
@@ -502,6 +532,9 @@ def probe_sources(
     all_sources: Annotated[bool, typer.Option("--all")] = False,
     persist: Annotated[bool, typer.Option("--persist/--no-persist")] = True,
     report_output: Annotated[Path | None, typer.Option("--report-output")] = None,
+    remediation_acquisition_probe_id: Annotated[
+        int | None, typer.Option("--remediation-acquisition-probe-id", min=1)
+    ] = None,
 ) -> None:
     sources = load_source_tree(root)
     if all_sources:
@@ -514,7 +547,27 @@ def probe_sources(
     else:
         typer.echo("Provide a source id or --all")
         raise typer.Exit(2)
-    results = asyncio.run(_probe_sources(selected, persist))
+    if remediation_acquisition_probe_id is not None:
+        if all_sources or source_id is None or len(selected) != 1 or not persist:
+            typer.echo("Remediation content linkage requires one persisted source probe")
+            raise typer.Exit(2)
+        with create_session() as session:
+            acquisition = session.get(
+                SourceAcquisitionProbeRunRecord, remediation_acquisition_probe_id
+            )
+            candidate = (
+                session.get(SourceAcquisitionCandidateRecord, acquisition.candidate_id)
+                if acquisition is not None
+                else None
+            )
+            if candidate is None or candidate.source_id != source_id:
+                typer.echo("Remediation acquisition probe does not belong to this source")
+                raise typer.Exit(2)
+    results = asyncio.run(
+        _probe_sources(selected, persist)
+        if remediation_acquisition_probe_id is None
+        else _probe_sources(selected, persist, remediation_acquisition_probe_id)
+    )
     for source in selected:
         result = results[source.id]
         typer.echo(
@@ -544,11 +597,13 @@ def snapshot_source_remediation(
     output: Annotated[Path, typer.Option("--output")] = Path(
         "reports/source-failure-remediation.md"
     ),
+    root: RootOption = Path("sources"),
 ) -> None:
-    """Write a read-only, immutable failure manifest for one UTC baseline."""
+    """Persist and write an immutable failure batch for one UTC baseline."""
     parsed_baseline = _parse_utc_baseline(baseline_at)
+    sources = load_source_tree(root)
     with create_session() as session:
-        manifest = RemediationRepository(session).manifest(parsed_baseline)
+        manifest = RemediationRepository(session).freeze_manifest(parsed_baseline, sources)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_remediation_report(manifest), encoding="utf-8")
     typer.echo(f"已写入 {len(manifest.entries)} 个失败来源的修复清单：{output}")
@@ -565,10 +620,14 @@ def report_source_remediation(
     """Regenerate the read-only remediation report for the given baseline."""
     parsed_baseline = _parse_utc_baseline(baseline_at)
     sources = load_source_tree(root)
-    with create_session() as session:
-        manifest = RemediationRepository(session).enriched_manifest(
-            parsed_baseline, sources, before_trial_count=16
-        )
+    try:
+        with create_session() as session:
+            manifest = RemediationRepository(session).enriched_manifest(parsed_baseline, sources)
+    except ValueError as error:
+        if str(error) != "remediation_batch_not_frozen":
+            raise
+        typer.echo("该基线尚未冻结；请先运行 newsradar sources remediate snapshot。", err=True)
+        raise typer.Exit(code=2) from error
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_remediation_report(manifest), encoding="utf-8")
     typer.echo(f"已写入 {len(manifest.entries)} 个失败来源的最终修复报告：{output}")

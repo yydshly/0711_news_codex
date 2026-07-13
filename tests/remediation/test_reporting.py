@@ -46,6 +46,8 @@ def test_report_contains_each_entry_without_query_or_fragment():
 
     report = render_remediation_report(manifest)
 
+    assert "本批强绑定试用验证：1" in report
+
     assert "alpha" in report
     assert "端点可能已变化" in report
     assert "https://example.test/feed" in report
@@ -57,3 +59,14 @@ def test_report_contains_each_entry_without_query_or_fragment():
     assert "succeeded / 5 条" in report
     assert "success / 5 条 / 100%" in report
     assert "试用抓取已验证" in report
+
+    unsafe = manifest.model_copy(
+        update={
+            "entries": (
+                manifest.entries[0].model_copy(
+                    update={"access_url": "https://user:secret@example.test/feed"}
+                ),
+            )
+        }
+    )
+    assert "user:secret" not in render_remediation_report(unsafe)

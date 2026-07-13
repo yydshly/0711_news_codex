@@ -136,9 +136,7 @@ def test_catalog_rows_include_list_metadata_without_detail_queries(query_service
     assert provider.auth_label == "无需认证"
     assert provider.capabilities == ("search",)
 
-    target = next(
-        row for row in query_service.targets() if row.source_id == "github-openai-python"
-    )
+    target = next(row for row in query_service.targets() if row.source_id == "github-openai-python")
     assert target.roles == ("discovery",)
     assert target.role_labels == ("发现",)
 
@@ -157,9 +155,7 @@ def test_details_contain_audited_fields_but_no_secret_values(query_service):
     assert target.risk is not None
 
 
-def test_provider_detail_loads_only_latest_three_capability_probes(
-    query_service, db_session
-):
+def test_provider_detail_loads_only_latest_three_capability_probes(query_service, db_session):
     from newsradar.db.models import ProviderProbeRunRecord
 
     for hour in range(13, 17):
@@ -357,9 +353,7 @@ def test_gap_groups_keep_all_restricted_platform_records_visible(
 ):
     groups = restricted_gap_query_service.gap_groups()
     platform_group = {
-        target.provider_name: group.availability
-        for group in groups
-        for target in group.targets
+        target.provider_name: group.availability for group in groups for target in group.targets
     }
 
     assert {
@@ -369,3 +363,15 @@ def test_gap_groups_keep_all_restricted_platform_records_visible(
         "TikTok": "manual_only",
         "LinkedIn": "unavailable",
     }.items() <= platform_group.items()
+
+
+def test_browser_evidence_url_fails_closed_for_non_public_schemes() -> None:
+    from newsradar.web.queries import _public_evidence_url
+
+    assert _public_evidence_url("postgresql://user:secret@localhost/database") is None
+    assert _public_evidence_url("file:///local/private/path") is None
+    assert _public_evidence_url("https://user:secret@example.test/feed") is None
+    assert (
+        _public_evidence_url("https://example.test/feed?token=secret#fragment")
+        == "https://example.test/feed"
+    )

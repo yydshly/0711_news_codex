@@ -18,7 +18,14 @@ _ENDPOINT_CODES = frozenset(
     {"invalid_payload", "invalid_feed", "unsupported_content_type", "schema_drift"}
 )
 _NETWORK_CODES = frozenset(
-    {"timeout", "connection_error", "dns_error", "tls_error", "source_timeout"}
+    {
+        "timeout",
+        "connection_error",
+        "connecterror",
+        "dns_error",
+        "tls_error",
+        "source_timeout",
+    }
 )
 
 
@@ -72,4 +79,9 @@ def explanation(category: FailureCategory) -> tuple[str, str]:
 def _incomplete_metrics(metrics: dict) -> bool:
     sample_count = metrics.get("sample_count")
     completeness = metrics.get("field_completeness")
-    return sample_count == 0 or (isinstance(completeness, (int, float)) and completeness < 0.60)
+    missing = metrics.get("missing_required_fields")
+    return (
+        sample_count == 0
+        or bool(missing)
+        or (isinstance(completeness, (int, float)) and completeness < 0.60)
+    )

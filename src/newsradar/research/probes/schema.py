@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import Protocol
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
@@ -76,6 +77,8 @@ class AcquisitionProbeResult(BaseModel):
     pagination_detected: bool | None = None
     cache_control: str | None = None
     rate_limit_remaining: int | None = None
+    retry_after_seconds: float | None = None
+    earliest_recheck_at: datetime | None = None
     blocked_condition: str | None = None
 
 
@@ -142,6 +145,9 @@ def with_http_evidence(
         for field in candidate.fields
         if any(getattr(sample, field, None) is not None for sample in result.samples)
     ]
+    retry_after_seconds = _retry_after_seconds(
+        response.headers.get("retry-after"), result.finished_at
+    )
     return result.model_copy(
         update={
             "http_status": response.status_code,
@@ -153,6 +159,12 @@ def with_http_evidence(
             "rate_limit_remaining": int(response.headers["x-ratelimit-remaining"])
             if response.headers.get("x-ratelimit-remaining", "").isdigit()
             else None,
+            "retry_after_seconds": retry_after_seconds,
+            "earliest_recheck_at": (
+                result.finished_at + timedelta(seconds=retry_after_seconds)
+                if retry_after_seconds is not None
+                else None
+            ),
             "pagination_detected": bool(result.metadata.get("pagination_detected")),
             "fields_present": fields,
             "field_completeness": len(fields) / len(candidate.fields),
@@ -165,6 +177,27 @@ def with_http_evidence(
             "sample_count": len(result.samples),
         }
     )
+
+
+def _retry_after_seconds(value: str | None, reference: datetime) -> float | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if stripped.isdigit():
+        seconds = int(stripped)
+        return float(seconds) if seconds <= _MAX_RETRY_AFTER_SECONDS else None
+    try:
+        parsed = parsedate_to_datetime(stripped)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    reference = reference if reference.tzinfo is not None else reference.replace(tzinfo=UTC)
+    seconds = max(0.0, (parsed - reference).total_seconds())
+    return seconds if seconds <= _MAX_RETRY_AFTER_SECONDS else None
+
+
+_MAX_RETRY_AFTER_SECONDS = 31 * 24 * 60 * 60
 
 
 _SENSITIVE_KEY = re.compile(

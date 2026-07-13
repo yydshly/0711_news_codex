@@ -9,10 +9,15 @@ from time import monotonic, sleep
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import OperationRunRecord
+from newsradar.db.models import (
+    OperationRunRecord,
+    SourceRemediationBatchRecord,
+    SourceRemediationMemberRecord,
+)
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.retry_policy import is_retryable_error
 from newsradar.operations.schema import OperationStatus, OperationType
+from newsradar.remediation.evidence_links import is_valid_remediation_content_link
 from newsradar.settings import Settings, get_settings
 
 
@@ -43,8 +48,18 @@ class OperationCommandService:
         max_items: int | None = None,
         one_off: bool = False,
         trial: bool = False,
+        remediation_content_probe_id: int | None = None,
         trigger: str,
     ) -> int:
+        if remediation_content_probe_id is not None:
+            if not trial:
+                raise ValueError("remediation_content_link_requires_trial")
+            if not is_valid_remediation_content_link(
+                self.session,
+                source_id=source_id,
+                content_probe_id=remediation_content_probe_id,
+            ):
+                raise ValueError("invalid_remediation_content_link")
         deadline_at = self._utcnow() + timedelta(seconds=self._settings.operation_timeout_seconds)
         record = OperationRepository(self.session).enqueue(
             OperationType.FETCH,
@@ -55,6 +70,11 @@ class OperationCommandService:
                 "max_items": max_items,
                 "one_off": one_off,
                 "trial": trial,
+                **(
+                    {"remediation_content_probe_id": remediation_content_probe_id}
+                    if remediation_content_probe_id is not None
+                    else {}
+                ),
                 "deadline_at": deadline_at.isoformat(),
             },
             trigger=trigger,
@@ -74,11 +94,24 @@ class OperationCommandService:
     ) -> int:
         if not source_id or not candidate_key or original_probe_id <= 0:
             raise ValueError("invalid_source_remediation_scope")
+        member = self.session.scalar(
+            select(SourceRemediationMemberRecord)
+            .join(
+                SourceRemediationBatchRecord,
+                SourceRemediationBatchRecord.id == SourceRemediationMemberRecord.batch_id,
+            )
+            .where(
+                SourceRemediationBatchRecord.baseline_at == baseline_at,
+                SourceRemediationMemberRecord.source_id == source_id,
+                SourceRemediationMemberRecord.original_probe_id == original_probe_id,
+            )
+        )
+        if member is None:
+            raise ValueError("source_not_in_frozen_remediation_batch")
         if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
             self.session.execute(
                 text(
-                    "SELECT pg_advisory_xact_lock("
-                    "hashtext('newsradar:source-remediation-enqueue'))"
+                    "SELECT pg_advisory_xact_lock(hashtext('newsradar:source-remediation-enqueue'))"
                 )
             )
         active = self.session.scalar(

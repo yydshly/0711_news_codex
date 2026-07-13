@@ -1,3 +1,6 @@
+import asyncio
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 
@@ -209,7 +212,11 @@ async def test_unreviewed_cross_domain_redirect_is_blocked_before_following() ->
         transport=httpx.MockTransport(responder), trust_env=False, follow_redirects=False
     ) as client:
         with pytest.raises(UnsafeProbeUrl):
-            await safe_get(HttpPolicy(client), candidate("https://example.test/feed"), "https://example.test/feed")
+            await safe_get(
+                HttpPolicy(client),
+                candidate("https://example.test/feed"),
+                "https://example.test/feed",
+            )
 
     assert requests == ["https://example.test/feed"]
 
@@ -236,6 +243,61 @@ async def test_sensitive_query_in_every_redirect_form_stops_before_next_request(
     assert result.outcome.value == "blocked"
     assert result.error_code == "unsafe_url"
     assert requests == ["https://example.test/feed"]
+
+
+@pytest.mark.asyncio
+async def test_safe_get_applies_one_deadline_to_the_entire_redirect_chain(monkeypatch) -> None:
+    from newsradar.research.probes import safe_http
+
+    async def responder(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.02)
+        return httpx.Response(302, headers={"location": "/next"})
+
+    monkeypatch.setattr(safe_http, "_TOTAL_PROBE_TIMEOUT_SECONDS", 0.01)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(responder), trust_env=False, follow_redirects=False
+    ) as client:
+        with pytest.raises(httpx.TimeoutException, match="research_total_timeout"):
+            await safe_get(
+                HttpPolicy(client),
+                candidate("https://example.test/feed"),
+                "https://example.test/feed",
+            )
+
+
+def test_http_evidence_records_retry_after_and_earliest_recheck() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    acquisition = candidate("https://example.test/feed")
+    finished_at = datetime(2026, 7, 13, 12, tzinfo=UTC)
+    result = probe_result(
+        source,
+        acquisition,
+        AcquisitionProbeOutcome.BLOCKED,
+        "触发限流。",
+    ).model_copy(update={"finished_at": finished_at})
+    request = httpx.Request("GET", "https://example.test/feed")
+    response = httpx.Response(429, request=request, headers={"Retry-After": "120"}, content=b"")
+
+    enriched = with_http_evidence(result, response, acquisition)
+
+    assert enriched.retry_after_seconds == 120
+    assert enriched.earliest_recheck_at == datetime(2026, 7, 13, 12, 2, tzinfo=UTC)
+
+
+def test_http_evidence_rejects_unbounded_retry_after() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    acquisition = candidate("https://example.test/feed")
+    result = probe_result(source, acquisition, AcquisitionProbeOutcome.BLOCKED, "触发限流。")
+    response = httpx.Response(
+        429,
+        request=httpx.Request("GET", "https://example.test/feed"),
+        headers={"Retry-After": "999999999999999999999999"},
+    )
+
+    enriched = with_http_evidence(result, response, acquisition)
+
+    assert enriched.retry_after_seconds is None
+    assert enriched.earliest_recheck_at is None
 
 
 @pytest.mark.asyncio

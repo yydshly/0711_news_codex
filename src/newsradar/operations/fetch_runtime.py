@@ -13,6 +13,7 @@ from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import ErrorCategory, OperationStatus, OperationType
 from newsradar.operations.worker import OperationResult
+from newsradar.remediation.evidence_links import is_valid_remediation_content_link
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.schema import SourceDefinition
 
@@ -38,9 +39,7 @@ class FetchOperationHandler:
     def production(cls, sources: Iterable[SourceDefinition]) -> FetchOperationHandler:
         return cls(sources, _execute_production_fetch)
 
-    def __call__(
-        self, lease: OperationLease, checkpoint: Callable[[str], None]
-    ) -> OperationResult:
+    def __call__(self, lease: OperationLease, checkpoint: Callable[[str], None]) -> OperationResult:
         if lease.operation_type != OperationType.FETCH.value:
             return OperationResult(
                 status=OperationStatus.FAILED,
@@ -108,7 +107,7 @@ def _result_from_summary(summary: SourceFetchSummary) -> OperationResult:
         "items_received": result.items_received,
         "items_inserted": result.items_inserted,
     }
-    if result.outcome == FetchOutcome.SUCCEEDED:
+    if result.outcome in {FetchOutcome.SUCCEEDED, FetchOutcome.NO_CHANGE}:
         return OperationResult(result_summary=summary_data)
     if result.outcome in {FetchOutcome.PARTIAL, FetchOutcome.BLOCKED}:
         return OperationResult(
@@ -170,6 +169,27 @@ def _execute_production_fetch(
 
     async def run() -> SourceFetchSummary:
         with create_session() as session:
+            remediation_probe_id = requested_scope.get("remediation_content_probe_id")
+            if remediation_probe_id is not None and (
+                not bool(requested_scope.get("trial", False))
+                or isinstance(remediation_probe_id, bool)
+                or not isinstance(remediation_probe_id, int)
+                or not is_valid_remediation_content_link(
+                    session,
+                    source_id=source.id,
+                    content_probe_id=remediation_probe_id,
+                )
+            ):
+                error_code = "invalid_remediation_content_link"
+                return SourceFetchSummary(
+                    source.id,
+                    FetchResult(
+                        outcome=FetchOutcome.BLOCKED,
+                        error_code=error_code,
+                        error_message="修复试用抓取缺少与当前来源匹配的完整证据链。",
+                    ),
+                    error_code=error_code,
+                )
             if bool(requested_scope.get("trial", False)):
                 decision = evaluate_trial_eligibility(
                     source, SourceRepository(session).latest_probe_snapshot(source.id)
@@ -190,8 +210,7 @@ def _execute_production_fetch(
                 return await IngestionService(session, FetcherFactory(policy)).fetch_source(
                     source,
                     approved_only=not bool(
-                        requested_scope.get("one_off", False)
-                        or requested_scope.get("trial", False)
+                        requested_scope.get("one_off", False) or requested_scope.get("trial", False)
                     ),
                     credential_free_only=bool(requested_scope.get("trial", False)),
                     max_items=(

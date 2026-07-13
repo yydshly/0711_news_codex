@@ -5,31 +5,77 @@
 
 {% block content %}
 <section class="panel intro-panel">
-  <p class="eyebrow">只读审计视图</p>
-  <h2>失败来源的候选获取方式</h2>
-  <p>本页只展示审核结论和最近研究探测；不会发起网络抓取，也不会启用来源。</p>
+  <p class="eyebrow">固定批次 · 只读审计</p>
+  <h2>失败来源的修复证据链</h2>
+  <p>本页只展示最近一次已冻结的失败批次，不会把目录中的其他来源混入，也不会因浏览页面而发起网络请求。</p>
+  {% if dashboard and dashboard.baseline_at %}<p>批次基线：{{ dashboard.baseline_at.isoformat() }}</p>{% endif %}
 </section>
+
+{% if dashboard and dashboard.baseline_at %}
+<section class="metric-grid" aria-label="修复批次指标">
+  <article class="metric-card"><span>固定失败来源</span><strong>{{ dashboard.total }}</strong><small>批次成员不会随 YAML 变化</small></article>
+  <article class="metric-card"><span>已审核候选</span><strong>{{ dashboard.reviewed_count }}</strong><small>已有候选获取方式</small></article>
+  <article class="metric-card"><span>RSS/API 可验证</span><strong>{{ dashboard.verifiable_count }}</strong><small>候选探测已成功</small></article>
+  <article class="metric-card"><span>HTML 候选</span><strong>{{ dashboard.html_count }}</strong><small>只研究，不自动抓取</small></article>
+  <article class="metric-card"><span>政策限制或未知</span><strong>{{ dashboard.policy_or_unknown_count }}</strong><small>需要人工处理</small></article>
+</section>
+
+<section class="panel">
+  <h2>六类失败原因</h2>
+  <div class="tag-list">
+  {% for key, label, count in dashboard.category_counts %}
+    <span>{{ label }}：{{ count }}</span>
+  {% endfor %}
+  </div>
+</section>
+
+<form class="panel filter-form" method="get" action="/remediation" aria-label="筛选修复来源">
+  <label>失败分类
+    <select name="category">
+      <option value="">全部分类</option>
+      {% for key, label, count in dashboard.category_counts %}<option value="{{ key }}"{% if selected_category == key %} selected{% endif %}>{{ label }}（{{ count }}）</option>{% endfor %}
+    </select>
+  </label>
+  <label>Provider
+    <select name="provider_id">
+      <option value="">全部 Provider</option>
+      {% for key, label in dashboard.providers %}<option value="{{ key }}"{% if selected_provider == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>当前结论
+    <select name="conclusion">
+      <option value="">全部结论</option>
+      <option value="verified"{% if selected_conclusion == 'verified' %} selected{% endif %}>试用抓取已验证</option>
+      <option value="blocked"{% if selected_conclusion == 'blocked' %} selected{% endif %}>受限或阻塞</option>
+      <option value="pending"{% if selected_conclusion == 'pending' %} selected{% endif %}>等待验证</option>
+    </select>
+  </label>
+  <div class="filter-actions"><button type="submit">应用筛选</button><a href="/remediation">清除</a></div>
+</form>
+
 <section class="panel table-panel">
-  <div class="table-scroll" role="region" aria-label="来源修复候选" tabindex="0">
+  <div class="table-scroll" role="region" aria-label="固定来源修复批次" tabindex="0">
     <table>
-      <thead><tr><th>来源</th><th>候选方式</th><th>获取类型</th><th>认证</th><th>最近结果</th><th>结论</th></tr></thead>
+      <thead><tr><th>来源</th><th>原探测</th><th>分类与原因</th><th>候选方式</th><th>候选探测</th><th>内容探测</th><th>结论与下一步</th></tr></thead>
       <tbody>
-      {% for target in targets %}
-        {% for candidate in target.candidates %}
+      {% for row in dashboard.rows %}
         <tr>
-          <td><a href="/research/targets/{{ target.source_id }}">{{ target.name }}</a></td>
-          <td>{{ candidate.key }}</td><td>{{ candidate.kind }}</td>
-          <td>{{ candidate.authentication_label }}</td><td>{{ candidate.latest_probe_label }}</td>
-          <td>{{ candidate.decision_label }}</td>
+          <td><a href="/research/targets/{{ row.source_id }}">{{ row.source_name }}</a><br><small>{{ row.provider_name }}</small></td>
+          <td>#{{ row.original_probe_id }}</td>
+          <td><strong>{{ row.category_label }}</strong><br><small>{{ row.reason_zh }}</small></td>
+          <td>{{ row.candidate_key or '尚未登记' }}{% if row.candidate_kind %}<br><small>{{ row.candidate_kind }}</small>{% endif %}</td>
+          <td>{{ row.acquisition_label }}</td>
+          <td>{{ row.content_label }}</td>
+          <td>{{ row.conclusion }}<br><small>下一步：{{ row.next_action_zh }}</small></td>
         </tr>
-        {% else %}
-        <tr><td><a href="/research/targets/{{ target.source_id }}">{{ target.name }}</a></td><td colspan="5">尚未登记候选获取方式</td></tr>
-        {% endfor %}
       {% else %}
-        <tr><td colspan="6">暂无已同步的来源研究记录。</td></tr>
+        <tr><td colspan="7">没有符合当前筛选条件的批次成员。</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
 </section>
+{% else %}
+<section class="panel"><p class="empty-state">尚未生成固定修复批次。请先运行来源修复快照命令。</p></section>
+{% endif %}
 {% endblock %}

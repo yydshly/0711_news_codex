@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import time
 from urllib.parse import urljoin, urlsplit
@@ -27,6 +28,7 @@ _PROBE_HEADERS = {
     "Accept": "application/json, application/feed+json, application/xml, text/xml",
 }
 _OWNED_SAFE_CLIENTS: WeakSet[httpx.AsyncClient] = WeakSet()
+_TOTAL_PROBE_TIMEOUT_SECONDS = 20.0
 
 
 def new_safe_probe_client() -> httpx.AsyncClient:
@@ -88,6 +90,17 @@ def _safe_client(policy: HttpPolicy) -> httpx.AsyncClient:
 
 async def safe_get(policy: HttpPolicy, candidate: AcquisitionCandidate, url: str) -> httpx.Response:
     """A bounded no-credential GET with explicit validated redirect hops."""
+    try:
+        async with asyncio.timeout(_TOTAL_PROBE_TIMEOUT_SECONDS):
+            return await _safe_get_redirect_chain(policy, candidate, url)
+    except TimeoutError as error:
+        raise httpx.TimeoutException("research_total_timeout") from error
+
+
+async def _safe_get_redirect_chain(
+    policy: HttpPolicy, candidate: AcquisitionCandidate, url: str
+) -> httpx.Response:
+    """Execute all redirect hops within the caller's single total deadline."""
     network_preflight(candidate)
     client = _safe_client(policy)
     started = time.perf_counter()
@@ -95,9 +108,7 @@ async def safe_get(policy: HttpPolicy, candidate: AcquisitionCandidate, url: str
     evidence_host = urlsplit(str(candidate.evidence[0])).hostname
     if evidence_host is None:
         raise UnsafeProbeUrl()
-    allowed_hosts = frozenset(
-        {evidence_host.lower(), *candidate.allowed_redirect_hosts}
-    )
+    allowed_hosts = frozenset({evidence_host.lower(), *candidate.allowed_redirect_hosts})
     for _ in range(6):
         _safe_url(current, client, allowed_hosts)
         # Build a standalone request: AsyncClient.build_request() merges caller

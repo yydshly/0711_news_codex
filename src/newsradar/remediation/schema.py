@@ -24,6 +24,9 @@ class RemediationEvidence(BaseModel):
     candidate_kind: str | None = None
     acquisition_outcome: str | None = None
     acquisition_sample_count: int | None = None
+    acquisition_http_status: int | None = None
+    retry_after_seconds: float | None = None
+    earliest_recheck_at: datetime | None = None
     content_outcome: str | None = None
     content_sample_count: int | None = None
     field_completeness: float | None = None

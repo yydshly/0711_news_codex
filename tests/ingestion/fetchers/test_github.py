@@ -82,3 +82,59 @@ async def test_github_uses_cursor_and_retains_prerelease_with_state_marker() -> 
         )
     assert route.called
     assert result.items[0].raw_payload["release_state"] == "prerelease"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_github_ignores_cursor_that_no_longer_matches_audited_repository_path() -> None:
+    data = valid_source()
+    data["access_methods"][0].update(
+        {"kind": "rest_api", "url": "https://api.github.com/repos/org/repo/releases"}
+    )
+    source = SourceDefinition.model_validate(data)
+    audited = respx.get("https://api.github.com/repos/org/repo/releases").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    alternate = respx.get("https://api.github.com/repositories/123/releases?page=2").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    async with httpx.AsyncClient() as client:
+        await GitHubFetcher(HttpPolicy(client)).fetch(
+            source,
+            source.access_methods[0],
+            FetchState(cursor="https://api.github.com/repositories/123/releases?page=2"),
+            5,
+        )
+
+    assert audited.called
+    assert not alternate.called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "http://api.github.com/repos/org/repo/releases?page=2",
+        "https://user:secret@api.github.com/repos/org/repo/releases?page=2",
+        "https://api.github.com:444/repos/org/repo/releases?page=2",
+        "https://api.github.com/repos/org/repo/releases?page=2&token=secret",
+    ],
+)
+@respx.mock
+async def test_github_ignores_cursor_outside_strict_audited_boundary(cursor: str) -> None:
+    data = valid_source()
+    data["access_methods"][0].update(
+        {"kind": "rest_api", "url": "https://api.github.com/repos/org/repo/releases"}
+    )
+    source = SourceDefinition.model_validate(data)
+    audited = respx.get("https://api.github.com/repos/org/repo/releases").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    async with httpx.AsyncClient() as client:
+        await GitHubFetcher(HttpPolicy(client)).fetch(
+            source, source.access_methods[0], FetchState(cursor=cursor), 5
+        )
+
+    assert audited.called

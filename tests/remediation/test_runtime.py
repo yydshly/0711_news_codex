@@ -112,6 +112,10 @@ def test_worker_runs_remediation_and_persists_research_probe_without_raw_item() 
         assert (
             session.scalar(select(func.count()).select_from(SourceAcquisitionProbeRunRecord)) == 1
         )
+        stored = session.scalar(select(SourceAcquisitionProbeRunRecord))
+        operation_id = session.scalar(select(SourceAcquisitionProbeRunRecord.operation_run_id))
+        assert operation_id is not None
+        assert stored.original_probe_id == original.id
         assert session.scalar(select(func.count()).select_from(RawItemRecord)) == 0
 
 

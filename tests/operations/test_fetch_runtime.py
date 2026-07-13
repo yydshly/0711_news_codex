@@ -273,6 +273,41 @@ def test_trial_fetch_worker_blocks_ineligible_latest_probe_before_creating_fetch
         assert record.error_code == "eligibility_trial_no_probe"
 
 
+def test_trial_fetch_worker_revalidates_remediation_evidence_before_fetcher(monkeypatch) -> None:
+    from newsradar.operations.fetch_runtime import FetchOperationHandler
+    from newsradar.sources.repository import SourceRepository
+
+    with _session() as db:
+        source = _source()
+        SourceRepository(db).sync([source])
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH,
+            {
+                "source_id": source.id,
+                "trial": True,
+                "remediation_content_probe_id": 999,
+            },
+        )
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.create_session", lambda: nullcontext(db)
+        )
+        monkeypatch.setattr(
+            "newsradar.operations.fetch_runtime.FetcherFactory",
+            lambda _policy: (_ for _ in ()).throw(
+                AssertionError("invalid evidence must be blocked before creating a fetcher")
+            ),
+        )
+
+        Worker(OperationRepository(db), "worker-a").run_once(
+            FetchOperationHandler.production([source])
+        )
+
+        record = db.get(OperationRunRecord, operation.id)
+        assert record is not None
+        assert record.status == OperationStatus.PARTIAL
+        assert record.error_code == "invalid_remediation_content_link"
+
+
 def test_trial_fetch_worker_blocks_credentials_access_before_creating_fetcher(monkeypatch) -> None:
     from newsradar.operations.fetch_runtime import FetchOperationHandler
     from newsradar.sources.repository import SourceRepository
@@ -490,6 +525,7 @@ def test_trial_fetch_worker_uses_public_method_when_credential_method_has_priori
             "https://source-a.test/public-feed",
         ]
         assert record is not None
+        assert record.status == OperationStatus.SUCCEEDED
 
 
 def test_trial_fetch_worker_uses_header_safe_method_when_sensitive_method_has_priority(

@@ -246,6 +246,33 @@ def test_repository_reads_the_latest_probe_snapshot() -> None:
         assert snapshot.finished_at == finished_at.replace(tzinfo=None)
 
 
+def test_repository_persists_missing_required_fields_metric() -> None:
+    source = _source()
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        repository = SourceRepository(session)
+        repository.sync([source])
+        finished_at = datetime(2026, 7, 13, tzinfo=UTC)
+        record = repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="rss",
+                access_url="https://www.anthropic.com/news/rss.xml",
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=finished_at,
+                finished_at=finished_at,
+                sample_count=1,
+                field_completeness=0.5,
+                samples=[ProbeSample(external_id="1", title="Release")],
+                suggested_status="candidate",
+                reason="partial",
+            )
+        )
+
+        assert record.metrics["missing_required_fields"] == ["canonical_url"]
+
+
 def test_repository_uses_the_latest_completed_probe_and_unions_sample_fields() -> None:
     source = _source()
     engine = create_engine("sqlite+pysqlite:///:memory:")

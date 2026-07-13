@@ -5,7 +5,7 @@ from typer.testing import CliRunner
 from newsradar.cli import app
 
 
-def test_sources_remediate_exposes_read_only_snapshot_command() -> None:
+def test_sources_remediate_exposes_explicit_snapshot_and_read_only_report_commands() -> None:
     result = CliRunner().invoke(app, ["sources", "remediate", "--help"])
 
     assert result.exit_code == 0

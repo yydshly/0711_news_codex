@@ -54,9 +54,7 @@ class SourceRemediationHandler:
     ) -> SourceRemediationHandler:
         return cls(sources, create_session)
 
-    def __call__(
-        self, lease: OperationLease, checkpoint: Callable[[str], None]
-    ) -> OperationResult:
+    def __call__(self, lease: OperationLease, checkpoint: Callable[[str], None]) -> OperationResult:
         if lease.operation_type != OperationType.SOURCE_REMEDIATION.value:
             return _failed("unsupported_operation_type", "修复 Worker 只处理来源修复操作。")
         source_id = lease.requested_scope.get("source_id")
@@ -122,6 +120,8 @@ class SourceRemediationHandler:
         with self._create_session() as session:
             SourceRepository(session).save_acquisition_probe_run(
                 candidate_id=candidate_record_id,
+                operation_run_id=lease.operation_id,
+                original_probe_id=original_probe_id,
                 started_at=result.started_at,
                 completed_at=result.finished_at,
                 outcome=result.outcome.value,
@@ -132,6 +132,8 @@ class SourceRemediationHandler:
                 latest_published_at=result.latest_published_at,
                 schema_fingerprint=result.schema_fingerprint,
                 error_code=result.error_code,
+                retry_after_seconds=result.retry_after_seconds,
+                earliest_recheck_at=result.earliest_recheck_at,
                 details=result.model_dump(mode="json"),
             )
             session.commit()

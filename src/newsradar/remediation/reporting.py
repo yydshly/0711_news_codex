@@ -9,6 +9,10 @@ from .schema import RemediationManifest
 def render_remediation_report(manifest: RemediationManifest) -> str:
     """Render a public, Chinese report without query, fragment, or credential data."""
     counts = Counter(entry.category.value for entry in manifest.entries)
+    strongly_verified = sum(
+        entry.evidence is not None and entry.evidence.fetch_outcome in {"succeeded", "no_change"}
+        for entry in manifest.entries
+    )
     lines = [
         "# 来源失败修复报告",
         "",
@@ -16,6 +20,7 @@ def render_remediation_report(manifest: RemediationManifest) -> str:
         f"固定失败 Target 数：{len(manifest.entries)}",
         f"修复前可试用来源：{_count(manifest.before_trial_count)}",
         f"修复后可试用来源：{_count(manifest.after_trial_count)}",
+        f"本批强绑定试用验证：{strongly_verified}",
         "",
         "## 分类汇总",
         "",
@@ -67,7 +72,17 @@ def _acquisition(evidence) -> str:
     if evidence is None or evidence.acquisition_outcome is None:
         return "尚未运行"
     count = evidence.acquisition_sample_count
-    return f"{evidence.acquisition_outcome} / {count if count is not None else 0} 条"
+    status = (
+        f" / HTTP {evidence.acquisition_http_status}"
+        if evidence.acquisition_http_status is not None
+        else ""
+    )
+    retry = (
+        f" / 最早复查 {evidence.earliest_recheck_at.isoformat()}"
+        if evidence.earliest_recheck_at is not None
+        else ""
+    )
+    return f"{evidence.acquisition_outcome} / {count if count is not None else 0} 条{status}{retry}"
 
 
 def _content(evidence) -> str:
@@ -75,9 +90,7 @@ def _content(evidence) -> str:
         return "尚未运行"
     count = evidence.content_sample_count if evidence.content_sample_count is not None else 0
     completeness = (
-        f"{evidence.field_completeness:.0%}"
-        if evidence.field_completeness is not None
-        else "未知"
+        f"{evidence.field_completeness:.0%}" if evidence.field_completeness is not None else "未知"
     )
     return f"{evidence.content_outcome} / {count} 条 / {completeness}"
 
@@ -98,4 +111,11 @@ def _public_url(value: str | None) -> str:
     if not value:
         return "—"
     parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return "—"
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))

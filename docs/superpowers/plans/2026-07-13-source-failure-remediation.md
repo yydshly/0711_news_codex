@@ -357,7 +357,9 @@ newsradar sources remediate retry <operation-id> --wait
 newsradar sources remediate report --baseline-at <UTC> --output reports/source-failure-remediation.md
 ```
 
-snapshot/report 只读；queue 只创建单 Target 操作；retry 只接受一次网络临时失败。`--wait` 超时只退出等待，不取消 Worker 操作。
+snapshot 显式持久化并冻结不可变批次；report 只读取已经冻结的批次，不得隐式写库。
+queue 只创建单 Target 操作；retry 只接受一次网络临时失败。`--wait` 超时只退出等待，
+不取消 Worker 操作。
 
 - [ ] **Step 4: 实现 `/remediation` 只读页面**
 

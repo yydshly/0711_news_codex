@@ -522,19 +522,32 @@ def create_app(service_factory: ServiceFactory | None = None) -> FastAPI:
         )
 
     @app.get("/remediation", response_class=HTMLResponse)
-    def remediation_console(request: Request) -> HTMLResponse:
-        """Read-only view of candidates used to repair failed source probes."""
+    def remediation_console(
+        request: Request,
+        category: str | None = Query(default=None),
+        provider_id: str | None = Query(default=None),
+        conclusion: str | None = Query(default=None),
+    ) -> HTMLResponse:
+        """Read-only view of the newest immutable failed-source batch."""
         result, error_response = research_query_safely(
-            request, lambda service: service.research_targets()
+            request,
+            lambda service: service.remediation_dashboard(
+                category=category,
+                provider_id=provider_id,
+                conclusion=conclusion,
+            ),
         )
         if error_response is not None:
             return error_response
-        targets, latest_probe_at = result or ([], None)
+        dashboard, latest_probe_at = result or (None, None)
         return templates.TemplateResponse(
             request=request,
             name="remediation.html",
             context={
-                "targets": targets,
+                "dashboard": dashboard,
+                "selected_category": category or "",
+                "selected_provider": provider_id or "",
+                "selected_conclusion": conclusion or "",
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": latest_probe_at,

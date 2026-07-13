@@ -164,6 +164,7 @@ class GapGroup:
     target_count: int
     targets: tuple[GapTarget, ...]
 
+
 @dataclass(frozen=True, slots=True)
 class ResearchCandidateView:
     key: str
@@ -186,6 +187,7 @@ class ResearchCandidateView:
     latest_probe_at: datetime | None = None
     field_completeness: float | None = None
 
+
 @dataclass(frozen=True, slots=True)
 class ResearchTargetView:
     source_id: str
@@ -203,3 +205,35 @@ class ResearchTargetView:
     conclusion: str | None
     no_fallback_reason: str | None
     candidates: tuple[ResearchCandidateView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RemediationRowView:
+    source_id: str
+    source_name: str
+    provider_id: str
+    provider_name: str
+    original_probe_id: int
+    category: str
+    category_label: str
+    reason_zh: str
+    next_action_zh: str
+    candidate_key: str | None
+    candidate_kind: str | None
+    acquisition_label: str
+    content_label: str
+    conclusion: str
+    conclusion_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class RemediationDashboardView:
+    baseline_at: datetime | None
+    total: int
+    reviewed_count: int
+    verifiable_count: int
+    html_count: int
+    policy_or_unknown_count: int
+    category_counts: tuple[tuple[str, str, int], ...]
+    providers: tuple[tuple[str, str], ...]
+    rows: tuple[RemediationRowView, ...]

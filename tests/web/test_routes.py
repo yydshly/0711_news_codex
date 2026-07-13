@@ -228,7 +228,7 @@ class FakeDashboardService:
                 reason_raw="ok",
                 suggested_status="active",
                 suggested_status_label="启用",
-            )
+            ),
         ]
         if filters and filters.get("probe_type"):
             return [row for row in rows if row.probe_type == filters["probe_type"]]
@@ -347,8 +347,8 @@ def test_dashboard_metric_counts_equal_real_target_drilldowns(db_session):
     assert dashboard.status_code == free_direct.status_code == three_success.status_code == 200
     assert "免费直接覆盖</span><strong>1</strong>" in dashboard.text
     assert "连续三轮成功</span><strong>1</strong>" in dashboard.text
-    assert "Target 列表</h2></div><span class=\"scope-label\">1 条" in free_direct.text
-    assert "Target 列表</h2></div><span class=\"scope-label\">1 条" in three_success.text
+    assert 'Target 列表</h2></div><span class="scope-label">1 条' in free_direct.text
+    assert 'Target 列表</h2></div><span class="scope-label">1 条' in three_success.text
 
 
 def test_dashboard_calls_out_missing_probe_history():
@@ -414,9 +414,7 @@ def _response_for_database_error(error: Exception, path: str = "/sources"):
 
 
 def test_unavailable_database_renders_safe_command_and_failed_status():
-    error = OperationalError(
-        "connection has password=do-not-leak", {}, Exception("secret")
-    )
+    error = OperationalError("connection has password=do-not-leak", {}, Exception("secret"))
 
     response = _response_for_database_error(error)
 
@@ -463,9 +461,7 @@ def test_other_programming_error_renders_generic_safe_failure():
 
 
 def test_provider_list_uses_safe_database_error_boundary():
-    error = OperationalError(
-        "connection has password=do-not-leak", {}, Exception("secret")
-    )
+    error = OperationalError("connection has password=do-not-leak", {}, Exception("secret"))
 
     response = _response_for_database_error(error, "/providers")
 
@@ -499,16 +495,14 @@ def test_static_shell_assets_preserve_accessible_navigation(client: TestClient):
     assert shell.status_code == 200
     assert css.status_code == 200
     assert javascript.status_code == 200
-    assert 'href="http://testserver/static/styles.css?v=20260711-2"' in shell.text
+    assert 'href="http://testserver/static/styles.css?v=20260713-1"' in shell.text
     assert ":focus-visible" in css.text
     assert "@media (max-width: 760px)" in css.text
     assert "aria-expanded" in javascript.text
 
 
 def test_provider_filter_is_forwarded_and_preserved(client, fake_service):
-    response = client.get(
-        "/providers?availability=requires_payment&cost_tier=paid&q=%20X%20"
-    )
+    response = client.get("/providers?availability=requires_payment&cost_tier=paid&q=%20X%20")
 
     assert response.status_code == 200
     assert fake_service.provider_filters == {
@@ -647,8 +641,7 @@ def test_catalog_tables_contain_wide_tables_inside_their_scroll_region(client):
     assert ".catalog-page > * { min-width: 0; }" in css.text
     assert ".catalog-table { min-width: 0; max-width: 100%; }" in css.text
     assert (
-        ".table-scroll { width: 100%; max-width: 100%; min-width: 0; "
-        "overflow-x: auto; }"
+        ".table-scroll { width: 100%; max-width: 100%; min-width: 0; overflow-x: auto; }"
     ) in css.text
 
 
@@ -675,9 +668,9 @@ def test_probe_page_visibly_distinguishes_probe_types(client, fake_service):
         "只确认平台能力，不代表获取到内容",
     ):
         assert text in response.text
-    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[
-        1
-    ].split("</tr>", 1)[0]
+    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[1].split(
+        "</tr>", 1
+    )[0]
     assert "只确认平台能力，不代表获取到内容" in capability_row
     assert "&lt;payment required&gt;" in response.text
     assert '<th scope="col">完整度</th>' not in response.text
@@ -787,20 +780,18 @@ def test_probe_page_shows_suggested_status_for_both_probe_types(client):
 
     assert response.status_code == 200
     assert '<th scope="col">建议状态</th>' in response.text
-    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[
-        1
-    ].split("</tr>", 1)[0]
-    content_row = response.text.split('class="probe-badge probe-content"', 1)[1].split(
+    capability_row = response.text.split('class="probe-badge probe-capability"', 1)[1].split(
         "</tr>", 1
     )[0]
+    content_row = response.text.split('class="probe-badge probe-content"', 1)[1].split("</tr>", 1)[
+        0
+    ]
     assert "需要付费" in capability_row
     assert "启用" in content_row
 
 
 def test_probe_and_gap_pages_use_safe_database_error_boundary():
-    error = OperationalError(
-        "connection has password=do-not-leak", {}, Exception("secret")
-    )
+    error = OperationalError("connection has password=do-not-leak", {}, Exception("secret"))
 
     for path in ("/probes", "/gaps"):
         response = _response_for_database_error(error, path)

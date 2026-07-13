@@ -243,6 +243,8 @@ class SourceRepository:
         self,
         *,
         candidate_id: int,
+        operation_run_id: int | None = None,
+        original_probe_id: int | None = None,
         started_at,
         completed_at,
         outcome: str,
@@ -253,10 +255,14 @@ class SourceRepository:
         latest_published_at=None,
         schema_fingerprint: str | None = None,
         error_code: str | None = None,
+        retry_after_seconds: float | None = None,
+        earliest_recheck_at=None,
         details: dict | None = None,
     ) -> SourceAcquisitionProbeRunRecord:
         record = SourceAcquisitionProbeRunRecord(
             candidate_id=candidate_id,
+            operation_run_id=operation_run_id,
+            original_probe_id=original_probe_id,
             started_at=started_at,
             completed_at=completed_at,
             outcome=outcome,
@@ -267,13 +273,21 @@ class SourceRepository:
             latest_published_at=latest_published_at,
             schema_fingerprint=schema_fingerprint,
             error_code=error_code,
+            retry_after_seconds=retry_after_seconds,
+            earliest_recheck_at=earliest_recheck_at,
             details=_sanitize_research_details(details or {}),
         )
         self.session.add(record)
         self.session.flush()
         return record
 
-    def save_probe_result(self, result: ProbeResult) -> SourceProbeRunRecord:
+    def save_probe_result(
+        self,
+        result: ProbeResult,
+        *,
+        remediation_acquisition_probe_id: int | None = None,
+    ) -> SourceProbeRunRecord:
+        sample_fields = {field for sample in result.samples for field in sample.fields_present()}
         metrics = {
             "content_type": result.content_type,
             "content_length": result.content_length,
@@ -290,8 +304,10 @@ class SourceRepository:
             if result.latest_published_at
             else None,
             "cross_domain_redirect": result.cross_domain_redirect,
+            "missing_required_fields": sorted({"title", "canonical_url"} - sample_fields),
         }
         record = SourceProbeRunRecord(
+            remediation_acquisition_probe_id=remediation_acquisition_probe_id,
             source_id=result.source_id,
             access_kind=result.access_kind,
             access_url=result.access_url,
@@ -334,11 +350,19 @@ class SourceRepository:
         """Return the newest completed probe state, or ``None`` when none exists."""
         return self.latest_probe_snapshots([source_id]).get(source_id)
 
-    def latest_probe_snapshots(self, source_ids: Sequence[str]) -> dict[str, ProbeSnapshot]:
+    def latest_probe_snapshots(
+        self, source_ids: Sequence[str], *, finished_at_lte=None
+    ) -> dict[str, ProbeSnapshot]:
         """Return newest completed probe state for each requested source in bounded queries."""
         requested_ids = tuple(dict.fromkeys(source_ids))
         if not requested_ids:
             return {}
+        filters = [
+            SourceProbeRunRecord.source_id.in_(requested_ids),
+            SourceProbeRunRecord.finished_at.is_not(None),
+        ]
+        if finished_at_lte is not None:
+            filters.append(SourceProbeRunRecord.finished_at <= finished_at_lte)
         ranked = (
             select(
                 SourceProbeRunRecord.id.label("probe_run_id"),
@@ -352,10 +376,7 @@ class SourceRepository:
                 )
                 .label("history_rank"),
             )
-            .where(
-                SourceProbeRunRecord.source_id.in_(requested_ids),
-                SourceProbeRunRecord.finished_at.is_not(None),
-            )
+            .where(*filters)
             .subquery()
         )
         probe_runs = self.session.scalars(
@@ -366,12 +387,14 @@ class SourceRepository:
         fields_by_run: dict[int, set[str]] = {}
         if probe_runs:
             for probe_run_id, fields in self.session.execute(
-                select(SourceProbeSampleRecord.probe_run_id, SourceProbeSampleRecord.fields_present)
-                .where(SourceProbeSampleRecord.probe_run_id.in_([run.id for run in probe_runs]))
+                select(
+                    SourceProbeSampleRecord.probe_run_id, SourceProbeSampleRecord.fields_present
+                ).where(SourceProbeSampleRecord.probe_run_id.in_([run.id for run in probe_runs]))
             ):
                 fields_by_run.setdefault(probe_run_id, set()).update(fields)
         return {
             run.source_id: ProbeSnapshot(
+                probe_run_id=run.id,
                 outcome=run.outcome,
                 sample_count=int(run.metrics.get("sample_count") or 0),
                 field_completeness=float(run.metrics.get("field_completeness") or 0.0),
