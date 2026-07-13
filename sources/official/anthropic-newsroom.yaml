@@ -1,0 +1,78 @@
+id: anthropic-newsroom
+name: Anthropic Newsroom
+provider_id: anthropic
+target_type: publisher_feed
+availability: requires_approval
+coverage_mode: direct
+official_identity_url: https://www.anthropic.com/news
+reviewed_at: '2026-07-12'
+unlock_requirements:
+- Complete a source-specific terms and robots review before automation.
+status: candidate
+nature: first_party
+roles:
+- discovery
+- evidence
+language: en
+topics:
+- foundation_models
+- agents
+- ai_safety
+- developer_tools
+authority_score: 5
+poll_interval_minutes: 120
+access_methods:
+- kind: html
+  url: https://www.anthropic.com/news
+  priority: 1
+  requires_manual_approval: true
+expected_fields:
+- title
+- canonical_url
+- published_at
+- summary
+risk:
+  terms: 4
+  authentication: 0
+  stability: 2
+  data_quality: 1
+  operating_cost: 1
+  evidence:
+  - https://www.anthropic.com/news
+  - https://www.anthropic.com/legal/consumer-terms
+notes: 'The official newsroom is a valuable first-party announcement index, but it is not enabled for automated ingestion. Fallback: no additional audited method.'
+ingestion:
+  enabled: false
+research:
+  status: needs_research
+  purpose: Track Anthropic first-party product, research, policy, and company announcements.
+  wanted_information:
+  - title
+  - canonical_url
+  - published_at
+  - summary
+  conclusion: Anthropic's official Newsroom exists and exposes dated announcement links. Its terms prohibit automated collection unless explicitly permitted, so this Target remains unverified and disabled.
+  risk_conclusion: No login, cookie, proxy, browser automation, or bypass is permitted. A robots and terms review plus a compliant static-method sample are required before any automation.
+  reviewed_at: '2026-07-12'
+  candidates:
+  - key: newsroom-static-html
+    kind: html
+    implementation: httpx
+    officiality: official
+    authentication: none
+    roles:
+    - discovery
+    - metadata
+    fields:
+    - title
+    - canonical_url
+    - published_at
+    limitations:
+    - Not approved for automated collection; terms and robots review is required.
+    - No JavaScript rendering, login session, cookie, proxy, or bypass may be used.
+    evidence:
+    - https://www.anthropic.com/news
+    - https://www.anthropic.com/legal/consumer-terms
+    reviewed_at: '2026-07-12'
+    sample_status: not_run
+    decision: manual_only

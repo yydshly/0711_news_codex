@@ -40,3 +40,8 @@ risk:
   - https://gnews.io/terms
   hard_block_reason: requires_credentials
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
+
+research:
+  status: placeholder
+  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
+  reviewed_at: '2026-07-12'

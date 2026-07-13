@@ -14,3 +14,15 @@ access_methods:
 expected_fields: [title, canonical_url, published_at, summary]
 risk: {terms: 1, authentication: 0, stability: 1, data_quality: 1, operating_cost: 0, evidence: [https://www.microsoft.com/en-us/research/]}
 
+research:
+  status: needs_research
+  purpose: Collect AI and technology news-discovery and attribution leads for this named Target.
+  wanted_information:
+  - title
+  - canonical_url
+  - published_at
+  - summary
+  conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
+  risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
+  reviewed_at: '2026-07-12'
+  candidates: []

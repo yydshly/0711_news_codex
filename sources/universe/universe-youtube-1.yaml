@@ -33,62 +33,9 @@ risk:
   evidence:
   - https://developers.google.com/youtube/v3
   - https://www.youtube.com/static?template=terms
+notes: 'Fallback: YouTube Data API requires the documented YOUTUBE_API_KEY; do not use browser sessions or cookies.'
+
 research:
-  status: verified
-  purpose: 发现 OpenAI 官方频道的视频，并以官方 API 补充描述和互动数据。
-  wanted_information: [video_id, title, channel, published_at, summary, engagement, transcript_excerpt]
-  risk_conclusion: Atom 是无认证的官方发现路径；API Key 仅用于官方 API；不使用 Cookie、登录态、网页会话、代理或反爬绕过。
-  no_fallback_reason: 没有安全的网页回退；Atom 不可用时仅记录失败并等待后续人工研究。
+  status: placeholder
+  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
   reviewed_at: '2026-07-12'
-  candidates:
-  - key: youtube-atom
-    kind: atom
-    implementation: youtube-channel-feed
-    officiality: official
-    authentication: none
-    roles: [discovery]
-    fields: [video_id, title, channel, published_at, canonical_url]
-    limitations: [仅公开频道元数据, 最多五条]
-    evidence:
-    - https://www.youtube.com/feeds/videos.xml?channel_id=UCXZCJLdBC09xxGZ6gcdrc6A
-    - https://help.openai.com/en/articles/11725090-verifying-communications-from-openai
-    reviewed_at: '2026-07-12'
-    sample_status: succeeded
-    decision: primary
-  - key: youtube-data-api
-    kind: api_key_api
-    implementation: youtube-data-api
-    officiality: official
-    authentication: api_key
-    roles: [metadata, engagement]
-    fields: [summary, engagement]
-    limitations: [仅读取 YOUTUBE_API_KEY, 无 Key 时明确阻断]
-    evidence: [https://developers.google.com/youtube/v3/docs/videos/list]
-    reviewed_at: '2026-07-12'
-    sample_status: blocked
-    decision: supplement
-  - key: youtube-transcript-api
-    kind: library
-    implementation: youtube-transcript-api
-    officiality: unofficial_library
-    authentication: none
-    roles: [transcript]
-    fields: [language, transcript_excerpt]
-    limitations: [非官方库, 有总体超时, 可读降级]
-    evidence: [https://pypi.org/project/youtube-transcript-api/]
-    reviewed_at: '2026-07-12'
-    sample_status: not_run
-    decision: supplement
-  - key: yt-dlp-metadata
-    kind: manual
-    implementation: manual-review
-    officiality: unofficial_library
-    authentication: none
-    roles: [evidence]
-    fields: [version, license, maintenance]
-    limitations: [仅元数据记录, 禁止执行媒体下载]
-    evidence: [https://github.com/yt-dlp/yt-dlp]
-    reviewed_at: '2026-07-12'
-    sample_status: partial
-    decision: manual_only
-notes: 研究样本是只读且有界的；ingestion 保持未启用。
