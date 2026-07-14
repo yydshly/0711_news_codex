@@ -27,15 +27,6 @@ STRONG_AI_TERMS = frozenset(
         "large language models",
         "llm",
         "llms",
-        "inference",
-        "training",
-        "fine tuning",
-        "finetuning",
-        "embedding",
-        "embeddings",
-        "transformer",
-        "transformers",
-        "diffusion",
         "multimodal",
         "rag",
         "ai benchmark",
@@ -46,6 +37,19 @@ STRONG_AI_TERMS = frozenset(
         "agentic",
     }
 )
+CONTEXTUAL_AI_TECH_TERMS = frozenset(
+    {
+        "diffusion",
+        "embedding",
+        "embeddings",
+        "fine tuning",
+        "finetuning",
+        "inference",
+        "training",
+        "transformer",
+        "transformers",
+    }
+)
 AI_ENTITY_TERMS = frozenset(
     {
         "anthropic",
@@ -53,11 +57,13 @@ AI_ENTITY_TERMS = frozenset(
         "claude",
         "deepseek",
         "gemini",
+        "gpt",
         "hugging face",
         "llama",
         "mistral",
         "openai",
         "qwen",
+        "nvidia",
     }
 )
 AMBIGUOUS_TERMS = frozenset(
@@ -129,7 +135,7 @@ ENTERTAINMENT_TERMS = frozenset(
         "xbox",
     }
 )
-ADVERTISEMENT_TERMS = frozenset(
+ADVERTISEMENT_CTA_TERMS = frozenset(
     {
         "buy now",
         "coupon",
@@ -141,7 +147,6 @@ ADVERTISEMENT_TERMS = frozenset(
         "sale",
         "sponsored",
         "subscribe",
-        "subscription",
     }
 )
 GENERIC_TECHNOLOGY_TERMS = frozenset(
@@ -162,8 +167,10 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
     source_topics = normalize_text(
         " ".join(topic[:SOURCE_TOPIC_MAX_CHARS] for topic in item.source_topics)
     )
+    subject_text = title or text
 
     strong_matches = _matching_terms(text, STRONG_AI_TERMS)
+    contextual_tech_matches = _matching_terms(text, CONTEXTUAL_AI_TECH_TERMS)
     ai_entities = _matching_terms(text, AI_ENTITY_TERMS)
     ambiguous_matches = _matching_terms(text, AMBIGUOUS_TERMS)
     event_actions = _matching_terms(text, EVENT_ACTION_TERMS)
@@ -174,12 +181,21 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
         and _has_ai_source_context(source_topics)
     )
 
-    qualified_ambiguous_signal = bool(
+    entity_action_signal = bool(not strong_matches and ai_entities and event_actions)
+    contextual_tech_signal = bool(
         not strong_matches
-        and ambiguous_matches
-        and (ai_entities or contextual_source_signal)
+        and contextual_tech_matches
+        and (ai_entities or _matching_terms(text, RESEARCH_TERMS))
     )
-    has_qualifying_signal = bool(strong_matches) or qualified_ambiguous_signal
+    qualified_ambiguous_signal = bool(
+        not strong_matches and ambiguous_matches and contextual_source_signal
+    )
+    has_qualifying_signal = bool(
+        strong_matches
+        or entity_action_signal
+        or contextual_tech_signal
+        or qualified_ambiguous_signal
+    )
     score = min(
         100,
         60 * has_qualifying_signal
@@ -190,7 +206,15 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
         text=text,
         has_qualifying_signal=has_qualifying_signal,
         has_ai_entity=bool(ai_entities),
+        has_explicit_ai_event_subject=bool(
+            _matching_terms(subject_text, EVENT_ACTION_TERMS)
+            and (
+                _matching_terms(subject_text, STRONG_AI_TERMS)
+                or _matching_terms(subject_text, AI_ENTITY_TERMS)
+            )
+        ),
         ambiguous_matches=ambiguous_matches,
+        subject_text=subject_text,
     )
     is_relevant = not exclusion_reasons and score >= 60
     if is_relevant:
@@ -198,6 +222,8 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
             reason
             for present, reason in (
                 (bool(strong_matches), "strong_ai_signal"),
+                (entity_action_signal, "qualified_ai_entity_action"),
+                (contextual_tech_signal, "qualified_ai_technical_signal"),
                 (qualified_ambiguous_signal, "qualified_ambiguous_signal"),
                 (bool(ai_entities), "recognized_ai_entity"),
                 (bool(event_actions), "event_action"),
@@ -230,14 +256,19 @@ def _exclusion_reasons(
     text: str,
     has_qualifying_signal: bool,
     has_ai_entity: bool,
+    has_explicit_ai_event_subject: bool,
     ambiguous_matches: tuple[str, ...],
+    subject_text: str,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
     if len(text) < 4:
         reasons.append("insufficient_text")
-    if _matching_terms(text, ENTERTAINMENT_TERMS):
+    if (
+        _matching_terms(subject_text, ENTERTAINMENT_TERMS)
+        and not has_explicit_ai_event_subject
+    ):
         reasons.append("game_or_entertainment")
-    if _matching_terms(text, ADVERTISEMENT_TERMS):
+    if _matching_terms(text, ADVERTISEMENT_CTA_TERMS):
         reasons.append("advertisement_or_subscription")
     if _is_auto_repost_without_claim(text):
         reasons.append("auto_repost_without_claim")

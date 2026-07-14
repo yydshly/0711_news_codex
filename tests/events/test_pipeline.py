@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.db.models import (
@@ -13,10 +13,232 @@ from newsradar.db.models import (
     SourceDefinitionRecord,
 )
 from newsradar.events.pipeline import EventPipeline
+from newsradar.events.relevance import (
+    CONTENT_MAX_CHARS,
+    ITEM_KIND_MAX_CHARS,
+    PUBLISHER_MAX_CHARS,
+    SOURCE_TOPIC_MAX_CHARS,
+    SUMMARY_MAX_CHARS,
+    TITLE_MAX_CHARS,
+    evaluate_relevance,
+)
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import ProcessingStage
 from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
+
+
+def _source_record(*, topics: list[str] | None = None) -> SourceDefinitionRecord:
+    return SourceDefinitionRecord(
+        id="source",
+        name="Source",
+        status="active",
+        nature="first_party",
+        language="en",
+        roles=["evidence"],
+        topics=topics or ["ai"],
+        authority_score=90,
+        poll_interval_minutes=60,
+        expected_fields=[],
+        definition_hash="source",
+    )
+
+
+def test_selection_uses_bounded_projection_after_closing_read_session(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(_source_record(topics=["ai", *("x" * 500 for _ in range(30))]))
+        db.add(
+            RawItemRecord(
+                source_id="source",
+                external_id="bounded",
+                canonical_url="https://example.test/bounded",
+                payload={"must_not": "be selected"},
+                raw_payload={"must_not": "be selected"},
+                title="OpenAI launches multimodal model " + "x" * 1_000,
+                summary="s" * 5_000,
+                content="c" * 50_000,
+                item_kind="kind" * 100,
+                publisher_name="publisher" * 100,
+                published_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+
+    open_sessions: set[Session] = set()
+
+    class TrackingSession(Session):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            open_sessions.add(self)
+
+        def close(self) -> None:
+            try:
+                super().close()
+            finally:
+                open_sessions.discard(self)
+
+    observed = []
+
+    def observe_relevance(item):
+        assert open_sessions == set()
+        observed.append(item)
+        return evaluate_relevance(item)
+
+    selected_sql: list[str] = []
+
+    def capture_sql(connection, cursor, statement, parameters, context, executemany):
+        del connection, cursor, parameters, context, executemany
+        if "FROM raw_items" in statement:
+            selected_sql.append(statement.casefold())
+
+    event.listen(engine, "before_cursor_execute", capture_sql)
+    monkeypatch.setattr("newsradar.events.pipeline.evaluate_relevance", observe_relevance)
+    factory = sessionmaker(bind=engine, class_=TrackingSession, expire_on_commit=False)
+    try:
+        result = EventPipeline(factory)._select_and_classify_items(72)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_sql)
+
+    assert result.selected_count == 1
+    assert len(observed) == 1
+    item = observed[0]
+    assert len(item.title) <= TITLE_MAX_CHARS
+    assert len(item.summary) <= SUMMARY_MAX_CHARS
+    assert len(item.content) <= CONTENT_MAX_CHARS
+    assert len(item.item_kind or "") <= ITEM_KIND_MAX_CHARS
+    assert len(item.publisher_name or "") <= PUBLISHER_MAX_CHARS
+    assert len(item.source_topics) <= 20
+    assert all(len(topic) <= SOURCE_TOPIC_MAX_CHARS for topic in item.source_topics)
+    assert len(selected_sql) == 1
+    assert "substr" in selected_sql[0]
+    assert "raw_items.payload" not in selected_sql[0]
+    assert "raw_items.raw_payload" not in selected_sql[0]
+
+
+def test_selection_uses_frozen_72_hour_boundary_and_orders_by_id() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
+    cutoff = now - timedelta(hours=72)
+    with Session(engine) as db:
+        db.add(_source_record())
+        db.add_all(
+            (
+                RawItemRecord(
+                    id=30,
+                    source_id="source",
+                    external_id="recent",
+                    canonical_url="https://example.test/recent",
+                    payload={},
+                    title="OpenAI launches GPT model",
+                    published_at=now,
+                    fetched_at=now,
+                ),
+                RawItemRecord(
+                    id=10,
+                    source_id="source",
+                    external_id="boundary",
+                    canonical_url="https://example.test/boundary",
+                    payload={},
+                    title="Anthropic releases Claude SDK",
+                    published_at=cutoff,
+                    fetched_at=now,
+                ),
+                RawItemRecord(
+                    id=20,
+                    source_id="source",
+                    external_id="too-old",
+                    canonical_url="https://example.test/too-old",
+                    payload={},
+                    title="OpenAI publishes benchmark",
+                    published_at=cutoff - timedelta(microseconds=1),
+                    fetched_at=now,
+                ),
+            )
+        )
+        db.commit()
+
+    selection = EventPipeline(
+        sessionmaker(bind=engine, expire_on_commit=False)
+    )._select_and_classify_items(72, now=now)
+
+    assert [raw_item_id for raw_item_id, _ in selection.decisions] == [10, 30]
+
+
+def test_entity_failure_keeps_committed_relevance_and_continues_clustering(
+    monkeypatch, tmp_path
+) -> None:
+    database_path = (tmp_path / "entity-failure.db").as_posix()
+    engine = create_engine(f"sqlite+pysqlite:///{database_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(_source_record())
+        good = RawItemRecord(
+            source_id="source",
+            external_id="good",
+            canonical_url="https://example.test/good",
+            payload={},
+            title="OpenAI launches GPT-5 model",
+            published_at=datetime.now(UTC),
+        )
+        failed = RawItemRecord(
+            source_id="source",
+            external_id="failed",
+            canonical_url="https://example.test/failed",
+            payload={},
+            title="Anthropic releases Claude SDK",
+            published_at=datetime.now(UTC),
+        )
+        db.add_all((good, failed))
+        db.commit()
+        good_id = good.id
+        failed_id = failed.id
+
+    from newsradar.events.entities import extract_entities as real_extract_entities
+
+    def fail_one_item(item):
+        with Session(engine) as audit_session:
+            relevance_ids = set(
+                audit_session.scalars(
+                    select(RawItemProcessingRecord.raw_item_id).where(
+                        RawItemProcessingRecord.stage == ProcessingStage.RELEVANCE.value,
+                        RawItemProcessingRecord.algorithm_version == "relevance-v2",
+                    )
+                )
+            )
+        assert relevance_ids == {good_id, failed_id}
+        assert len(item.content) <= CONTENT_MAX_CHARS
+        if item.raw_item_id == failed_id:
+            raise RuntimeError("bad item")
+        return real_extract_entities(item)
+
+    monkeypatch.setattr("newsradar.events.pipeline.extract_entities", fail_one_item)
+    with Session(engine) as db:
+        result = EventPipeline.production(db).run(
+            window_hours=72, operation_id=1, checkpoint=lambda _: None
+        )
+        entity_records = {
+            record.raw_item_id: record
+            for record in db.scalars(
+                select(RawItemProcessingRecord).where(
+                    RawItemProcessingRecord.stage == ProcessingStage.ENTITIES.value
+                )
+            )
+        }
+        clustered_ids = set(
+            db.scalars(
+                select(RawItemProcessingRecord.raw_item_id).where(
+                    RawItemProcessingRecord.stage == ProcessingStage.CLUSTER.value
+                )
+            )
+        )
+
+    assert result.included_item_count == 2
+    assert entity_records[failed_id].outcome == "failed"
+    assert entity_records[failed_id].reason_codes == ["entity_extraction_failed"]
+    assert clustered_ids == {good_id, failed_id}
 
 
 def test_pipeline_records_included_and_excluded_items_using_published_or_fetched_time() -> (

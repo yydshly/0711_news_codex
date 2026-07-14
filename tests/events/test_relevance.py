@@ -72,8 +72,80 @@ def test_source_topic_cannot_make_an_ambiguous_term_relevant_by_itself() -> None
     assert "ambiguous_term_only" in result.reasons
 
 
-def test_ambiguous_term_is_qualified_by_a_recognized_ai_entity() -> None:
+def test_ambiguous_term_and_ai_entity_still_need_an_event_action() -> None:
     result = evaluate_relevance(RawItemText(title="OpenAI model roadmap"))
+
+    assert result.outcome == "excluded"
+    assert result.score < 60
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Google launches Gemini 3",
+        "Anthropic releases Claude SDK",
+        "OpenAI publishes benchmark",
+    ],
+)
+def test_ai_entity_and_event_action_form_a_qualifying_signal(title: str) -> None:
+    result = evaluate_relevance(RawItemText(title=title))
+
+    assert result.outcome == "included"
+    assert result.score >= 60
+    assert "no_ai_signal" not in result.reasons
+
+
+def test_ai_entity_without_event_action_is_not_automatically_included() -> None:
+    result = evaluate_relevance(RawItemText(title="Anthropic Claude overview"))
+
+    assert result.outcome == "excluded"
+    assert result.score < 60
+
+
+def test_entertainment_word_does_not_override_explicit_ai_event_subject() -> None:
+    result = evaluate_relevance(
+        RawItemText(title="OpenAI launches GPT-5 API for game developers")
+    )
+
+    assert result.outcome == "included"
+    assert "game_or_entertainment" not in result.reasons
+
+
+def test_entertainment_title_remains_subject_despite_ai_terms_in_summary() -> None:
+    result = evaluate_relevance(
+        RawItemText(
+            title="Agent 64 is the GoldenEye successor arriving next month",
+            summary="OpenAI launches an AI API for game developers",
+        )
+    )
+
+    assert result.outcome == "excluded"
+    assert "game_or_entertainment" in result.reasons
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Transformer fire disrupts city power grid",
+        "Employee training schedule updated",
+    ],
+)
+def test_ambiguous_technical_terms_need_ai_event_context(title: str) -> None:
+    result = evaluate_relevance(RawItemText(title=title))
+
+    assert result.outcome == "excluded"
+    assert result.score < 60
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Anthropic publishes transformer research",
+        "Researchers release diffusion benchmark",
+    ],
+)
+def test_ambiguous_technical_terms_keep_explicit_ai_research_events(title: str) -> None:
+    result = evaluate_relevance(RawItemText(title=title))
 
     assert result.outcome == "included"
     assert result.score >= 60

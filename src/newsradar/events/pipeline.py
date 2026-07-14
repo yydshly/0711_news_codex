@@ -22,7 +22,16 @@ from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
 from newsradar.events.evidence import assess_evidence, count_suppressed_independent_roots
 from newsradar.events.minimax import EventMiniMaxAdapter, EventModelRun
 from newsradar.events.publishing import EventPublisher, rule_enrichment
-from newsradar.events.relevance import RELEVANCE_RULE_VERSION, evaluate_relevance
+from newsradar.events.relevance import (
+    CONTENT_MAX_CHARS,
+    ITEM_KIND_MAX_CHARS,
+    PUBLISHER_MAX_CHARS,
+    RELEVANCE_RULE_VERSION,
+    SOURCE_TOPIC_MAX_CHARS,
+    SUMMARY_MAX_CHARS,
+    TITLE_MAX_CHARS,
+    evaluate_relevance,
+)
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import (
     ClusterItem,
@@ -61,6 +70,7 @@ class SelectionResult:
     excluded_count: int
     exclusion_reasons: dict[str, int]
     decisions: tuple[tuple[int, RelevanceDecision], ...]
+    included_texts: tuple[RawItemText, ...]
 
 
 class EventPipeline:
@@ -82,9 +92,10 @@ class EventPipeline:
         checkpoint("before_event_selection")
         selection = self._select_and_classify_items(window_hours)
         checkpoint("after_event_selection")
-        self._record_item_stages(selection)
+        self._record_relevance_decisions(selection)
+        items = self._extract_and_record_entities(selection)
         checkpoint("after_event_rules")
-        candidates = self._cluster(selection.included)
+        candidates = self._cluster(items)
         checkpoint("after_event_cluster")
         duplicate_root_suppressed_count = sum(
             count_suppressed_independent_roots(assess_evidence(candidate.items))
@@ -107,72 +118,151 @@ class EventPipeline:
             model_fallback_count=model_fallback_count,
         )
 
-    def _select_and_classify_items(self, window_hours: int) -> SelectionResult:
-        cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    def _select_and_classify_items(
+        self, window_hours: int, *, now: datetime | None = None
+    ) -> SelectionResult:
+        cutoff = (now or datetime.now(UTC)) - timedelta(hours=window_hours)
         with self._session_factory() as session:
             event_time = func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at)
-            rows = session.execute(
-                select(RawItemRecord, SourceDefinitionRecord)
-                .join(
-                    SourceDefinitionRecord,
-                    SourceDefinitionRecord.id == RawItemRecord.source_id,
-                )
-                .where(event_time >= cutoff)
-                .order_by(RawItemRecord.id)
-            ).all()
-            included: list[ClusterItem] = []
-            decisions: list[tuple[int, RelevanceDecision]] = []
-            exclusion_reasons: Counter[str] = Counter()
-            for item, source in rows:
-                text = RawItemText(
-                    raw_item_id=item.id,
-                    title=item.title or "",
-                    summary=item.summary or "",
-                    content=item.content or "",
-                    item_kind=item.item_kind,
-                    publisher_name=item.publisher_name or source.name,
-                    source_topics=tuple(source.topics),
-                )
-                decision = evaluate_relevance(text)
-                decisions.append((item.id, decision))
-                if decision.outcome == "excluded":
-                    exclusion_reasons.update(decision.reasons)
-                    continue
-                entities = tuple(entity.canonical_key for entity in extract_entities(text))
-                included.append(
-                    ClusterItem(
-                        raw_item_id=item.id,
-                        title=item.title or "",
-                        canonical_url=item.canonical_url,
-                        canonical_url_hash=item.canonical_url_hash,
-                        original_url=item.original_url,
-                        title_fingerprint=item.title_fingerprint,
-                        entities=entities,
-                        published_at=item.published_at or item.fetched_at,
-                        source_nature=source.nature,
-                        source_roles=tuple(source.roles),
-                        publisher_name=item.publisher_name or source.name,
+            rows = tuple(
+                session.execute(
+                    select(
+                        RawItemRecord.id.label("raw_item_id"),
+                        func.substr(
+                            func.coalesce(RawItemRecord.title, ""), 1, TITLE_MAX_CHARS
+                        ).label("title"),
+                        func.substr(
+                            func.coalesce(RawItemRecord.summary, ""),
+                            1,
+                            SUMMARY_MAX_CHARS,
+                        ).label("summary"),
+                        func.substr(
+                            func.coalesce(RawItemRecord.content, ""),
+                            1,
+                            CONTENT_MAX_CHARS,
+                        ).label("content"),
+                        func.substr(
+                            func.coalesce(RawItemRecord.item_kind, ""),
+                            1,
+                            ITEM_KIND_MAX_CHARS,
+                        ).label("item_kind"),
+                        func.substr(
+                            func.coalesce(
+                                RawItemRecord.publisher_name,
+                                SourceDefinitionRecord.name,
+                            ),
+                            1,
+                            PUBLISHER_MAX_CHARS,
+                        ).label("publisher_name"),
+                        func.substr(RawItemRecord.canonical_url, 1, 4_096).label(
+                            "canonical_url"
+                        ),
+                        func.substr(RawItemRecord.original_url, 1, 4_096).label(
+                            "original_url"
+                        ),
+                        RawItemRecord.canonical_url_hash.label("canonical_url_hash"),
+                        RawItemRecord.title_fingerprint.label("title_fingerprint"),
+                        RawItemRecord.published_at.label("published_at"),
+                        RawItemRecord.fetched_at.label("fetched_at"),
+                        SourceDefinitionRecord.nature.label("source_nature"),
+                        SourceDefinitionRecord.roles.label("source_roles"),
+                        SourceDefinitionRecord.topics.label("source_topics"),
                     )
+                    .join(
+                        SourceDefinitionRecord,
+                        SourceDefinitionRecord.id == RawItemRecord.source_id,
+                    )
+                    .where(event_time >= cutoff)
+                    .order_by(RawItemRecord.id)
                 )
-            return SelectionResult(
-                selected_count=len(rows),
-                included=tuple(included),
-                excluded_count=len(rows) - len(included),
-                exclusion_reasons=dict(sorted(exclusion_reasons.items())),
-                decisions=tuple(decisions),
+                .mappings()
+                .all()
             )
 
-    def _record_item_stages(self, selection: SelectionResult) -> None:
+        included: list[ClusterItem] = []
+        included_texts: list[RawItemText] = []
+        decisions: list[tuple[int, RelevanceDecision]] = []
+        exclusion_reasons: Counter[str] = Counter()
+        for row in rows:
+            text = RawItemText(
+                raw_item_id=row["raw_item_id"],
+                title=row["title"],
+                summary=row["summary"],
+                content=row["content"],
+                item_kind=row["item_kind"] or None,
+                publisher_name=row["publisher_name"] or None,
+                source_topics=_bounded_values(row["source_topics"]),
+            )
+            decision = evaluate_relevance(text)
+            decisions.append((row["raw_item_id"], decision))
+            if decision.outcome == "excluded":
+                exclusion_reasons.update(decision.reasons)
+                continue
+            included_texts.append(text)
+            included.append(
+                ClusterItem(
+                    raw_item_id=row["raw_item_id"],
+                    title=row["title"],
+                    canonical_url=row["canonical_url"],
+                    canonical_url_hash=row["canonical_url_hash"],
+                    original_url=row["original_url"],
+                    title_fingerprint=row["title_fingerprint"],
+                    entities=(),
+                    published_at=row["published_at"] or row["fetched_at"],
+                    source_nature=row["source_nature"],
+                    source_roles=_bounded_values(row["source_roles"], max_chars=64),
+                    publisher_name=row["publisher_name"] or None,
+                )
+            )
+        return SelectionResult(
+            selected_count=len(rows),
+            included=tuple(included),
+            excluded_count=len(rows) - len(included),
+            exclusion_reasons=dict(sorted(exclusion_reasons.items())),
+            decisions=tuple(decisions),
+            included_texts=tuple(included_texts),
+        )
+
+    def _record_relevance_decisions(self, selection: SelectionResult) -> None:
         with self._session_factory() as session:
             repository = EventRepository(session)
             repository.record_relevance_decisions(
                 selection.decisions, RELEVANCE_RULE_VERSION
             )
-            for item in selection.included:
+            session.commit()
+
+    def _extract_and_record_entities(
+        self, selection: SelectionResult
+    ) -> tuple[ClusterItem, ...]:
+        items: list[ClusterItem] = []
+        audits: list[tuple[int, str, tuple[str, ...], int]] = []
+        for item, text in zip(selection.included, selection.included_texts, strict=True):
+            try:
+                entities = tuple(
+                    entity.canonical_key for entity in extract_entities(text)
+                )
+            except Exception:
+                entities = ()
+                audits.append(
+                    (item.raw_item_id, "failed", ("entity_extraction_failed",), 0)
+                )
+            else:
+                audits.append((item.raw_item_id, "included", (), len(entities)))
+            items.append(item.model_copy(update={"entities": entities}))
+
+        with self._session_factory() as session:
+            repository = EventRepository(session)
+            for raw_item_id, outcome, reason_codes, entity_count in audits:
                 repository.record_stage(
-                    item.raw_item_id, ProcessingStage.ENTITIES, ENTITY_RULE_VERSION
+                    raw_item_id,
+                    ProcessingStage.ENTITIES,
+                    ENTITY_RULE_VERSION,
+                    outcome=outcome,
+                    reason_codes=reason_codes,
+                    details={"entity_count": entity_count, "failed": outcome == "failed"},
                 )
             session.commit()
+        return tuple(items)
 
     def _cluster(self, items: tuple[ClusterItem, ...]):
         candidates = tuple(
@@ -288,6 +378,18 @@ class EventPipeline:
             )
         ).all()
         return set(active) == set(raw_item_ids)
+
+
+def _bounded_values(
+    values: object, *, max_count: int = 20, max_chars: int = SOURCE_TOPIC_MAX_CHARS
+) -> tuple[str, ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    return tuple(
+        value[:max_chars]
+        for value in values[:max_count]
+        if isinstance(value, str) and value
+    )
 
 
 def _category(items: tuple[ClusterItem, ...]) -> EventCategory:
