@@ -20,6 +20,10 @@ from newsradar.db.models import (
 )
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
+from newsradar.events.reporting import (
+    build_event_quality_report_view,
+    render_event_quality_report,
+)
 from newsradar.events.runtime import EventOperationHandler
 from newsradar.ingestion.coverage_closure_reporting import (
     COVERAGE_CLOSURE_V1_BASELINE_SOURCE_IDS,
@@ -404,6 +408,21 @@ def show_event(event_id: int) -> None:
         if event is None:
             raise typer.Exit(2)
         typer.echo(f"{event.id} {event.status} {event.canonical_key}")
+
+
+@events_app.command("quality-report")
+def event_quality_report(
+    window_hours: Annotated[int, typer.Option("--window-hours", min=1)] = 72,
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        "reports/event-quality-closure-v2.md"
+    ),
+) -> None:
+    """Write a read-only, secret-free Event Intelligence v2 acceptance report."""
+    with create_session() as session:
+        view = build_event_quality_report_view(session, window_hours=window_hours)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_event_quality_report(view), encoding="utf-8")
+    typer.echo(f"已生成事件质量报告：{output}")
 
 
 @app.command("serve")

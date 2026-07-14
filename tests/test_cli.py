@@ -567,6 +567,47 @@ def test_events_build_wait_prints_terminal_status_while_session_is_open(monkeypa
     assert "Operation 12: succeeded" in result.stdout
 
 
+def test_events_quality_report_is_read_only_and_writes_only_requested_output(
+    monkeypatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "nested" / "event-quality.md"
+    view = object()
+    calls: list[tuple[object, int]] = []
+
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(
+        "newsradar.cli.build_event_quality_report_view",
+        lambda session, *, window_hours: calls.append((session, window_hours)) or view,
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.render_event_quality_report",
+        lambda value: "# Event Intelligence v2 事件质量验收报告\n"
+        if value is view
+        else "unexpected",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "events",
+            "quality-report",
+            "--window-hours",
+            "72",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls and calls[0][1] == 72
+    assert output.read_text(encoding="utf-8").startswith("# Event Intelligence v2")
+    assert "已生成事件质量报告" in result.stdout
+    assert sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")) == [
+        "nested",
+        "nested/event-quality.md",
+    ]
+
+
 def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "sources"
     write_source(root)
