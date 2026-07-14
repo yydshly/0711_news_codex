@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}高价值混合来源 · News Codex{% endblock %}
+{% block header %}<h1>高价值混合来源</h1>{% endblock %}
+
+{% block content %}
+<div class="mixed-source-page">
+  <section class="panel intro-panel mixed-source-hero">
+    <p class="eyebrow">真实热点发现 · 运行证据总览</p>
+    <h2>从官网公告扩展到社区、视频、开放社交、聚合与专业媒体</h2>
+    <p>这里聚焦 45 个首批高价值目标。目录登记不等于已经抓取；只有数据库中的真实抓取批次和原始条目，才算运行证据。</p>
+    <div class="conclusion-grid" aria-label="阅读说明">
+      <p><strong>直接抓取</strong><br>从目标自身 API、RSS 或公开接口取得内容。</p>
+      <p><strong>间接发现</strong><br>由聚合入口发现报道，事实需回到原始媒体确认。</p>
+      <p><strong>三轮稳定</strong><br>最近三次均成功或无变化，表示当前接入较稳定。</p>
+    </div>
+  </section>
+
+  <section class="metric-grid" aria-label="混合来源运行指标">
+    <article class="metric-card"><span>目录目标</span><strong>{{ dashboard.summary.catalog_target_count }}</strong><small>本波次固定范围</small></article>
+    <article class="metric-card"><span>已同步</span><strong>{{ dashboard.summary.synced_target_count }}</strong><small>已进入本地数据库</small></article>
+    <article class="metric-card"><span>直接抓取</span><strong>{{ dashboard.summary.direct_ready_count }}</strong><small>最近运行成功</small></article>
+    <article class="metric-card"><span>间接发现</span><strong>{{ dashboard.summary.indirect_ready_count }}</strong><small>聚合发现成功</small></article>
+    <article class="metric-card"><span>等待解锁</span><strong>{{ dashboard.summary.blocked_count }}</strong><small>凭据、审批或权限</small></article>
+    <article class="metric-card"><span>降级或失败</span><strong>{{ dashboard.summary.degraded_count + dashboard.summary.failed_count }}</strong><small>需要定位处理</small></article>
+    <article class="metric-card"><span>尚未运行</span><strong>{{ dashboard.summary.not_run_count }}</strong><small>没有真实抓取证据</small></article>
+    <article class="metric-card"><span>连续三轮稳定</span><strong>{{ dashboard.summary.three_run_stable_count }}</strong><small>最近三次成功或无变化</small></article>
+  </section>
+
+  {% for group in dashboard.groups %}
+  <section class="panel mixed-source-group" aria-labelledby="mixed-group-{{ group.key }}">
+    <div class="section-heading">
+      <div><p class="eyebrow">{{ group.targets | length }} 个具体目标</p><h2 id="mixed-group-{{ group.key }}">{{ group.label }}</h2></div>
+    </div>
+    {% if group.targets %}
+    <div class="table-scroll" role="region" aria-label="{{ group.label }}运行证据" tabindex="0">
+      <table class="mixed-source-table">
+        <thead><tr><th>具体目标</th><th>当前结论</th><th>获取方式</th><th>最近三轮</th><th>原始条目</th><th>说明与下一步</th></tr></thead>
+        <tbody>
+        {% for target in group.targets %}
+          <tr>
+            <td><a href="/targets/{{ target.source_id }}">{{ target.name }}</a><br><small>{{ target.provider_id }} · {{ target.source_id }}</small></td>
+            <td><span class="status {% if target.state in ('direct_ready', 'indirect_ready') %}status-healthy{% elif target.state == 'failed' %}status-failed{% else %}status-blocked{% endif %}">{{ target.state_label }}</span></td>
+            <td>{{ target.access_kind or '未登记' }}<br><small>{{ '直接覆盖' if target.coverage_mode == 'direct' else '间接发现' }}</small></td>
+            <td>
+              {% if target.three_run_outcomes %}
+                {% for outcome in target.three_run_outcomes %}<span class="run-chip">{{ outcome | zh_label('outcome') }}</span>{% endfor %}
+              {% else %}<span class="muted">尚未运行</span>{% endif %}
+              {% if target.three_run_stable %}<br><small>已连续三轮稳定</small>{% endif %}
+            </td>
+            <td>{{ target.raw_item_count }}{% if target.latest_content_at %}<br><small>最新：{{ target.latest_content_at.strftime('%Y-%m-%d %H:%M') }}</small>{% endif %}</td>
+            <td class="wrap-cell">{{ target.conclusion_zh }}<br><small>下一步：{{ target.next_action_zh }}</small></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p class="empty-state">该分组尚无已同步目标。</p>{% endif %}
+  </section>
+  {% endfor %}
+
+  <section class="panel compliance-notice">
+    <h2>事实确认边界</h2>
+    <p>Reddit、YouTube、Bluesky、Mastodon 与 Hacker News 主要用于发现线索和衡量讨论热度。进入新闻事实前，必须由官方一手来源或独立专业媒体确认；本页不会把能力探测冒充内容覆盖。</p>
+  </section>
+</div>
+{% endblock %}

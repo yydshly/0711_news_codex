@@ -22,6 +22,7 @@
           <a href="/events"{% if request.url.path.startswith('/events') %} aria-current="page"{% endif %}>全部事件</a>
           <a href="/emerging"{% if request.url.path.startswith('/emerging') %} aria-current="page"{% endif %}>新兴线索</a>
           <a href="/sources"{% if request.url.path == '/sources' %} aria-current="page"{% endif %}>项目能力</a>
+          <a href="/mixed-sources"{% if request.url.path.startswith('/mixed-sources') %} aria-current="page"{% endif %}>混合来源</a>
           <a href="/providers"{% if request.url.path.startswith('/providers') %} aria-current="page"{% endif %}>来源能力</a>
           <a href="/probes"{% if request.url.path.startswith('/probes') %} aria-current="page"{% endif %}>探测记录</a>
           <a href="/targets"{% if request.url.path.startswith('/targets') %} aria-current="page"{% endif %}>目标目录</a>

@@ -29,6 +29,7 @@ from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snaps
 from newsradar.web.event_queries import EventQueryService
 from newsradar.web.i18n import zh_label
 from newsradar.web.item_queries import ItemQueryService
+from newsradar.web.mixed_source_queries import MixedSourceQueryService
 from newsradar.web.operation_queries import OperationQueryService
 from newsradar.web.queries import DashboardQueryService
 from newsradar.web.routes.system import build_system_health
@@ -163,6 +164,7 @@ def create_app(
     )
     templates = Jinja2Templates(directory=_WEB_ROOT / "templates")
     templates.env.autoescape = select_autoescape(("html", "xml"), default_for_string=True)
+    templates.env.filters["zh_label"] = lambda value, dimension: zh_label(dimension, value)
     templates.env.globals["http_trust_env"] = get_settings().http_trust_env
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
@@ -322,6 +324,34 @@ def create_app(
     @app.get("/sources", response_class=HTMLResponse)
     def sources(request: Request) -> HTMLResponse:
         return source_dashboard(request)
+
+    @app.get("/mixed-sources", response_class=HTMLResponse)
+    def mixed_sources(request: Request) -> HTMLResponse:
+        """Show catalog scope and persisted fetch evidence without running a fetch."""
+        try:
+            with create_session() as session:
+                dashboard = MixedSourceQueryService(session).build()
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        latest_run_at = max(
+            (
+                run.finished_at
+                for target in dashboard.targets
+                for run in target.recent_runs
+                if run.finished_at is not None
+            ),
+            default=None,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="mixed_sources.html",
+            context={
+                "dashboard": dashboard,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": latest_run_at,
+            },
+        )
 
     @app.get("/events", response_class=HTMLResponse)
     def events(request: Request, status: str | None = None) -> HTMLResponse:
