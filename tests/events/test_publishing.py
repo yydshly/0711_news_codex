@@ -14,7 +14,7 @@ from newsradar.db.models import (
 )
 from newsradar.events.publishing import EventPublisher
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import CandidateCluster, EventStatus
+from newsradar.events.schema import CandidateCluster, EventScoreInput, EventStatus
 
 
 @pytest.fixture
@@ -58,10 +58,24 @@ def candidate(db_session: Session):
     return record
 
 
+def real_score_input() -> EventScoreInput:
+    return EventScoreInput(
+        ai_relevance=90,
+        source_coverage=70,
+        source_authority=80,
+        recency=100,
+        engagement_velocity=40,
+        novelty=100,
+        reasons=("engagement:log_normalized",),
+    )
+
+
 def test_reader_sees_only_complete_version(db_session: Session, candidate) -> None:
     publisher = EventPublisher(EventRepository(db_session))
 
-    published = publisher.publish(candidate.id, operation_id=1)
+    published = publisher.publish(
+        candidate.id, operation_id=1, score_input=real_score_input()
+    )
 
     current = EventRepository(db_session).get_current_event(published.event_id)
     assert current is not None
@@ -70,6 +84,16 @@ def test_reader_sees_only_complete_version(db_session: Session, candidate) -> No
         select(EventScoreRecord).where(EventScoreRecord.event_id == published.event_id)
     )
     assert score is not None
+    assert score.breakdown["rule_version"] == "score-v2"
+    assert score.breakdown["ai_relevance"] == 90
+    assert db_session.get(EventRecord, published.event_id).visibility == "current"
+
+
+def test_publisher_rejects_missing_score_input(db_session: Session, candidate) -> None:
+    publisher = EventPublisher(EventRepository(db_session))
+
+    with pytest.raises(TypeError):
+        publisher.publish(candidate.id, operation_id=1)
 
 
 def test_publisher_reconstructs_official_evidence_for_persisted_candidate(
@@ -80,7 +104,9 @@ def test_publisher_reconstructs_official_evidence_for_persisted_candidate(
         (("official", "first_party", "https://official.test/release"),),
     )
 
-    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+    published = EventPublisher(EventRepository(db_session)).publish(
+        candidate.id, operation_id=1, score_input=real_score_input()
+    )
 
     assert published.status is EventStatus.CONFIRMED
     assert published.score is not None
@@ -98,7 +124,9 @@ def test_publisher_confirms_two_independent_professional_roots(
         ),
     )
 
-    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+    published = EventPublisher(EventRepository(db_session)).publish(
+        candidate.id, operation_id=1, score_input=real_score_input()
+    )
 
     assert published.status is EventStatus.CONFIRMED
     assert published.score is not None
@@ -111,7 +139,9 @@ def test_publisher_persists_evidence_limitations_in_score_reasons(db_session: Se
         (("research", "research", "https://arxiv.org/abs/1234.5678"),),
     )
 
-    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+    published = EventPublisher(EventRepository(db_session)).publish(
+        candidate.id, operation_id=1, score_input=real_score_input()
+    )
 
     score = db_session.scalar(
         select(EventScoreRecord).where(EventScoreRecord.event_id == published.event_id)
@@ -127,7 +157,9 @@ def test_publisher_marks_persisted_conflicting_candidate_as_disputed(db_session:
         reasons=("conflicting_action",),
     )
 
-    published = EventPublisher(EventRepository(db_session)).publish(candidate.id, operation_id=1)
+    published = EventPublisher(EventRepository(db_session)).publish(
+        candidate.id, operation_id=1, score_input=real_score_input()
+    )
 
     assert published.status is EventStatus.DISPUTED
 
@@ -141,7 +173,9 @@ def test_failure_before_version_switch_preserves_previous_readable_version(
 ) -> None:
     repository = EventRepository(db_session)
     publisher = EventPublisher(repository)
-    first = publisher.publish(candidate.id, operation_id=1)
+    first = publisher.publish(
+        candidate.id, operation_id=1, score_input=real_score_input()
+    )
     db_session.commit()
 
     def fail_before_switch(*_args: object) -> None:
@@ -150,7 +184,7 @@ def test_failure_before_version_switch_preserves_previous_readable_version(
     monkeypatch.setattr(repository, "before_current_version_switch", fail_before_switch)
 
     with pytest.raises(RuntimeError, match="injected publish failure"):
-        publisher.publish(candidate.id, operation_id=2)
+        publisher.publish(candidate.id, operation_id=2, score_input=real_score_input())
 
     db_session.rollback()
     current = repository.get_current_event(first.event_id)
@@ -158,6 +192,22 @@ def test_failure_before_version_switch_preserves_previous_readable_version(
     assert current.version_number == 1
     assert db_session.scalars(select(EventVersionRecord)).all()[0].version_number == 1
     assert db_session.get(EventRecord, first.event_id).current_version_number == 1
+
+
+def test_publisher_updates_legacy_event_to_current_visibility(
+    db_session: Session, candidate
+) -> None:
+    publisher = EventPublisher(EventRepository(db_session))
+    first = publisher.publish(
+        candidate.id, operation_id=1, score_input=real_score_input()
+    )
+    record = db_session.get(EventRecord, first.event_id)
+    record.visibility = "legacy"
+    db_session.commit()
+
+    publisher.publish(candidate.id, operation_id=2, score_input=real_score_input())
+
+    assert db_session.get(EventRecord, first.event_id).visibility == "current"
 
 
 def persisted_candidate(

@@ -23,7 +23,25 @@ def test_extract_entities_preserves_original_mention_and_normalizes_alias() -> N
     assert entities[0].entity_type is EntityType.ORGANIZATION
     assert entities[0].canonical_key == "organization:huggingface"
     assert entities[0].aliases == ("Hugging Face",)
-    assert ENTITY_RULE_VERSION == "entities-v1"
+    assert ENTITY_RULE_VERSION == "entities-v2"
+
+
+def test_extract_entities_identifies_named_core_object_for_cluster_v2() -> None:
+    entities = extract_entities(RawItemText(title="OpenAI launches Orion model"))
+
+    assert [(entity.entity_type, entity.canonical_key) for entity in entities] == [
+        (EntityType.ORGANIZATION, "organization:openai"),
+        (EntityType.MODEL, "model:orion"),
+    ]
+
+
+def test_model_object_identity_ignores_generic_ai_descriptor() -> None:
+    explicit_ai = extract_entities(
+        RawItemText(title="OpenAI launches Orion AI model")
+    )[-1]
+    plain = extract_entities(RawItemText(title="Orion model released by OpenAI"))[-1]
+
+    assert explicit_ai.canonical_key == plain.canonical_key == "model:orion"
 
 
 def test_extract_entities_does_not_treat_generic_ai_terms_as_organizations() -> None:

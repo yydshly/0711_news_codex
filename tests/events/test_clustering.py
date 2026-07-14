@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
 import pytest
 
@@ -52,11 +53,13 @@ def test_same_company_action_and_day_do_not_merge_different_object_entities() ->
     left = item(
         entities=("organization:acme", "model:alpha"),
         title="Acme launches Alpha",
+        publisher_name="Shared Publisher",
     )
     right = item(
         raw_item_id=2,
         entities=("organization:acme", "model:beta"),
         title="Acme launches Beta",
+        publisher_name="Shared Publisher",
     )
 
     decision = compare_items(left, right)
@@ -81,6 +84,50 @@ def test_same_company_action_and_shared_object_entity_is_a_compatible_weak_match
 
     assert decision.matched
     assert "shared_object_entity" in decision.reasons
+
+
+def test_cluster_v2_does_not_merge_shared_company_without_same_object_and_action() -> None:
+    left = item(
+        entities=("organization:openai", "model:orion"),
+        title="OpenAI launches Orion model",
+    )
+    right = item(
+        raw_item_id=2,
+        entities=("organization:openai", "organization:example"),
+        title="OpenAI acquires Example Corp",
+    )
+
+    assert compare_items(left, right).matched is False
+
+
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [(timedelta(hours=48), True), (timedelta(hours=48, seconds=1), False)],
+)
+def test_cluster_v2_requires_same_object_action_within_48_hours(
+    offset: timedelta, expected: bool
+) -> None:
+    left = item(
+        entities=("model:orion",),
+        title="OpenAI launches Orion model",
+    )
+    right = item(
+        raw_item_id=2,
+        entities=("model:orion",),
+        title="Orion model released: by OpenAI",
+        published_at=NOW + offset,
+    )
+
+    assert compare_items(left, right).matched is expected
+
+
+def test_title_fingerprint_needs_same_publisher_or_evidence_root() -> None:
+    left = item(title_fingerprint="same", publisher_name="Media A")
+    unrelated = item(raw_item_id=2, title_fingerprint="same", publisher_name="Media B")
+    same_publisher = unrelated.model_copy(update={"publisher_name": "Media A"})
+
+    assert compare_items(left, unrelated).matched is False
+    assert compare_items(left, same_publisher).matched is True
 
 
 def test_same_upstream_root_is_a_strong_match_without_explicit_object_entity() -> None:
@@ -162,18 +209,35 @@ def test_repository_and_paper_identity_override_conflicting_title_actions(identi
 
 
 def test_candidate_generation_only_merges_blocked_items_within_48_hours() -> None:
-    first = item(raw_item_id=1, title_fingerprint="model-x")
+    first = item(raw_item_id=1, title_fingerprint="model-x", publisher_name="Publisher")
     nearby = item(
-        raw_item_id=2, title_fingerprint="model-x", published_at=NOW + timedelta(hours=47)
+        raw_item_id=2,
+        title_fingerprint="model-x",
+        published_at=NOW + timedelta(hours=47),
+        publisher_name="Publisher",
     )
-    old = item(raw_item_id=3, title_fingerprint="model-x", published_at=NOW + timedelta(hours=49))
+    old = item(
+        raw_item_id=3,
+        title_fingerprint="model-x",
+        published_at=NOW + timedelta(hours=49),
+        publisher_name="Publisher",
+    )
     unblocked = item(raw_item_id=4, title="Model X coverage", published_at=NOW)
 
     clusters = cluster_candidates((old, unblocked, nearby, first))
 
-    assert CLUSTER_RULE_VERSION == "cluster-v1"
+    assert CLUSTER_RULE_VERSION == "cluster-v2"
     assert [cluster.raw_item_ids for cluster in clusters] == [(1, 2), (3,), (4,)]
     assert "same_title_fingerprint" in clusters[0].reasons
+
+
+def test_cluster_v2_candidate_identity_does_not_reuse_legacy_identity() -> None:
+    candidate_key = cluster_candidates((item(),))[0].candidate_key
+    legacy_value = "title:acme launches model x|launch|2026-07-12"
+    legacy_key = f"event-v2:{sha256(legacy_value.encode()).hexdigest()[:16]}"
+
+    assert candidate_key.startswith("event-v2:")
+    assert candidate_key != legacy_key
 
 
 def test_shared_generic_entity_is_not_a_blocking_key() -> None:

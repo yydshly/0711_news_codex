@@ -4,12 +4,7 @@ from __future__ import annotations
 
 from newsradar.events.evidence import assess_evidence
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import (
-    EventEnrichment,
-    EventScoreInput,
-    EvidenceAssessment,
-    PublishedEvent,
-)
+from newsradar.events.schema import EventEnrichment, EventScoreInput, PublishedEvent
 from newsradar.events.scoring import decide_publication, score_event
 
 
@@ -20,20 +15,31 @@ class EventPublisher:
         self.repository = repository
 
     def publish(
-        self, candidate_id: int, operation_id: int, enrichment: EventEnrichment | None = None
+        self,
+        candidate_id: int,
+        operation_id: int,
+        *,
+        score_input: EventScoreInput,
+        enrichment: EventEnrichment | None = None,
     ) -> PublishedEvent:
-        published = self.assemble(candidate_id, enrichment)
+        published = self.assemble(
+            candidate_id, score_input=score_input, enrichment=enrichment
+        )
         event = self.repository.publish_complete_event(published, operation_id)
         return published.model_copy(update={"event_id": event.id})
 
     def assemble(
-        self, candidate_id: int, enrichment: EventEnrichment | None = None
+        self,
+        candidate_id: int,
+        *,
+        score_input: EventScoreInput,
+        enrichment: EventEnrichment | None = None,
     ) -> PublishedEvent:
         """Build the complete deterministic snapshot without making it reader-visible."""
         candidate, source_item_ids = self.repository.get_candidate_for_publication(candidate_id)
         evidence = assess_evidence(candidate.items)
         decision = decide_publication(candidate, evidence)
-        score = score_event(_score_input(candidate.metadata, evidence))
+        score = score_event(score_input.model_copy(update={"evidence": evidence}))
         # A model is editorial assistance only.  This deterministic original-title
         # fallback is always complete, so an absent key or a model outage cannot
         # block a confirmed event or leave NULL reader-facing fields.
@@ -48,21 +54,6 @@ class EventPublisher:
             evidence=evidence,
             source_item_ids=source_item_ids,
         )
-
-
-def _score_input(metadata: dict, evidence: tuple[EvidenceAssessment, ...]) -> EventScoreInput:
-    values = metadata.get("score_input", {})
-    return EventScoreInput(
-        ai_relevance=values.get("ai_relevance", 0),
-        source_coverage=values.get("source_coverage", 0),
-        source_authority=values.get("source_authority", 0),
-        recency=values.get("recency", 0),
-        engagement_velocity=values.get("engagement_velocity", 0),
-        novelty=values.get("novelty", 0),
-        evidence=evidence,
-    )
-
-
 def rule_enrichment(candidate) -> EventEnrichment:
     title = candidate.title.strip() or "未命名 AI 事件"
     return EventEnrichment(

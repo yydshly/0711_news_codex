@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from newsradar.db.models import (
     EventItemRecord,
     EventRecord,
+    EventVersionRecord,
+    OperationRunRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
@@ -22,6 +24,7 @@ from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
 from newsradar.events.evidence import assess_evidence, count_suppressed_independent_roots
 from newsradar.events.minimax import EventMiniMaxAdapter, EventModelRun
 from newsradar.events.publishing import EventPublisher, rule_enrichment
+from newsradar.events.quality import build_score_input
 from newsradar.events.relevance import (
     CONTENT_MAX_CHARS,
     ITEM_KIND_MAX_CHARS,
@@ -40,12 +43,14 @@ from newsradar.events.schema import (
     RawItemText,
     RelevanceDecision,
 )
+from newsradar.events.scoring import SCORE_RULE_VERSION
 from newsradar.settings import get_settings
 
 ALGORITHM_VERSIONS = {
     "relevance": RELEVANCE_RULE_VERSION,
     "entities": ENTITY_RULE_VERSION,
     "cluster": CLUSTER_RULE_VERSION,
+    "score": SCORE_RULE_VERSION,
 }
 
 
@@ -71,6 +76,8 @@ class SelectionResult:
     exclusion_reasons: dict[str, int]
     decisions: tuple[tuple[int, RelevanceDecision], ...]
     included_texts: tuple[RawItemText, ...]
+    authority_by_item: dict[int, object]
+    engagement_by_item: dict[int, dict[str, object]]
 
 
 class EventPipeline:
@@ -89,8 +96,9 @@ class EventPipeline:
     ) -> PipelineResult:
         if window_hours <= 0:
             raise ValueError("window_hours must be positive")
+        snapshot_now = self._operation_window_end(operation_id)
         checkpoint("before_event_selection")
-        selection = self._select_and_classify_items(window_hours)
+        selection = self._select_and_classify_items(window_hours, now=snapshot_now)
         checkpoint("after_event_selection")
         self._record_relevance_decisions(selection)
         items = self._extract_and_record_entities(selection)
@@ -102,7 +110,16 @@ class EventPipeline:
             for candidate in candidates
         )
         event_ids, created_versions, model_fallback_count = self._publish(
-            candidates, operation_id, checkpoint
+            candidates,
+            operation_id,
+            checkpoint,
+            relevance_by_item={
+                raw_item_id: decision.score
+                for raw_item_id, decision in selection.decisions
+            },
+            authority_by_item=selection.authority_by_item,
+            engagement_by_item=selection.engagement_by_item,
+            now=snapshot_now,
         )
         checkpoint("after_event_publish")
         return PipelineResult(
@@ -164,7 +181,9 @@ class EventPipeline:
                         RawItemRecord.title_fingerprint.label("title_fingerprint"),
                         RawItemRecord.published_at.label("published_at"),
                         RawItemRecord.fetched_at.label("fetched_at"),
+                        RawItemRecord.engagement.label("engagement"),
                         SourceDefinitionRecord.nature.label("source_nature"),
+                        SourceDefinitionRecord.authority_score.label("authority_score"),
                         SourceDefinitionRecord.roles.label("source_roles"),
                         SourceDefinitionRecord.topics.label("source_topics"),
                     )
@@ -183,6 +202,8 @@ class EventPipeline:
         included_texts: list[RawItemText] = []
         decisions: list[tuple[int, RelevanceDecision]] = []
         exclusion_reasons: Counter[str] = Counter()
+        authority_by_item: dict[int, object] = {}
+        engagement_by_item: dict[int, dict[str, object]] = {}
         for row in rows:
             text = RawItemText(
                 raw_item_id=row["raw_item_id"],
@@ -199,6 +220,10 @@ class EventPipeline:
                 exclusion_reasons.update(decision.reasons)
                 continue
             included_texts.append(text)
+            authority_by_item[row["raw_item_id"]] = row["authority_score"]
+            engagement_by_item[row["raw_item_id"]] = _bounded_engagement(
+                row["engagement"]
+            )
             included.append(
                 ClusterItem(
                     raw_item_id=row["raw_item_id"],
@@ -221,7 +246,26 @@ class EventPipeline:
             exclusion_reasons=dict(sorted(exclusion_reasons.items())),
             decisions=tuple(decisions),
             included_texts=tuple(included_texts),
+            authority_by_item=authority_by_item,
+            engagement_by_item=engagement_by_item,
         )
+
+    def _operation_window_end(self, operation_id: int) -> datetime:
+        with self._session_factory() as session:
+            scope = session.scalar(
+                select(OperationRunRecord.requested_scope).where(
+                    OperationRunRecord.id == operation_id
+                )
+            )
+        if isinstance(scope, dict) and isinstance(scope.get("window_end"), str):
+            try:
+                window_end = datetime.fromisoformat(scope["window_end"])
+            except ValueError:
+                pass
+            else:
+                if window_end.tzinfo is not None:
+                    return window_end.astimezone(UTC)
+        return datetime.now(UTC)
 
     def _record_relevance_decisions(self, selection: SelectionResult) -> None:
         with self._session_factory() as session:
@@ -281,7 +325,17 @@ class EventPipeline:
             session.commit()
         return candidates
 
-    def _publish(self, candidates, operation_id: int, checkpoint: Callable[[str], None]):
+    def _publish(
+        self,
+        candidates,
+        operation_id: int,
+        checkpoint: Callable[[str], None],
+        *,
+        relevance_by_item: dict[int, object],
+        authority_by_item: dict[int, object],
+        engagement_by_item: dict[int, dict[str, object]],
+        now: datetime,
+    ):
         event_ids: list[int] = []
         created = 0
         model_fallback_count = 0
@@ -297,6 +351,8 @@ class EventPipeline:
                 existing = session.scalar(
                     select(EventRecord).where(EventRecord.canonical_key == candidate.candidate_key)
                 )
+                prior_event_exists = existing is not None
+                prior_evidence_roots = _prior_evidence_roots(session, existing)
                 if existing is not None and self._has_same_membership(
                     session, existing.id, candidate.raw_item_ids
                 ):
@@ -307,6 +363,18 @@ class EventPipeline:
                 ):
                     continue
                 candidate_id = candidate_record.id
+
+            evidence = assess_evidence(candidate.items)
+            score_input = build_score_input(
+                candidate=candidate,
+                evidence=evidence,
+                relevance_by_item=relevance_by_item,
+                authority_by_item=authority_by_item,
+                engagement_by_item=engagement_by_item,
+                now=now,
+                prior_event_exists=prior_event_exists,
+                prior_evidence_roots=prior_evidence_roots,
+            )
 
             # Network/model work is deliberately between short DB sessions.
             enrichment, model_runs = self._enrich(candidate)
@@ -327,7 +395,10 @@ class EventPipeline:
                         session.commit()
                         continue
                 published = EventPublisher(repository).publish(
-                    candidate_id, operation_id, enrichment
+                    candidate_id,
+                    operation_id,
+                    score_input=score_input,
+                    enrichment=enrichment,
                 )
                 if claimed_event_id is not None:
                     repository.release_event(claimed_event_id, operation_id)
@@ -389,6 +460,44 @@ def _bounded_values(
         value[:max_chars]
         for value in values[:max_count]
         if isinstance(value, str) and value
+    )
+
+
+def _bounded_engagement(values: object, *, max_count: int = 20) -> dict[str, object]:
+    if not isinstance(values, Mapping):
+        return {}
+    return {
+        key[:120]: value
+        for key, value in sorted(values.items())[:max_count]
+        if isinstance(key, str)
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    }
+
+
+def _prior_evidence_roots(
+    session: Session, event: EventRecord | None
+) -> frozenset[str]:
+    if event is None or event.current_version_number <= 0:
+        return frozenset()
+    version = session.scalar(
+        select(EventVersionRecord).where(
+            EventVersionRecord.event_id == event.id,
+            EventVersionRecord.version_number == event.current_version_number,
+        )
+    )
+    if version is None or not isinstance(version.payload, dict):
+        return frozenset()
+    evidence = version.payload.get("evidence")
+    if not isinstance(evidence, list):
+        return frozenset()
+    return frozenset(
+        root
+        for row in evidence
+        if isinstance(row, dict)
+        and row.get("independent") is True
+        and isinstance((root := row.get("root_evidence_key")), str)
+        and root
     )
 
 

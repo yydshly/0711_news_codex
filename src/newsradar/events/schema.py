@@ -146,6 +146,7 @@ class EventScoreInput(_Schema):
     engagement_velocity: float = Field(ge=0, le=100)
     novelty: float = Field(ge=0, le=100)
     evidence: tuple[EvidenceAssessment, ...] = ()
+    reasons: tuple[str, ...] = ()
 
 
 class ScoreBreakdown(_Schema):

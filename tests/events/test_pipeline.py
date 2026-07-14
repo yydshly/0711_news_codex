@@ -7,12 +7,14 @@ from newsradar.db.models import (
     Base,
     EventItemRecord,
     EventRecord,
+    EventScoreRecord,
     EventVersionRecord,
+    OperationRunRecord,
     RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
-from newsradar.events.pipeline import EventPipeline
+from newsradar.events.pipeline import ALGORITHM_VERSIONS, EventPipeline
 from newsradar.events.relevance import (
     CONTENT_MAX_CHARS,
     ITEM_KIND_MAX_CHARS,
@@ -26,6 +28,83 @@ from newsradar.events.repository import EventRepository
 from newsradar.events.schema import ProcessingStage
 from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
+
+
+def test_pipeline_exposes_all_v2_rule_versions() -> None:
+    assert ALGORITHM_VERSIONS == {
+        "relevance": "relevance-v2",
+        "entities": "entities-v2",
+        "cluster": "cluster-v2",
+        "score": "score-v2",
+    }
+
+
+def test_pipeline_scores_from_real_fields_using_operation_window_end() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    window_end = datetime(2025, 1, 4, 12, tzinfo=UTC)
+    with Session(engine) as db:
+        db.add(
+            SourceDefinitionRecord(
+                id="scored-source",
+                name="Scored Source",
+                status="active",
+                nature="first_party",
+                language="en",
+                roles=["evidence"],
+                topics=["ai"],
+                authority_score=4,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash="scored-source",
+            )
+        )
+        db.add(
+            RawItemRecord(
+                source_id="scored-source",
+                external_id="scored-item",
+                canonical_url="https://example.test/scored-item",
+                payload={},
+                title="OpenAI launches Orion AI model",
+                published_at=window_end - timedelta(hours=72),
+                fetched_at=window_end,
+                engagement={"score": 99, "invalid": -10},
+            )
+        )
+        operation = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="queued",
+            requested_scope={
+                "window_hours": 72,
+                "window_end": window_end.isoformat(),
+            },
+        )
+        db.add(operation)
+        db.commit()
+
+        result = EventPipeline.production(db).run(
+            window_hours=72,
+            operation_id=operation.id,
+            checkpoint=lambda _: None,
+        )
+        score = db.scalar(
+            select(EventScoreRecord).where(
+                EventScoreRecord.event_id == result.current_event_ids[0]
+            )
+        )
+        event_record = db.get(EventRecord, result.current_event_ids[0])
+
+    assert score is not None
+    assert score.breakdown["ai_relevance"] == 100
+    assert score.breakdown["source_coverage"] == 35
+    assert score.breakdown["source_authority"] == 80
+    assert score.breakdown["recency"] == 15
+    assert score.breakdown["engagement_velocity"] > 0
+    assert score.breakdown["novelty"] == 100
+    assert score.breakdown["rule_version"] == "score-v2"
+    assert event_record is not None
+    assert event_record.visibility == "current"
 
 
 def _source_record(*, topics: list[str] | None = None) -> SourceDefinitionRecord:

@@ -14,7 +14,7 @@ from newsradar.events.schema import (
     ScoreBreakdown,
 )
 
-SCORE_RULE_VERSION = "score-v1"
+SCORE_RULE_VERSION = "score-v2"
 CONFIRMATION_THRESHOLD = 70
 IMPORTANCE_WEIGHTS = {
     "ai_relevance": 0.25,
@@ -52,6 +52,7 @@ def score_event(input: EventScoreInput) -> ScoreBreakdown:
         rule_version=SCORE_RULE_VERSION,
         reasons=(
             "importance:versioned_weights",
+            *input.reasons,
             *credibility_reasons,
             *_limitation_reasons(input.evidence),
             "heat:60_importance_40_credibility",

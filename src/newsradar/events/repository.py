@@ -268,6 +268,7 @@ class EventRepository:
             if record is None:
                 record = EventRecord(
                     canonical_key=event.canonical_key,
+                    visibility=EventVisibility.CURRENT.value,
                     status=event.status.value,
                     category=event.category.value if event.category else None,
                     occurred_at=event.occurred_at,
@@ -300,6 +301,7 @@ class EventRepository:
             self.session.flush()
             self.before_current_version_switch(record, version)
             record.status = event.status.value
+            record.visibility = EventVisibility.CURRENT.value
             record.category = event.category.value if event.category else None
             record.occurred_at = event.occurred_at
             record.current_version_number = next_version

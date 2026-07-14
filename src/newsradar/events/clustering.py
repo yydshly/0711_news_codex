@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from hashlib import sha256
 
 from newsradar.events.schema import CandidateCluster, ClusterDecision, ClusterItem
 
-CLUSTER_RULE_VERSION = "cluster-v1"
+CLUSTER_RULE_VERSION = "cluster-v2"
 _CANDIDATE_WINDOW_SECONDS = 48 * 60 * 60
 _GENERIC_ENTITIES = frozenset({"ai", "agent", "api", "benchmark", "llm", "model"})
 _OBJECT_ENTITY_TYPES = frozenset({"product", "model", "paper", "dataset", "project"})
@@ -28,7 +29,11 @@ def compare_items(left: ClusterItem, right: ClusterItem) -> ClusterDecision:
     left_action, right_action = _action(left.title), _action(right.title)
     if score == 0 and left_action and right_action and left_action != right_action:
         return _decision(False, 0.0, ("conflicting_action",))
-    if left.title_fingerprint and left.title_fingerprint == right.title_fingerprint:
+    if (
+        left.title_fingerprint
+        and left.title_fingerprint == right.title_fingerprint
+        and _same_publisher_or_root(left, right)
+    ):
         reasons.append("same_title_fingerprint")
         score += 0.8
     score += _entity_action_similarity(left, right, left_action, right_action, reasons)
@@ -201,8 +206,17 @@ def _url_identities(item: ClusterItem) -> set[str]:
     return {value for value in (item.canonical_url, item.original_url) if value}
 
 
+def _same_publisher_or_root(left: ClusterItem, right: ClusterItem) -> bool:
+    same_publisher = bool(
+        left.publisher_name
+        and right.publisher_name
+        and left.publisher_name.casefold().strip() == right.publisher_name.casefold().strip()
+    )
+    return same_publisher or bool(_url_identities(left) & _url_identities(right))
+
+
 def _action(title: str) -> str | None:
-    tokens = set(title.casefold().replace("-", " ").split())
+    tokens = set(re.findall(r"[a-z0-9]+", title.casefold().replace("-", " ")))
     return next((name for name, words in _ACTION_GROUPS.items() if tokens & words), None)
 
 
@@ -238,7 +252,7 @@ def _candidate_key(items: tuple[ClusterItem, ...]) -> str:
     )
     action = _action(anchor.title) or "report"
     occurred = anchor.published_at or datetime(1970, 1, 1, tzinfo=UTC)
-    value = f"{primary}|{action}|{occurred.date().isoformat()}"
+    value = f"{CLUSTER_RULE_VERSION}|{primary}|{action}|{occurred.date().isoformat()}"
     return f"event-v2:{sha256(value.encode()).hexdigest()[:16]}"
 
 

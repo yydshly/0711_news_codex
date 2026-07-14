@@ -55,7 +55,15 @@ def test_importance_uses_versioned_weights() -> None:
     score = score_event(full_score_input())
 
     assert score.importance == 92
-    assert score.rule_version == SCORE_RULE_VERSION == "score-v1"
+    assert score.rule_version == SCORE_RULE_VERSION == "score-v2"
+
+
+def test_score_preserves_quality_input_reasons() -> None:
+    score_input = full_score_input().model_copy(
+        update={"reasons": ("engagement_unavailable",)}
+    )
+
+    assert "engagement_unavailable" in score_event(score_input).reasons
 
 
 def test_social_only_candidate_is_emerging_not_confirmed() -> None:

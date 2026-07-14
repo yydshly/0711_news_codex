@@ -25,6 +25,7 @@ from newsradar.events.schema import (
     ClusterItem,
     EventCategory,
     EventEnrichment,
+    EventScoreInput,
     EventStatus,
     PublishedEvent,
     RawItemText,
@@ -477,15 +478,20 @@ def _recluster_event(
     created_event_ids: list[int] = []
     publisher = EventPublisher(repository)
     if changed:
+        score_input = _event_score_input(repository, event)
         retained_snapshot = publisher.assemble(
-            candidate_ids[retained.candidate_key], _enrichment(repository, event)
+            candidate_ids[retained.candidate_key],
+            score_input=score_input,
+            enrichment=_enrichment(repository, event),
         ).model_copy(update={"event_id": event.id, "canonical_key": event.canonical_key})
         repository.publish_complete_event(retained_snapshot, lease.operation_id)
         for candidate in candidates:
             if candidate is retained:
                 continue
             published = publisher.publish(
-                candidate_ids[candidate.candidate_key], lease.operation_id
+                candidate_ids[candidate.candidate_key],
+                lease.operation_id,
+                score_input=score_input,
             )
             assert published.event_id is not None
             created_event_ids.append(published.event_id)
@@ -572,6 +578,21 @@ def _score(repository: EventRepository, event: EventRecord) -> ScoreBreakdown:
         ai_relevance=0, source_coverage=0, source_authority=0, recency=0,
         engagement_velocity=0, novelty=0, importance=0, credibility=0, heat=0,
         rule_version="manual-v1", reasons=("manual_event_action",),
+    )
+
+
+def _event_score_input(
+    repository: EventRepository, event: EventRecord
+) -> EventScoreInput:
+    score = _score(repository, event)
+    return EventScoreInput(
+        ai_relevance=score.ai_relevance,
+        source_coverage=score.source_coverage,
+        source_authority=score.source_authority,
+        recency=score.recency,
+        engagement_velocity=score.engagement_velocity,
+        novelty=score.novelty,
+        reasons=score.reasons,
     )
 
 

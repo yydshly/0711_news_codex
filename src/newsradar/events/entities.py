@@ -8,7 +8,7 @@ from collections.abc import Iterator
 
 from newsradar.events.schema import EntityType, ExtractedEntity, RawItemText
 
-ENTITY_RULE_VERSION = "entities-v1"
+ENTITY_RULE_VERSION = "entities-v2"
 
 _ORGANIZATION_ALIASES = {
     "anthropic": "Anthropic",
@@ -26,6 +26,10 @@ _ORGANIZATION_ALIASES = {
 _GENERIC_AI_TERMS = frozenset(
     {"agent", "ai", "api", "benchmark", "inference", "llm", "model", "multimodal"}
 )
+_GENERIC_OBJECT_NAME_WORDS = frozenset(
+    {"a", "an", "the", "new", "ai", "artificial", "generative", "intelligence"}
+)
+_GENERIC_OBJECT_SUFFIXES = frozenset({"ai", "generative", "llm"})
 
 
 def canonical_entity_key(name: str, entity_type: EntityType) -> str:
@@ -37,7 +41,7 @@ def canonical_entity_key(name: str, entity_type: EntityType) -> str:
 
 
 def extract_entities(item: RawItemText) -> tuple[ExtractedEntity, ...]:
-    """Extract known organizations in mention order without network or model calls."""
+    """Extract audited organizations and explicit named core objects deterministically."""
     text = " ".join(_item_text_parts(item))
     entities: list[ExtractedEntity] = []
     seen_keys: set[str] = set()
@@ -58,6 +62,19 @@ def extract_entities(item: RawItemText) -> tuple[ExtractedEntity, ...]:
                 confidence=1.0,
             )
         )
+    for mention, entity_type in _typed_object_mentions(text):
+        key = canonical_entity_key(mention, entity_type)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        entities.append(
+            ExtractedEntity(
+                canonical_key=key,
+                name=mention,
+                entity_type=entity_type,
+                confidence=0.9,
+            )
+        )
     return tuple(entities)
 
 
@@ -69,6 +86,29 @@ def _organization_mentions(text: str) -> Iterator[tuple[str, str]]:
             matches.append((match.start(), -len(match.group()), match.group(), canonical_name))
     for _, _, mention, canonical_name in sorted(matches):
         yield mention, canonical_name
+
+
+def _typed_object_mentions(text: str) -> Iterator[tuple[str, EntityType]]:
+    entity_types = {
+        "product": EntityType.PRODUCT,
+        "model": EntityType.MODEL,
+        "paper": EntityType.PAPER,
+        "dataset": EntityType.DATASET,
+        "project": EntityType.PROJECT,
+    }
+    pattern = re.compile(
+        r"(?<!\w)(?P<name>[A-Z][A-Za-z0-9.-]*(?:\s+[A-Z0-9][A-Za-z0-9.-]*){0,3})"
+        r"\s+(?P<kind>product|model|paper|dataset|project)\b"
+    )
+    for match in pattern.finditer(text):
+        mention_words = match.group("name").strip(" .-").split()
+        while len(mention_words) > 1 and mention_words[-1].casefold() in _GENERIC_OBJECT_SUFFIXES:
+            mention_words.pop()
+        mention = " ".join(mention_words)
+        normalized = _normalized_name(mention)
+        if normalized in _GENERIC_AI_TERMS or set(normalized.split()) <= _GENERIC_OBJECT_NAME_WORDS:
+            continue
+        yield mention, entity_types[match.group("kind").casefold()]
 
 
 def _normalized_name(value: str) -> str:
