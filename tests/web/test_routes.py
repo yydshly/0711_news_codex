@@ -401,6 +401,7 @@ def test_dashboard_shows_end_to_end_capability_and_real_outputs(client: TestClie
     assert 'href="/events/9"' in response.text
     assert "数据库现有 1 个历史事件" in response.text
     assert "聚合为 1 个事件" not in response.text
+    assert "close-coverage" not in response.text
 
 
 def test_capability_dashboard_never_exposes_sensitive_values(client: TestClient):

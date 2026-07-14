@@ -21,6 +21,15 @@ from newsradar.db.models import (
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.events.runtime import EventOperationHandler
+from newsradar.ingestion.coverage_closure_reporting import (
+    COVERAGE_CLOSURE_V1_BASELINE_SOURCE_IDS,
+    CatalogAdjustment,
+    render_coverage_closure_report,
+)
+from newsradar.ingestion.coverage_closure_runtime import (
+    COVERAGE_CLOSURE_TRIGGER,
+    CoverageClosureService,
+)
 from newsradar.ingestion.trial import evaluate_trial_eligibility
 from newsradar.local_postgres import (
     LocalPostgresError,
@@ -589,6 +598,101 @@ def report_sources(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_source_report(sources), encoding="utf-8")
     typer.echo(f"Wrote source report to {output}")
+
+
+@sources_app.command("close-coverage")
+def close_source_coverage(
+    root: RootOption = Path("sources"),
+    execute: Annotated[bool, typer.Option("--execute/--no-execute")] = False,
+    wait: Annotated[bool, typer.Option("--wait/--no-wait")] = False,
+    max_items: Annotated[int, typer.Option("--max-items", min=1, max=5)] = 5,
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        "reports/source-coverage-closure-v1.md"
+    ),
+) -> None:
+    """Plan or execute bounded trial fetches for uncovered ready direct sources."""
+    if wait and not execute:
+        typer.echo("--wait 必须与 --execute 一起使用")
+        raise typer.Exit(2)
+
+    sources = load_source_tree(root)
+    if not execute:
+        with create_session() as session:
+            plan = CoverageClosureService(session).plan(sources)
+        typer.echo(_coverage_plan_summary(plan))
+        typer.echo("仅预览，未写入数据库、未创建抓取任务。")
+        return
+
+    with create_session() as session:
+        repository = SourceRepository(session)
+        repository.sync(sources)
+        session.commit()
+        service = CoverageClosureService(session)
+        before = service.plan(sources)
+        before_evidence = service.evidence(COVERAGE_CLOSURE_V1_BASELINE_SOURCE_IDS)
+        operations = service.enqueue(
+            before,
+            max_items=max_items,
+            trigger=COVERAGE_CLOSURE_TRIGGER,
+        )
+        for operation in operations:
+            if operation.operation_id:
+                typer.echo(f"已创建操作 {operation.operation_id}：{operation.source_id}")
+            else:
+                typer.echo(f"未创建操作：{operation.source_id}（{operation.status}）")
+        if not wait:
+            typer.echo("任务已入队，未等待终态；未生成验收报告。")
+            return
+        terminals = service.wait(operations)
+        after = service.plan(sources)
+        operation_ids = [
+            operation.operation_id for operation in terminals if operation.operation_id
+        ]
+        after_evidence = service.evidence(
+            COVERAGE_CLOSURE_V1_BASELINE_SOURCE_IDS,
+            operation_ids=operation_ids,
+        )
+
+    for operation in terminals:
+        typer.echo(f"操作 {operation.operation_id}：{operation.status}")
+    report = render_coverage_closure_report(
+        before=before,
+        after=after,
+        operations=terminals,
+        before_evidence=before_evidence,
+        after_evidence=after_evidence,
+        adjustments=(
+            CatalogAdjustment(
+                source_id="qwen3-releases",
+                conclusion="退出就绪直连统计",
+                evidence="官方 Releases 端点当前没有条目，HTTP 200 空数组不算内容覆盖。",
+                next_action="官方仓库出现 Release 后重新探测。",
+            ),
+        ),
+        generated_at=datetime.now(UTC),
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report, encoding="utf-8")
+    typer.echo(f"已写入来源覆盖收口报告：{output}")
+    failure_statuses = {
+        "enqueue_failed",
+        "operation_in_progress",
+        "failed",
+        "cancelled",
+        "partial",
+        "interrupted",
+        "timed_out",
+        "missing",
+    }
+    if any(operation.status in failure_statuses for operation in terminals):
+        raise typer.Exit(1)
+
+
+def _coverage_plan_summary(plan) -> str:
+    return (
+        f"范围内：{len(plan.entries)}；已覆盖：{len(plan.covered)}；"
+        f"可入队：{len(plan.queueable)}；阻塞：{len(plan.blocked)}"
+    )
 
 
 @remediate_app.command("snapshot")
