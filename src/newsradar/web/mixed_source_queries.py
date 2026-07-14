@@ -241,7 +241,6 @@ class MixedSourceQueryService:
         raw: tuple[int, datetime | None],
     ) -> MixedSourceTarget:
         latest = runs[0] if runs else None
-        state = _classify(source, latest)
         run_views = tuple(
             MixedSourceRun(
                 outcome=run.outcome,
@@ -253,6 +252,7 @@ class MixedSourceQueryService:
         )
         outcomes = tuple(run.outcome for run in runs)
         stable = len(outcomes) == 3 and all(value in _STABLE_OUTCOMES for value in outcomes)
+        state = _classify(source, latest, three_run_stable=stable)
         conclusion, next_action = _explain(state, source, latest)
         return MixedSourceTarget(
             source_id=source.id,
@@ -278,20 +278,29 @@ class MixedSourceQueryService:
 
 
 def _classify(
-    source: SourceDefinitionRecord, latest: FetchRunRecord | None
+    source: SourceDefinitionRecord,
+    latest: FetchRunRecord | None,
+    *,
+    three_run_stable: bool,
 ) -> MixedSourceState:
-    if source.availability != "ready" or (latest and latest.outcome == "blocked"):
+    if latest and latest.outcome == "blocked":
         return MixedSourceState.BLOCKED
-    if source.status == "degraded" or (latest and latest.outcome == "partial"):
+    if latest and latest.outcome == "partial":
         return MixedSourceState.DEGRADED
     if latest and latest.outcome == "failed":
         return MixedSourceState.FAILED
     if latest and latest.outcome in _STABLE_OUTCOMES:
+        if source.status == "degraded" and not three_run_stable:
+            return MixedSourceState.DEGRADED
         return (
             MixedSourceState.INDIRECT_READY
             if source.coverage_mode == "indirect"
             else MixedSourceState.DIRECT_READY
         )
+    if source.availability != "ready":
+        return MixedSourceState.BLOCKED
+    if source.status == "degraded":
+        return MixedSourceState.DEGRADED
     return MixedSourceState.NOT_RUN
 
 

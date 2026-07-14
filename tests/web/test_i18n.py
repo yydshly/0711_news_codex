@@ -8,6 +8,9 @@ def test_zh_label_covers_dashboard_enums():
     assert zh_label("coverage_mode", "indirect") == "间接发现"
     assert zh_label("probe_type", "capability") == "能力探测"
     assert zh_label("target_type", "community") == "社区"
+    assert zh_label("outcome", "succeeded") == "成功"
+    assert zh_label("outcome", "no_change") == "无变化"
+    assert zh_label("outcome", "partial") == "部分成功"
 
 
 def test_probe_outcome_options_match_domain_enum_and_all_have_chinese_labels():

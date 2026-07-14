@@ -65,6 +65,9 @@ LABELS: dict[str, dict[str, str]] = {
     },
     "outcome": {
         "success": "成功",
+        "succeeded": "成功",
+        "no_change": "无变化",
+        "partial": "部分成功",
         "degraded": "降级",
         "blocked": "受阻",
         "failed": "失败",

@@ -80,6 +80,18 @@ class RawItemDetail:
     published_at: datetime | None
     first_seen_at: datetime | None
     last_seen_at: datetime | None
+    authors: tuple[str, ...]
+    summary: str | None
+    content: str | None
+    language: str | None
+    content_type: str | None
+    source_updated_at: datetime | None
+    discussion_url: str | None
+    engagement: Mapping[str, object]
+    item_kind: str | None
+    publisher_name: str | None
+    publisher_url: str | None
+    origin_resolution_status: str | None
     payload: Mapping[str, object]
     versions: tuple[RawItemVersionRow, ...]
 
@@ -253,6 +265,18 @@ class ItemQueryService:
             published_at=item.published_at,
             first_seen_at=item.first_seen_at,
             last_seen_at=item.last_seen_at,
+            authors=tuple(item.authors or ()),
+            summary=item.summary,
+            content=item.content,
+            language=item.language,
+            content_type=item.content_type,
+            source_updated_at=item.source_updated_at,
+            discussion_url=item.discussion_url,
+            engagement=_freeze_mapping(item.engagement or {}),
+            item_kind=item.item_kind,
+            publisher_name=item.publisher_name,
+            publisher_url=item.publisher_url,
+            origin_resolution_status=item.origin_resolution_status,
             payload=_freeze_mapping(item.payload),
             versions=tuple(
                 RawItemVersionRow(

@@ -1,4 +1,57 @@
 {% extends "base.html" %}
 {% block title %}条目详情 · News Codex{% endblock %}
 {% block header %}<h1>条目详情</h1>{% endblock %}
-{% block content %}<section class="panel"><h2>{{ item.title }}</h2><p>来源：{{ item.source_name }}（{{ item.provider_id }}）</p><p><a href="{{ item.canonical_url }}" target="_blank" rel="noopener noreferrer">原始链接</a></p><p>首次发现：{{ item.first_seen_at or '—' }}；最后发现：{{ item.last_seen_at or '—' }}</p></section><section class="panel"><h2>内容版本</h2>{% if item.versions %}<ul>{% for version in item.versions %}<li>#{{ version.snapshot_id }} · {{ version.created_at }} · {{ version.content_hash }}</li>{% endfor %}</ul>{% else %}<p>暂无版本快照。</p>{% endif %}</section>{% endblock %}
+{% block content %}
+<div class="detail-page">
+  <section class="panel">
+    <p class="eyebrow">规范化原始信息</p>
+    <h2>{{ item.title }}</h2>
+    <div class="tag-list">
+      <span>来源：{{ item.source_name }}</span>
+      <span>Provider：{{ item.provider_id }}</span>
+      {% if item.item_kind %}<span>类型：{{ item.item_kind }}</span>{% endif %}
+      {% if item.language %}<span>语言：{{ item.language }}</span>{% endif %}
+    </div>
+    <dl class="detail-grid">
+      <div><dt>发布时间</dt><dd>{{ item.published_at or '—' }}</dd></div>
+      <div><dt>首次发现</dt><dd>{{ item.first_seen_at or '—' }}</dd></div>
+      <div><dt>最后发现</dt><dd>{{ item.last_seen_at or '—' }}</dd></div>
+      <div><dt>原始归属状态</dt><dd>{{ item.origin_resolution_status or '—' }}</dd></div>
+      <div><dt>作者</dt><dd>{{ item.authors | join('、') if item.authors else '—' }}</dd></div>
+      <div><dt>发布方</dt><dd>{{ item.publisher_name or '—' }}</dd></div>
+    </dl>
+    <p class="link-list">
+      <a href="{{ item.canonical_url }}" target="_blank" rel="noopener noreferrer">打开原始链接</a>
+      {% if item.discussion_url %}<a href="{{ item.discussion_url }}" target="_blank" rel="noopener noreferrer">打开讨论页</a>{% endif %}
+      {% if item.discovery_url %}<a href="{{ item.discovery_url }}" target="_blank" rel="noopener noreferrer">打开发现入口</a>{% endif %}
+      {% if item.publisher_url %}<a href="{{ item.publisher_url }}" target="_blank" rel="noopener noreferrer">打开发布方</a>{% endif %}
+    </p>
+  </section>
+
+  {% if item.summary or item.content %}
+  <section class="panel">
+    <h2>内容</h2>
+    {% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
+    {% if item.content %}<div class="normalized-content">{{ item.content }}</div>{% endif %}
+  </section>
+  {% endif %}
+
+  {% if item.engagement %}
+  <section class="panel">
+    <h2>互动数据</h2>
+    <dl class="detail-grid">
+      {% for key, value in item.engagement.items() %}
+      <div><dt>{{ key }}</dt><dd>{{ value }}</dd></div>
+      {% endfor %}
+    </dl>
+  </section>
+  {% endif %}
+
+  <section class="panel">
+    <h2>内容版本</h2>
+    {% if item.versions %}
+    <ul>{% for version in item.versions %}<li>#{{ version.snapshot_id }} · {{ version.created_at }} · {{ version.content_hash }}</li>{% endfor %}</ul>
+    {% else %}<p>暂无版本快照。</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -48,7 +48,11 @@
               {% else %}<span class="muted">尚未运行</span>{% endif %}
               {% if target.three_run_stable %}<br><small>已连续三轮稳定</small>{% endif %}
             </td>
-            <td>{{ target.raw_item_count }}{% if target.latest_content_at %}<br><small>最新：{{ target.latest_content_at.strftime('%Y-%m-%d %H:%M') }}</small>{% endif %}</td>
+            <td>
+              {{ target.raw_item_count }}{% if target.latest_content_at %}<br><small>最新：{{ target.latest_content_at.strftime('%Y-%m-%d %H:%M') }}</small>{% endif %}
+              <br><a href="/items?source_id={{ target.source_id }}">查看原始条目</a>
+              · <a href="/fetch-runs?source_id={{ target.source_id }}">查看抓取批次</a>
+            </td>
             <td class="wrap-cell">{{ target.conclusion_zh }}<br><small>下一步：{{ target.next_action_zh }}</small></td>
           </tr>
         {% endfor %}

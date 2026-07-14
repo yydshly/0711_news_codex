@@ -39,7 +39,7 @@ def _source(
 
 def _seed_mixed_sources(db_session) -> None:
     sources = (
-        _source("openai-youtube"),
+        _source("openai-youtube", availability="requires_credentials"),
         _source("universe-reuters-2", coverage="indirect"),
         _source("reddit-localllama", availability="requires_credentials"),
         _source("gdelt-ai", status="degraded"),

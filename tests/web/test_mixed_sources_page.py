@@ -29,7 +29,7 @@ def _dashboard() -> MixedSourceDashboard:
         recent_runs=(),
         three_run_outcomes=(),
         three_run_stable=False,
-        raw_item_count=0,
+        raw_item_count=18,
         latest_content_at=None,
         latest_error_code="missing_credentials",
         conclusion_zh="接口已登记，但尚未获得真实内容。",
@@ -64,6 +64,8 @@ def test_mixed_sources_page_explains_scope_evidence_and_next_steps(monkeypatch) 
     assert "等待凭据或权限" in response.text
     assert "配置本地环境变量后运行受控抓取" in response.text
     assert 'href="/mixed-sources" aria-current="page"' in response.text
+    assert 'href="/items?source_id=openai-youtube"' in response.text
+    assert 'href="/fetch-runs?source_id=openai-youtube"' in response.text
 
 
 def test_mixed_sources_page_does_not_expose_urls_or_credentials(monkeypatch) -> None:
