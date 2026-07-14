@@ -98,7 +98,7 @@ def test_enqueue_fetch_persists_operation_deadline() -> None:
 
 
 def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> None:
-    now = datetime(2026, 7, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 12, 0, 37, 12, tzinfo=UTC)
     with session() as db:
         operation_id = OperationCommandService(db, utcnow=lambda: now).enqueue_event_pipeline(
             window_hours=24, trigger="cli"
@@ -108,5 +108,6 @@ def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> No
         assert record is not None
         assert record.operation_type == "event_pipeline"
         assert record.requested_scope["window_hours"] == 24
+        assert record.requested_scope["window_end"] == now.isoformat()
         assert record.requested_scope["algorithm_versions"]
         assert record.requested_scope["idempotency_key"]

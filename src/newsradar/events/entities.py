@@ -27,7 +27,17 @@ _GENERIC_AI_TERMS = frozenset(
     {"agent", "ai", "api", "benchmark", "inference", "llm", "model", "multimodal"}
 )
 _GENERIC_OBJECT_NAME_WORDS = frozenset(
-    {"a", "an", "the", "new", "ai", "artificial", "generative", "intelligence"}
+    {
+        "a",
+        "an",
+        "the",
+        "new",
+        "ai",
+        "artificial",
+        "generative",
+        "github",
+        "intelligence",
+    }
 )
 _GENERIC_OBJECT_SUFFIXES = frozenset({"ai", "generative", "llm"})
 
@@ -75,6 +85,23 @@ def extract_entities(item: RawItemText) -> tuple[ExtractedEntity, ...]:
                 confidence=0.9,
             )
         )
+    for mention, entity_type in (
+        *_known_model_mentions(text),
+        *_paper_mentions(text),
+        *_repository_mentions(text),
+    ):
+        key = canonical_entity_key(mention, entity_type)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        entities.append(
+            ExtractedEntity(
+                canonical_key=key,
+                name=mention,
+                entity_type=entity_type,
+                confidence=1.0,
+            )
+        )
     return tuple(entities)
 
 
@@ -109,6 +136,46 @@ def _typed_object_mentions(text: str) -> Iterator[tuple[str, EntityType]]:
         if normalized in _GENERIC_AI_TERMS or set(normalized.split()) <= _GENERIC_OBJECT_NAME_WORDS:
             continue
         yield mention, entity_types[match.group("kind").casefold()]
+
+
+def _known_model_mentions(text: str) -> tuple[tuple[str, EntityType], ...]:
+    patterns = (
+        r"\bGPT-\d+(?:\.\d+)?(?:-[A-Za-z0-9]+)?\b",
+        r"\bClaude\s+\d+(?:\.\d+)?(?:\s+(?:Sonnet|Opus|Haiku))?\b",
+        r"\bGemini\s+\d+(?:\.\d+)?(?:\s+(?:Pro|Flash|Ultra))?\b",
+        r"\bQwen-?\d+(?:\.\d+)?(?:-[A-Za-z0-9]+)?\b",
+        r"\bDeepSeek-?(?:R\d+|V\d+(?:\.\d+)?)\b",
+    )
+    matches: list[tuple[int, str]] = []
+    for pattern in patterns:
+        matches.extend(
+            (match.start(), match.group())
+            for match in re.finditer(pattern, text, re.IGNORECASE)
+        )
+    return tuple(
+        (mention, EntityType.MODEL) for _, mention in sorted(set(matches))
+    )
+
+
+def _paper_mentions(text: str) -> tuple[tuple[str, EntityType], ...]:
+    patterns = (
+        re.compile(r"[\"“](?P<title>[^\"”\n]{10,240})[\"”]\s+paper\b", re.IGNORECASE),
+        re.compile(r"\bpaper\s+[\"“](?P<title>[^\"”\n]{10,240})[\"”]", re.IGNORECASE),
+    )
+    matches = {
+        (match.start("title"), match.group("title").strip())
+        for pattern in patterns
+        for match in pattern.finditer(text)
+    }
+    return tuple((title, EntityType.PAPER) for _, title in sorted(matches))
+
+
+def _repository_mentions(text: str) -> tuple[tuple[str, EntityType], ...]:
+    matches = re.finditer(
+        r"(?<![\w/])(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?![\w/])",
+        text,
+    )
+    return tuple((match.group("repo"), EntityType.PROJECT) for match in matches)
 
 
 def _normalized_name(value: str) -> str:

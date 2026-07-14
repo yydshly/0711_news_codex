@@ -186,9 +186,9 @@ class OperationCommandService:
             raise ValueError("window_hours must be positive")
         now = self._utcnow()
         versions = {"relevance": "relevance-v1", "entities": "entities-v1", "cluster": "cluster-v1"}
-        window_end = now.replace(minute=0, second=0, microsecond=0)
+        window_bucket = now.replace(minute=0, second=0, microsecond=0)
         key_parts = {
-            "window_end": window_end.isoformat(),
+            "window_end": window_bucket.isoformat(),
             "window_hours": window_hours,
             "versions": versions,
         }
@@ -196,7 +196,7 @@ class OperationCommandService:
             "actor": trigger,
             "window_hours": window_hours,
             "algorithm_versions": versions,
-            "window_end": window_end.isoformat(),
+            "window_end": now.isoformat(),
             "idempotency_key": "event-pipeline:"
             + sha256(dumps(key_parts, sort_keys=True).encode()).hexdigest(),
             "deadline_at": (

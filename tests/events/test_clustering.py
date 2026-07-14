@@ -7,7 +7,8 @@ import pytest
 
 from newsradar.events import clustering
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates, compare_items
-from newsradar.events.schema import ClusterItem
+from newsradar.events.entities import extract_entities
+from newsradar.events.schema import ClusterItem, RawItemText
 
 NOW = datetime(2026, 7, 12, 12, tzinfo=UTC)
 
@@ -240,6 +241,90 @@ def test_cluster_v2_candidate_identity_does_not_reuse_legacy_identity() -> None:
     assert candidate_key != legacy_key
 
 
+def test_core_identity_is_object_and_action_independent_of_event_day() -> None:
+    first = cluster_candidates(
+        (
+            item(
+                entities=("model:orion",),
+                title="OpenAI launches Orion model",
+                published_at=NOW,
+            ),
+        )
+    )[0]
+    later = cluster_candidates(
+        (
+            item(
+                raw_item_id=2,
+                entities=("model:orion",),
+                title="Orion model released by OpenAI",
+                published_at=NOW + timedelta(days=3),
+            ),
+        )
+    )[0]
+
+    assert first.candidate_key != later.candidate_key
+    assert first.metadata["_core_identity"] == later.metadata["_core_identity"]
+    assert first.metadata["_core_identity"] == "model:orion|launch"
+
+
+def test_candidates_without_a_core_object_do_not_share_a_novelty_identity() -> None:
+    candidate = cluster_candidates(
+        (item(title="A general AI industry report", entities=("organization:openai",)),)
+    )[0]
+
+    assert candidate.metadata["_core_identity"] is None
+
+
+@pytest.mark.parametrize("identity", ["canonical_url", "repository_id", "paper_id"])
+def test_immutable_identity_candidate_key_does_not_depend_on_date_or_anchor(
+    identity: str,
+) -> None:
+    value = "https://official.test/release" if identity == "canonical_url" else "shared-id"
+    first = cluster_candidates(
+        (item(raw_item_id=1, published_at=NOW, **{identity: value}),)
+    )[0]
+    later = cluster_candidates(
+        (item(raw_item_id=99, published_at=NOW + timedelta(days=10), **{identity: value}),)
+    )[0]
+
+    assert first.candidate_key == later.candidate_key
+
+
+def test_real_gpt5_titles_with_different_urls_cluster_by_model_and_action() -> None:
+    left_title = "OpenAI releases GPT-5 for developers"
+    right_title = "GPT-5 model released with new coding capabilities"
+    left_entities = tuple(
+        entity.canonical_key
+        for entity in extract_entities(RawItemText(title=left_title))
+    )
+    right_entities = tuple(
+        entity.canonical_key
+        for entity in extract_entities(RawItemText(title=right_title))
+    )
+
+    clusters = cluster_candidates(
+        (
+            item(
+                raw_item_id=1,
+                title=left_title,
+                canonical_url="https://official.test/gpt5",
+                entities=left_entities,
+            ),
+            item(
+                raw_item_id=2,
+                title=right_title,
+                canonical_url="https://media.test/gpt5",
+                entities=right_entities,
+                published_at=NOW + timedelta(hours=3),
+            ),
+        )
+    )
+
+    assert [cluster.raw_item_ids for cluster in clusters] == [(1, 2)]
+    assert "model:gpt-5" in left_entities
+    assert "model:gpt-5" in right_entities
+
+
 def test_shared_generic_entity_is_not_a_blocking_key() -> None:
     left = item(raw_item_id=1, entities=("organization:model",))
     right = item(raw_item_id=2, entities=("organization:model",))
@@ -265,3 +350,34 @@ def test_candidate_generation_compares_only_shared_blocking_buckets(monkeypatch)
     cluster_candidates((first, second, *unrelated))
 
     assert compared == [(1, 2)]
+
+
+@pytest.mark.parametrize("count", [100, 200])
+def test_dense_component_window_check_does_not_rescan_members(
+    monkeypatch, count: int
+) -> None:
+    find_calls = 0
+    real_find = clustering._find
+
+    def recording_find(parents: list[int], index: int) -> int:
+        nonlocal find_calls
+        find_calls += 1
+        return real_find(parents, index)
+
+    monkeypatch.setattr(clustering, "_find", recording_find)
+    dense = tuple(
+        item(
+            raw_item_id=index,
+            title="Orion model released",
+            entities=("model:orion",),
+            published_at=NOW + timedelta(minutes=index),
+        )
+        for index in range(1, count + 1)
+    )
+
+    clusters = cluster_candidates(dense)
+
+    assert [cluster.raw_item_ids for cluster in clusters] == [
+        tuple(range(1, count + 1))
+    ]
+    assert find_calls <= 10 * count * count

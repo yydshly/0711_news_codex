@@ -14,7 +14,19 @@ _GENERIC_ENTITIES = frozenset({"ai", "agent", "api", "benchmark", "llm", "model"
 _OBJECT_ENTITY_TYPES = frozenset({"product", "model", "paper", "dataset", "project"})
 _ACTION_GROUPS = {
     "launch": frozenset(
-        {"announce", "announced", "launch", "launches", "launched", "release", "released"}
+        {
+            "announce",
+            "announced",
+            "launch",
+            "launches",
+            "launched",
+            "release",
+            "releases",
+            "released",
+            "unveil",
+            "unveils",
+            "unveiled",
+        }
     ),
     "acquire": frozenset({"acquire", "acquires", "acquired", "acquisition"}),
     "partner": frozenset({"partner", "partners", "partnership"}),
@@ -45,11 +57,25 @@ def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster
     """Union matching pairs only when a blocking key and 48-hour window permit it."""
     ordered = tuple(sorted(items, key=lambda item: item.raw_item_id))
     parents = list(range(len(ordered)))
+    component_min = [item.published_at for item in ordered]
+    component_max = [item.published_at for item in ordered]
     reasons_by_index: list[set[str]] = [set() for _ in ordered]
     for left_index, right_index in _candidate_pairs(ordered):
         decision = compare_items(ordered[left_index], ordered[right_index])
-        if decision.matched and _can_union_within_window(parents, ordered, left_index, right_index):
-            _union(parents, left_index, right_index)
+        if decision.matched and _can_union_within_window(
+            parents,
+            component_min,
+            component_max,
+            left_index,
+            right_index,
+        ):
+            _union(
+                parents,
+                component_min,
+                component_max,
+                left_index,
+                right_index,
+            )
             reasons_by_index[left_index].update(decision.reasons)
             reasons_by_index[right_index].update(decision.reasons)
 
@@ -70,6 +96,7 @@ def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster
                 items=members,
                 raw_item_ids=ids,
                 reasons=cluster_reasons,
+                metadata={"_core_identity": _core_identity(members)},
                 occurred_at=min(
                     (member.published_at for member in members if member.published_at is not None),
                     default=datetime(1970, 1, 1, tzinfo=UTC),
@@ -252,8 +279,32 @@ def _candidate_key(items: tuple[ClusterItem, ...]) -> str:
     )
     action = _action(anchor.title) or "report"
     occurred = anchor.published_at or datetime(1970, 1, 1, tzinfo=UTC)
-    value = f"{CLUSTER_RULE_VERSION}|{primary}|{action}|{occurred.date().isoformat()}"
+    if primary.startswith(("repository:", "paper:", "root:", "url:")):
+        value = f"{CLUSTER_RULE_VERSION}|{primary}"
+    else:
+        value = f"{CLUSTER_RULE_VERSION}|{primary}|{action}|{occurred.date().isoformat()}"
     return f"event-v2:{sha256(value.encode()).hexdigest()[:16]}"
+
+
+def _core_identity(items: tuple[ClusterItem, ...]) -> str | None:
+    object_sets = tuple(
+        {
+            entity
+            for entity in _non_generic_entities(item.entities)
+            if _entity_type(entity) in _OBJECT_ENTITY_TYPES
+        }
+        for item in items
+    )
+    shared_objects = set.intersection(*object_sets) if object_sets else set()
+    if not shared_objects:
+        shared_objects = set().union(*object_sets) if object_sets else set()
+    if not shared_objects:
+        return None
+    primary = min(shared_objects)
+    actions = {_action(item.title) for item in items}
+    actions.discard(None)
+    action = min(actions, default="report")
+    return f"{primary}|{action}"
 
 
 def _find(parents: list[int], index: int) -> int:
@@ -262,22 +313,44 @@ def _find(parents: list[int], index: int) -> int:
     return parents[index]
 
 
-def _union(parents: list[int], left: int, right: int) -> None:
+def _union(
+    parents: list[int],
+    component_min: list[datetime | None],
+    component_max: list[datetime | None],
+    left: int,
+    right: int,
+) -> None:
     left_root, right_root = _find(parents, left), _find(parents, right)
     if left_root != right_root:
         parents[right_root] = left_root
+        left_min, right_min = component_min[left_root], component_min[right_root]
+        left_max, right_max = component_max[left_root], component_max[right_root]
+        component_min[left_root] = min(
+            value for value in (left_min, right_min) if value is not None
+        )
+        component_max[left_root] = max(
+            value for value in (left_max, right_max) if value is not None
+        )
 
 
 def _can_union_within_window(
-    parents: list[int], items: tuple[ClusterItem, ...], left: int, right: int
+    parents: list[int],
+    component_min: list[datetime | None],
+    component_max: list[datetime | None],
+    left: int,
+    right: int,
 ) -> bool:
     left_root, right_root = _find(parents, left), _find(parents, right)
-    left_members = tuple(index for index in range(len(items)) if _find(parents, index) == left_root)
-    right_members = tuple(
-        index for index in range(len(items)) if _find(parents, index) == right_root
+    if left_root == right_root:
+        return True
+    timestamps = (
+        component_min[left_root],
+        component_min[right_root],
+        component_max[left_root],
+        component_max[right_root],
     )
-    return all(
-        _within_candidate_window(items[left_index], items[right_index])
-        for left_index in left_members
-        for right_index in right_members
+    if any(value is None for value in timestamps):
+        return False
+    return (max(timestamps) - min(timestamps)).total_seconds() <= (
+        _CANDIDATE_WINDOW_SECONDS
     )

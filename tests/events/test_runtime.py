@@ -9,8 +9,11 @@ from newsradar.db.models import (
     EventItemRecord,
     EventModelRunRecord,
     EventRecord,
+    EventScoreRecord,
     EventVersionRecord,
     ModelUsageRecord,
+    OperationRunRecord,
+    RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
@@ -19,7 +22,13 @@ from newsradar.events.pipeline import EventPipeline
 from newsradar.events.publishing import rule_enrichment
 from newsradar.events.repository import EventRepository
 from newsradar.events.runtime import EventOperationHandler
-from newsradar.events.schema import EventEnrichment, EventStatus, PublishedEvent, ScoreBreakdown
+from newsradar.events.schema import (
+    EventEnrichment,
+    EventStatus,
+    ProcessingStage,
+    PublishedEvent,
+    ScoreBreakdown,
+)
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
@@ -41,8 +50,25 @@ def _score() -> ScoreBreakdown:
     )
 
 
-def _seed_published_event(engine, titles: tuple[str, ...], *, origin: str = "rule_fallback") -> int:
+def _seed_published_event(
+    engine,
+    titles: tuple[str, ...],
+    *,
+    origin: str = "rule_fallback",
+    missing_relevance_ids: frozenset[int] = frozenset(),
+) -> int:
     with Session(engine) as db:
+        now = datetime(2026, 7, 14, 12, tzinfo=UTC)
+        db.add(
+            OperationRunRecord(
+                id=1,
+                operation_type="event_recluster",
+                trigger="manual",
+                status="running",
+                requested_scope={"window_end": now.isoformat()},
+                created_at=now,
+            )
+        )
         db.add(
             SourceDefinitionRecord(
                 id="official",
@@ -67,11 +93,26 @@ def _seed_published_event(engine, titles: tuple[str, ...], *, origin: str = "rul
                 payload={},
                 title=title,
                 title_fingerprint=f"title-{index}",
-                published_at=datetime.now(UTC),
+                published_at=now - timedelta(hours=index),
+                fetched_at=now,
+                engagement={"score": 1_000 if index == 1 else 0},
             )
             db.add(raw)
             db.flush()
             raw_ids.append(raw.id)
+            if raw.id not in missing_relevance_ids:
+                db.add(
+                    RawItemProcessingRecord(
+                        raw_item_id=raw.id,
+                        stage=ProcessingStage.RELEVANCE.value,
+                        algorithm_version="relevance-v2",
+                        outcome="included",
+                        score=100 if index == 1 else 60,
+                        reason_codes=[],
+                        details={},
+                        created_at=now,
+                    )
+                )
         event = EventRepository(db).publish_complete_event(
             PublishedEvent(
                 canonical_key="legacy-combined",
@@ -157,6 +198,45 @@ def test_recluster_splits_incompatible_members_and_publishes_changed_versions() 
             )
         )
         assert active_split == {2}
+        scores = {
+            row.event_id: row.breakdown
+            for row in db.scalars(select(EventScoreRecord))
+        }
+        assert scores[event_id]["rule_version"] == "score-v2"
+        assert scores[event_id]["ai_relevance"] == 100
+        assert scores[event_id]["engagement_velocity"] > 0
+        assert scores[split_id]["rule_version"] == "score-v2"
+        assert scores[split_id]["ai_relevance"] == 60
+        assert scores[split_id]["engagement_velocity"] == 0
+
+
+def test_recluster_missing_real_quality_input_preserves_old_version() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    event_id = _seed_published_event(
+        engine,
+        ("OpenAI launches Alpha model", "OpenAI launches Beta model"),
+        missing_relevance_ids=frozenset({2}),
+    )
+
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1,
+            1,
+            1,
+            "worker",
+            {"event_id": event_id, "actor": "web"},
+            "event_recluster",
+        ),
+        lambda _: None,
+    )
+
+    assert result.status is OperationStatus.FAILED
+    assert result.error_code == "event_quality_input_unavailable"
+    with Session(engine) as db:
+        assert db.get(EventRecord, event_id).current_version_number == 1
+        assert db.query(EventRecord).count() == 1
+        assert db.query(EventVersionRecord).count() == 1
 
 
 def test_recluster_does_not_publish_when_membership_is_unchanged() -> None:

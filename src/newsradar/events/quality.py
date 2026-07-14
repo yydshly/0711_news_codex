@@ -31,6 +31,10 @@ _ENGAGEMENT_FIELDS = frozenset(
 )
 
 
+class QualityInputUnavailable(ValueError):
+    """Raised when a persisted event-quality fact is absent or invalid."""
+
+
 @dataclass(frozen=True, slots=True)
 class QualityInputs:
     """Safe numeric facts consumed by the score-v2 formulas."""
@@ -57,15 +61,20 @@ def build_score_input(
 ) -> EventScoreInput:
     """Build the six score components without reading payloads, clocks, or external state."""
     member_ids = candidate.raw_item_ids or tuple(item.raw_item_id for item in candidate.items)
+    validated_relevance = _required_scores(
+        relevance_by_item, member_ids, name="relevance", upper=100
+    )
+    validated_authority = _required_scores(
+        authority_by_item, member_ids, name="authority", upper=5
+    )
     relevance_scores = tuple(
-        _bounded_number(relevance_by_item.get(raw_item_id), upper=100)
-        for raw_item_id in member_ids
+        validated_relevance[raw_item_id] for raw_item_id in member_ids
     )
     independent_roots = _independent_roots(evidence)
     authority_scores = tuple(
         max(
             (
-                _authority_score(authority_by_item.get(raw_item_id))
+                validated_authority[raw_item_id] * 20
                 for raw_item_id in raw_item_ids
             ),
             default=0.0,
@@ -174,15 +183,26 @@ def _independent_roots(
     return {root: tuple(sorted(raw_item_ids)) for root, raw_item_ids in roots.items()}
 
 
-def _bounded_number(value: object, *, upper: float) -> float:
-    number = _finite_number(value)
-    if number is None:
-        return 0.0
-    return min(upper, max(0.0, number))
-
-
-def _authority_score(value: object) -> float:
-    return _bounded_number(value, upper=5) * 20
+def _required_scores(
+    values: Mapping[int, object],
+    member_ids: tuple[int, ...],
+    *,
+    name: str,
+    upper: float,
+) -> dict[int, float]:
+    result: dict[int, float] = {}
+    for raw_item_id in member_ids:
+        if raw_item_id not in values:
+            raise QualityInputUnavailable(
+                f"missing {name} for raw item {raw_item_id}"
+            )
+        number = _finite_number(values[raw_item_id])
+        if number is None:
+            raise QualityInputUnavailable(
+                f"invalid {name} for raw item {raw_item_id}"
+            )
+        result[raw_item_id] = min(upper, max(0.0, number))
+    return result
 
 
 def _engagement_value(value: object) -> float | None:
@@ -194,7 +214,7 @@ def _is_engagement_field(key: object) -> bool:
     if not isinstance(key, str):
         return False
     normalized = key.casefold().replace("-", "_").replace(" ", "_")
-    return normalized in _ENGAGEMENT_FIELDS or normalized.endswith("_count")
+    return normalized in _ENGAGEMENT_FIELDS
 
 
 def _finite_number(value: object) -> float | None:

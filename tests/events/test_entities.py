@@ -44,6 +44,48 @@ def test_model_object_identity_ignores_generic_ai_descriptor() -> None:
     assert explicit_ai.canonical_key == plain.canonical_key == "model:orion"
 
 
+@pytest.mark.parametrize(
+    ("title", "expected_key"),
+    [
+        ("OpenAI releases GPT-5 for developers", "model:gpt-5"),
+        ("Anthropic launches Claude 5", "model:claude5"),
+        ("Google unveils Gemini 2.5", "model:gemini2.5"),
+        ("Alibaba releases Qwen3", "model:qwen3"),
+        ("DeepSeek-R1 released with stronger reasoning", "model:deepseek-r1"),
+    ],
+)
+def test_extract_entities_recognizes_common_versioned_models(
+    title: str, expected_key: str
+) -> None:
+    assert expected_key in {
+        entity.canonical_key for entity in extract_entities(RawItemText(title=title))
+    }
+
+
+@pytest.mark.parametrize(
+    ("title", "expected_key"),
+    [
+        (
+            'Researchers release "Attention Is All You Need for Vision and Language" paper',
+            "paper:attentionisallyouneedforvisionandlanguage",
+        ),
+        (
+            'Paper "Scaling Monosemanticity: Extracting Interpretable Features '
+            'from Claude 3 Sonnet" released',
+            "paper:scalingmonosemanticity:extractinginterpretablefeaturesfromclaude3sonnet",
+        ),
+        ("openai/codex repository released", "project:openai/codex"),
+        ("GitHub project huggingface/transformers launches v5", "project:huggingface/transformers"),
+    ],
+)
+def test_extract_entities_recognizes_papers_and_owner_repositories(
+    title: str, expected_key: str
+) -> None:
+    assert expected_key in {
+        entity.canonical_key for entity in extract_entities(RawItemText(title=title))
+    }
+
+
 def test_extract_entities_does_not_treat_generic_ai_terms_as_organizations() -> None:
     entities = extract_entities(
         RawItemText(title="An AI model agent benchmark improves inference and API tooling")

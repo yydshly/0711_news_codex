@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from newsradar.events.evidence import assess_evidence
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import EventEnrichment, EventScoreInput, PublishedEvent
+from newsradar.events.schema import (
+    CandidateCluster,
+    EventEnrichment,
+    EventScoreInput,
+    PublishedEvent,
+)
 from newsradar.events.scoring import decide_publication, score_event
 
 
@@ -28,6 +33,21 @@ class EventPublisher:
         event = self.repository.publish_complete_event(published, operation_id)
         return published.model_copy(update={"event_id": event.id})
 
+    def publish_snapshot(
+        self,
+        candidate: CandidateCluster,
+        operation_id: int,
+        *,
+        score_input: EventScoreInput,
+        enrichment: EventEnrichment | None = None,
+    ) -> PublishedEvent:
+        """Publish the exact immutable candidate snapshot that was scored."""
+        published = self.assemble_snapshot(
+            candidate, score_input=score_input, enrichment=enrichment
+        )
+        event = self.repository.publish_complete_event(published, operation_id)
+        return published.model_copy(update={"event_id": event.id})
+
     def assemble(
         self,
         candidate_id: int,
@@ -37,6 +57,19 @@ class EventPublisher:
     ) -> PublishedEvent:
         """Build the complete deterministic snapshot without making it reader-visible."""
         candidate, source_item_ids = self.repository.get_candidate_for_publication(candidate_id)
+        candidate = candidate.model_copy(update={"raw_item_ids": source_item_ids})
+        return self.assemble_snapshot(
+            candidate, score_input=score_input, enrichment=enrichment
+        )
+
+    def assemble_snapshot(
+        self,
+        candidate: CandidateCluster,
+        *,
+        score_input: EventScoreInput,
+        enrichment: EventEnrichment | None = None,
+    ) -> PublishedEvent:
+        """Assemble evidence, score, and members from one immutable candidate value."""
         evidence = assess_evidence(candidate.items)
         decision = decide_publication(candidate, evidence)
         score = score_event(score_input.model_copy(update={"evidence": evidence}))
@@ -52,7 +85,7 @@ class EventPublisher:
             enrichment=enrichment,
             score=score,
             evidence=evidence,
-            source_item_ids=source_item_ids,
+            source_item_ids=candidate.raw_item_ids,
         )
 def rule_enrichment(candidate) -> EventEnrichment:
     title = candidate.title.strip() or "未命名 AI 事件"

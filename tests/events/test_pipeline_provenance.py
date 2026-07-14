@@ -9,6 +9,7 @@ from newsradar.db.models import (
     Base,
     EventModelRunRecord,
     ModelUsageRecord,
+    OperationRunRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
@@ -47,6 +48,18 @@ def _engine_with_candidate():
                 title="OpenAI launches Orion model",
                 published_at=datetime.now(UTC),
             )
+        )
+        snapshot = datetime.now(UTC)
+        db.add_all(
+            OperationRunRecord(
+                id=operation_id,
+                operation_type="event_pipeline",
+                trigger="manual",
+                status="running",
+                requested_scope={"window_end": snapshot.isoformat()},
+                created_at=snapshot,
+            )
+            for operation_id in (41, 42, 43)
         )
         db.commit()
     return engine

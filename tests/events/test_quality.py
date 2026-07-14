@@ -129,12 +129,33 @@ def test_engagement_ignores_negative_non_finite_boolean_and_non_numeric_values()
     result = build(
         engagement_by_item={
             1: {"negative": -2, "nan": float("nan"), "infinite": float("inf")},
-            2: {"boolean": True, "text": "500", "timestamp": 500},
+            2: {
+                "boolean": True,
+                "text": "500",
+                "timestamp": 500,
+                "error_count": 50_000,
+            },
         }
     )
 
     assert result.engagement_velocity == 0
     assert "engagement_unavailable" in result.reasons
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("relevance_by_item", {1: 100}, "missing relevance for raw item 2"),
+        ("relevance_by_item", {1: 100, 2: None}, "invalid relevance for raw item 2"),
+        ("authority_by_item", {1: 5}, "missing authority for raw item 2"),
+        ("authority_by_item", {1: 5, 2: None}, "invalid authority for raw item 2"),
+    ],
+)
+def test_required_member_quality_mappings_must_be_complete_and_numeric(
+    field: str, value: dict[int, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build(**{field: value})
 
 
 def test_engagement_is_capped_at_100() -> None:

@@ -17,15 +17,19 @@ from newsradar.db.models import (
 )
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
 from newsradar.events.entities import extract_entities
-from newsradar.events.pipeline import EventPipeline
+from newsradar.events.pipeline import (
+    EventPipeline,
+    build_candidate_score_input,
+    load_operation_window_end,
+)
 from newsradar.events.publishing import EventPublisher
+from newsradar.events.quality import QualityInputUnavailable
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import (
     CandidateCluster,
     ClusterItem,
     EventCategory,
     EventEnrichment,
-    EventScoreInput,
     EventStatus,
     PublishedEvent,
     RawItemText,
@@ -164,6 +168,17 @@ class EventOperationHandler:
                 EventRepository(session).release_event(release_id, lease.operation_id)
             session.commit()
             return _timeout_result(error)
+        except QualityInputUnavailable as error:
+            session.rollback()
+            for release_id in reversed(claimed):
+                EventRepository(session).release_event(release_id, lease.operation_id)
+            session.commit()
+            return OperationResult(
+                status=OperationStatus.FAILED,
+                error_code="event_quality_input_unavailable",
+                error_message=str(error),
+                retryable=False,
+            )
         except Exception:
             session.rollback()
             # Do not strand a lease when a bounded editorial mutation fails.
@@ -465,11 +480,9 @@ def _recluster_event(
         candidate.model_copy(update={"category": category})
         for candidate in cluster_candidates(items)
     )
-    candidate_ids: dict[str, int] = {}
     for candidate in candidates:
         record = repository.upsert_candidate(candidate, CLUSTER_RULE_VERSION)
         repository.replace_candidate_items(record.id, candidate.raw_item_ids)
-        candidate_ids[candidate.candidate_key] = record.id
 
     anchor_id = min(previous_ids)
     retained = next(candidate for candidate in candidates if anchor_id in candidate.raw_item_ids)
@@ -478,20 +491,28 @@ def _recluster_event(
     created_event_ids: list[int] = []
     publisher = EventPublisher(repository)
     if changed:
-        score_input = _event_score_input(repository, event)
-        retained_snapshot = publisher.assemble(
-            candidate_ids[retained.candidate_key],
-            score_input=score_input,
+        snapshot_now = load_operation_window_end(
+            repository.session, lease.operation_id
+        )
+        score_inputs = {
+            candidate.candidate_key: build_candidate_score_input(
+                repository.session, candidate, now=snapshot_now
+            )
+            for candidate in candidates
+        }
+        retained_snapshot = publisher.assemble_snapshot(
+            retained,
+            score_input=score_inputs[retained.candidate_key],
             enrichment=_enrichment(repository, event),
         ).model_copy(update={"event_id": event.id, "canonical_key": event.canonical_key})
         repository.publish_complete_event(retained_snapshot, lease.operation_id)
         for candidate in candidates:
             if candidate is retained:
                 continue
-            published = publisher.publish(
-                candidate_ids[candidate.candidate_key],
+            published = publisher.publish_snapshot(
+                candidate,
                 lease.operation_id,
-                score_input=score_input,
+                score_input=score_inputs[candidate.candidate_key],
             )
             assert published.event_id is not None
             created_event_ids.append(published.event_id)
@@ -578,21 +599,6 @@ def _score(repository: EventRepository, event: EventRecord) -> ScoreBreakdown:
         ai_relevance=0, source_coverage=0, source_authority=0, recency=0,
         engagement_velocity=0, novelty=0, importance=0, credibility=0, heat=0,
         rule_version="manual-v1", reasons=("manual_event_action",),
-    )
-
-
-def _event_score_input(
-    repository: EventRepository, event: EventRecord
-) -> EventScoreInput:
-    score = _score(repository, event)
-    return EventScoreInput(
-        ai_relevance=score.ai_relevance,
-        source_coverage=score.source_coverage,
-        source_authority=score.source_authority,
-        recency=score.recency,
-        engagement_velocity=score.engagement_velocity,
-        novelty=score.novelty,
-        reasons=score.reasons,
     )
 
 

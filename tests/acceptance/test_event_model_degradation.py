@@ -5,7 +5,12 @@ import httpx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import Base, RawItemRecord, SourceDefinitionRecord
+from newsradar.db.models import (
+    Base,
+    OperationRunRecord,
+    RawItemRecord,
+    SourceDefinitionRecord,
+)
 from newsradar.events.minimax import EventMiniMaxAdapter
 from newsradar.events.pipeline import EventPipeline
 from newsradar.events.schema import CandidateCluster, ClusterItem, EventEnrichment
@@ -57,6 +62,17 @@ def test_minimax_offline_does_not_block_rule_publication() -> None:
                 source_id="model-off-source", external_id="1", payload={},
                 canonical_url="https://example.test/model-off", title="OpenAI launches model",
                 published_at=datetime.now(UTC),
+            )
+        )
+        snapshot = datetime.now(UTC)
+        session.add(
+            OperationRunRecord(
+                id=1,
+                operation_type="event_pipeline",
+                trigger="manual",
+                status="running",
+                requested_scope={"window_end": snapshot.isoformat()},
+                created_at=snapshot,
             )
         )
         session.commit()

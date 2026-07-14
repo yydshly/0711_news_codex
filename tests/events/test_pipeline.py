@@ -1,10 +1,12 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.db.models import (
     Base,
+    EventCandidateRecord,
     EventItemRecord,
     EventRecord,
     EventScoreRecord,
@@ -15,6 +17,7 @@ from newsradar.db.models import (
     SourceDefinitionRecord,
 )
 from newsradar.events.pipeline import ALGORITHM_VERSIONS, EventPipeline
+from newsradar.events.publishing import rule_enrichment
 from newsradar.events.relevance import (
     CONTENT_MAX_CHARS,
     ITEM_KIND_MAX_CHARS,
@@ -28,6 +31,25 @@ from newsradar.events.repository import EventRepository
 from newsradar.events.schema import ProcessingStage
 from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
+
+
+def _seed_operation(
+    session: Session,
+    operation_id: int,
+    *,
+    window_end: datetime | None = None,
+) -> None:
+    snapshot = window_end or datetime.now(UTC)
+    session.add(
+        OperationRunRecord(
+            id=operation_id,
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="running",
+            requested_scope={"window_end": snapshot.isoformat()},
+            created_at=snapshot,
+        )
+    )
 
 
 def test_pipeline_exposes_all_v2_rule_versions() -> None:
@@ -71,6 +93,18 @@ def test_pipeline_scores_from_real_fields_using_operation_window_end() -> None:
                 engagement={"score": 99, "invalid": -10},
             )
         )
+        db.add(
+            RawItemRecord(
+                source_id="scored-source",
+                external_id="future-item",
+                canonical_url="https://example.test/future-item",
+                payload={},
+                title="OpenAI launches Future Orion AI model",
+                published_at=window_end + timedelta(days=10),
+                fetched_at=window_end + timedelta(days=10),
+                engagement={"score": 10_000},
+            )
+        )
         operation = OperationRunRecord(
             operation_type="event_pipeline",
             trigger="manual",
@@ -96,6 +130,7 @@ def test_pipeline_scores_from_real_fields_using_operation_window_end() -> None:
         event_record = db.get(EventRecord, result.current_event_ids[0])
 
     assert score is not None
+    assert result.selected_item_count == 1
     assert score.breakdown["ai_relevance"] == 100
     assert score.breakdown["source_coverage"] == 35
     assert score.breakdown["source_authority"] == 80
@@ -105,6 +140,237 @@ def test_pipeline_scores_from_real_fields_using_operation_window_end() -> None:
     assert score.breakdown["rule_version"] == "score-v2"
     assert event_record is not None
     assert event_record.visibility == "current"
+
+
+def test_operation_window_end_accepts_naive_iso_as_utc() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        operation = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="queued",
+            requested_scope={"window_end": "2025-01-04T12:00:00"},
+        )
+        db.add(operation)
+        db.commit()
+
+        result = EventPipeline.production(db)._operation_window_end(operation.id)
+
+    assert result == datetime(2025, 1, 4, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("scope", [{}, {"window_end": "not-a-date"}])
+def test_operation_window_end_falls_back_to_stable_created_at_and_records_reason(
+    scope: dict[str, object],
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    created_at = datetime(2025, 2, 3, 4, 5, tzinfo=UTC)
+    with Session(engine) as db:
+        operation = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="queued",
+            requested_scope=scope,
+            created_at=created_at,
+        )
+        db.add(operation)
+        db.commit()
+        checkpoints: list[str] = []
+
+        result = EventPipeline.production(db)._operation_window_end(
+            operation.id, checkpoint=checkpoints.append
+        )
+
+    assert result == created_at
+    assert checkpoints == ["operation_window_end_fallback"]
+
+
+def test_operation_window_end_rejects_missing_operation() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        pipeline = EventPipeline.production(db)
+
+        with pytest.raises(LookupError, match="operation 99 does not exist"):
+            pipeline._operation_window_end(99)
+
+
+def test_pipeline_novelty_finds_same_core_identity_in_prior_30_day_current_event() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    first_now = datetime(2025, 3, 1, 12, tzinfo=UTC)
+    second_now = first_now + timedelta(hours=72)
+    with Session(engine) as db:
+        for source_id, nature, authority in (
+            ("official", "first_party", 5),
+            ("media", "professional_media", 4),
+        ):
+            db.add(
+                SourceDefinitionRecord(
+                    id=source_id,
+                    name=source_id,
+                    status="active",
+                    nature=nature,
+                    language="en",
+                    roles=["evidence"],
+                    topics=["ai"],
+                    authority_score=authority,
+                    poll_interval_minutes=60,
+                    expected_fields=[],
+                    definition_hash=source_id,
+                )
+            )
+        first_item = RawItemRecord(
+            source_id="official",
+            external_id="orion-first",
+            canonical_url="https://official.test/orion",
+            payload={},
+            title="OpenAI launches Orion model",
+            published_at=first_now,
+            fetched_at=first_now,
+        )
+        first_operation = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="queued",
+            requested_scope={"window_hours": 72, "window_end": first_now.isoformat()},
+            created_at=first_now,
+        )
+        db.add_all((first_item, first_operation))
+        db.commit()
+        first_result = EventPipeline.production(db).run(
+            window_hours=72,
+            operation_id=first_operation.id,
+            checkpoint=lambda _: None,
+        )
+        assert first_result.created_event_versions == 1
+
+        second_item = RawItemRecord(
+            source_id="media",
+            external_id="orion-second",
+            canonical_url="https://media.test/orion-followup",
+            payload={},
+            title="Orion model released by OpenAI",
+            published_at=second_now,
+            fetched_at=second_now,
+        )
+        second_operation = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="queued",
+            requested_scope={"window_hours": 72, "window_end": second_now.isoformat()},
+            created_at=second_now,
+        )
+        db.add_all((second_item, second_operation))
+        db.commit()
+
+        second_result = EventPipeline.production(db).run(
+            window_hours=72,
+            operation_id=second_operation.id,
+            checkpoint=lambda _: None,
+        )
+        scores = tuple(
+            db.scalars(select(EventScoreRecord).order_by(EventScoreRecord.event_id))
+        )
+
+    assert second_result.created_event_versions == 1
+    assert len(scores) == 2
+    assert scores[0].breakdown["novelty"] == 100
+    assert scores[1].breakdown["novelty"] == 50
+
+
+def test_pipeline_publishes_same_candidate_snapshot_used_for_score_when_members_are_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    window_end = datetime(2025, 4, 1, 12, tzinfo=UTC)
+    with Session(engine) as db:
+        db.add(
+            SourceDefinitionRecord(
+                id="official",
+                name="Official",
+                status="active",
+                nature="first_party",
+                language="en",
+                roles=["evidence"],
+                topics=["ai"],
+                authority_score=5,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash="official",
+            )
+        )
+        selected = RawItemRecord(
+            source_id="official",
+            external_id="selected",
+            canonical_url="https://official.test/selected",
+            payload={},
+            title="OpenAI launches Orion model",
+            published_at=window_end,
+            fetched_at=window_end,
+        )
+        replacement = RawItemRecord(
+            source_id="official",
+            external_id="replacement",
+            canonical_url="https://official.test/replacement",
+            payload={},
+            title="OpenAI launches Replacement model",
+            published_at=window_end + timedelta(days=10),
+            fetched_at=window_end + timedelta(days=10),
+        )
+        operation = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="queued",
+            requested_scope={"window_hours": 72, "window_end": window_end.isoformat()},
+            created_at=window_end,
+        )
+        db.add_all((selected, replacement, operation))
+        db.commit()
+        selected_id, replacement_id, operation_id = (
+            selected.id,
+            replacement.id,
+            operation.id,
+        )
+
+    def replace_members(candidate):
+        with Session(engine) as other:
+            record = other.scalar(
+                select(EventCandidateRecord).where(
+                    EventCandidateRecord.candidate_key == candidate.candidate_key
+                )
+            )
+            assert record is not None
+            EventRepository(other).replace_candidate_items(record.id, (replacement_id,))
+            other.commit()
+        return rule_enrichment(candidate), ()
+
+    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(replace_members))
+    with Session(engine) as db:
+        result = EventPipeline.production(db).run(
+            window_hours=72,
+            operation_id=operation_id,
+            checkpoint=lambda _: None,
+        )
+        active_ids = set(
+            db.scalars(
+                select(EventItemRecord.raw_item_id).where(
+                    EventItemRecord.event_id == result.current_event_ids[0],
+                    EventItemRecord.removed_version_number.is_(None),
+                )
+            )
+        )
+        version = db.scalar(select(EventVersionRecord))
+
+    assert active_ids == {selected_id}
+    assert version is not None
+    assert version.payload["source_item_ids"] == [selected_id]
+    assert version.payload["evidence"][0]["root_evidence_key"] == (
+        "https://official.test/selected"
+    )
 
 
 def _source_record(*, topics: list[str] | None = None) -> SourceDefinitionRecord:
@@ -203,6 +469,7 @@ def test_selection_uses_frozen_72_hour_boundary_and_orders_by_id() -> None:
     cutoff = now - timedelta(hours=72)
     with Session(engine) as db:
         db.add(_source_record())
+        _seed_operation(db, 1)
         db.add_all(
             (
                 RawItemRecord(
@@ -271,6 +538,7 @@ def test_entity_failure_keeps_committed_relevance_and_continues_clustering(
             published_at=datetime.now(UTC),
         )
         db.add_all((good, failed))
+        _seed_operation(db, 1)
         db.commit()
         good_id = good.id
         failed_id = failed.id
@@ -379,6 +647,7 @@ def test_pipeline_records_included_and_excluded_items_using_published_or_fetched
             fetched_at=now,
         )
         db.add_all((included, excluded, missing_date, stale_published))
+        _seed_operation(db, 1, window_end=now)
         db.commit()
 
         result = EventPipeline.production(db).run(
@@ -443,6 +712,9 @@ def test_pipeline_replay_does_not_duplicate_versions() -> None:
                 published_at=datetime.now(UTC),
             )
         )
+        snapshot = datetime.now(UTC)
+        _seed_operation(db, 1, window_end=snapshot)
+        _seed_operation(db, 2, window_end=snapshot)
         db.commit()
 
         pipeline = EventPipeline.production(db)
@@ -484,6 +756,7 @@ def test_pipeline_persists_audited_evidence_for_web_detail() -> None:
                 published_at=datetime.now(UTC),
             )
         )
+        _seed_operation(db, 1)
         db.commit()
         event_id = (
             EventPipeline.production(db)
@@ -535,6 +808,7 @@ def test_pipeline_keeps_event_identity_and_source_publication_time_when_new_sour
                 published_at=published_at,
             )
         )
+        _seed_operation(db, 1)
         db.commit()
         first = EventPipeline.production(db).run(
             window_hours=24 * 365, operation_id=1, checkpoint=lambda _: None
@@ -555,6 +829,7 @@ def test_pipeline_keeps_event_identity_and_source_publication_time_when_new_sour
                 published_at=published_at,
             )
         )
+        _seed_operation(db, 2)
         db.commit()
         second = EventPipeline.production(db).run(
             window_hours=24 * 365, operation_id=2, checkpoint=lambda _: None
@@ -609,6 +884,7 @@ def test_minimax_invocation_has_no_open_session_or_event_lease_before_publicatio
                 published_at=datetime.now(UTC),
             )
         )
+        _seed_operation(db, 1)
         db.commit()
 
     open_sessions: set[Session] = set()
@@ -643,6 +919,7 @@ def test_minimax_invocation_has_no_open_session_or_event_lease_before_publicatio
                 published_at=datetime.now(UTC),
             )
         )
+        _seed_operation(db, 2)
         db.commit()
 
     order: list[str] = []
@@ -720,6 +997,7 @@ def test_pipeline_counts_independent_evidence_items_suppressed_by_duplicate_root
                     published_at=datetime.now(UTC),
                 )
             )
+        _seed_operation(db, 3)
         db.commit()
 
     with Session(engine) as db:

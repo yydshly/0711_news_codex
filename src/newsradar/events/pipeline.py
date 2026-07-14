@@ -12,10 +12,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.db.models import (
+    EventCandidateRecord,
     EventItemRecord,
     EventRecord,
     EventVersionRecord,
     OperationRunRecord,
+    RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
@@ -37,8 +39,10 @@ from newsradar.events.relevance import (
 )
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import (
+    CandidateCluster,
     ClusterItem,
     EventCategory,
+    EventScoreInput,
     ProcessingStage,
     RawItemText,
     RelevanceDecision,
@@ -96,7 +100,7 @@ class EventPipeline:
     ) -> PipelineResult:
         if window_hours <= 0:
             raise ValueError("window_hours must be positive")
-        snapshot_now = self._operation_window_end(operation_id)
+        snapshot_now = self._operation_window_end(operation_id, checkpoint=checkpoint)
         checkpoint("before_event_selection")
         selection = self._select_and_classify_items(window_hours, now=snapshot_now)
         checkpoint("after_event_selection")
@@ -138,7 +142,8 @@ class EventPipeline:
     def _select_and_classify_items(
         self, window_hours: int, *, now: datetime | None = None
     ) -> SelectionResult:
-        cutoff = (now or datetime.now(UTC)) - timedelta(hours=window_hours)
+        snapshot_now = now or datetime.now(UTC)
+        cutoff = snapshot_now - timedelta(hours=window_hours)
         with self._session_factory() as session:
             event_time = func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at)
             rows = tuple(
@@ -191,7 +196,7 @@ class EventPipeline:
                         SourceDefinitionRecord,
                         SourceDefinitionRecord.id == RawItemRecord.source_id,
                     )
-                    .where(event_time >= cutoff)
+                    .where(event_time >= cutoff, event_time <= snapshot_now)
                     .order_by(RawItemRecord.id)
                 )
                 .mappings()
@@ -250,22 +255,16 @@ class EventPipeline:
             engagement_by_item=engagement_by_item,
         )
 
-    def _operation_window_end(self, operation_id: int) -> datetime:
+    def _operation_window_end(
+        self,
+        operation_id: int,
+        *,
+        checkpoint: Callable[[str], None] | None = None,
+    ) -> datetime:
         with self._session_factory() as session:
-            scope = session.scalar(
-                select(OperationRunRecord.requested_scope).where(
-                    OperationRunRecord.id == operation_id
-                )
+            return load_operation_window_end(
+                session, operation_id, checkpoint=checkpoint
             )
-        if isinstance(scope, dict) and isinstance(scope.get("window_end"), str):
-            try:
-                window_end = datetime.fromisoformat(scope["window_end"])
-            except ValueError:
-                pass
-            else:
-                if window_end.tzinfo is not None:
-                    return window_end.astimezone(UTC)
-        return datetime.now(UTC)
 
     def _record_relevance_decisions(self, selection: SelectionResult) -> None:
         with self._session_factory() as session:
@@ -344,15 +343,16 @@ class EventPipeline:
             # Persist/read the bounded candidate context first, then close the DB
             # transaction before optional HTTP work.  No event lease exists here.
             with self._session_factory() as session:
-                candidate_record = EventRepository(session).upsert_candidate(
+                EventRepository(session).upsert_candidate(
                     candidate, CLUSTER_RULE_VERSION
                 )
                 session.flush()
                 existing = session.scalar(
                     select(EventRecord).where(EventRecord.canonical_key == candidate.candidate_key)
                 )
-                prior_event_exists = existing is not None
-                prior_evidence_roots = _prior_evidence_roots(session, existing)
+                prior_event_exists, prior_evidence_roots = _prior_quality_state(
+                    session, candidate, now
+                )
                 if existing is not None and self._has_same_membership(
                     session, existing.id, candidate.raw_item_ids
                 ):
@@ -362,7 +362,6 @@ class EventPipeline:
                     session, existing.id, candidate.raw_item_ids
                 ):
                     continue
-                candidate_id = candidate_record.id
 
             evidence = assess_evidence(candidate.items)
             score_input = build_score_input(
@@ -394,8 +393,8 @@ class EventPipeline:
                         event_ids.append(existing.id)
                         session.commit()
                         continue
-                published = EventPublisher(repository).publish(
-                    candidate_id,
+                published = EventPublisher(repository).publish_snapshot(
+                    candidate,
                     operation_id,
                     score_input=score_input,
                     enrichment=enrichment,
@@ -451,6 +450,90 @@ class EventPipeline:
         return set(active) == set(raw_item_ids)
 
 
+def load_operation_window_end(
+    session: Session,
+    operation_id: int,
+    *,
+    checkpoint: Callable[[str], None] | None = None,
+) -> datetime:
+    """Resolve the immutable clock snapshot owned by a durable operation."""
+    row = session.execute(
+        select(
+            OperationRunRecord.requested_scope,
+            OperationRunRecord.created_at,
+        ).where(OperationRunRecord.id == operation_id)
+    ).one_or_none()
+    if row is None:
+        raise LookupError(f"operation {operation_id} does not exist")
+    scope, created_at = row
+    if isinstance(scope, dict) and isinstance(scope.get("window_end"), str):
+        try:
+            window_end = datetime.fromisoformat(scope["window_end"])
+        except ValueError:
+            pass
+        else:
+            return _as_utc(window_end)
+    if checkpoint is not None:
+        checkpoint("operation_window_end_fallback")
+    return _as_utc(created_at)
+
+
+def build_candidate_score_input(
+    session: Session,
+    candidate: CandidateCluster,
+    *,
+    now: datetime,
+) -> EventScoreInput:
+    """Rebuild score-v2 inputs from persisted facts for one candidate snapshot."""
+    member_ids = candidate.raw_item_ids
+    relevance_by_item = dict(
+        session.execute(
+            select(
+                RawItemProcessingRecord.raw_item_id,
+                RawItemProcessingRecord.score,
+            ).where(
+                RawItemProcessingRecord.raw_item_id.in_(member_ids),
+                RawItemProcessingRecord.stage == ProcessingStage.RELEVANCE.value,
+                RawItemProcessingRecord.algorithm_version == RELEVANCE_RULE_VERSION,
+                RawItemProcessingRecord.outcome == "included",
+            )
+        ).all()
+    )
+    quality_rows = session.execute(
+        select(
+            RawItemRecord.id,
+            RawItemRecord.engagement,
+            SourceDefinitionRecord.authority_score,
+        )
+        .join(
+            SourceDefinitionRecord,
+            SourceDefinitionRecord.id == RawItemRecord.source_id,
+        )
+        .where(RawItemRecord.id.in_(member_ids))
+    ).all()
+    authority_by_item = {
+        raw_item_id: authority for raw_item_id, _, authority in quality_rows
+    }
+    engagement_by_item = {
+        raw_item_id: _bounded_engagement(engagement)
+        for raw_item_id, engagement, _ in quality_rows
+    }
+    prior_event_exists, prior_evidence_roots = _prior_quality_state(
+        session, candidate, now
+    )
+    evidence = assess_evidence(candidate.items)
+    return build_score_input(
+        candidate=candidate,
+        evidence=evidence,
+        relevance_by_item=relevance_by_item,
+        authority_by_item=authority_by_item,
+        engagement_by_item=engagement_by_item,
+        now=now,
+        prior_event_exists=prior_event_exists,
+        prior_evidence_roots=prior_evidence_roots,
+    )
+
+
 def _bounded_values(
     values: object, *, max_count: int = 20, max_chars: int = SOURCE_TOPIC_MAX_CHARS
 ) -> tuple[str, ...]:
@@ -461,6 +544,12 @@ def _bounded_values(
         for value in values[:max_count]
         if isinstance(value, str) and value
     )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _bounded_engagement(values: object, *, max_count: int = 20) -> dict[str, object]:
@@ -499,6 +588,42 @@ def _prior_evidence_roots(
         and isinstance((root := row.get("root_evidence_key")), str)
         and root
     )
+
+
+def _prior_quality_state(
+    session: Session,
+    candidate,
+    now: datetime,
+) -> tuple[bool, frozenset[str] | None]:
+    core_identity = candidate.metadata.get("_core_identity")
+    if not isinstance(core_identity, str) or not core_identity:
+        return False, None
+    cutoff = now - timedelta(days=30)
+    event_time = func.coalesce(EventRecord.occurred_at, EventRecord.updated_at)
+    events = tuple(
+        session.scalars(
+            select(EventRecord)
+            .join(
+                EventCandidateRecord,
+                EventCandidateRecord.candidate_key == EventRecord.canonical_key,
+            )
+            .where(
+                EventCandidateRecord.algorithm_version == CLUSTER_RULE_VERSION,
+                EventCandidateRecord.metadata_json["_core_identity"].as_string()
+                == core_identity,
+                EventRecord.visibility == "current",
+                event_time >= cutoff,
+                event_time <= now,
+            )
+            .order_by(EventRecord.id)
+        )
+    )
+    if not events:
+        return False, frozenset()
+    roots: set[str] = set()
+    for event in events:
+        roots.update(_prior_evidence_roots(session, event))
+    return True, frozenset(roots)
 
 
 def _category(items: tuple[ClusterItem, ...]) -> EventCategory:
