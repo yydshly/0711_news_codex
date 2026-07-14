@@ -62,7 +62,7 @@
 
 ---
 
-### 任务 1：追加式迁移、旧事件保护和 current/legacy 查询边界
+### Task 1：追加式迁移、旧事件保护和 current/legacy 查询边界
 
 **文件：**
 
@@ -197,7 +197,7 @@ git commit -m "feat: preserve legacy events and processing decisions"
 
 ---
 
-### 任务 2：相关性 v2、明确排除原因和 72 小时全覆盖
+### Task 2：相关性 v2、明确排除原因和 72 小时全覆盖
 
 **文件：**
 
@@ -318,7 +318,7 @@ git commit -m "feat: classify every recent raw item with relevance v2"
 
 ---
 
-### 任务 3：聚类 v2、独立证据根和真实评分输入
+### Task 3：聚类 v2、独立证据根和真实评分输入
 
 **文件：**
 
@@ -409,7 +409,7 @@ git commit -m "feat: score event candidates from real quality signals"
 
 ---
 
-### 任务 4：MiniMax 有界中文增强、降级审计和 Worker 结果统计
+### Task 4：MiniMax 有界中文增强、降级审计和 Worker 结果统计
 
 **文件：**
 
@@ -488,7 +488,7 @@ git commit -m "feat: enrich event candidates with bounded MiniMax fallback"
 
 ---
 
-### 任务 5：中文事件网页、历史入口和处理覆盖
+### Task 5：中文事件网页、历史入口和处理覆盖
 
 **文件：**
 
@@ -551,7 +551,7 @@ git commit -m "feat: explain current event quality in Chinese dashboard"
 
 ---
 
-### 任务 6：中文报告、真实 PostgreSQL 回填和最终验收
+### Task 6：中文报告、真实 PostgreSQL 回填和最终验收
 
 **文件：**
 
