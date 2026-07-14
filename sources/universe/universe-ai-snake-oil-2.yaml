@@ -18,6 +18,9 @@ topics:
 - technology
 authority_score: 4
 poll_interval_minutes: 60
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
 - kind: rss
   url: https://news.google.com/rss/search?q=AI+technology+source%3AAI+Snake+Oil
