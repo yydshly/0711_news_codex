@@ -645,7 +645,13 @@ def close_source_coverage(
             return
         terminals = service.wait(operations)
         after = service.plan(sources)
-        after_evidence = service.evidence(COVERAGE_CLOSURE_V1_BASELINE_SOURCE_IDS)
+        operation_ids = [
+            operation.operation_id for operation in terminals if operation.operation_id
+        ]
+        after_evidence = service.evidence(
+            COVERAGE_CLOSURE_V1_BASELINE_SOURCE_IDS,
+            operation_ids=operation_ids,
+        )
 
     for operation in terminals:
         typer.echo(f"操作 {operation.operation_id}：{operation.status}")
@@ -668,7 +674,16 @@ def close_source_coverage(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
     typer.echo(f"已写入来源覆盖收口报告：{output}")
-    failure_statuses = {"enqueue_failed", "failed", "cancelled", "timed_out", "missing"}
+    failure_statuses = {
+        "enqueue_failed",
+        "operation_in_progress",
+        "failed",
+        "cancelled",
+        "partial",
+        "interrupted",
+        "timed_out",
+        "missing",
+    }
     if any(operation.status in failure_statuses for operation in terminals):
         raise typer.Exit(1)
 

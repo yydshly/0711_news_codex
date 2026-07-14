@@ -220,7 +220,15 @@ def _new_items(
     before: CoverageEvidence | None,
     after: CoverageEvidence | None,
 ) -> int:
-    return max((after.raw_item_count if after else 0) - (before.raw_item_count if before else 0), 0)
+    """Return items first seen by this closure operation's FetchRun.
+
+    ``before`` is retained in the call signature so report rows can carry a
+    baseline, but it must not be subtracted from operation-scoped evidence:
+    it is the source's total historical count, while ``after`` is already the
+    exact set first seen by the closure operation.
+    """
+    del before
+    return after.raw_item_count if after else 0
 
 
 def _retryable_label(error_code: str | None) -> str:
@@ -230,7 +238,7 @@ def _retryable_label(error_code: str | None) -> str:
 
 
 def _next_action(status: str | None, error_code: str | None) -> str:
-    if status in {"enqueue_failed", "missing", "timed_out"}:
+    if status in {"enqueue_failed", "missing", "timed_out", "operation_in_progress"}:
         return "检查任务运行状态后重新执行。"
     if error_code is None:
         return "无需处理。"

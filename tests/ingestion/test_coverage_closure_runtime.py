@@ -153,6 +153,36 @@ def test_service_records_enqueue_failure_and_continues_with_later_source() -> No
     ]
 
 
+def test_enqueue_rechecks_active_source_after_acquiring_source_lock(monkeypatch) -> None:
+    source = _source("queueable")
+    calls: list[dict[str, object]] = []
+    locks: list[str] = []
+
+    class Commands:
+        def enqueue_fetch(self, **kwargs: object) -> int:
+            calls.append(kwargs)
+            return 42
+
+    with _session() as session:
+        SourceRepository(session).sync([source])
+        _save_successful_probe(session, source)
+        session.commit()
+        service = CoverageClosureService(session, commands_factory=lambda _: Commands())
+        plan = service.plan([source])
+        monkeypatch.setattr(
+            service,
+            "_lock_source_for_enqueue",
+            lambda source_id: locks.append(source_id) or True,
+        )
+        monkeypatch.setattr(service, "_active_source_ids", lambda: {source.id})
+
+        operations = service.enqueue(plan, max_items=5, trigger="cli")
+
+    assert locks == [source.id]
+    assert calls == []
+    assert operations == (ClosureOperation(source.id, 0, "operation_in_progress"),)
+
+
 def test_evidence_returns_latest_outcome_and_raw_item_count() -> None:
     source = _source("evidence")
     with _session() as session:
@@ -182,6 +212,76 @@ def test_evidence_returns_latest_outcome_and_raw_item_count() -> None:
         (item.source_id, item.latest_fetch_outcome, item.raw_item_count)
         for item in evidence
     ] == [("evidence", "succeeded", 2)]
+
+
+def test_operation_evidence_excludes_other_fetches_and_counts_only_this_runs_new_items() -> None:
+    source = _source("evidence")
+    with _session() as session:
+        SourceRepository(session).sync([source])
+        operation = OperationRunRecord(
+            operation_type="fetch",
+            trigger="cli",
+            status="succeeded",
+            requested_scope={"source_id": source.id},
+            result_summary={},
+            attempt_count=0,
+        )
+        other_operation = OperationRunRecord(
+            operation_type="fetch",
+            trigger="cli",
+            status="failed",
+            requested_scope={"source_id": source.id},
+            result_summary={},
+            attempt_count=0,
+        )
+        session.add_all([operation, other_operation])
+        session.flush()
+        own_fetch = FetchRunRecord(
+            source_id=source.id,
+            operation_run_id=operation.id,
+            outcome="succeeded",
+        )
+        other_fetch = FetchRunRecord(
+            source_id=source.id,
+            operation_run_id=other_operation.id,
+            outcome="failed",
+            error_code="network_error",
+        )
+        session.add_all([own_fetch, other_fetch])
+        session.flush()
+        session.add_all(
+            [
+                RawItemRecord(
+                    source_id=source.id,
+                    external_id="own",
+                    canonical_url="https://example.test/own",
+                    payload={},
+                    first_seen_run_id=own_fetch.id,
+                ),
+                RawItemRecord(
+                    source_id=source.id,
+                    external_id="other",
+                    canonical_url="https://example.test/other",
+                    payload={},
+                    first_seen_run_id=other_fetch.id,
+                ),
+            ]
+        )
+        session.commit()
+
+        evidence = CoverageClosureService(session).evidence(
+            [source.id], operation_ids=[operation.id]
+        )
+
+    assert [
+        (
+            item.source_id,
+            item.latest_fetch_outcome,
+            item.latest_fetch_error_code,
+            item.raw_item_count,
+        )
+        for item in evidence
+    ] == [("evidence", "succeeded", None, 1)]
 
 
 def test_wait_continues_after_missing_and_timeout_operations() -> None:

@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import FetchRunRecord, OperationRunRecord, RawItemRecord
@@ -69,17 +69,7 @@ class CoverageClosureService:
                 .distinct()
             )
         )
-        active_source_ids = {
-            source_id
-            for scope in self.session.scalars(
-                select(OperationRunRecord.requested_scope)
-                .where(OperationRunRecord.operation_type == OperationType.FETCH.value)
-                .where(OperationRunRecord.status.in_(_ACTIVE_OPERATION_STATUSES))
-            )
-            if isinstance(scope, dict)
-            for source_id in [scope.get("source_id")]
-            if isinstance(source_id, str) and source_id
-        }
+        active_source_ids = self._active_source_ids()
         snapshots = SourceRepository(self.session).latest_probe_snapshots(source_ids)
         return build_coverage_closure_plan(
             sources,
@@ -100,7 +90,17 @@ class CoverageClosureService:
         commands = self._commands_factory(self.session)
         operations: list[ClosureOperation] = []
         for entry in plan.queueable:
+            acquired = self._lock_source_for_enqueue(entry.source_id)
+            if not acquired:
+                operations.append(ClosureOperation(entry.source_id, 0, "operation_in_progress"))
+                continue
             try:
+                # This second check is deliberately inside the source lock: a
+                # separately launched closure command may have queued it after
+                # the read-only plan was made.
+                if entry.source_id in self._active_source_ids():
+                    operations.append(ClosureOperation(entry.source_id, 0, "operation_in_progress"))
+                    continue
                 operation_id = commands.enqueue_fetch(
                     source_id=entry.source_id,
                     max_items=max_items,
@@ -110,6 +110,8 @@ class CoverageClosureService:
             except ValueError:
                 operations.append(ClosureOperation(entry.source_id, 0, "enqueue_failed"))
                 continue
+            finally:
+                self._unlock_source_for_enqueue(entry.source_id, acquired=acquired)
             operations.append(ClosureOperation(entry.source_id, operation_id))
         return tuple(operations)
 
@@ -130,28 +132,53 @@ class CoverageClosureService:
                 terminals.append(replace(operation, status=terminal.status))
         return tuple(terminals)
 
-    def evidence(self, source_ids: Sequence[str]) -> tuple[CoverageEvidence, ...]:
+    def evidence(
+        self,
+        source_ids: Sequence[str],
+        *,
+        operation_ids: Sequence[int] | None = None,
+    ) -> tuple[CoverageEvidence, ...]:
         requested_ids = tuple(dict.fromkeys(source_ids))
         if not requested_ids:
             return ()
+        is_operation_evidence = operation_ids is not None
+        operation_ids = tuple(dict.fromkeys(operation_ids or ()))
+        fetch_query = select(FetchRunRecord).where(FetchRunRecord.source_id.in_(requested_ids))
+        if operation_ids:
+            fetch_query = fetch_query.where(FetchRunRecord.operation_run_id.in_(operation_ids))
+        elif is_operation_evidence:
+            fetch_query = fetch_query.where(False)
         latest_fetches: dict[str, FetchRunRecord] = {}
-        for fetch in self.session.scalars(
-            select(FetchRunRecord)
-            .where(FetchRunRecord.source_id.in_(requested_ids))
-            .order_by(
+        fetches = list(self.session.scalars(
+            fetch_query.order_by(
                 FetchRunRecord.source_id,
                 FetchRunRecord.started_at.desc(),
                 FetchRunRecord.id.desc(),
             )
-        ):
+        ))
+        for fetch in fetches:
             latest_fetches.setdefault(fetch.source_id, fetch)
-        raw_item_counts = dict(
-            self.session.execute(
-                select(RawItemRecord.source_id, func.count(RawItemRecord.id))
-                .where(RawItemRecord.source_id.in_(requested_ids))
-                .group_by(RawItemRecord.source_id)
-            ).all()
-        )
+        if not is_operation_evidence:
+            raw_item_counts = dict(
+                self.session.execute(
+                    select(RawItemRecord.source_id, func.count(RawItemRecord.id))
+                    .where(RawItemRecord.source_id.in_(requested_ids))
+                    .group_by(RawItemRecord.source_id)
+                ).all()
+            )
+        else:
+            fetch_run_ids = [fetch.id for fetch in fetches]
+            raw_item_counts = (
+                dict(
+                    self.session.execute(
+                        select(RawItemRecord.source_id, func.count(RawItemRecord.id))
+                        .where(RawItemRecord.first_seen_run_id.in_(fetch_run_ids))
+                        .group_by(RawItemRecord.source_id)
+                    ).all()
+                )
+                if fetch_run_ids
+                else {}
+            )
         return tuple(
             CoverageEvidence(
                 source_id=source_id,
@@ -165,3 +192,44 @@ class CoverageClosureService:
             )
             for source_id in sorted(requested_ids)
         )
+
+    def _active_source_ids(self) -> set[str]:
+        return {
+            source_id
+            for scope in self.session.scalars(
+                select(OperationRunRecord.requested_scope)
+                .where(OperationRunRecord.operation_type == OperationType.FETCH.value)
+                .where(OperationRunRecord.status.in_(_ACTIVE_OPERATION_STATUSES))
+            )
+            if isinstance(scope, dict)
+            for source_id in [scope.get("source_id")]
+            if isinstance(source_id, str) and source_id
+        }
+
+    def _lock_source_for_enqueue(self, source_id: str) -> bool:
+        """Take a non-blocking PostgreSQL session lock for one source.
+
+        The command service commits while creating an operation, so this must
+        be session-scoped rather than transaction-scoped.  It is released in a
+        finally block immediately after the recheck-and-enqueue boundary.
+        """
+        if self.session.get_bind().dialect.name != "postgresql":
+            return True
+        acquired = bool(
+            self.session.scalar(
+                text("SELECT pg_try_advisory_lock(hashtext(:lock_key))"),
+                {"lock_key": f"newsradar:coverage-closure:{source_id}"},
+            )
+        )
+        if not acquired:
+            self.session.rollback()
+        return acquired
+
+    def _unlock_source_for_enqueue(self, source_id: str, *, acquired: bool) -> None:
+        if not acquired or self.session.get_bind().dialect.name != "postgresql":
+            return
+        self.session.execute(
+            text("SELECT pg_advisory_unlock(hashtext(:lock_key))"),
+            {"lock_key": f"newsradar:coverage-closure:{source_id}"},
+        )
+        self.session.commit()

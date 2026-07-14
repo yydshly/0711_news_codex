@@ -110,7 +110,7 @@ def test_close_coverage_execute_wait_writes_report_after_all_terminals(
             calls.append("plan")
             return _plan()
 
-        def evidence(self, source_ids):
+        def evidence(self, source_ids, *, operation_ids=None):
             calls.append("evidence")
             return (CoverageEvidence("queueable-a", "succeeded", None, 1),)
 
@@ -164,3 +164,55 @@ def test_close_coverage_execute_wait_writes_report_after_all_terminals(
         "evidence",
         "render",
     ]
+
+
+@pytest.mark.parametrize("terminal_status", ["partial", "interrupted"])
+def test_close_coverage_execute_wait_fails_when_fetch_is_not_fully_covered(
+    monkeypatch, tmp_path: Path, terminal_status: str
+) -> None:
+    class Session:
+        def commit(self) -> None:
+            pass
+
+    class Repository:
+        def __init__(self, session) -> None:
+            pass
+
+        def sync(self, sources) -> None:
+            pass
+
+    class Service:
+        def __init__(self, session) -> None:
+            pass
+
+        def plan(self, sources):
+            return _plan()
+
+        def evidence(self, source_ids, *, operation_ids=None):
+            return ()
+
+        def enqueue(self, plan, *, max_items, trigger):
+            return (ClosureOperation("queueable-a", 11),)
+
+        def wait(self, operations):
+            return (ClosureOperation("queueable-a", 11, terminal_status),)
+
+    monkeypatch.setattr(cli, "load_source_tree", lambda root: [_source("one")])
+    monkeypatch.setattr(cli, "create_session", lambda: nullcontext(Session()))
+    monkeypatch.setattr(cli, "SourceRepository", Repository)
+    monkeypatch.setattr(cli, "CoverageClosureService", Service)
+    monkeypatch.setattr(cli, "render_coverage_closure_report", lambda **kwargs: "# report\n")
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "sources",
+            "close-coverage",
+            "--execute",
+            "--wait",
+            "--output",
+            str(tmp_path / "coverage.md"),
+        ],
+    )
+
+    assert result.exit_code == 1
