@@ -1,1 +1,24 @@
-{% extends "base.html" %}{% block title %}全部事件 · News Codex{% endblock %}{% block header %}<h1>全部事件</h1>{% endblock %}{% block content %}<section class="panel"><p><a href="/">返回事件首页</a> · <a href="/emerging">新兴线索</a></p>{% for event in event_page.events %}<article class="event-card"><h2><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h2><p>{{ event.zh_summary }}</p><small>{{ event.status }} · 热度 {{ event.heat|round(1) }}</small></article>{% else %}<p>暂无事件。</p>{% endfor %}</section>{% endblock %}
+{% extends "base.html" %}
+{% set is_legacy = event_page.filters.get('visibility') == 'legacy' %}
+{% block title %}{{ '历史旧版事件' if is_legacy else '当前事件' }} · News Codex{% endblock %}
+{% block header %}<h1>{{ '历史旧版事件' if is_legacy else '当前事件' }}</h1>{% endblock %}
+{% block content %}
+{% if is_legacy %}
+<section class="panel diagnostic-warning" role="status">
+  <strong>旧版算法结果，不参与当前首页</strong>
+  <p>此处仅保留历史可追溯记录；评分、中文摘要和证据完整度可能不符合 Event Intelligence v2 门槛。</p>
+</section>
+{% endif %}
+<section class="panel">
+  <p><a href="/">返回事件首页</a> · <a href="/events">当前事件</a> · <a href="/events?visibility=legacy">历史旧版事件</a> · <a href="/emerging">新兴线索</a></p>
+  {% for event in event_page.events %}
+  <article class="event-card">
+    <p class="eyebrow">{{ event.visibility|zh_label('event_visibility') }} · {{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %}</p>
+    <h2><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h2>
+    <p>{{ event.zh_summary }}</p>
+    <p><strong>为何值得关注：</strong>{{ event.why_it_matters }}</p>
+    <small>独立证据 {{ event.independent_root_count }} · 重要度 {{ event.importance|round(1) }} · 可信度 {{ event.credibility|round(1) }} · 热度 {{ event.heat|round(1) }}</small>
+  </article>
+  {% else %}<p>此视图暂无事件。</p>{% endfor %}
+</section>
+{% endblock %}

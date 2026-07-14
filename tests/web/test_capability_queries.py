@@ -14,6 +14,7 @@ from newsradar.db.models import (
     FetchRunRecord,
     ModelUsageRecord,
     OperationRunRecord,
+    RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
     SourceProbeRunRecord,
@@ -269,6 +270,97 @@ def test_capability_overview_uses_catalog_truth_and_runtime_facts(db_session):
     assert view.recent_worker_activity_count == 1
     assert view.operation_status_counts == (("failed", 1),)
     assert any(gap.key == "catalog_drift" for gap in view.gaps)
+
+
+def test_event_quality_coverage_counts_recent_v2_processing_in_collection_queries(db_session):
+    recent_items = []
+    for index in range(3):
+        item = RawItemRecord(
+            source_id="github-openai-python",
+            external_id=f"quality-{index}",
+            canonical_url=f"https://example.com/quality/{index}",
+            payload={},
+            title=f"质量样本 {index}",
+            published_at=NOW - timedelta(hours=index),
+            fetched_at=NOW,
+        )
+        db_session.add(item)
+        recent_items.append(item)
+    db_session.add(
+        RawItemRecord(
+            source_id="github-openai-python",
+            external_id="quality-old",
+            canonical_url="https://example.com/quality/old",
+            payload={},
+            title="窗口外样本",
+            published_at=NOW - timedelta(hours=73),
+            fetched_at=NOW - timedelta(hours=73),
+        )
+    )
+    db_session.flush()
+    db_session.add_all(
+        [
+            RawItemProcessingRecord(
+                raw_item_id=recent_items[0].id,
+                stage="relevance",
+                algorithm_version="relevance-v2",
+                outcome="included",
+                score=90,
+                reason_codes=["ai_product_action"],
+                details={},
+            ),
+            RawItemProcessingRecord(
+                raw_item_id=recent_items[1].id,
+                stage="relevance",
+                algorithm_version="relevance-v2",
+                outcome="excluded",
+                score=10,
+                reason_codes=["generic_technology", "insufficient_text"],
+                details={"safe": True},
+            ),
+        ]
+    )
+    db_session.add(
+        OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="manual",
+            status="succeeded",
+            requested_scope={"window_hours": 72},
+            result_summary={"selected_item_count": 3},
+            finished_at=NOW - timedelta(minutes=2),
+            created_at=NOW - timedelta(minutes=5),
+            updated_at=NOW - timedelta(minutes=2),
+        )
+    )
+    db_session.commit()
+
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lower())
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        view = CapabilityQueryService(db_session).build(
+            _catalog(), minimax_configured=False, now=NOW
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    coverage = view.event_quality_coverage
+    assert coverage.window_hours == 72
+    assert coverage.selected_count == 3
+    assert coverage.processed_count == 2
+    assert coverage.included_count == 1
+    assert coverage.excluded_count == 1
+    assert coverage.exclusion_reasons == (
+        ("generic_technology", 1),
+        ("insufficient_text", 1),
+    )
+    assert coverage.last_completed_at == NOW - timedelta(minutes=2)
+    processing_queries = [sql for sql in statements if "raw_item_processing" in sql]
+    assert len(processing_queries) == 1
 
 
 def test_capability_overview_reflects_new_fetchrun_and_rawitem_without_new_projection(

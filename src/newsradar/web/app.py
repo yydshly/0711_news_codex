@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated, Literal, TypeVar
@@ -76,6 +76,7 @@ TargetType = Literal[
     "market",
 ]
 CoverageMode = Literal["direct", "indirect", "catalog_only"]
+EventVisibilityMode = Literal["current", "legacy"]
 ProbeType = Literal["capability", "content"]
 QueryResult = TypeVar("QueryResult")
 PROBE_OUTCOME_VALUES = tuple(outcome.value for outcome in DomainProbeOutcome)
@@ -354,10 +355,19 @@ def create_app(
         )
 
     @app.get("/events", response_class=HTMLResponse)
-    def events(request: Request, status: str | None = None) -> HTMLResponse:
+    def events(
+        request: Request,
+        status: str | None = None,
+        category: str | None = None,
+        visibility: EventVisibilityMode = "current",
+        hours: Annotated[int | None, Query(ge=1, le=8760)] = None,
+    ) -> HTMLResponse:
+        filters = _active_filters(status=status, category=category, visibility=visibility)
+        if hours is not None:
+            filters["since"] = datetime.now(UTC) - timedelta(hours=hours)
         try:
             with create_session() as session:
-                event_page = EventQueryService(session).list_events(_active_filters(status=status))
+                event_page = EventQueryService(session).list_events(filters)
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         return templates.TemplateResponse(

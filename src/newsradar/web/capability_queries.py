@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
     EntityRecord,
+    EventCandidateRecord,
     EventModelRunRecord,
     EventRecord,
     EventScoreRecord,
@@ -19,6 +20,7 @@ from newsradar.db.models import (
     ModelUsageRecord,
     OperationRunRecord,
     ProviderDefinitionRecord,
+    RawItemProcessingRecord,
     RawItemRecord,
     SourceAccessMethodRecord,
     SourceDefinitionRecord,
@@ -34,6 +36,9 @@ from newsradar.sources.yaml_loader import load_source_tree
 
 _COMPLETED_FETCH_OUTCOMES = frozenset({"succeeded", "no_change"})
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+EVENT_QUALITY_WINDOW_HOURS = 72
+EVENT_QUALITY_RELEVANCE_VERSION = "relevance-v2"
+EVENT_QUALITY_CLUSTER_VERSION = "cluster-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +95,29 @@ class CapabilityGap:
 
 
 @dataclass(frozen=True, slots=True)
+class EventQualityCoverageView:
+    window_hours: int
+    selected_count: int
+    processed_count: int
+    included_count: int
+    excluded_count: int
+    exclusion_reasons: tuple[tuple[str, int], ...]
+    last_completed_at: datetime | None
+    candidate_count: int
+    current_event_count: int
+    legacy_event_count: int
+    model_fallback_count: int
+
+    @property
+    def reason_counts(self) -> tuple[tuple[str, int], ...]:
+        return self.exclusion_reasons
+
+    @property
+    def last_completed(self) -> datetime | None:
+        return self.last_completed_at
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityOverviewView:
     catalog_readable: bool
     provider_file_count: int
@@ -124,6 +152,109 @@ class CapabilityOverviewView:
     operation_status_counts: tuple[tuple[str, int], ...]
     stages: tuple[CapabilityStage, ...]
     gaps: tuple[CapabilityGap, ...]
+    event_quality_coverage: EventQualityCoverageView = EventQualityCoverageView(
+        window_hours=EVENT_QUALITY_WINDOW_HOURS,
+        selected_count=0,
+        processed_count=0,
+        included_count=0,
+        excluded_count=0,
+        exclusion_reasons=(),
+        last_completed_at=None,
+        candidate_count=0,
+        current_event_count=0,
+        legacy_event_count=0,
+        model_fallback_count=0,
+    )
+
+
+class EventQualityCoverageQueryService:
+    """Aggregate the fixed v2 processing window without per-item queries."""
+
+    WINDOW_HOURS = EVENT_QUALITY_WINDOW_HOURS
+    RELEVANCE_ALGORITHM_VERSION = EVENT_QUALITY_RELEVANCE_VERSION
+    CLUSTER_ALGORITHM_VERSION = EVENT_QUALITY_CLUSTER_VERSION
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def build(self, *, now: datetime | None = None) -> EventQualityCoverageView:
+        now = now or datetime.now(UTC)
+        since = now - timedelta(hours=self.WINDOW_HOURS)
+        selected = select(RawItemRecord.id).where(
+            func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at) >= since
+        )
+        selected_count = int(
+            self._session.scalar(
+                select(func.count(RawItemRecord.id)).where(
+                    func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at) >= since
+                )
+            )
+            or 0
+        )
+        processing_rows = self._session.execute(
+            select(RawItemProcessingRecord.outcome, RawItemProcessingRecord.reason_codes).where(
+                RawItemProcessingRecord.raw_item_id.in_(selected),
+                RawItemProcessingRecord.stage == "relevance",
+                RawItemProcessingRecord.algorithm_version
+                == self.RELEVANCE_ALGORITHM_VERSION,
+                RawItemProcessingRecord.outcome.in_(("included", "excluded")),
+            )
+        ).all()
+        outcomes = Counter(row.outcome for row in processing_rows)
+        reasons: Counter[str] = Counter()
+        for row in processing_rows:
+            if row.outcome != "excluded" or not isinstance(row.reason_codes, list):
+                continue
+            reasons.update(str(reason) for reason in row.reason_codes)
+
+        last_completed_at = self._session.scalar(
+            select(func.max(OperationRunRecord.finished_at)).where(
+                OperationRunRecord.operation_type == "event_pipeline",
+                OperationRunRecord.status == "succeeded",
+            )
+        )
+        if last_completed_at is not None and last_completed_at.tzinfo is None:
+            last_completed_at = last_completed_at.replace(tzinfo=UTC)
+        candidate_count = int(
+            self._session.scalar(
+                select(func.count(EventCandidateRecord.id)).where(
+                    EventCandidateRecord.algorithm_version == self.CLUSTER_ALGORITHM_VERSION,
+                    EventCandidateRecord.updated_at >= since,
+                )
+            )
+            or 0
+        )
+        visibility_counts = dict(
+            self._session.execute(
+                select(EventRecord.visibility, func.count(EventRecord.id))
+                .where(EventRecord.current_version_number > 0)
+                .group_by(EventRecord.visibility)
+            ).all()
+        )
+        model_fallback_count = int(
+            self._session.scalar(
+                select(func.count(EventModelRunRecord.id))
+                .join(ModelUsageRecord, ModelUsageRecord.id == EventModelRunRecord.model_usage_id)
+                .where(
+                    EventModelRunRecord.created_at >= since,
+                    ModelUsageRecord.outcome != "success",
+                )
+            )
+            or 0
+        )
+        return EventQualityCoverageView(
+            window_hours=self.WINDOW_HOURS,
+            selected_count=selected_count,
+            processed_count=len(processing_rows),
+            included_count=outcomes["included"],
+            excluded_count=outcomes["excluded"],
+            exclusion_reasons=tuple(sorted(reasons.items(), key=lambda item: (-item[1], item[0]))),
+            last_completed_at=last_completed_at,
+            candidate_count=candidate_count,
+            current_event_count=int(visibility_counts.get("current", 0)),
+            legacy_event_count=int(visibility_counts.get("legacy", 0)),
+            model_fallback_count=model_fallback_count,
+        )
 
 
 def load_catalog_snapshot(
@@ -451,6 +582,7 @@ class CapabilityQueryService:
             operation_status_counts=operation_counts,
             stages=stages,
             gaps=gaps,
+            event_quality_coverage=EventQualityCoverageQueryService(self._session).build(now=now),
         )
 
     def _latest_probes(self, source_ids: set[str]) -> dict[str, SourceProbeRunRecord]:

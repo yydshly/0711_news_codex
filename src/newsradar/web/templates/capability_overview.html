@@ -16,6 +16,30 @@
     <p class="metric-note">本页只读；抓取、取消、重试和重复候选裁决会写入数据库，并由 Worker 执行。</p>
   </section>
 
+  <section class="panel capability-pipeline-panel" aria-labelledby="event-quality-coverage-heading">
+    {% set event_quality = capability.event_quality_coverage %}
+    <div class="section-heading">
+      <div><p class="eyebrow">Event Intelligence v2</p><h2 id="event-quality-coverage-heading">72 小时事件处理覆盖</h2></div>
+      <a href="/events">查看当前事件</a>
+    </div>
+    <dl class="capability-metrics">
+      <div><dt>窗口 RawItem</dt><dd>{{ event_quality.selected_count }}</dd></div>
+      <div><dt>已处理</dt><dd>{{ event_quality.processed_count }}</dd></div>
+      <div><dt>纳入</dt><dd>{{ event_quality.included_count }}</dd></div>
+      <div><dt>排除</dt><dd>{{ event_quality.excluded_count }}</dd></div>
+      <div><dt>候选簇</dt><dd>{{ event_quality.candidate_count }}</dd></div>
+      <div><dt>当前事件</dt><dd>{{ event_quality.current_event_count }}</dd></div>
+      <div><dt>旧版事件</dt><dd>{{ event_quality.legacy_event_count }}</dd></div>
+      <div><dt>模型回退</dt><dd>{{ event_quality.model_fallback_count }}</dd></div>
+      <div><dt>最后完成</dt><dd class="text-value">{% if event_quality.last_completed_at %}{{ event_quality.last_completed_at.strftime('%Y-%m-%d %H:%M') }}{% else %}暂无成功运行{% endif %}</dd></div>
+    </dl>
+    <h3>主要排除原因</h3>
+    <ul class="result-list">
+      {% for reason, count in event_quality.exclusion_reasons %}<li><span>{{ reason|zh_label('event_processing_reason') }}</span><strong>{{ count }}</strong></li>{% else %}<li>当前窗口未记录排除原因。</li>{% endfor %}
+    </ul>
+    <p class="metric-note">口径固定为最近 {{ event_quality.window_hours }} 小时、relevance-v2 处理结论；未处理条目不会被误计为已纳入或已排除。</p>
+  </section>
+
   <section class="panel capability-pipeline-panel" aria-labelledby="pipeline-heading">
     <div class="section-heading">
       <div><p class="eyebrow">端到端口径</p><h2 id="pipeline-heading">能力流水线</h2></div>

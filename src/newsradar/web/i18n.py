@@ -71,6 +71,89 @@ LABELS: dict[str, dict[str, str]] = {
         "degraded": "降级",
         "blocked": "受阻",
         "failed": "失败",
+        "fallback": "规则回退",
+    },
+    "event_status": {
+        "confirmed": "已确认",
+        "emerging": "新兴线索",
+        "developing": "持续发展",
+        "disputed": "存在分歧",
+        "stale": "已过时",
+        "rejected": "已排除",
+    },
+    "event_visibility": {
+        "current": "当前版本",
+        "legacy": "旧版历史",
+    },
+    "event_category": {
+        "model_release": "模型发布",
+        "research": "研究进展",
+        "product": "产品动态",
+        "funding": "融资与商业",
+        "policy": "政策与治理",
+        "security": "安全事件",
+        "benchmark": "基准评测",
+        "other": "其他",
+    },
+    "enrichment_origin": {
+        "model": "MiniMax 中文增强",
+        "previous_version": "沿用已核验中文版本",
+        "rule_fallback": "规则中文回退",
+    },
+    "score_dimension": {
+        "ai_relevance": "AI 相关性",
+        "source_coverage": "来源覆盖",
+        "source_authority": "来源权威性",
+        "recency": "时效",
+        "engagement_velocity": "互动热度",
+        "novelty": "新颖性",
+    },
+    "event_reason": {
+        "official_evidence": "存在独立官方一手证据",
+        "two_independent_professional_roots": "至少两个独立专业媒体证据根",
+        "insufficient_independent_evidence": "独立证据仍不足",
+        "engagement_unavailable": "暂无可用互动数据",
+        "importance:versioned_weights": "重要度使用版本化权重",
+        "credibility:official_evidence": "可信度由独立官方证据支持",
+        "credibility:two_independent_professional_roots": "可信度由两个独立专业媒体支持",
+        "credibility:one_independent_professional_root": "目前仅有一个独立专业媒体证据根",
+        "credibility:independent_research": "存在独立研究证据",
+        "credibility:social_or_community_only_cap": "仅社交或社区证据，可信度受限",
+        "heat:60_importance_40_credibility": "热度由重要度与可信度共同计算",
+    },
+    "event_limitation": {
+        "not_peer_reviewed": "未经同行评审",
+        "model_unavailable_or_not_configured": "中文模型不可用，当前使用规则回退",
+        "upstream_attribution_not_independent": "上游转载归因不独立",
+        "source_role_conflict": "来源角色与证据用途存在冲突",
+        "source_nature_not_independent": "来源性质不支持独立证据",
+        "source_not_evidence": "该来源仅用于发现，不作为事实证据",
+    },
+    "evidence_role": {
+        "official": "官方一手证据",
+        "professional_media": "专业媒体",
+        "research": "研究材料",
+        "community": "社区线索",
+        "social": "社交线索",
+        "aggregator": "聚合转载",
+        "unknown": "未标注",
+    },
+    "event_processing_reason": {
+        "ambiguous_term_only": "仅命中歧义词",
+        "game_or_entertainment": "游戏或娱乐内容",
+        "advertisement_or_subscription": "广告、促销或订阅引导",
+        "generic_technology": "泛科技内容，缺少直接 AI 关联",
+        "auto_repost_without_claim": "自动转载且没有可识别事实主张",
+        "insufficient_text": "文本不足，无法形成事件候选",
+        "no_ai_signal": "未识别到 AI 信号",
+        "ai_entity_without_event_context": "仅出现 AI 实体，缺少事件动作",
+        "technology_entity_without_ai_context": "技术实体缺少 AI 语境",
+    },
+    "model_purpose": {
+        "event_enrichment": "事件中文增强",
+        "event_conflict_explanation": "分歧解释",
+        "event_pair_comparison": "事件候选比对",
+        "event_entity_suggestions": "实体建议",
     },
     "probe_type": {
         "capability": "能力探测",
@@ -99,9 +182,23 @@ LABELS: dict[str, dict[str, str]] = {
     },
 }
 
+_SAFE_EVENT_FALLBACKS = {
+    "event_status": "其他状态",
+    "event_visibility": "未知版本",
+    "event_category": "其他",
+    "enrichment_origin": "中文来源未标注",
+    "score_dimension": "其他评分",
+    "event_reason": "其他可审计原因",
+    "event_limitation": "其他已知限制",
+    "evidence_role": "未标注",
+    "event_processing_reason": "其他规则原因",
+    "model_purpose": "其他受控用途",
+}
+
 
 def zh_label(group: str, value: str) -> str:
-    return LABELS.get(group, {}).get(value, value)
+    labels = LABELS.get(group, {})
+    return labels.get(value, _SAFE_EVENT_FALLBACKS.get(group, value))
 
 
 def explain_failure(reason: str, http_status: int | None, error_code: str | None) -> str:

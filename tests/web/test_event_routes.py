@@ -11,11 +11,18 @@ from newsradar.db.models import (
 from newsradar.web.app import create_app
 
 
-def _add_event(session, event_id=41, status="confirmed", title="确认事件"):
+def _add_event(
+    session,
+    event_id=41,
+    status="confirmed",
+    title="确认事件",
+    visibility="current",
+):
     session.add(
         EventRecord(
             id=event_id,
             canonical_key=f"e-{event_id}",
+            visibility=visibility,
             status=status,
             occurred_at=datetime.now(UTC),
             current_version_number=1,
@@ -23,12 +30,45 @@ def _add_event(session, event_id=41, status="confirmed", title="确认事件"):
     )
     session.add(
         EventVersionRecord(
-            event_id=event_id, version_number=1, zh_title=title, zh_summary="已核验摘要", payload={}
+            event_id=event_id,
+            version_number=1,
+            zh_title=title,
+            zh_summary="已核验摘要",
+            payload={
+                "enrichment": {
+                    "why_it_matters": "影响行业采用。",
+                    "limitations": [],
+                    "origin": "model",
+                },
+                "evidence": [
+                    {
+                        "raw_item_id": event_id,
+                        "role": "official",
+                        "root_evidence_key": f"official:{event_id}",
+                        "independent": True,
+                    }
+                ],
+            },
         )
     )
     session.add(
         EventScoreRecord(
-            event_id=event_id, version_number=1, heat=88, breakdown={"reasons": ["官方来源"]}
+            event_id=event_id,
+            version_number=1,
+            heat=88,
+            breakdown={
+                "ai_relevance": 90,
+                "source_coverage": 70,
+                "source_authority": 90,
+                "recency": 100,
+                "engagement_velocity": 50,
+                "novelty": 70,
+                "importance": 83,
+                "credibility": 90,
+                "heat": 88,
+                "rule_version": "score-v2",
+                "reasons": ["official_evidence"],
+            },
         )
     )
     session.commit()
@@ -53,6 +93,22 @@ def test_emerging_page_labels_unconfirmed_social_signal(db_session, monkeypatch)
     assert response.status_code == 200
     assert "仅线索" in response.text
     assert "社交线索" in response.text
+
+
+def test_events_defaults_to_current_and_legacy_entry_warns(db_session, monkeypatch):
+    _add_event(db_session, 43, "confirmed", "当前事件")
+    _add_event(db_session, 44, "confirmed", "历史事件", visibility="legacy")
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    with TestClient(create_app()) as client:
+        current = client.get("/events")
+        legacy = client.get("/events?visibility=legacy")
+
+    assert "当前事件" in current.text
+    assert "历史事件" not in current.text
+    assert "历史事件" in legacy.text
+    assert '<h2><a href="/events/43">当前事件</a></h2>' not in legacy.text
+    assert "旧版算法结果，不参与当前首页" in legacy.text
 
 
 def test_recluster_post_only_enqueues_operation(db_session, monkeypatch):
