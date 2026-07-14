@@ -1,48 +1,26 @@
 id: universe-reuters-2
-name: Reuters AI discovery
+name: Reuters AI 报道间接发现
 provider_id: reuters
 target_type: search_query
-availability: manual_only
-coverage_mode: catalog_only
+availability: ready
+coverage_mode: indirect
 official_identity_url: https://www.reuters.com/technology/
-reviewed_at: '2026-07-11'
-unlock_requirements:
-- Unlock official Reuters access
+reviewed_at: '2026-07-14'
+unlock_requirements: []
 status: candidate
 nature: professional_media
-roles:
-- discovery
-- context
-- evidence
+roles: [discovery, context]
 language: en
-topics:
-- artificial_intelligence
-- technology
+topics: [artificial_intelligence, technology]
 authority_score: 4
 poll_interval_minutes: 60
 access_methods:
-- kind: html
-  url: https://www.reuters.com/technology/
-  priority: 1
-  requires_manual_approval: true
-expected_fields:
-- title
-- canonical_url
-- published_at
-- summary
-risk:
-  terms: 4
-  authentication: 4
-  stability: 2
-  data_quality: 1
-  operating_cost: 4
-  evidence:
-  - https://www.reutersagency.com/en/services/content-delivery/
-  - https://www.reuters.com/info-pages/terms-of-use/
-  hard_block_reason: manual_only
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
-
-research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  - kind: rss
+    url: https://news.google.com/rss/search
+    priority: 1
+    params: {q: 'AI source:"Reuters" when:7d', hl: en-US, gl: US, ceid: 'US:en'}
+expected_fields: [title, canonical_url, published_at, summary]
+risk: {terms: 2, authentication: 0, stability: 3, data_quality: 2, operating_cost: 1, evidence: [https://www.reuters.com/technology/, https://news.google.com/rss]}
+ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
+research: {status: needs_research, purpose: 通过 Google News 间接发现 Reuters 的 AI 报道。, wanted_information: [title, canonical_url, published_at, summary], conclusion: 已确认发布者限定查询入口；这不代表 Reuters 官方 API 已解锁。, risk_conclusion: 只保留间接发现身份，必须解析并回到 Reuters 原文确认。, reviewed_at: '2026-07-14'}
+notes: Google News 间接发现；不自动抓取 Reuters HTML，不代表直接覆盖 Reuters。

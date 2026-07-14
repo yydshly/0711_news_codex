@@ -1,0 +1,43 @@
+id: nvidia-developer-youtube
+name: NVIDIA Developer YouTube 官方频道
+provider_id: youtube
+target_type: channel
+availability: requires_credentials
+coverage_mode: direct
+official_identity_url: https://www.youtube.com/@NVIDIADeveloper
+reviewed_at: '2026-07-14'
+unlock_requirements: [配置免费的 YOUTUBE_API_KEY；无凭据时使用频道 Atom Feed]
+status: candidate
+nature: social
+roles: [discovery, engagement, context]
+language: en
+topics: [artificial_intelligence, chips_compute, developer_tools]
+authority_score: 4
+poll_interval_minutes: 30
+access_methods:
+  - kind: rest_api
+    url: https://www.googleapis.com/youtube/v3/channels
+    priority: 1
+    auth_envs: [YOUTUBE_API_KEY]
+    params: {id: UCBHcMCGaiJhv-ESTcWGJPcw}
+  - kind: atom
+    url: https://www.youtube.com/feeds/videos.xml
+    priority: 2
+    params: {channel_id: UCBHcMCGaiJhv-ESTcWGJPcw}
+expected_fields: [title, canonical_url, published_at, author, summary, engagement]
+risk:
+  terms: 1
+  authentication: 1
+  stability: 1
+  data_quality: 1
+  operating_cost: 1
+  evidence: [https://www.youtube.com/@NVIDIADeveloper, https://developers.google.com/youtube/v3/docs/channels/list]
+ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
+research:
+  status: needs_research
+  purpose: 初步获取 NVIDIA 开发者、芯片与 AI 工程视频。
+  wanted_information: [title, canonical_url, published_at, author, summary, engagement]
+  conclusion: 已确认具体频道与稳定 Channel ID，允许初步抓取，深度审计后续完成。
+  risk_conclusion: 只使用 YouTube Data API 或公开频道 Feed，不抓取登录页面。
+  reviewed_at: '2026-07-14'
+notes: 主路径读取上传播放列表；Atom Feed 为无凭据备用方式。

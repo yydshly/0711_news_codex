@@ -1,48 +1,26 @@
 id: universe-ap-2
-name: Associated Press AI discovery
+name: Associated Press AI 报道间接发现
 provider_id: ap
 target_type: search_query
-availability: requires_approval
-coverage_mode: catalog_only
+availability: ready
+coverage_mode: indirect
 official_identity_url: https://apnews.com/technology
-reviewed_at: '2026-07-11'
-unlock_requirements:
-- Unlock official Associated Press access
+reviewed_at: '2026-07-14'
+unlock_requirements: []
 status: candidate
 nature: professional_media
-roles:
-- discovery
-- context
-- evidence
+roles: [discovery, context]
 language: en
-topics:
-- artificial_intelligence
-- technology
+topics: [artificial_intelligence, technology]
 authority_score: 4
 poll_interval_minutes: 60
 access_methods:
-- kind: html
-  url: https://apnews.com/technology
-  priority: 1
-  requires_manual_approval: true
-expected_fields:
-- title
-- canonical_url
-- published_at
-- summary
-risk:
-  terms: 4
-  authentication: 4
-  stability: 2
-  data_quality: 1
-  operating_cost: 4
-  evidence:
-  - https://developer.ap.org/
-  - https://www.ap.org/terms-and-conditions/
-  hard_block_reason: requires_approval
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
-
-research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  - kind: rss
+    url: https://news.google.com/rss/search
+    priority: 1
+    params: {q: 'AI source:"Associated Press" when:7d', hl: en-US, gl: US, ceid: 'US:en'}
+expected_fields: [title, canonical_url, published_at, summary]
+risk: {terms: 2, authentication: 0, stability: 3, data_quality: 2, operating_cost: 1, evidence: [https://apnews.com/technology, https://news.google.com/rss]}
+ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
+research: {status: needs_research, purpose: 通过 Google News 间接发现 Associated Press 的 AI 报道。, wanted_information: [title, canonical_url, published_at, summary], conclusion: 已确认发布者限定查询入口；这不代表 AP 官方 API 已解锁。, risk_conclusion: 只保留间接发现身份，必须解析并回到 AP 原文确认。, reviewed_at: '2026-07-14'}
+notes: Google News 间接发现；不自动抓取 AP HTML，不代表直接覆盖 AP。
