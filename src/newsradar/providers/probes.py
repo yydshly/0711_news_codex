@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from datetime import UTC, datetime
+from typing import Protocol
 
 import httpx
 from pydantic import BaseModel, ConfigDict
+
+from newsradar.credentials import SettingsCredentials
 
 from .schema import Availability, ProviderDefinition
 
@@ -25,9 +27,18 @@ class ProviderProbeResult(BaseModel):
     evidence_url: str
 
 
+class CredentialInventory(Protocol):
+    def configured_names(self) -> set[str]: ...
+
+
 class ProviderProbe:
-    def __init__(self, client: httpx.AsyncClient):
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        credentials: CredentialInventory | None = None,
+    ):
         self.client = client
+        self.credentials = credentials or SettingsCredentials()
 
     async def probe(self, provider: ProviderDefinition) -> ProviderProbeResult:
         checked_at = datetime.now(UTC)
@@ -40,7 +51,8 @@ class ProviderProbe:
         if provider.availability in blocked:
             requirements = "; ".join(provider.unlock_requirements) or provider.availability.value
             return self._result(provider, "blocked", requirements, checked_at)
-        missing = [name for name in provider.required_env if not os.environ.get(name)]
+        configured = self.credentials.configured_names()
+        missing = [name for name in provider.required_env if name not in configured]
         if missing:
             return self._result(
                 provider,
