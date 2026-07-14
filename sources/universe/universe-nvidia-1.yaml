@@ -41,6 +41,6 @@ risk:
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: duplicate
+  conclusion: 此记录与 universe-nvidia-2 使用相同入口；保留为目录审计历史，不参与探测或抓取。
+  reviewed_at: '2026-07-14'

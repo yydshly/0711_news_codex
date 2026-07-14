@@ -40,6 +40,9 @@ risk:
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  purpose: 通过间接聚合查询发现与该 Provider 相关的 AI/技术新闻线索。
+  wanted_information: [title, canonical_url, published_at, summary]
+  conclusion: 这是唯一保留的间接发现入口；聚合结果只能用于发现，事实必须回到官方或独立专业媒体确认。
+  risk_conclusion: 不使用登录 Cookie、代理绕过或页面抓取；在完成样本、字段、条款和备用方式审核前保持未启用。
+  reviewed_at: '2026-07-14'

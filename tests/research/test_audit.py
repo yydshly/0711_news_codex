@@ -42,14 +42,20 @@ def _verified_research(kind: str = "rss") -> dict[str, object]:
     }
 
 
-def test_audit_keeps_universe_placeholder_as_warning() -> None:
+def test_audit_does_not_treat_universe_id_as_placeholder() -> None:
     report = audit_source_catalog((), (_source(id="universe-social-1"),))
 
     assert report.status_counts == {"needs_research": 1}
-    assert any(
-        finding.code == "placeholder_target" and finding.severity == "warning"
-        for finding in report.findings
+    assert not any(finding.code == "placeholder_target" for finding in report.findings)
+
+
+def test_audit_flags_explicit_placeholder_status() -> None:
+    report = audit_source_catalog(
+        (),
+        (_source(id="real-placeholder", research={"status": "placeholder"}),),
     )
+
+    assert [finding.code for finding in report.findings] == ["placeholder_target"]
 
 
 def test_audit_flags_provider_homepage_as_generic_platform_target() -> None:
@@ -76,6 +82,43 @@ def test_audit_flags_duplicate_official_identity_within_provider() -> None:
     report = audit_source_catalog((provider,), (first, second))
 
     assert [finding.code for finding in report.findings].count("duplicate_candidate") == 2
+
+
+def test_audit_does_not_reopen_explicit_duplicate_as_pending_candidate() -> None:
+    provider = _provider()
+    duplicate = _source(
+        provider_id=provider.id,
+        official_identity_url="https://example.test/profile",
+        research={"status": "duplicate"},
+    )
+    canonical = _source(
+        id="canonical-source",
+        provider_id=provider.id,
+        official_identity_url="https://example.test/profile",
+    )
+
+    report = audit_source_catalog((provider,), (duplicate, canonical))
+
+    assert not any(finding.code == "duplicate_candidate" for finding in report.findings)
+
+
+def test_audit_does_not_confuse_direct_and_indirect_targets_with_same_provider_identity() -> None:
+    provider = _provider()
+    direct = _source(
+        provider_id=provider.id,
+        official_identity_url="https://example.test/profile",
+    )
+    indirect = _source(
+        id="indirect-source",
+        provider_id=provider.id,
+        target_type="search_query",
+        coverage_mode="indirect",
+        official_identity_url="https://example.test/profile",
+    )
+
+    report = audit_source_catalog((provider,), (direct, indirect))
+
+    assert not any(finding.code == "duplicate_candidate" for finding in report.findings)
 
 
 def test_audit_reports_incomplete_verified_research_as_errors() -> None:
