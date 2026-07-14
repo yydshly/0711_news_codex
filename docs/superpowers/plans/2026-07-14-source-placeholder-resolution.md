@@ -26,7 +26,7 @@
 - 修改：`tests/research/test_audit.py`
 - 修改：`tests/research/test_catalog_completion.py`
 
-**接口：** `audit_source_catalog(providers, sources) -> ResearchAuditReport`。只有 `research.status == placeholder` 产生 `placeholder_target` 警告；ID 命名不改变审计结论。
+**接口：** `audit_source_catalog(providers, sources) -> ResearchAuditReport`。只有 `research.status == placeholder` 产生 `placeholder_target` 警告；ID 命名不改变审计结论；重复候选仅在同 Provider、Target 类型和覆盖模式内比较，且排除已标记的重复历史项。
 
 - [ ] **步骤 1：写失败测试。**
 

@@ -84,6 +84,43 @@ def test_audit_flags_duplicate_official_identity_within_provider() -> None:
     assert [finding.code for finding in report.findings].count("duplicate_candidate") == 2
 
 
+def test_audit_does_not_reopen_explicit_duplicate_as_pending_candidate() -> None:
+    provider = _provider()
+    duplicate = _source(
+        provider_id=provider.id,
+        official_identity_url="https://example.test/profile",
+        research={"status": "duplicate"},
+    )
+    canonical = _source(
+        id="canonical-source",
+        provider_id=provider.id,
+        official_identity_url="https://example.test/profile",
+    )
+
+    report = audit_source_catalog((provider,), (duplicate, canonical))
+
+    assert not any(finding.code == "duplicate_candidate" for finding in report.findings)
+
+
+def test_audit_does_not_confuse_direct_and_indirect_targets_with_same_provider_identity() -> None:
+    provider = _provider()
+    direct = _source(
+        provider_id=provider.id,
+        official_identity_url="https://example.test/profile",
+    )
+    indirect = _source(
+        id="indirect-source",
+        provider_id=provider.id,
+        target_type="search_query",
+        coverage_mode="indirect",
+        official_identity_url="https://example.test/profile",
+    )
+
+    report = audit_source_catalog((provider,), (direct, indirect))
+
+    assert not any(finding.code == "duplicate_candidate" for finding in report.findings)
+
+
 def test_audit_reports_incomplete_verified_research_as_errors() -> None:
     source = _source()
     object.__setattr__(

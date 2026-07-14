@@ -63,7 +63,7 @@
 审计保留以下检查：
 
 - `research.status == placeholder` 时产生占位警告；
-- 同一 Provider 下相同 `official_identity_url` 仍作为潜在重复提示；
+- 同一 Provider、Target 类型和覆盖模式下相同 `official_identity_url` 才作为潜在重复提示；已明确标为 `duplicate` 的历史项不再作为待裁决重复候选；
 - `needs_research` 不计为已验证，但可作为真实、待研究 Target 进入目录统计；
 - `duplicate` 不计入真实覆盖和可抓取覆盖。
 

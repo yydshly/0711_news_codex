@@ -1,9 +1,12 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from newsradar.db.models import SourceResearchProfileRecord
+from newsradar.sources.repository import SourceRepository
+from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.web.app import create_app
 from newsradar.web.queries import DashboardQueryService
 from newsradar.web.viewmodels import RemediationDashboardView, RemediationRowView
@@ -111,4 +114,23 @@ def test_research_target_explains_duplicate_and_needs_research_status(db_session
 
     assert "历史目录项" in duplicate.text
     assert "不会参与探测或抓取" in duplicate.text
+    assert "尚未完成样本、字段、条款和备用方式验证" in canonical.text
+
+
+def test_research_target_renders_resolved_openai_catalog_pair(db_session) -> None:
+    SourceRepository(db_session).sync(load_source_tree(Path("sources")))
+    db_session.commit()
+
+    @contextmanager
+    def factory():
+        yield DashboardQueryService(db_session)
+
+    client = TestClient(create_app(factory))
+    duplicate = client.get("/research/targets/universe-openai-1")
+    canonical = client.get("/research/targets/universe-openai-2")
+
+    assert duplicate.status_code == canonical.status_code == 200
+    assert "重复" in duplicate.text
+    assert "universe-openai-2" in duplicate.text
+    assert "待研究" in canonical.text
     assert "尚未完成样本、字段、条款和备用方式验证" in canonical.text
