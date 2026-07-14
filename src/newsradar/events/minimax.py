@@ -44,6 +44,7 @@ EventEnrichmentCallable = Callable[
     [CandidateCluster, EventEnrichment],
     Awaitable[EventEnrichmentResult | EventEnrichment],
 ]
+CandidateCheckpoint = Callable[[CandidateCluster], None]
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -56,23 +57,35 @@ class EventEnrichmentBatch:
         max_concurrency: int = 2,
         *,
         fallback_model: str = "MiniMax-M2.7-highspeed",
+        candidate_checkpoint: CandidateCheckpoint | None = None,
     ) -> None:
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be positive")
         self._adapter = adapter
-        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._semaphore = asyncio.Semaphore(min(max_concurrency, 2))
         self._fallback_model = fallback_model
+        self._candidate_checkpoint = candidate_checkpoint
 
     async def enrich(
         self, candidates: tuple[CandidateCluster, ...]
     ) -> dict[str, EventEnrichmentResult]:
         from newsradar.events.publishing import rule_enrichment
 
+        aborted = asyncio.Event()
+
         async def enrich_one(
             candidate: CandidateCluster,
         ) -> tuple[str, EventEnrichmentResult]:
             fallback = rule_enrichment(candidate)
             async with self._semaphore:
+                if aborted.is_set():
+                    raise asyncio.CancelledError
+                if self._candidate_checkpoint is not None:
+                    try:
+                        self._candidate_checkpoint(candidate)
+                    except BaseException:
+                        aborted.set()
+                        raise
                 try:
                     result = await self._adapter(candidate, fallback)
                     if isinstance(result, EventEnrichment):
@@ -99,7 +112,15 @@ class EventEnrichmentBatch:
                     )
                 return candidate.candidate_key, result
 
-        rows = await asyncio.gather(*(enrich_one(candidate) for candidate in candidates))
+        tasks = [asyncio.create_task(enrich_one(candidate)) for candidate in candidates]
+        try:
+            rows = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return dict(rows)
 
 
@@ -116,7 +137,7 @@ class EventMiniMaxAdapter:
             raise ValueError("event_model_max_concurrency must be positive")
         self.settings = settings
         self.event_run_sink = event_run_sink
-        self._semaphore = asyncio.Semaphore(settings.event_model_max_concurrency)
+        self._semaphore = asyncio.Semaphore(min(settings.event_model_max_concurrency, 2))
         self.client = MiniMaxClient(settings, http, self._record_usage)
 
     async def enrich_event(
@@ -185,9 +206,7 @@ class EventMiniMaxAdapter:
         return result.model_copy(update={"origin": "model"}) if result is not fallback else result
 
     async def explain_conflict(self, candidate: CandidateCluster) -> ConflictExplanation:
-        if not bool(candidate.metadata.get("disputed")) and not any(
-            "conflict" in reason.casefold() for reason in candidate.reasons
-        ):
+        if candidate.metadata.get("disputed") is not True:
             raise ValueError("M3 conflict explanation requires a rule-disputed candidate")
         fallback = ConflictExplanation(
             summary="Rule fallback: conflicting evidence requires human review",
@@ -261,7 +280,7 @@ class EventMiniMaxAdapter:
     @staticmethod
     def _bounded_title(value: str) -> str:
         without_url_queries = re.sub(
-            r"(https?://[^\s?#]+)[?#][^\s]*",
+            r"((?:https?:)?//[^\s?#]+|www\.[^\s?#]+)[?#][^\s]*",
             r"\1",
             value,
             flags=re.IGNORECASE,

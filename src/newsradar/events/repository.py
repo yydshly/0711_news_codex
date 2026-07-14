@@ -321,6 +321,13 @@ class EventRepository:
                             record.id, event.source_item_ids
                         )
                     ):
+                        try:
+                            for usage in model_usages:
+                                self.record_model_run(record.id, usage)
+                        except Exception as audit_error:
+                            raise EventModelAuditError(
+                                "Model attempt audit could not be linked to the published event"
+                            ) from audit_error
                         self.last_publish_created_version = False
                         return record
                     raise EventPublicationConflict(

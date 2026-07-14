@@ -1,6 +1,7 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from threading import Lock
-from time import sleep
+from time import perf_counter
 
 import pytest
 from sqlalchemy import create_engine, event, select, text
@@ -10,6 +11,7 @@ from newsradar.db.models import (
     Base,
     EventCandidateRecord,
     EventItemRecord,
+    EventModelRunRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
@@ -18,6 +20,7 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
+from newsradar.events.minimax import EventEnrichmentResult
 from newsradar.events.pipeline import (
     ALGORITHM_VERSIONS,
     EventPipeline,
@@ -34,7 +37,7 @@ from newsradar.events.relevance import (
     evaluate_relevance,
 )
 from newsradar.events.repository import EventPublicationConflict, EventRepository
-from newsradar.events.schema import ProcessingStage
+from newsradar.events.schema import CandidateCluster, ClusterItem, ProcessingStage
 from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
 
@@ -102,23 +105,27 @@ def test_pipeline_batch_enrichment_is_bounded_to_two_candidates(
     active = 0
     maximum_active = 0
 
-    def tracked_enrichment(candidate):
+    async def tracked_enrichment(candidate, fallback, settings, http):
         nonlocal active, maximum_active
+        del fallback, settings, http
         with lock:
             active += 1
             maximum_active = max(maximum_active, active)
-        sleep(0.03)
+        await asyncio.sleep(0.03)
         with lock:
             active -= 1
-        return (
-            rule_enrichment(candidate).model_copy(update={"origin": "model"}),
-            (),
+        return EventEnrichmentResult(
+            enrichment=rule_enrichment(candidate).model_copy(
+                update={"origin": "model"}
+            )
         )
 
-    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(tracked_enrichment))
+    monkeypatch.setattr(
+        EventPipeline, "_enrich_candidate_async", staticmethod(tracked_enrichment)
+    )
     monkeypatch.setattr(
         "newsradar.events.pipeline.get_settings",
-        lambda: Settings(event_model_max_concurrency=2),
+        lambda: Settings(event_model_max_concurrency=5),
     )
     with Session(engine) as db:
         result = EventPipeline.production(db).run(
@@ -164,9 +171,49 @@ def test_pipeline_records_all_required_stage_checkpoints() -> None:
         "after_event_selection",
         "after_event_relevance",
         "after_event_cluster",
+        "before_event_enrichment",
         "after_event_enrichment",
         "after_event_publish",
     }.issubset(checkpoints)
+
+
+def test_pipeline_checkpoint_cancels_inflight_async_enrichment_promptly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled: list[str] = []
+    candidates = tuple(
+        CandidateCluster(
+            candidate_key=f"cancel-{index}",
+            title=f"Candidate {index}",
+            items=(ClusterItem(raw_item_id=index + 1, title=f"Item {index}"),),
+            raw_item_ids=(index + 1,),
+        )
+        for index in range(4)
+    )
+
+    async def hanging(candidate, fallback, settings, http):
+        del fallback, settings, http
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(candidate.candidate_key)
+            raise
+
+    def checkpoint(candidate: CandidateCluster) -> None:
+        if candidate.candidate_key == "cancel-1":
+            raise RuntimeError("operation_cancelled")
+
+    monkeypatch.setattr(
+        EventPipeline, "_enrich_candidate_async", staticmethod(hanging)
+    )
+    started = perf_counter()
+    with pytest.raises(RuntimeError, match="operation_cancelled"):
+        EventPipeline._enrich_candidates(
+            candidates, candidate_checkpoint=checkpoint
+        )
+
+    assert perf_counter() - started < 0.5
+    assert cancelled == ["cancel-0"]
 
 
 def test_pipeline_enrichment_batch_receives_only_rule_included_candidates(
@@ -202,11 +249,14 @@ def test_pipeline_enrichment_batch_receives_only_rule_included_candidates(
 
     enriched_item_ids: list[tuple[int, ...]] = []
 
-    def observe(candidate):
+    async def observe(candidate, fallback, settings, http):
+        del fallback, settings, http
         enriched_item_ids.append(candidate.raw_item_ids)
-        return rule_enrichment(candidate), ()
+        return EventEnrichmentResult(enrichment=rule_enrichment(candidate))
 
-    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(observe))
+    monkeypatch.setattr(
+        EventPipeline, "_enrich_candidate_async", staticmethod(observe)
+    )
     with Session(engine) as db:
         result = EventPipeline.production(db).run(
             window_hours=24,
@@ -501,7 +551,8 @@ def test_pipeline_publishes_same_candidate_snapshot_used_for_score_when_members_
             operation.id,
         )
 
-    def replace_members(candidate):
+    async def replace_members(candidate, fallback, settings, http):
+        del fallback, settings, http
         with Session(engine) as other:
             record = other.scalar(
                 select(EventCandidateRecord).where(
@@ -511,9 +562,11 @@ def test_pipeline_publishes_same_candidate_snapshot_used_for_score_when_members_
             assert record is not None
             EventRepository(other).replace_candidate_items(record.id, (replacement_id,))
             other.commit()
-        return rule_enrichment(candidate), ()
+        return EventEnrichmentResult(enrichment=rule_enrichment(candidate))
 
-    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(replace_members))
+    monkeypatch.setattr(
+        EventPipeline, "_enrich_candidate_async", staticmethod(replace_members)
+    )
     with Session(engine) as db:
         result = EventPipeline.production(db).run(
             window_hours=72,
@@ -890,6 +943,111 @@ def test_pipeline_replay_does_not_duplicate_versions() -> None:
         assert second.created_event_versions == 0
         assert second.current_event_ids == first.current_event_ids
         assert db.query(EventVersionRecord).count() == 1
+
+
+def test_same_snapshot_won_during_claim_creates_one_version_and_audits_loser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B's stale pre-read must converge on A's snapshot after B acquires the lease."""
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(_source_record())
+        db.add(
+            RawItemRecord(
+                source_id="source",
+                external_id="race-a",
+                canonical_url="https://example.test/race-a",
+                payload={},
+                title="OpenAI launches Race AI model",
+                title_fingerprint="openai-launches-race-ai-model",
+                published_at=now,
+            )
+        )
+        _seed_operation(db, 301, window_end=now)
+        _seed_operation(db, 302, window_end=now)
+        db.commit()
+        first = EventPipeline.production(db).run(
+            window_hours=24, operation_id=301, checkpoint=lambda _: None
+        )
+        event_id = first.current_event_ids[0]
+        db.add(
+            RawItemRecord(
+                source_id="source",
+                external_id="race-b",
+                canonical_url="https://example.test/race-b",
+                payload={},
+                title="OpenAI launches Race AI model",
+                title_fingerprint="openai-launches-race-ai-model",
+                published_at=now,
+            )
+        )
+        db.commit()
+
+    original_claim = EventRepository.claim_event
+    injected = False
+
+    def inject_a_winner_then_claim(self, claimed_event_id, operation_id, lease_until):
+        nonlocal injected
+        if not injected:
+            injected = True
+            record = self.session.get(EventRecord, claimed_event_id)
+            previous = self.session.scalar(
+                select(EventVersionRecord).where(
+                    EventVersionRecord.event_id == claimed_event_id,
+                    EventVersionRecord.version_number == 1,
+                )
+            )
+            previous_score = self.session.scalar(
+                select(EventScoreRecord).where(
+                    EventScoreRecord.event_id == claimed_event_id,
+                    EventScoreRecord.version_number == 1,
+                )
+            )
+            second_item_id = self.session.scalar(
+                select(RawItemRecord.id).where(RawItemRecord.external_id == "race-b")
+            )
+            assert record and previous and previous_score and second_item_id
+            payload = dict(previous.payload)
+            payload["source_item_ids"] = [1, second_item_id]
+            self.session.add(
+                EventVersionRecord(
+                    event_id=claimed_event_id,
+                    version_number=2,
+                    payload=payload,
+                    zh_title=previous.zh_title,
+                    zh_summary=previous.zh_summary,
+                )
+            )
+            self.session.add(
+                EventItemRecord(
+                    event_id=claimed_event_id,
+                    raw_item_id=second_item_id,
+                    added_version_number=2,
+                )
+            )
+            self.session.add(
+                EventScoreRecord(
+                    event_id=claimed_event_id,
+                    version_number=2,
+                    heat=previous_score.heat,
+                    breakdown=previous_score.breakdown,
+                )
+            )
+            record.current_version_number = 2
+            self.session.flush()
+        return original_claim(self, claimed_event_id, operation_id, lease_until)
+
+    monkeypatch.setattr(EventRepository, "claim_event", inject_a_winner_then_claim)
+    with Session(engine) as db:
+        second = EventPipeline.production(db).run(
+            window_hours=24, operation_id=302, checkpoint=lambda _: None
+        )
+        assert second.created_event_versions == 0
+        assert db.get(EventRecord, event_id).current_version_number == 2  # type: ignore[union-attr]
+        assert db.query(EventVersionRecord).filter_by(event_id=event_id).count() == 2
+        assert db.query(EventModelRunRecord).filter_by(event_id=event_id).count() == 2
 
 
 def test_pipeline_returns_retryable_conflict_when_publication_lease_is_busy(

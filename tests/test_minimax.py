@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from newsradar.ai.minimax import MiniMaxClient, ModelUsage
+from newsradar.ai.minimax import MiniMaxClient, ModelUsage, fallback_topics
 from newsradar.ingestion.fetchers.credentials import SettingsCredentials
 from newsradar.settings import Settings
 
@@ -60,6 +60,84 @@ async def test_invalid_json_gets_one_repair_attempt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_repair_attempt_receives_only_remaining_total_timeout_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 10.0}
+    calls = 0
+
+    monkeypatch.setattr(
+        "newsradar.ai.minimax.time.perf_counter", lambda: clock["now"]
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            clock["now"] += 0.09
+            return httpx.Response(200, json=response_payload("not json"), request=request)
+        timeout = request.extensions["timeout"]
+        assert 0 < timeout["read"] <= 0.011
+        return httpx.Response(
+            200,
+            json=response_payload('{"topics":["agents"],"confidence":0.8}'),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await MiniMaxClient(Settings(minimax_api_key="secret"), http).structured(
+            "event_enrichment",
+            "model",
+            "prompt",
+            type(fallback_topics("agents")),
+            fallback_topics("agents"),
+            timeout_seconds=0.1,
+        )
+
+    assert calls == 2
+    assert result.confidence == 0.8
+
+
+@pytest.mark.asyncio
+async def test_expired_total_timeout_skips_repair_and_records_timeout_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 10.0}
+    captured: list[ModelUsage] = []
+    calls = 0
+
+    monkeypatch.setattr(
+        "newsradar.ai.minimax.time.perf_counter", lambda: clock["now"]
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        clock["now"] += 0.11
+        return httpx.Response(200, json=response_payload("not json"), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fallback = fallback_topics("agents")
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).structured(
+            "event_enrichment",
+            "model",
+            "prompt",
+            type(fallback),
+            fallback,
+            timeout_seconds=0.1,
+        )
+
+    assert result is fallback
+    assert calls == 1
+    assert [(usage.outcome, usage.error) for usage in captured] == [
+        ("retry", "invalid_response"),
+        ("fallback", "timeout"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_missing_api_key_returns_rule_fallback_without_network() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("Network must not be called without an API key")
@@ -89,6 +167,45 @@ async def test_model_usage_sink_failure_does_not_block_model_or_fallback(content
         )
 
     assert result.confidence in {0.0, 0.8}
+
+
+@pytest.mark.asyncio
+async def test_malformed_prompt_token_count_keeps_success_usage_audit() -> None:
+    captured: list[ModelUsage] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = response_payload('{"topics":["agents"],"confidence":0.8}')
+        payload["usage"]["prompt_tokens"] = "bad"
+        return httpx.Response(200, json=payload, request=request)
+
+    settings = Settings(minimax_api_key="secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await MiniMaxClient(settings, http, captured.append).infer_source_topics(
+            "Agent research"
+        )
+
+    assert result.confidence == 0.8
+    assert len(captured) == 1
+    assert captured[0].outcome == "success"
+    assert captured[0].input_tokens == 0
+    assert captured[0].output_tokens == 5
+
+
+@pytest.mark.parametrize("token_count", [-1, float("nan"), 10**100])
+def test_untrusted_token_counts_are_nonnegative_and_bounded(token_count: object) -> None:
+    captured: list[ModelUsage] = []
+    client = MiniMaxClient(Settings(), httpx.AsyncClient(), usage_sink=captured.append)
+
+    client._record_usage(
+        "event_enrichment",
+        "model",
+        {"usage": {"prompt_tokens": token_count, "completion_tokens": token_count}},
+        0.0,
+        "success",
+    )
+
+    assert captured[0].input_tokens == 0
+    assert captured[0].output_tokens == 0
 
 
 def test_settings_repr_never_contains_api_key() -> None:

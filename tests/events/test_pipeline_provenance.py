@@ -14,7 +14,7 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
-from newsradar.events.minimax import EventModelRun
+from newsradar.events.minimax import EventEnrichmentResult, EventModelRun
 from newsradar.events.pipeline import EventModelAuditError, EventPipeline
 from newsradar.events.publishing import rule_enrichment
 from newsradar.events.repository import EventRepository
@@ -76,8 +76,8 @@ def test_pipeline_persists_model_usage_and_linked_event_run(
 ) -> None:
     engine = _engine_with_candidate()
 
-    def enrichment(candidate):
-        fallback = rule_enrichment(candidate)
+    async def enrichment(candidate, fallback, settings, http):
+        del candidate, settings, http
         result = fallback.model_copy(update={"origin": origin})
         usage = ModelUsage(
             purpose="event_enrichment",
@@ -88,9 +88,12 @@ def test_pipeline_persists_model_usage_and_linked_event_run(
             outcome=outcome,
             error=error,
         )
-        return result, (EventModelRun(stage=usage.purpose, usage=usage),)
+        return EventEnrichmentResult(
+            enrichment=result,
+            model_runs=(EventModelRun(stage=usage.purpose, usage=usage),),
+        )
 
-    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(enrichment))
+    monkeypatch.setattr(EventPipeline, "_enrich_candidate_async", staticmethod(enrichment))
     with Session(engine) as db:
         event_id = EventPipeline.production(db).run(
             window_hours=24, operation_id=41, checkpoint=lambda _: None
@@ -113,8 +116,9 @@ def test_pipeline_persists_model_usage_and_linked_event_run(
 def test_event_detail_projects_persisted_model_provenance(monkeypatch) -> None:
     engine = _engine_with_candidate()
 
-    def enrichment(candidate):
-        fallback = rule_enrichment(candidate).model_copy(update={"origin": "model"})
+    async def enrichment(candidate, fallback, settings, http):
+        del candidate, settings, http
+        fallback = fallback.model_copy(update={"origin": "model"})
         usage = ModelUsage(
             purpose="event_enrichment",
             model="MiniMax-M2.7-highspeed",
@@ -123,9 +127,12 @@ def test_event_detail_projects_persisted_model_provenance(monkeypatch) -> None:
             latency_ms=1,
             outcome="success",
         )
-        return fallback, (EventModelRun(stage=usage.purpose, usage=usage),)
+        return EventEnrichmentResult(
+            enrichment=fallback,
+            model_runs=(EventModelRun(stage=usage.purpose, usage=usage),),
+        )
 
-    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(enrichment))
+    monkeypatch.setattr(EventPipeline, "_enrich_candidate_async", staticmethod(enrichment))
     with Session(engine) as db:
         event_id = EventPipeline.production(db).run(
             window_hours=24, operation_id=42, checkpoint=lambda _: None
@@ -143,7 +150,8 @@ def test_model_provenance_sink_failure_rolls_back_publication_and_is_retryable(
 ) -> None:
     engine = _engine_with_candidate()
 
-    def enrichment(candidate):
+    async def enrichment(candidate, fallback, settings, http):
+        del fallback, settings, http
         usage = ModelUsage(
             purpose="event_enrichment",
             model="MiniMax-M2.7-highspeed",
@@ -152,13 +160,16 @@ def test_model_provenance_sink_failure_rolls_back_publication_and_is_retryable(
             latency_ms=1,
             outcome="success",
         )
-        return rule_enrichment(candidate), (EventModelRun(stage=usage.purpose, usage=usage),)
+        return EventEnrichmentResult(
+            enrichment=rule_enrichment(candidate),
+            model_runs=(EventModelRun(stage=usage.purpose, usage=usage),),
+        )
 
     def fail_sink(self, event_id, usage):
         del self, event_id, usage
         raise RuntimeError("provenance database unavailable")
 
-    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(enrichment))
+    monkeypatch.setattr(EventPipeline, "_enrich_candidate_async", staticmethod(enrichment))
     monkeypatch.setattr(EventRepository, "record_model_run", fail_sink)
     with Session(engine) as db, pytest.raises(EventModelAuditError) as raised:
         EventPipeline.production(db).run(
@@ -175,8 +186,9 @@ def test_model_provenance_sink_failure_rolls_back_publication_and_is_retryable(
 def test_pipeline_links_every_repair_attempt_to_the_final_event(monkeypatch) -> None:
     engine = _engine_with_candidate()
 
-    def enrichment(candidate):
-        fallback = rule_enrichment(candidate).model_copy(update={"origin": "model"})
+    async def enrichment(candidate, fallback, settings, http):
+        del candidate, settings, http
+        fallback = fallback.model_copy(update={"origin": "model"})
         usages = (
             ModelUsage(
                 purpose="event_enrichment",
@@ -196,11 +208,14 @@ def test_pipeline_links_every_repair_attempt_to_the_final_event(monkeypatch) -> 
                 outcome="success",
             ),
         )
-        return fallback, tuple(
-            EventModelRun(stage=usage.purpose, usage=usage) for usage in usages
+        return EventEnrichmentResult(
+            enrichment=fallback,
+            model_runs=tuple(
+                EventModelRun(stage=usage.purpose, usage=usage) for usage in usages
+            ),
         )
 
-    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(enrichment))
+    monkeypatch.setattr(EventPipeline, "_enrich_candidate_async", staticmethod(enrichment))
     with Session(engine) as db:
         event_id = EventPipeline.production(db).run(
             window_hours=24, operation_id=41, checkpoint=lambda _: None

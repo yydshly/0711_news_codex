@@ -389,8 +389,12 @@ class EventPipeline:
             publish_plans.append((candidate, score_input))
 
         # Optional network work is complete before any publication transaction.
+        checkpoint("before_event_enrichment")
         enrichment_results = self._enrich_candidates(
-            tuple(candidate for candidate, _ in publish_plans)
+            tuple(candidate for candidate, _ in publish_plans),
+            candidate_checkpoint=lambda _: checkpoint(
+                "before_event_enrichment_candidate"
+            ),
         )
         checkpoint("after_event_enrichment")
         model_success_count = sum(
@@ -425,6 +429,19 @@ class EventPipeline:
                         raise EventPublicationConflict(
                             "Event publication lease is held by another Operation"
                         )
+                    # The pre-enrichment membership read may now be stale.  Re-read
+                    # only after this operation owns the lease, and close a
+                    # same-snapshot race without creating another event version.
+                    if self._has_same_membership(
+                        session, existing.id, candidate.raw_item_ids
+                    ):
+                        self._record_model_runs(
+                            repository, existing.id, enrichment_result.model_runs
+                        )
+                        repository.release_event(existing.id, operation_id)
+                        event_ids.append(existing.id)
+                        session.commit()
+                        continue
                 published = EventPublisher(repository).publish_snapshot(
                     candidate,
                     operation_id,
@@ -460,34 +477,38 @@ class EventPipeline:
 
     @staticmethod
     def _enrich_candidates(
-        candidates: tuple[CandidateCluster, ...]
+        candidates: tuple[CandidateCluster, ...],
+        *,
+        candidate_checkpoint: Callable[[CandidateCluster], None] | None = None,
     ) -> dict[str, EventEnrichmentResult]:
         settings = get_settings()
 
-        async def adapter(candidate, fallback):
-            del fallback
-            enrichment, model_runs = await asyncio.to_thread(
-                EventPipeline._enrich, candidate
-            )
-            return EventEnrichmentResult(
-                enrichment=enrichment,
-                model_runs=tuple(model_runs),
-            )
-
         async def run():
-            return await EventEnrichmentBatch(
-                adapter=adapter,
-                max_concurrency=settings.event_model_max_concurrency,
-                fallback_model=settings.minimax_fast_model,
-            ).enrich(candidates)
+            import httpx
+
+            async with httpx.AsyncClient() as http:
+                async def adapter(candidate, fallback):
+                    return await EventPipeline._enrich_candidate_async(
+                        candidate, fallback, settings, http
+                    )
+
+                return await EventEnrichmentBatch(
+                    adapter=adapter,
+                    max_concurrency=settings.event_model_max_concurrency,
+                    fallback_model=settings.minimax_fast_model,
+                    candidate_checkpoint=candidate_checkpoint,
+                ).enrich(candidates)
 
         return asyncio.run(run())
 
     @staticmethod
-    def _enrich(candidate):
-        """Call MiniMax only in the Worker pipeline; hard fallback remains publishable."""
-        fallback = rule_enrichment(candidate)
-        settings = get_settings()
+    async def _enrich_candidate_async(
+        candidate: CandidateCluster,
+        fallback,
+        settings,
+        http,
+    ) -> EventEnrichmentResult:
+        """Run one cancellable model request without crossing a thread boundary."""
         runs: list[EventModelRun] = []
         if not settings.minimax_api_key:
             usage = ModelUsage(
@@ -499,18 +520,14 @@ class EventPipeline:
                 outcome="fallback",
                 error="no_api_key",
             )
-            return fallback, (EventModelRun(stage=usage.purpose, usage=usage),)
-
-        async def run():
-            import httpx
-
-            async with httpx.AsyncClient() as http:
-                return await EventMiniMaxAdapter(settings, http, runs.append).enrich_event(
-                    candidate, fallback
-                )
-
+            return EventEnrichmentResult(
+                enrichment=fallback,
+                model_runs=(EventModelRun(stage=usage.purpose, usage=usage),),
+            )
         try:
-            return asyncio.run(run()), tuple(runs)
+            enrichment = await EventMiniMaxAdapter(
+                settings, http, runs.append
+            ).enrich_event(candidate, fallback)
         except Exception:
             if not runs:
                 usage = ModelUsage(
@@ -523,7 +540,24 @@ class EventPipeline:
                     error="unexpected_error",
                 )
                 runs.append(EventModelRun(stage=usage.purpose, usage=usage))
-            return fallback, tuple(runs)
+            enrichment = fallback
+        return EventEnrichmentResult(enrichment=enrichment, model_runs=tuple(runs))
+
+    @staticmethod
+    def _enrich(candidate):
+        """Call MiniMax only in the Worker pipeline; hard fallback remains publishable."""
+        fallback = rule_enrichment(candidate)
+        settings = get_settings()
+        async def run():
+            import httpx
+
+            async with httpx.AsyncClient() as http:
+                return await EventPipeline._enrich_candidate_async(
+                    candidate, fallback, settings, http
+                )
+
+        result = asyncio.run(run())
+        return result.enrichment, result.model_runs
 
     @staticmethod
     def _has_same_membership(

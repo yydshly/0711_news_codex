@@ -8,10 +8,13 @@ from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
+    EventModelRunRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
+    ModelUsageRecord,
     OperationAttemptRecord,
     OperationEventRecord,
     OperationRunRecord,
@@ -165,7 +168,18 @@ def test_postgres_concurrent_first_publish_of_same_canonical_event_is_idempotent
 
             sqlalchemy_event.listen(session, "before_flush", synchronize_first_insert)
             record = EventRepository(session).publish_complete_event(
-                snapshot(), operation_id
+                snapshot(),
+                operation_id,
+                model_usages=(
+                    ModelUsage(
+                        purpose="event_enrichment",
+                        model=f"contention-operation-{operation_id}",
+                        input_tokens=operation_id,
+                        output_tokens=1,
+                        latency_ms=1,
+                        outcome="success",
+                    ),
+                ),
             )
             event_id = record.id
             session.commit()
@@ -189,17 +203,54 @@ def test_postgres_concurrent_first_publish_of_same_canonical_event_is_idempotent
                     )
                 )
             )
+            run_rows = tuple(
+                verify.scalars(
+                    select(EventModelRunRecord).where(
+                        EventModelRunRecord.event_id == event_rows[0].id
+                    )
+                )
+            )
+            usage_rows = tuple(
+                verify.scalars(
+                    select(ModelUsageRecord).where(
+                        ModelUsageRecord.id.in_(
+                            [row.model_usage_id for row in run_rows]
+                        )
+                    )
+                )
+            )
 
         assert len(set(event_ids)) == 1
         assert len(event_rows) == 1
         assert event_rows[0].current_version_number == 1
         assert len(version_rows) == 1
+        assert len(run_rows) == 2
+        assert {row.model for row in usage_rows} == {
+            "contention-operation-901",
+            "contention-operation-902",
+        }
     finally:
         with Session(engine) as cleanup:
             event_id = cleanup.scalar(
                 select(EventRecord.id).where(EventRecord.canonical_key == canonical_key)
             )
             if event_id is not None:
+                usage_ids = tuple(
+                    cleanup.scalars(
+                        select(EventModelRunRecord.model_usage_id).where(
+                            EventModelRunRecord.event_id == event_id
+                        )
+                    )
+                )
+                cleanup.execute(
+                    delete(EventModelRunRecord).where(
+                        EventModelRunRecord.event_id == event_id
+                    )
+                )
+                if usage_ids:
+                    cleanup.execute(
+                        delete(ModelUsageRecord).where(ModelUsageRecord.id.in_(usage_ids))
+                    )
                 cleanup.execute(
                     delete(EventScoreRecord).where(EventScoreRecord.event_id == event_id)
                 )

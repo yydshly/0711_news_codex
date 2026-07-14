@@ -112,6 +112,69 @@ async def test_enrichment_batch_isolates_invalid_adapter_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enrichment_batch_hard_caps_requested_concurrency_at_two() -> None:
+    active = 0
+    maximum_active = 0
+    release = asyncio.Event()
+
+    async def adapter(candidate: CandidateCluster, fallback: EventEnrichment):
+        nonlocal active, maximum_active
+        del candidate
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await release.wait()
+        active -= 1
+        return EventEnrichmentResult(enrichment=fallback)
+
+    batch = EventEnrichmentBatch(adapter=adapter, max_concurrency=5)
+    task = asyncio.create_task(
+        batch.enrich(tuple(batch_candidate(index) for index in range(6)))
+    )
+    while maximum_active < 2:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert maximum_active == 2
+    release.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_enrichment_batch_checkpoint_failure_cancels_started_and_pending_work() -> None:
+    started: list[str] = []
+    cancelled: list[str] = []
+    checkpointed: list[str] = []
+
+    async def adapter(candidate: CandidateCluster, fallback: EventEnrichment):
+        del fallback
+        started.append(candidate.candidate_key)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(candidate.candidate_key)
+            raise
+
+    def candidate_checkpoint(candidate: CandidateCluster) -> None:
+        checkpointed.append(candidate.candidate_key)
+        if candidate.candidate_key == "candidate-1":
+            raise RuntimeError("operation_cancelled")
+
+    batch = EventEnrichmentBatch(
+        adapter=adapter,
+        max_concurrency=2,
+        candidate_checkpoint=candidate_checkpoint,
+    )
+    with pytest.raises(RuntimeError, match="operation_cancelled"):
+        await asyncio.wait_for(
+            batch.enrich(tuple(batch_candidate(index) for index in range(4))),
+            timeout=0.2,
+        )
+
+    assert checkpointed == ["candidate-0", "candidate-1"]
+    assert started == ["candidate-0"]
+    assert cancelled == ["candidate-0"]
+
+
+@pytest.mark.asyncio
 async def test_no_key_returns_rule_fallback_without_http_call() -> None:
     runs = []
 
@@ -168,13 +231,19 @@ async def test_prompt_uses_five_bounded_titles_without_urls_or_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("UNRELATED_SECRET", "environment-secret-value")
+    title_urls = (
+        "https://title.test/1?token=https-secret#fragment",
+        "http://title.test/2?token=http-secret#fragment",
+        "//title.test/3?token=relative-secret#fragment",
+        "www.title.test/4?token=www-secret#fragment",
+        "https://title.test/5?token=fifth-secret#fragment",
+        "https://title.test/6?token=sixth-secret#fragment",
+        "https://title.test/7?token=seventh-secret#fragment",
+    )
     items = tuple(
         ClusterItem(
             raw_item_id=index,
-            title=(
-                f"Evidence {index} https://title.test/{index}?token=title-secret-{index} "
-                + "x" * 600
-            ),
+            title=(f"Evidence {index} {title_urls[index - 1]} " + "x" * 600),
             canonical_url=f"https://evidence.test/{index}?token=url-secret-{index}",
             original_url=f"https://origin.test/{index}?key=original-secret-{index}",
         )
@@ -194,7 +263,10 @@ async def test_prompt_uses_five_bounded_titles_without_urls_or_environment(
         assert "candidate-secret" not in prompt
         assert "url-secret" not in prompt
         assert "original-secret" not in prompt
-        assert "title-secret" not in prompt
+        assert "https-secret" not in prompt
+        assert "http-secret" not in prompt
+        assert "relative-secret" not in prompt
+        assert "www-secret" not in prompt
         assert "Evidence 5" in prompt
         assert "Evidence 6" not in prompt
         assert "x" * 501 not in prompt
@@ -356,6 +428,21 @@ async def test_conflict_explanation_rejects_candidate_not_marked_disputed() -> N
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(ValueError, match="disputed"):
             await EventMiniMaxAdapter(settings, http).explain_conflict(candidate_context())
+
+
+@pytest.mark.asyncio
+async def test_conflict_reason_cannot_authorize_m3_without_explicit_boolean_flag() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("M3 must require metadata.disputed is True")
+
+    candidate = candidate_context().model_copy(
+        update={"reasons": ("conflicting_assertions",), "metadata": {}}
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ValueError, match="disputed"):
+            await EventMiniMaxAdapter(
+                Settings(minimax_api_key="secret"), http
+            ).explain_conflict(candidate)
 
 
 @pytest.mark.asyncio
