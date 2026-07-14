@@ -7,15 +7,76 @@ from newsradar.events.schema import RawItemText
 
 
 @pytest.mark.parametrize(
-    "title",
+    ("title", "reason"),
     [
-        "New multimodal model API released",
-        "Agent framework adds tool calling",
-        "Benchmark evaluates long-context reasoning",
+        (
+            "Agent 64 is the GoldenEye successor arriving next month",
+            "game_or_entertainment",
+        ),
+        ("Model railway exhibition opens this weekend", "ambiguous_term_only"),
+        (
+            "Subscribe now for weekly technology deals",
+            "advertisement_or_subscription",
+        ),
+        ("Agent under fire", "ambiguous_term_only"),
     ],
 )
-def test_ai_relevance_positive_samples(title: str) -> None:
-    assert evaluate_relevance(RawItemText(title=title)).is_relevant
+def test_relevance_v2_rejects_ambiguous_non_ai_items(title: str, reason: str) -> None:
+    result = evaluate_relevance(RawItemText(title=title, source_topics=("ai",)))
+
+    assert result.is_relevant is False
+    assert result.outcome == "excluded"
+    assert reason in result.reasons
+
+
+@pytest.mark.parametrize(
+    ("title", "reason"),
+    [
+        ("New smartphone browser features arrive", "generic_technology"),
+        ("RT link only", "auto_repost_without_claim"),
+        ("#", "insufficient_text"),
+    ],
+)
+def test_relevance_v2_uses_stable_non_ai_exclusion_reasons(
+    title: str, reason: str
+) -> None:
+    result = evaluate_relevance(RawItemText(title=title))
+
+    assert result.outcome == "excluded"
+    assert reason in result.reasons
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "OpenAI launches a new multimodal model API",
+        "Anthropic releases an AI coding agent SDK",
+        "Benchmark evaluates inference efficiency for LLMs",
+    ],
+)
+def test_relevance_v2_keeps_explicit_ai_events(title: str) -> None:
+    result = evaluate_relevance(RawItemText(title=title))
+
+    assert result.is_relevant is True
+    assert result.outcome == "included"
+    assert result.score >= 60
+
+
+def test_source_topic_cannot_make_an_ambiguous_term_relevant_by_itself() -> None:
+    result = evaluate_relevance(
+        RawItemText(title="Agent overview", source_topics=("ai",))
+    )
+
+    assert result.outcome == "excluded"
+    assert result.score < 60
+    assert "ambiguous_term_only" in result.reasons
+
+
+def test_ambiguous_term_is_qualified_by_a_recognized_ai_entity() -> None:
+    result = evaluate_relevance(RawItemText(title="OpenAI model roadmap"))
+
+    assert result.outcome == "included"
+    assert result.score >= 60
 
 
 def test_ai_relevance_rejects_generic_business_news() -> None:
@@ -24,24 +85,33 @@ def test_ai_relevance_rejects_generic_business_news() -> None:
     )
 
     assert result.is_relevant is False
+    assert result.outcome == "excluded"
     assert result.score == 0
     assert result.topics == ()
     assert result.reasons == ("no_ai_signal",)
 
 
-def test_relevance_uses_sorted_matches_and_rule_topics() -> None:
+def test_relevance_uses_explainable_signals_and_rule_topics() -> None:
     result = evaluate_relevance(
-        RawItemText(title="Benchmark model API release", summary="", content="")
+        RawItemText(title="OpenAI launches multimodal model API benchmark")
     )
 
-    assert result.score == 75
+    assert result.score == 100
     assert result.topics == ("product", "research")
-    assert result.reasons == ("matched:api", "matched:benchmark", "matched:model")
-    assert RELEVANCE_RULE_VERSION == "relevance-v1"
+    assert result.reasons == (
+        "strong_ai_signal",
+        "recognized_ai_entity",
+        "event_action",
+    )
+    assert RELEVANCE_RULE_VERSION == "relevance-v2"
 
 
 def test_relevance_decision_is_byte_equivalent_on_replay() -> None:
-    item = RawItemText(title="New model API release", summary="SDK preview", content="")
+    item = RawItemText(
+        title="OpenAI launches new multimodal API",
+        summary="SDK preview",
+        content="",
+    )
 
     first = json.dumps(evaluate_relevance(item).model_dump(), separators=(",", ":"))
     second = json.dumps(evaluate_relevance(item).model_dump(), separators=(",", ":"))
@@ -52,15 +122,18 @@ def test_relevance_decision_is_byte_equivalent_on_replay() -> None:
 @pytest.mark.parametrize(
     "item",
     [
-        RawItemText(summary="model"),
-        RawItemText(content="model"),
-        RawItemText(item_kind="model"),
-        RawItemText(publisher_name="OpenAI model updates"),
-        RawItemText(source_topics=("model",)),
+        RawItemText(summary="OpenAI releases a multimodal system"),
+        RawItemText(content="Anthropic publishes research on inference"),
+        RawItemText(item_kind="artificial intelligence release"),
+        RawItemText(publisher_name="OpenAI multimodal research"),
+        RawItemText(
+            title="Agent launches a safety benchmark",
+            source_topics=("artificial intelligence",),
+        ),
     ],
 )
-def test_relevance_uses_each_pure_input_field(item: RawItemText) -> None:
-    assert evaluate_relevance(item).is_relevant
+def test_relevance_uses_each_bounded_input_field(item: RawItemText) -> None:
+    assert evaluate_relevance(item).outcome == "included"
 
 
 def test_relevance_matches_terms_at_word_boundaries_only() -> None:
@@ -71,6 +144,18 @@ def test_relevance_matches_terms_at_word_boundaries_only() -> None:
 
 
 def test_relevance_normalizes_case_punctuation_and_whitespace() -> None:
-    result = evaluate_relevance(RawItemText(title="  MODEL—API\n"))
+    result = evaluate_relevance(RawItemText(title="  OPENAI—MULTIMODAL API\n"))
 
-    assert result.reasons == ("matched:api", "matched:model")
+    assert result.reasons == ("strong_ai_signal", "recognized_ai_entity")
+
+
+def test_relevance_truncates_content_before_normalization() -> None:
+    result = evaluate_relevance(
+        RawItemText(
+            title="Company publishes a general update",
+            content="x" * 100_000 + " inference LLM",
+        )
+    )
+
+    assert result.outcome == "excluded"
+    assert result.score < 60

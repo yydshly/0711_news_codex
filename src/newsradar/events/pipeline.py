@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.db.models import (
@@ -23,7 +24,13 @@ from newsradar.events.minimax import EventMiniMaxAdapter, EventModelRun
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.relevance import RELEVANCE_RULE_VERSION, evaluate_relevance
 from newsradar.events.repository import EventRepository
-from newsradar.events.schema import ClusterItem, EventCategory, ProcessingStage, RawItemText
+from newsradar.events.schema import (
+    ClusterItem,
+    EventCategory,
+    ProcessingStage,
+    RawItemText,
+    RelevanceDecision,
+)
 from newsradar.settings import get_settings
 
 ALGORITHM_VERSIONS = {
@@ -39,8 +46,21 @@ class PipelineResult:
     created_event_versions: int
     candidate_count: int
     processed_item_count: int
+    selected_item_count: int
+    included_item_count: int
+    excluded_item_count: int
+    exclusion_reasons: dict[str, int]
     duplicate_root_suppressed_count: int
     model_fallback_count: int
+
+
+@dataclass(frozen=True)
+class SelectionResult:
+    selected_count: int
+    included: tuple[ClusterItem, ...]
+    excluded_count: int
+    exclusion_reasons: dict[str, int]
+    decisions: tuple[tuple[int, RelevanceDecision], ...]
 
 
 class EventPipeline:
@@ -60,11 +80,11 @@ class EventPipeline:
         if window_hours <= 0:
             raise ValueError("window_hours must be positive")
         checkpoint("before_event_selection")
-        items = self._select_items(window_hours)
+        selection = self._select_and_classify_items(window_hours)
         checkpoint("after_event_selection")
-        self._record_item_stages(items)
+        self._record_item_stages(selection)
         checkpoint("after_event_rules")
-        candidates = self._cluster(items)
+        candidates = self._cluster(selection.included)
         checkpoint("after_event_cluster")
         duplicate_root_suppressed_count = sum(
             count_suppressed_independent_roots(assess_evidence(candidate.items))
@@ -78,27 +98,31 @@ class EventPipeline:
             current_event_ids=tuple(sorted(event_ids)),
             created_event_versions=created_versions,
             candidate_count=len(candidates),
-            processed_item_count=len(items),
+            processed_item_count=len(selection.included),
+            selected_item_count=selection.selected_count,
+            included_item_count=len(selection.included),
+            excluded_item_count=selection.excluded_count,
+            exclusion_reasons=dict(selection.exclusion_reasons),
             duplicate_root_suppressed_count=duplicate_root_suppressed_count,
             model_fallback_count=model_fallback_count,
         )
 
-    def _select_items(self, window_hours: int) -> tuple[ClusterItem, ...]:
+    def _select_and_classify_items(self, window_hours: int) -> SelectionResult:
         cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
         with self._session_factory() as session:
+            event_time = func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at)
             rows = session.execute(
                 select(RawItemRecord, SourceDefinitionRecord)
                 .join(
                     SourceDefinitionRecord,
                     SourceDefinitionRecord.id == RawItemRecord.source_id,
                 )
-                .where(
-                    RawItemRecord.published_at.is_not(None),
-                    RawItemRecord.published_at >= cutoff,
-                )
+                .where(event_time >= cutoff)
                 .order_by(RawItemRecord.id)
             ).all()
-            result: list[ClusterItem] = []
+            included: list[ClusterItem] = []
+            decisions: list[tuple[int, RelevanceDecision]] = []
+            exclusion_reasons: Counter[str] = Counter()
             for item, source in rows:
                 text = RawItemText(
                     raw_item_id=item.id,
@@ -109,10 +133,13 @@ class EventPipeline:
                     publisher_name=item.publisher_name or source.name,
                     source_topics=tuple(source.topics),
                 )
-                if not evaluate_relevance(text).is_relevant:
+                decision = evaluate_relevance(text)
+                decisions.append((item.id, decision))
+                if decision.outcome == "excluded":
+                    exclusion_reasons.update(decision.reasons)
                     continue
                 entities = tuple(entity.canonical_key for entity in extract_entities(text))
-                result.append(
+                included.append(
                     ClusterItem(
                         raw_item_id=item.id,
                         title=item.title or "",
@@ -121,21 +148,27 @@ class EventPipeline:
                         original_url=item.original_url,
                         title_fingerprint=item.title_fingerprint,
                         entities=entities,
-                        published_at=item.published_at,
+                        published_at=item.published_at or item.fetched_at,
                         source_nature=source.nature,
                         source_roles=tuple(source.roles),
                         publisher_name=item.publisher_name or source.name,
                     )
                 )
-            return tuple(result)
+            return SelectionResult(
+                selected_count=len(rows),
+                included=tuple(included),
+                excluded_count=len(rows) - len(included),
+                exclusion_reasons=dict(sorted(exclusion_reasons.items())),
+                decisions=tuple(decisions),
+            )
 
-    def _record_item_stages(self, items: tuple[ClusterItem, ...]) -> None:
+    def _record_item_stages(self, selection: SelectionResult) -> None:
         with self._session_factory() as session:
             repository = EventRepository(session)
-            for item in items:
-                repository.record_stage(
-                    item.raw_item_id, ProcessingStage.RELEVANCE, RELEVANCE_RULE_VERSION
-                )
+            repository.record_relevance_decisions(
+                selection.decisions, RELEVANCE_RULE_VERSION
+            )
+            for item in selection.included:
                 repository.record_stage(
                     item.raw_item_id, ProcessingStage.ENTITIES, ENTITY_RULE_VERSION
                 )

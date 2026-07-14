@@ -1,6 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.db.models import (
@@ -8,13 +8,109 @@ from newsradar.db.models import (
     EventItemRecord,
     EventRecord,
     EventVersionRecord,
+    RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
 from newsradar.events.pipeline import EventPipeline
 from newsradar.events.repository import EventRepository
+from newsradar.events.schema import ProcessingStage
 from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
+
+
+def test_pipeline_records_included_and_excluded_items_using_published_or_fetched_time() -> (
+    None
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(
+            SourceDefinitionRecord(
+                id="source",
+                name="Source",
+                status="active",
+                nature="first_party",
+                language="en",
+                roles=["evidence"],
+                topics=["ai"],
+                authority_score=90,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash="source",
+            )
+        )
+        included = RawItemRecord(
+            source_id="source",
+            external_id="included",
+            canonical_url="https://example.test/included",
+            payload={},
+            title="OpenAI launches AI model",
+            published_at=now,
+            fetched_at=now,
+        )
+        excluded = RawItemRecord(
+            source_id="source",
+            external_id="excluded",
+            canonical_url="https://example.test/excluded",
+            payload={},
+            title="Agent 64 game review",
+            published_at=now,
+            fetched_at=now,
+        )
+        missing_date = RawItemRecord(
+            source_id="source",
+            external_id="missing-date",
+            canonical_url="https://example.test/missing-date",
+            payload={},
+            title="Generic company update",
+            published_at=None,
+            fetched_at=now,
+        )
+        stale_published = RawItemRecord(
+            source_id="source",
+            external_id="stale-published",
+            canonical_url="https://example.test/stale-published",
+            payload={},
+            title="OpenAI launches another AI model",
+            published_at=now - timedelta(hours=73),
+            fetched_at=now,
+        )
+        db.add_all((included, excluded, missing_date, stale_published))
+        db.commit()
+
+        result = EventPipeline.production(db).run(
+            window_hours=72,
+            operation_id=1,
+            checkpoint=lambda _: None,
+        )
+
+        assert result.selected_item_count == 3
+        assert result.included_item_count == 1
+        assert result.excluded_item_count == 2
+        assert result.processed_item_count == 1
+        decisions = {
+            record.raw_item_id: record
+            for record in db.scalars(
+                select(RawItemProcessingRecord).where(
+                    RawItemProcessingRecord.stage == ProcessingStage.RELEVANCE.value,
+                    RawItemProcessingRecord.algorithm_version == "relevance-v2",
+                )
+            )
+        }
+        assert decisions[included.id].outcome == "included"
+        assert decisions[excluded.id].outcome == "excluded"
+        assert decisions[missing_date.id].outcome == "excluded"
+        assert stale_published.id not in decisions
+        assert set(
+            db.scalars(
+                select(RawItemProcessingRecord.raw_item_id).where(
+                    RawItemProcessingRecord.stage == ProcessingStage.ENTITIES.value
+                )
+            )
+        ) == {included.id}
+        assert set(db.scalars(select(EventItemRecord.raw_item_id))) == {included.id}
 
 
 def test_pipeline_replay_does_not_duplicate_versions() -> None:
