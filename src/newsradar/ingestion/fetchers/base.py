@@ -213,7 +213,7 @@ class FetcherFactory:
             return GdeltFetcher(self.policy)
         if host == "oauth.reddit.com":
             return RedditFetcher(self.policy, self.credentials or EnvironmentCredentials())
-        if host == "www.googleapis.com" and path == "/youtube/v3/search":
+        if host == "www.googleapis.com" and path == "/youtube/v3/channels":
             return YouTubeFetcher(self.policy, self.credentials or EnvironmentCredentials())
         if host == "news.google.com" and method.kind is AccessKind.RSS:
             return GoogleNewsFetcher(self.policy)
