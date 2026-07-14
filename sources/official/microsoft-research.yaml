@@ -7,6 +7,9 @@ language: en
 topics: [research, foundation_models, developer_tools]
 authority_score: 5
 poll_interval_minutes: 180
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
   - kind: rss
     url: https://www.microsoft.com/en-us/research/feed/

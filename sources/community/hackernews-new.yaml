@@ -12,6 +12,9 @@ topics:
 - ai_infrastructure
 authority_score: 2
 poll_interval_minutes: 15
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
 - kind: public_api
   url: https://hacker-news.firebaseio.com/v0/newstories.json

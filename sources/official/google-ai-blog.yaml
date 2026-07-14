@@ -12,6 +12,9 @@ topics:
 - agents
 authority_score: 5
 poll_interval_minutes: 120
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
 - kind: rss
   url: https://blog.google/innovation-and-ai/technology/ai/rss/
