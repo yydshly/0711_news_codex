@@ -26,6 +26,7 @@ from newsradar.events.schema import (
     CandidateCluster,
     ClusterItem,
     EventCategory,
+    EventVisibility,
     ProcessingStage,
     PublishedEvent,
 )
@@ -365,28 +366,45 @@ class EventRepository:
 
 
 _STABLE_ENUM_VALUE = re.compile(r"[A-Za-z0-9_.:-]+")
+_SENSITIVE_DETAIL_KEY_PARTS = (
+    "apikey",
+    "token",
+    "authorization",
+    "cookie",
+    "secret",
+    "credential",
+    "password",
+    "header",
+)
+_ALLOWED_DETAIL_ENUM_TYPES = (EventVisibility,)
+_DETAILS_VALUE_ERROR = "details values must be booleans, numbers, or enum members"
 
 
 def _normalize_processing_details(details: dict[str, object] | None) -> dict[str, object]:
     normalized: dict[str, object] = {}
     for key, value in (details or {}).items():
+        canonical_key = re.sub(r"[^a-z0-9]", "", key.casefold())
+        if any(part in canonical_key for part in _SENSITIVE_DETAIL_KEY_PARTS):
+            raise ValueError(
+                f"{_DETAILS_VALUE_ERROR}; sensitive field names are forbidden"
+            )
         if isinstance(value, Enum):
             enum_value = value.value
-            if not isinstance(enum_value, (str, bool, int, float)):
-                raise ValueError(
-                    "details values must be booleans, numbers, or enum members"
-                )
+            if isinstance(enum_value, float) and not isfinite(enum_value):
+                raise ValueError("details values must use finite numbers")
+            if not isinstance(value, _ALLOWED_DETAIL_ENUM_TYPES):
+                raise ValueError("details enum members must use a project-defined stable enum")
             if isinstance(enum_value, str) and (
                 len(enum_value) > 120 or _STABLE_ENUM_VALUE.fullmatch(enum_value) is None
             ):
-                raise ValueError(
-                    "details values must be booleans, numbers, or enum members"
-                )
+                raise ValueError(_DETAILS_VALUE_ERROR)
+            if not isinstance(enum_value, (str, bool, int, float)):
+                raise ValueError(_DETAILS_VALUE_ERROR)
             normalized[key] = enum_value
         elif isinstance(value, (bool, int)):
             normalized[key] = value
         elif isinstance(value, float) and isfinite(value):
             normalized[key] = value
         else:
-            raise ValueError("details values must be booleans, numbers, or enum members")
+            raise ValueError(_DETAILS_VALUE_ERROR)
     return normalized

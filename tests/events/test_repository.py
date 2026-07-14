@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from types import SimpleNamespace
 
 import pytest
@@ -157,6 +158,66 @@ def test_stage_record_rejects_sensitive_processing_details(details: dict[str, ob
                 ProcessingStage.RELEVANCE,
                 "relevance-v2",
                 details=details,
+            )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "API-Key",
+        "access_token",
+        "AUTHORIZATION",
+        "session-cookie",
+        "client_secret",
+        "service-Credential",
+        "db_password",
+    ],
+)
+def test_stage_record_rejects_sensitive_detail_keys_even_for_safe_enum_values(key: str) -> None:
+    from newsradar.events.schema import EventVisibility
+
+    with session() as db:
+        item = raw_item(db)
+
+        with pytest.raises(ValueError, match="sensitive field names"):
+            EventRepository(db).record_stage(
+                item.id,
+                ProcessingStage.RELEVANCE,
+                "relevance-v2",
+                details={key: EventVisibility.LEGACY},
+            )
+
+
+def test_stage_record_rejects_credential_bearing_string_enum() -> None:
+    class CredentialEnum(Enum):
+        TOKEN = "secret-token-value"
+
+    with session() as db:
+        item = raw_item(db)
+
+        with pytest.raises(ValueError, match="project-defined stable enum"):
+            EventRepository(db).record_stage(
+                item.id,
+                ProcessingStage.RELEVANCE,
+                "relevance-v2",
+                details={"decision": CredentialEnum.TOKEN},
+            )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_stage_record_rejects_non_finite_enum_numbers(value: float) -> None:
+    class NonFiniteEnum(Enum):
+        VALUE = value
+
+    with session() as db:
+        item = raw_item(db)
+
+        with pytest.raises(ValueError, match="finite numbers"):
+            EventRepository(db).record_stage(
+                item.id,
+                ProcessingStage.RELEVANCE,
+                "relevance-v2",
+                details={"threshold": NonFiniteEnum.VALUE},
             )
 
 
