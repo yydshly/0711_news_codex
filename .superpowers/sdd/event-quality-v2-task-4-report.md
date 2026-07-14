@@ -18,7 +18,7 @@
 
 1. 取得已有 Event lease 后重新读取 active membership。A/B 同快照竞争时，B 原子关联自身 attempts、释放 lease、返回 `created=0`，不再创建重复版本。
 2. Batch 与生产 adapter 的有效并发硬上限为 2，即使配置请求 5。
-3. 两次模型尝试共享一个 monotonic deadline；repair 只获得剩余预算，预算耗尽不再发 HTTP，并写入 `fallback/timeout`。
+3. 两次模型尝试共享一个 monotonic deadline；repair 只获得剩余预算。每次 `http.post` 同时受 HTTPX phase timeout 和 `asyncio.timeout(remaining)` 墙钟上限保护；预算耗尽或 transport 超时后不再 repair，不接受迟到响应，并写入 `fallback/timeout`。
 4. canonical 首建 loser 在同 membership 时把自身 usages 原子关联到 winner；审计失败仍为显式 retryable。
 5. malformed、negative、NaN、无穷或超大 token count 安全归零，不再导致合法 success usage 丢失。
 6. M3 只接受 `candidate.metadata.get("disputed") is True`，reason 文本不能授权。
@@ -29,9 +29,10 @@
 
 - 第一批 1/2/4/5/6/7 均先建立最小 RED，再转 GREEN；确定性 A/B 测试验证只新增一个版本且 B usage 被审计。
 - 第二批 total-timeout RED 证明旧实现给 repair 完整 0.1 秒且过期仍发第二请求；取消 RED 证明旧实现会让后续候选抢占刚释放的 semaphore。
-- 聚焦 enrichment/pipeline/provenance：70 passed。
+- 最终复审墙钟 RED 使用 `MockTransport` 延迟 50ms、总预算 10ms，证明只配置 HTTPX phase timeout 会在 deadline 后错误接受 success。GREEN 后请求由 `asyncio.timeout(remaining)` 在墙钟预算内取消，只记录一次 `fallback/timeout`，且不发 repair。
+- 聚焦 MiniMax：41 passed；Task 4（含真实 PostgreSQL contention）：73 passed。
 - 真实 PostgreSQL canonical 首建 contention：passed；唯一 event、唯一 version，winner/loser 两次 usage 均关联。
-- 全量（安全注入项目本地 PostgreSQL 配置）：916 collected，全部 passed。
+- 全量（安全注入项目本地 PostgreSQL 配置）：917 collected，全部 passed。
 - `python -m ruff check src tests`：passed。
 - `git diff --check`：passed。
 - `.env` 未修改、未提交。

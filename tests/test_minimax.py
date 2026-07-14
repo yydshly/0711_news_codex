@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -134,6 +136,44 @@ async def test_expired_total_timeout_skips_repair_and_records_timeout_fallback(
     assert [(usage.outcome, usage.error) for usage in captured] == [
         ("retry", "invalid_response"),
         ("fallback", "timeout"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_total_timeout_cancels_slow_valid_transport_before_success() -> None:
+    captured: list[ModelUsage] = []
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return httpx.Response(
+            200,
+            json=response_payload('{"topics":["agents"],"confidence":0.8}'),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fallback = fallback_topics("agents")
+        started = time.perf_counter()
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).structured(
+            "event_enrichment",
+            "model",
+            "prompt",
+            type(fallback),
+            fallback,
+            timeout_seconds=0.01,
+        )
+        elapsed = time.perf_counter() - started
+
+    assert result is fallback
+    assert elapsed < 0.04
+    assert calls == 1
+    assert [(usage.outcome, usage.error) for usage in captured] == [
+        ("fallback", "timeout")
     ]
 
 

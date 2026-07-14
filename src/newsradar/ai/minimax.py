@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -208,7 +209,7 @@ class MiniMaxClient:
                 break
             usage_payload: dict = {}
             try:
-                response = await self.http.post(
+                request = self.http.post(
                     f"{self.settings.minimax_base_url.rstrip('/')}/v1/text/chatcompletion_v2",
                     headers={
                         "Authorization": (
@@ -225,6 +226,11 @@ class MiniMaxClient:
                     },
                     timeout=remaining_timeout,
                 )
+                if remaining_timeout is None:
+                    response = await request
+                else:
+                    async with asyncio.timeout(remaining_timeout):
+                        response = await request
                 response.raise_for_status()
                 payload = response.json()
                 if isinstance(payload, dict):
@@ -241,6 +247,7 @@ class MiniMaxClient:
                 TypeError,
                 ValueError,
                 ValidationError,
+                TimeoutError,
             ) as exc:
                 repairable = isinstance(
                     exc, (KeyError, IndexError, TypeError, ValueError, ValidationError)
@@ -270,7 +277,7 @@ class MiniMaxClient:
 
     @staticmethod
     def _bounded_error_code(exc: Exception) -> str:
-        if isinstance(exc, httpx.TimeoutException):
+        if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
             return "timeout"
         if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
             status = exc.response.status_code
