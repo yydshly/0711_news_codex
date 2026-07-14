@@ -170,7 +170,41 @@ Invoke-WebRequest http://127.0.0.1:8766/items -UseBasicParsing | Select-Object -
 
 Expected: 本地 Web 运行时两个端点均为 `200`；否则记录运行前置条件，不误报为代码故障。
 
-### Task 4: 完整验收与合并前审查
+### Task 4: 将 GitHub 凭据真正传递到官方 API
+
+**Files:**
+- Modify: `src/newsradar/ingestion/fetchers/github.py`
+- Modify: `src/newsradar/ingestion/fetchers/base.py`
+- Modify: `tests/ingestion/fetchers/test_github.py`
+
+**Interfaces:**
+- Consumes: `AccessMethod.auth_envs` 与 `CredentialProvider.require("GITHUB_TOKEN")`。
+- Produces: 仅对显式声明 `GITHUB_TOKEN` 的 GitHub REST API 请求附加 `Authorization: Bearer ...`；缺失凭据时返回 `blocked/missing_credential`。
+
+- [ ] **Step 1: Write the failing HTTP-header and missing-credential tests**
+
+Use an injected fake credential provider and `respx` route. Assert the request contains `Authorization: Bearer test-github-token`; assert missing credentials returns `FetchOutcome.BLOCKED` and `missing_credential` before network I/O.
+
+- [ ] **Step 2: Verify RED**
+
+Run: `uv run python -m pytest tests/ingestion/fetchers/test_github.py -q`
+
+Expected: the two new tests fail because the previous constructor had no credential provider and never set an authorization header.
+
+- [ ] **Step 3: Implement the minimal credential propagation**
+
+Keep the existing public-fetch constructor compatible. When `method.auth_envs` contains `GITHUB_TOKEN`, obtain it from the injected provider, put it only in the in-memory request header, and return a blocked result if absent. Have `FetcherFactory` inject its existing credential provider for GitHub.
+
+- [ ] **Step 4: Verify GREEN and lint**
+
+```bash
+uv run python -m pytest tests/ingestion/fetchers/test_github.py tests/ingestion/test_credential_source_activation.py -q
+uv run ruff check src/newsradar/ingestion/fetchers/github.py tests/ingestion/fetchers/test_github.py
+```
+
+Expected: all tests and lint checks pass.
+
+### Task 5: 完整验收与合并前审查
 
 **Files:**
 - Read: `docs/superpowers/specs/2026-07-14-credential-source-activation-design.md`

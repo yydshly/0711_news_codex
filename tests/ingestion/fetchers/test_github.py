@@ -10,6 +10,62 @@ from newsradar.sources.schema import SourceDefinition
 from ...test_source_schema import valid_source
 
 
+class _Credentials:
+    def require(self, name: str) -> str:
+        assert name == "GITHUB_TOKEN"
+        return "test-github-token"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_github_uses_configured_token_for_credentialed_method() -> None:
+    data = valid_source()
+    data["access_methods"][0].update(
+        {
+            "kind": "rest_api",
+            "url": "https://api.github.com/repos/org/repo/releases",
+            "auth_envs": ["GITHUB_TOKEN"],
+        }
+    )
+    source = SourceDefinition.model_validate(data)
+    route = respx.get("https://api.github.com/repos/org/repo/releases").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    async with httpx.AsyncClient() as client:
+        await GitHubFetcher(HttpPolicy(client), _Credentials()).fetch(
+            source, source.access_methods[0], FetchState(), 5
+        )
+
+    assert route.called
+    assert route.calls.last.request.headers["Authorization"] == "Bearer test-github-token"
+
+
+@pytest.mark.asyncio
+async def test_github_blocks_credentialed_method_when_token_is_missing() -> None:
+    data = valid_source()
+    data["access_methods"][0].update(
+        {
+            "kind": "rest_api",
+            "url": "https://api.github.com/repos/org/repo/releases",
+            "auth_envs": ["GITHUB_TOKEN"],
+        }
+    )
+    source = SourceDefinition.model_validate(data)
+
+    class _MissingCredentials:
+        def require(self, name: str) -> str:
+            raise KeyError(name)
+
+    async with httpx.AsyncClient() as client:
+        result = await GitHubFetcher(HttpPolicy(client), _MissingCredentials()).fetch(
+            source, source.access_methods[0], FetchState(), 5
+        )
+
+    assert result.outcome is FetchOutcome.BLOCKED
+    assert result.error_code == "missing_credential"
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_github_filters_drafts_and_retains_prereleases() -> None:

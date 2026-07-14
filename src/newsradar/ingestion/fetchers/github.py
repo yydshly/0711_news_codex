@@ -3,15 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlsplit
 
-from newsradar.ingestion.schema import FetchOutcome, NormalizedRawItem
+from newsradar.ingestion.schema import FetchOutcome, FetchResult, NormalizedRawItem
 from newsradar.sources.schema import AccessMethod, SourceDefinition
 
 from .base import FetchState, HttpPolicy, response_result
+from .credentials import CredentialProvider
 
 
 class GitHubFetcher:
-    def __init__(self, policy: HttpPolicy):
-        self.policy = policy
+    def __init__(self, policy: HttpPolicy, credentials: CredentialProvider | None = None):
+        self.policy, self.credentials = policy, credentials
 
     async def fetch(
         self, source: SourceDefinition, method: AccessMethod, state: FetchState, limit: int
@@ -37,6 +38,17 @@ class GitHubFetcher:
             else audited_url
         )
         headers = {"Accept": "application/vnd.github+json", **method.headers}
+        if "GITHUB_TOKEN" in method.auth_envs:
+            try:
+                if self.credentials is None:
+                    raise KeyError("GITHUB_TOKEN")
+                headers["Authorization"] = f"Bearer {self.credentials.require('GITHUB_TOKEN')}"
+            except (KeyError, ValueError):
+                return FetchResult(
+                    outcome=FetchOutcome.BLOCKED,
+                    error_code="missing_credential",
+                    error_message="GitHub token is not configured",
+                )
         if state.etag:
             headers["If-None-Match"] = state.etag
         params = (

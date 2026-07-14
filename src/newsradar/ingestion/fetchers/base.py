@@ -204,7 +204,7 @@ class FetcherFactory:
         if host == "hacker-news.firebaseio.com":
             return HackerNewsFetcher(self.policy)
         if host == "api.github.com":
-            return GitHubFetcher(self.policy)
+            return GitHubFetcher(self.policy, self.credentials or EnvironmentCredentials())
         if host == "export.arxiv.org":
             return ArxivFetcher(self.policy)
         if host == "public.api.bsky.app":
