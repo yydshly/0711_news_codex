@@ -125,6 +125,16 @@ def test_event_detail_explains_six_scores_and_redacts_untrusted_sensitive_text(
                 "independent": True,
             }
         ],
+        "model_runs": [
+            {
+                "model": "MiniMax-M2.7-highspeed",
+                "purpose": "event_enrichment",
+                "outcome": "fallback",
+                "latency_ms": 245.0,
+                "prompt": "提示全文不应展示",
+                "error": "API 原始错误不应展示",
+            }
+        ],
     }
     usage = ModelUsageRecord(
         purpose="event_enrichment",
@@ -162,6 +172,7 @@ def test_event_detail_explains_six_scores_and_redacts_untrusted_sensitive_text(
         "规则回退",
         "245.0 毫秒",
         "未经同行评审",
+        "北京时间",
     ):
         assert expected in response.text
     for forbidden in (

@@ -31,7 +31,7 @@
   <h2 id="evidence-heading">证据时间线</h2>
   <ul>
     {% for evidence in event_detail.evidence %}
-    <li>{{ evidence.role|zh_label('evidence_role') }}{% if evidence.independent %} · 独立来源{% else %} · 非独立/待核验{% endif %}{% if evidence.root_evidence_key %} · 根证据 {{ evidence.root_evidence_key }}{% endif %}：{% if evidence.original_url %}<a href="{{ evidence.original_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.title }}</a>{% else %}{{ evidence.title }}{% endif %}{% if evidence.published_at %}（{{ evidence.published_at.strftime('%Y-%m-%d %H:%M') }}）{% endif %}{% if evidence.limitations %} · 限制：{{ evidence.limitations|join('；') }}{% endif %}</li>
+    <li>{{ evidence.role|zh_label('evidence_role') }}{% if evidence.independent %} · 独立来源{% else %} · 非独立/待核验{% endif %}{% if evidence.root_evidence_key %} · 根证据 {{ evidence.root_evidence_key }}{% endif %}：{% if evidence.original_url %}<a href="{{ evidence.original_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.title }}</a>{% else %}{{ evidence.title }}{% endif %}{% if evidence.published_at %}（{{ evidence.published_at|format_datetime_zh }}）{% endif %}{% if evidence.limitations %} · 限制：{{ evidence.limitations|join('；') }}{% endif %}</li>
     {% else %}<li>暂无可展示的原始证据。</li>{% endfor %}
   </ul>
 </section>

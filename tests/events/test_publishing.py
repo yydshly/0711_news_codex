@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     Base,
     EventRecord,
@@ -87,6 +88,38 @@ def test_reader_sees_only_complete_version(db_session: Session, candidate) -> No
     assert score.breakdown["rule_version"] == "score-v2"
     assert score.breakdown["ai_relevance"] == 90
     assert db_session.get(EventRecord, published.event_id).visibility == "current"
+
+
+def test_publish_snapshot_passes_safe_model_summary_into_same_version(db_session: Session) -> None:
+    publisher = EventPublisher(EventRepository(db_session))
+    usage = ModelUsage(
+        purpose="event_enrichment",
+        model="MiniMax-M2.7-highspeed",
+        input_tokens=10,
+        output_tokens=5,
+        latency_ms=21,
+        outcome="fallback",
+        error="timeout",
+    )
+
+    published = publisher.publish_snapshot(
+        CandidateCluster(candidate_key="safe-model-run", title="Safe model run"),
+        operation_id=1,
+        score_input=real_score_input(),
+        model_usages=(usage,),
+    )
+
+    version = db_session.scalar(
+        select(EventVersionRecord).where(EventVersionRecord.event_id == published.event_id)
+    )
+    assert version.payload["model_runs"] == [
+        {
+            "model": "MiniMax-M2.7-highspeed",
+            "purpose": "event_enrichment",
+            "outcome": "fallback",
+            "latency_ms": 21,
+        }
+    ]
 
 
 def test_publisher_rejects_missing_score_input(db_session: Session, candidate) -> None:

@@ -28,6 +28,7 @@ from newsradar.db.models import (
     SourceRiskAssessmentRecord,
     WorkerRecord,
 )
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.ingestion.trial import TrialDecision, evaluate_trial_eligibility
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.sources.repository import SourceRepository
@@ -37,8 +38,8 @@ from newsradar.sources.yaml_loader import load_source_tree
 _COMPLETED_FETCH_OUTCOMES = frozenset({"succeeded", "no_change"})
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 EVENT_QUALITY_WINDOW_HOURS = 72
-EVENT_QUALITY_RELEVANCE_VERSION = "relevance-v2"
-EVENT_QUALITY_CLUSTER_VERSION = "cluster-v2"
+EVENT_QUALITY_RELEVANCE_VERSION = EVENT_ALGORITHM_VERSIONS["relevance"]
+EVENT_QUALITY_CLUSTER_VERSION = EVENT_ALGORITHM_VERSIONS["cluster"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,13 +181,16 @@ class EventQualityCoverageQueryService:
     def build(self, *, now: datetime | None = None) -> EventQualityCoverageView:
         now = now or datetime.now(UTC)
         since = now - timedelta(hours=self.WINDOW_HOURS)
+        item_time = func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at)
         selected = select(RawItemRecord.id).where(
-            func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at) >= since
+            item_time >= since,
+            item_time <= now,
         )
         selected_count = int(
             self._session.scalar(
                 select(func.count(RawItemRecord.id)).where(
-                    func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at) >= since
+                    item_time >= since,
+                    item_time <= now,
                 )
             )
             or 0
@@ -207,11 +211,26 @@ class EventQualityCoverageQueryService:
                 continue
             reasons.update(str(reason) for reason in row.reason_codes)
 
-        last_completed_at = self._session.scalar(
-            select(func.max(OperationRunRecord.finished_at)).where(
+        completed_rows = self._session.execute(
+            select(OperationRunRecord.finished_at, OperationRunRecord.requested_scope)
+            .where(
                 OperationRunRecord.operation_type == "event_pipeline",
                 OperationRunRecord.status == "succeeded",
+                OperationRunRecord.finished_at >= since,
+                OperationRunRecord.finished_at <= now,
             )
+            .order_by(OperationRunRecord.finished_at.desc(), OperationRunRecord.id.desc())
+        ).all()
+        expected_versions = dict(EVENT_ALGORITHM_VERSIONS)
+        last_completed_at = next(
+            (
+                row.finished_at
+                for row in completed_rows
+                if isinstance(row.requested_scope, dict)
+                and row.requested_scope.get("window_hours") == self.WINDOW_HOURS
+                and row.requested_scope.get("algorithm_versions") == expected_versions
+            ),
+            None,
         )
         if last_completed_at is not None and last_completed_at.tzinfo is None:
             last_completed_at = last_completed_at.replace(tzinfo=UTC)
@@ -220,6 +239,7 @@ class EventQualityCoverageQueryService:
                 select(func.count(EventCandidateRecord.id)).where(
                     EventCandidateRecord.algorithm_version == self.CLUSTER_ALGORITHM_VERSION,
                     EventCandidateRecord.updated_at >= since,
+                    EventCandidateRecord.updated_at <= now,
                 )
             )
             or 0
@@ -227,7 +247,11 @@ class EventQualityCoverageQueryService:
         visibility_counts = dict(
             self._session.execute(
                 select(EventRecord.visibility, func.count(EventRecord.id))
-                .where(EventRecord.current_version_number > 0)
+                .where(
+                    EventRecord.current_version_number > 0,
+                    EventRecord.updated_at >= since,
+                    EventRecord.updated_at <= now,
+                )
                 .group_by(EventRecord.visibility)
             ).all()
         )
@@ -237,6 +261,7 @@ class EventQualityCoverageQueryService:
                 .join(ModelUsageRecord, ModelUsageRecord.id == EventModelRunRecord.model_usage_id)
                 .where(
                     EventModelRunRecord.created_at >= since,
+                    EventModelRunRecord.created_at <= now,
                     ModelUsageRecord.outcome != "success",
                 )
             )

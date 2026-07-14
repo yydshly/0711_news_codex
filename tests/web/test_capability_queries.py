@@ -7,6 +7,7 @@ from sqlalchemy import event
 
 from newsradar.db.models import (
     EntityRecord,
+    EventCandidateRecord,
     EventModelRunRecord,
     EventRecord,
     EventScoreRecord,
@@ -21,6 +22,7 @@ from newsradar.db.models import (
     SourceProbeSampleRecord,
     WorkerRecord,
 )
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.web.capability_queries import (
     CapabilityQueryService,
     CatalogSnapshot,
@@ -297,6 +299,17 @@ def test_event_quality_coverage_counts_recent_v2_processing_in_collection_querie
             fetched_at=NOW - timedelta(hours=73),
         )
     )
+    db_session.add(
+        RawItemRecord(
+            source_id="github-openai-python",
+            external_id="quality-future",
+            canonical_url="https://example.com/quality/future",
+            payload={},
+            title="未来样本",
+            published_at=NOW + timedelta(seconds=1),
+            fetched_at=NOW + timedelta(seconds=1),
+        )
+    )
     db_session.flush()
     db_session.add_all(
         [
@@ -320,17 +333,140 @@ def test_event_quality_coverage_counts_recent_v2_processing_in_collection_querie
             ),
         ]
     )
+    valid_scope = {
+        "window_hours": 72,
+        "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+    }
     db_session.add(
         OperationRunRecord(
             operation_type="event_pipeline",
             trigger="manual",
             status="succeeded",
-            requested_scope={"window_hours": 72},
+            requested_scope=valid_scope,
             result_summary={"selected_item_count": 3},
             finished_at=NOW - timedelta(minutes=2),
             created_at=NOW - timedelta(minutes=5),
             updated_at=NOW - timedelta(minutes=2),
         )
+    )
+    db_session.add_all(
+        [
+            OperationRunRecord(
+                operation_type="event_pipeline",
+                trigger="manual",
+                status="succeeded",
+                requested_scope={
+                    "window_hours": 24,
+                    "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+                },
+                result_summary={},
+                finished_at=NOW - timedelta(minutes=1),
+                created_at=NOW - timedelta(minutes=2),
+                updated_at=NOW - timedelta(minutes=1),
+            ),
+            OperationRunRecord(
+                operation_type="event_pipeline",
+                trigger="manual",
+                status="succeeded",
+                requested_scope={
+                    "window_hours": 72,
+                    "algorithm_versions": {
+                        "relevance": "relevance-v1",
+                        "entities": "entities-v1",
+                        "cluster": "cluster-v1",
+                        "score": "score-v1",
+                    },
+                },
+                result_summary={},
+                finished_at=NOW - timedelta(seconds=30),
+                created_at=NOW - timedelta(minutes=1),
+                updated_at=NOW - timedelta(seconds=30),
+            ),
+            OperationRunRecord(
+                operation_type="event_pipeline",
+                trigger="manual",
+                status="succeeded",
+                requested_scope=valid_scope,
+                result_summary={},
+                finished_at=NOW + timedelta(seconds=1),
+                created_at=NOW,
+                updated_at=NOW,
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            EventCandidateRecord(
+                candidate_key="coverage-current",
+                algorithm_version="cluster-v2",
+                title="当前候选",
+                updated_at=NOW,
+            ),
+            EventCandidateRecord(
+                candidate_key="coverage-future",
+                algorithm_version="cluster-v2",
+                title="未来候选",
+                updated_at=NOW + timedelta(seconds=1),
+            ),
+        ]
+    )
+    current_event = EventRecord(
+        canonical_key="coverage-current-event",
+        visibility="current",
+        status="confirmed",
+        occurred_at=NOW,
+        current_version_number=1,
+        updated_at=NOW,
+    )
+    legacy_event = EventRecord(
+        canonical_key="coverage-legacy-event",
+        visibility="legacy",
+        status="confirmed",
+        occurred_at=NOW,
+        current_version_number=1,
+        updated_at=NOW,
+    )
+    future_event = EventRecord(
+        canonical_key="coverage-future-event",
+        visibility="current",
+        status="confirmed",
+        occurred_at=NOW + timedelta(seconds=1),
+        current_version_number=1,
+        updated_at=NOW + timedelta(seconds=1),
+    )
+    db_session.add_all([current_event, legacy_event, future_event])
+    db_session.flush()
+    current_usage = ModelUsageRecord(
+        purpose="event_enrichment",
+        model="MiniMax",
+        latency_ms=1,
+        outcome="fallback",
+    )
+    future_usage = ModelUsageRecord(
+        purpose="event_enrichment",
+        model="MiniMax",
+        latency_ms=1,
+        outcome="fallback",
+    )
+    db_session.add_all([current_usage, future_usage])
+    db_session.flush()
+    db_session.add_all(
+        [
+            EventModelRunRecord(
+                event_id=current_event.id,
+                model_usage_id=current_usage.id,
+                stage="event_enrichment",
+                algorithm_version="MiniMax",
+                created_at=NOW,
+            ),
+            EventModelRunRecord(
+                event_id=future_event.id,
+                model_usage_id=future_usage.id,
+                stage="event_enrichment",
+                algorithm_version="MiniMax",
+                created_at=NOW + timedelta(seconds=1),
+            ),
+        ]
     )
     db_session.commit()
 
@@ -359,6 +495,10 @@ def test_event_quality_coverage_counts_recent_v2_processing_in_collection_querie
         ("insufficient_text", 1),
     )
     assert coverage.last_completed_at == NOW - timedelta(minutes=2)
+    assert coverage.candidate_count == 1
+    assert coverage.current_event_count == 1
+    assert coverage.legacy_event_count == 1
+    assert coverage.model_fallback_count == 1
     processing_queries = [sql for sql in statements if "raw_item_processing" in sql]
     assert len(processing_queries) == 1
 

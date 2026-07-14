@@ -9,6 +9,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     Base,
     EventCandidateItemRecord,
@@ -102,6 +103,41 @@ def test_stage_record_is_idempotent() -> None:
 def test_event_visibility_has_stable_current_and_legacy_values() -> None:
     assert EventVisibility.CURRENT.value == "current"
     assert EventVisibility.LEGACY.value == "legacy"
+
+
+def test_complete_version_payload_contains_only_safe_current_model_run_summary() -> None:
+    with session() as db:
+        repository = EventRepository(db)
+        usage = ModelUsage(
+            purpose="event_enrichment",
+            model="MiniMax-M2.7-highspeed",
+            input_tokens=123,
+            output_tokens=45,
+            latency_ms=87.5,
+            outcome="success",
+            error="Authorization: Bearer must-not-enter-version",
+        )
+
+        event = repository.publish_complete_event(
+            published_event(), operation_id=1, model_usages=(usage,)
+        )
+        db.commit()
+
+        version = db.scalar(
+            select(EventVersionRecord).where(EventVersionRecord.event_id == event.id)
+        )
+        assert version.payload["model_runs"] == [
+            {
+                "model": "MiniMax-M2.7-highspeed",
+                "purpose": "event_enrichment",
+                "outcome": "success",
+                "latency_ms": 87.5,
+            }
+        ]
+        serialized = repr(version.payload)
+        assert "input_tokens" not in serialized
+        assert "output_tokens" not in serialized
+        assert "Authorization" not in serialized
 
 
 def test_stage_record_updates_the_same_processing_decision() -> None:

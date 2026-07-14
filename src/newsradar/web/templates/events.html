@@ -11,6 +11,28 @@
 {% endif %}
 <section class="panel">
   <p><a href="/">返回事件首页</a> · <a href="/events">当前事件</a> · <a href="/events?visibility=legacy">历史旧版事件</a> · <a href="/emerging">新兴线索</a></p>
+  <form method="get" action="/events" aria-label="事件筛选">
+    <input type="hidden" name="visibility" value="{{ event_page.filters.get('visibility', 'current') }}">
+    <label>状态
+      <select name="status">
+        <option value="">全部状态</option>
+        {% for value in ('confirmed', 'emerging', 'developing', 'disputed', 'stale', 'rejected') %}<option value="{{ value }}"{% if event_page.filters.get('status') == value %} selected{% endif %}>{{ value|zh_label('event_status') }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>类别
+      <select name="category">
+        <option value="">全部类别</option>
+        {% for value in ('product_model', 'research', 'developer_tool', 'company') %}<option value="{{ value }}"{% if event_page.filters.get('category') == value %} selected{% endif %}>{{ value|zh_label('event_category') }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>时间范围
+      <select name="hours">
+        <option value="">全部时间</option>
+        {% for value, label in ((24, '最近 24 小时'), (72, '最近 72 小时'), (168, '最近 7 天')) %}<option value="{{ value }}"{% if event_page.filters.get('hours') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit">应用筛选</button>
+  </form>
   {% for event in event_page.events %}
   <article class="event-card">
     <p class="eyebrow">{{ event.visibility|zh_label('event_visibility') }} · {{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %}</p>

@@ -3,18 +3,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 from urllib.parse import urlsplit, urlunsplit
 
-from sqlalchemy import Select, and_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
     EventItemRecord,
-    EventModelRunRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
-    ModelUsageRecord,
     RawItemRecord,
 )
 from newsradar.web.capability_queries import (
@@ -165,28 +164,38 @@ class EventQueryService:
         now: datetime | None = None,
     ) -> EventHomeView:
         now = now or datetime.now(UTC)
+        since = now - timedelta(hours=window_hours)
         snapshots = self._projections(
             {
                 "visibility": "current",
-                "since": now - timedelta(hours=window_hours),
-                "limit": 10_000,
+                "status": "confirmed",
+                "since": since,
+                "until": now,
+                "min_ai_relevance": HOME_MIN_AI_RELEVANCE,
             }
         )
         complete_snapshots = tuple(
             snapshot for snapshot in snapshots if self._home_snapshot_is_complete(snapshot)
         )
-        complete = tuple(self._event_row(*snapshot) for snapshot in complete_snapshots)
         home_events = tuple(
-            self._event_row(event, version, score)
-            for event, version, score in complete_snapshots
-            if event.status == "confirmed"
-            and score is not None
-            and _numeric_score(score.breakdown.get("ai_relevance")) >= HOME_MIN_AI_RELEVANCE
+            self._event_row(*snapshot) for snapshot in complete_snapshots
         )[:limit]
+        status_counts = dict(
+            self.session.execute(
+                select(EventRecord.status, func.count(EventRecord.id))
+                .where(
+                    EventRecord.visibility == "current",
+                    EventRecord.status.in_(("confirmed", "emerging")),
+                    EventRecord.occurred_at >= since,
+                    EventRecord.occurred_at <= now,
+                )
+                .group_by(EventRecord.status)
+            ).all()
+        )
         return EventHomeView(
             events=home_events,
-            current_confirmed_count=sum(row.status == "confirmed" for row in complete),
-            current_emerging_count=sum(row.status == "emerging" for row in complete),
+            current_confirmed_count=int(status_counts.get("confirmed", 0)),
+            current_emerging_count=int(status_counts.get("emerging", 0)),
             coverage=EventQualityCoverageQueryService(self.session).build(now=now),
         )
 
@@ -198,6 +207,7 @@ class EventQueryService:
     ) -> EventPage:
         active = dict(filters or {})
         active.setdefault("visibility", visibility)
+        active.setdefault("limit", 100)
         return EventPage(events=self._list(active), filters=active)
 
     def list_emerging(self, limit: int = 50) -> EventPage:
@@ -213,6 +223,8 @@ class EventQueryService:
         if snapshot is None:
             return None
         event, version, score = snapshot
+        if event.visibility == "current" and not self._home_snapshot_is_complete(snapshot):
+            return None
         row = self._event_row(event, version, score)
         payload = version.payload if isinstance(version.payload, dict) else {}
         evidence_payload = _as_sequence(payload.get("evidence"))
@@ -242,14 +254,18 @@ class EventQueryService:
                 .join(EventItemRecord, EventItemRecord.raw_item_id == RawItemRecord.id)
                 .where(
                     EventItemRecord.event_id == event_id,
-                    EventItemRecord.removed_version_number.is_(None),
+                    EventItemRecord.added_version_number <= event.current_version_number,
+                    or_(
+                        EventItemRecord.removed_version_number.is_(None),
+                        EventItemRecord.removed_version_number > event.current_version_number,
+                    ),
                 )
                 .order_by(RawItemRecord.published_at.desc(), RawItemRecord.id.desc())
             )
         )
         enrichment = payload.get("enrichment")
         enrichment = enrichment if isinstance(enrichment, dict) else {}
-        breakdown = dict(score.breakdown) if score is not None else {}
+        breakdown = dict(score.breakdown)
         scores = tuple(
             ScoreDimensionView(
                 key=key,
@@ -259,26 +275,16 @@ class EventQueryService:
             )
             for key in SCORE_DIMENSION_KEYS
         )
-        limitations = _localized_limitations(
-            (
-                *(_as_sequence(enrichment.get("limitations"))),
-                *(item for evidence_row in evidence for item in evidence_row.limitations),
+        enrichment_limitations = _localized_limitations(enrichment.get("limitations"))
+        limitations = tuple(
+            dict.fromkeys(
+                (
+                    *enrichment_limitations,
+                    *(item for evidence_row in evidence for item in evidence_row.limitations),
+                )
             )
         )
-        model_runs = tuple(
-            ModelRunSummary(
-                model=_safe_display_text(usage.model, "未记录模型", max_length=120),
-                purpose=_safe_display_text(usage.purpose, "unknown", max_length=64),
-                outcome=_safe_display_text(usage.outcome, "unknown", max_length=32),
-                latency_ms=usage.latency_ms,
-            )
-            for _run, usage in self.session.execute(
-                select(EventModelRunRecord, ModelUsageRecord)
-                .join(ModelUsageRecord, ModelUsageRecord.id == EventModelRunRecord.model_usage_id)
-                .where(EventModelRunRecord.event_id == event_id)
-                .order_by(EventModelRunRecord.created_at.desc(), EventModelRunRecord.id.desc())
-            )
-        )
+        model_runs = _model_run_summaries(payload.get("model_runs"))
         origin = str(enrichment.get("origin", "rule_fallback"))
         return EventDetailView(
             event=row,
@@ -298,7 +304,7 @@ class EventQueryService:
 
     def _projections(
         self, filters: dict[str, object]
-    ) -> tuple[tuple[EventRecord, EventVersionRecord, EventScoreRecord | None], ...]:
+    ) -> tuple[tuple[EventRecord, EventVersionRecord, EventScoreRecord], ...]:
         statement = _published_snapshot_statement().where(
             EventRecord.current_version_number > 0,
             EventRecord.visibility == filters.get("visibility", "current"),
@@ -309,16 +315,25 @@ class EventQueryService:
             statement = statement.where(EventRecord.category == category)
         if since := filters.get("since"):
             statement = statement.where(EventRecord.occurred_at >= since)
+        if until := filters.get("until"):
+            statement = statement.where(EventRecord.occurred_at <= until)
+        if min_ai_relevance := filters.get("min_ai_relevance"):
+            statement = statement.where(
+                EventScoreRecord.breakdown["ai_relevance"].as_float()
+                >= float(min_ai_relevance)
+            )
         statement = statement.order_by(
             EventScoreRecord.heat.desc().nullslast(),
             EventRecord.occurred_at.desc(),
             EventRecord.id.desc(),
-        ).limit(int(filters.get("limit", 100)))
+        )
+        if "limit" in filters:
+            statement = statement.limit(int(filters["limit"]))
         return tuple(self.session.execute(statement))
 
     def _snapshot(
         self, event_id: int
-    ) -> tuple[EventRecord, EventVersionRecord, EventScoreRecord | None] | None:
+    ) -> tuple[EventRecord, EventVersionRecord, EventScoreRecord] | None:
         return self.session.execute(
             _published_snapshot_statement().where(
                 EventRecord.id == event_id, EventRecord.current_version_number > 0
@@ -329,12 +344,12 @@ class EventQueryService:
         self,
         event: EventRecord,
         version: EventVersionRecord,
-        score: EventScoreRecord | None,
+        score: EventScoreRecord,
     ) -> EventRow:
         payload = version.payload if isinstance(version.payload, dict) else {}
         enrichment = payload.get("enrichment")
         enrichment = enrichment if isinstance(enrichment, dict) else {}
-        breakdown = dict(score.breakdown) if score is not None else {}
+        breakdown = dict(score.breakdown)
         return EventRow(
             event_id=event.id,
             visibility=event.visibility,
@@ -346,7 +361,7 @@ class EventQueryService:
                 enrichment.get("why_it_matters"), "暂无关注理由", max_length=2_000
             ),
             occurred_at=event.occurred_at,
-            heat=float(score.heat) if score is not None else 0.0,
+            heat=float(score.heat),
             importance=_numeric_score(breakdown.get("importance")),
             credibility=_numeric_score(breakdown.get("credibility")),
             independent_root_count=_independent_root_count(payload.get("evidence")),
@@ -359,11 +374,11 @@ class EventQueryService:
 
     @staticmethod
     def _home_snapshot_is_complete(
-        snapshot: tuple[EventRecord, EventVersionRecord, EventScoreRecord | None],
+        snapshot: tuple[EventRecord, EventVersionRecord, EventScoreRecord],
     ) -> bool:
         _event, version, score = snapshot
         payload = version.payload if isinstance(version.payload, dict) else {}
-        breakdown = dict(score.breakdown) if score is not None else {}
+        breakdown = dict(score.breakdown)
         evidence = payload.get("evidence")
         evidence_complete = isinstance(evidence, (list, tuple)) and bool(evidence) and all(
             isinstance(item, dict)
@@ -376,7 +391,6 @@ class EventQueryService:
         return bool(
             version.zh_title
             and version.zh_summary
-            and score is not None
             and all(isinstance(breakdown.get(key), (int, float)) for key in SCORE_DIMENSION_KEYS)
             and isinstance(payload.get("enrichment"), dict)
             and evidence_complete
@@ -396,7 +410,7 @@ def _published_snapshot_statement() -> Select:
                 EventVersionRecord.version_number == EventRecord.current_version_number,
             ),
         )
-        .outerjoin(
+        .join(
             EventScoreRecord,
             and_(
                 EventScoreRecord.event_id == EventRecord.id,
@@ -408,6 +422,35 @@ def _published_snapshot_statement() -> Select:
 
 def _as_sequence(value: object) -> tuple[object, ...]:
     return tuple(value) if isinstance(value, (list, tuple)) else ()
+
+
+def _model_run_summaries(value: object) -> tuple[ModelRunSummary, ...]:
+    summaries: list[ModelRunSummary] = []
+    for item in _as_sequence(value)[:20]:
+        if not isinstance(item, dict):
+            continue
+        model = item.get("model")
+        purpose = item.get("purpose")
+        outcome = item.get("outcome")
+        latency = item.get("latency_ms")
+        if not all(isinstance(field, str) and field.strip() for field in (model, purpose, outcome)):
+            continue
+        if latency is not None and (
+            isinstance(latency, bool)
+            or not isinstance(latency, (int, float))
+            or not isfinite(float(latency))
+            or latency < 0
+        ):
+            continue
+        summaries.append(
+            ModelRunSummary(
+                model=_safe_display_text(model, "未记录模型", max_length=120),
+                purpose=_safe_display_text(purpose, "unknown", max_length=64),
+                outcome=_safe_display_text(outcome, "unknown", max_length=32),
+                latency_ms=float(latency) if latency is not None else None,
+            )
+        )
+    return tuple(summaries)
 
 
 def _independent_root_count(evidence: object) -> int:

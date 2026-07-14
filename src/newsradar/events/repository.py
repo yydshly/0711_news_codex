@@ -335,10 +335,14 @@ class EventRepository:
                     ) from error
 
             next_version = record.current_version_number + 1
+            version_payload = event.model_dump(mode="json")
+            version_payload["model_runs"] = [
+                _safe_model_run_summary(usage) for usage in model_usages
+            ]
             version = EventVersionRecord(
                 event_id=record.id,
                 version_number=next_version,
-                payload=event.model_dump(mode="json"),
+                payload=version_payload,
                 zh_title=event.enrichment.zh_title if event.enrichment else None,
                 zh_summary=event.enrichment.zh_summary if event.enrichment else None,
             )
@@ -510,6 +514,21 @@ _ALLOWED_DETAIL_ENUM_TYPES = (
     EntityType,
 )
 _DETAILS_VALUE_ERROR = "details values must be booleans, numbers, or enum members"
+
+
+def _safe_model_run_summary(usage: ModelUsage) -> dict[str, object]:
+    latency = usage.latency_ms
+    safe_latency = (
+        float(latency)
+        if isinstance(latency, (int, float)) and isfinite(latency) and latency >= 0
+        else None
+    )
+    return {
+        "model": str(usage.model)[:120],
+        "purpose": str(usage.purpose)[:64],
+        "outcome": str(usage.outcome)[:32],
+        "latency_ms": safe_latency,
+    }
 
 
 def _normalize_processing_details(details: dict[str, object] | None) -> dict[str, object]:

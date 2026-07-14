@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+_BEIJING = ZoneInfo("Asia/Shanghai")
+
 LABELS: dict[str, dict[str, str]] = {
     "provider_category": {
         "social_community": "社交与社区",
@@ -86,6 +91,9 @@ LABELS: dict[str, dict[str, str]] = {
         "legacy": "旧版历史",
     },
     "event_category": {
+        "product_model": "产品与模型",
+        "developer_tool": "开发者工具",
+        "company": "公司动态",
         "model_release": "模型发布",
         "research": "研究进展",
         "product": "产品动态",
@@ -199,6 +207,11 @@ _SAFE_EVENT_FALLBACKS = {
 def zh_label(group: str, value: str) -> str:
     labels = LABELS.get(group, {})
     return labels.get(value, _SAFE_EVENT_FALLBACKS.get(group, value))
+
+
+def format_datetime_zh(value: datetime) -> str:
+    aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value
+    return aware.astimezone(_BEIJING).strftime("%Y-%m-%d %H:%M（北京时间）")
 
 
 def explain_failure(reason: str, http_status: int | None, error_code: str | None) -> str:

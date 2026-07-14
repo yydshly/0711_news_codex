@@ -106,6 +106,9 @@ def test_events_defaults_to_current_and_legacy_entry_warns(db_session, monkeypat
 
     assert "当前事件" in current.text
     assert "历史事件" not in current.text
+    assert 'name="status"' in current.text
+    assert 'name="category"' in current.text
+    assert 'name="hours"' in current.text
     assert "历史事件" in legacy.text
     assert '<h2><a href="/events/43">当前事件</a></h2>' not in legacy.text
     assert "旧版算法结果，不参与当前首页" in legacy.text

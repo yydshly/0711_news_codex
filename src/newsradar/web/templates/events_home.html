@@ -11,7 +11,7 @@
     <div><dt>当前新兴线索</dt><dd>{{ event_home.current_emerging_count }}</dd></div>
     <div><dt>72 小时已处理</dt><dd>{{ event_home.coverage.processed_count }} / {{ event_home.coverage.selected_count }}</dd></div>
     <div><dt>排除</dt><dd>排除 {{ event_home.coverage.excluded_count }}</dd></div>
-    <div><dt>最后完成</dt><dd class="text-value">{% if event_home.coverage.last_completed_at %}{{ event_home.coverage.last_completed_at.strftime('%Y-%m-%d %H:%M') }}{% else %}暂无成功运行{% endif %}</dd></div>
+    <div><dt>最后完成</dt><dd class="text-value">{% if event_home.coverage.last_completed_at %}{{ event_home.coverage.last_completed_at|format_datetime_zh }}{% else %}暂无成功运行{% endif %}</dd></div>
   </dl>
   <p><a href="/events">全部当前事件</a> · <a href="/emerging">新兴线索</a> · <a href="/events?visibility=legacy">历史旧版事件</a> · <a href="/sources">来源与能力看板</a></p>
 </section>

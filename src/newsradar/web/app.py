@@ -27,7 +27,7 @@ from newsradar.settings import get_settings
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.event_queries import EventQueryService
-from newsradar.web.i18n import zh_label
+from newsradar.web.i18n import format_datetime_zh, zh_label
 from newsradar.web.item_queries import ItemQueryService
 from newsradar.web.mixed_source_queries import MixedSourceQueryService
 from newsradar.web.operation_queries import OperationQueryService
@@ -166,6 +166,7 @@ def create_app(
     templates = Jinja2Templates(directory=_WEB_ROOT / "templates")
     templates.env.autoescape = select_autoescape(("html", "xml"), default_for_string=True)
     templates.env.filters["zh_label"] = lambda value, dimension: zh_label(dimension, value)
+    templates.env.filters["format_datetime_zh"] = format_datetime_zh
     templates.env.globals["http_trust_env"] = get_settings().http_trust_env
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
@@ -362,9 +363,12 @@ def create_app(
         visibility: EventVisibilityMode = "current",
         hours: Annotated[int | None, Query(ge=1, le=8760)] = None,
     ) -> HTMLResponse:
+        query_now = datetime.now(UTC)
         filters = _active_filters(status=status, category=category, visibility=visibility)
+        filters["until"] = query_now
         if hours is not None:
-            filters["since"] = datetime.now(UTC) - timedelta(hours=hours)
+            filters["since"] = query_now - timedelta(hours=hours)
+            filters["hours"] = hours
         try:
             with create_session() as session:
                 event_page = EventQueryService(session).list_events(filters)

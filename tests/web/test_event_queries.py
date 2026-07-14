@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import event, select
+
 from newsradar.db.models import (
     EventItemRecord,
     EventModelRunRecord,
@@ -144,6 +146,26 @@ def test_home_only_returns_current_recent_confirmed_complete_relevant_events(db_
         occurred_at=now,
         breakdown=low_relevance,
     )
+    incomplete = _event(
+        db_session,
+        event_id=12,
+        status="confirmed",
+        title="评分未完成事件",
+        occurred_at=now,
+    )
+    db_session.delete(
+        db_session.scalar(
+            select(EventScoreRecord).where(EventScoreRecord.event_id == incomplete.id)
+        )
+    )
+    _event(
+        db_session,
+        event_id=13,
+        status="confirmed",
+        title="未来事件",
+        occurred_at=now + timedelta(minutes=1),
+    )
+    db_session.commit()
     _event(
         db_session,
         event_id=3,
@@ -152,15 +174,34 @@ def test_home_only_returns_current_recent_confirmed_complete_relevant_events(db_
         occurred_at=now - timedelta(hours=25),
     )
 
-    home = EventQueryService(db_session).home(now=now)
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lower())
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        home = EventQueryService(db_session).home(now=now)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
 
     assert [event.event_id for event in home.events] == [confirmed.id]
+    assert home.current_confirmed_count == 3
+    assert home.current_emerging_count == 1
     assert home.events[0].zh_title == "已确认事件"
     assert home.events[0].visibility == "current"
     assert home.events[0].importance == 78
     assert home.events[0].credibility == 90
     assert home.events[0].independent_root_count == 1
     assert home.events[0].enrichment_origin == "model"
+    eligible_queries = [
+        statement
+        for statement in statements
+        if "join event_versions" in statement and "join event_scores" in statement
+    ]
+    assert len(eligible_queries) == 1
+    assert " limit " not in eligible_queries[0]
 
 
 def test_detail_exposes_score_and_degradation_state(db_session):
@@ -222,21 +263,46 @@ def test_detail_model_run_summary_only_projects_safe_fields(db_session):
             algorithm_version="MiniMax-M2.7-highspeed",
         )
     )
+    version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
+    version.payload = {
+        **version.payload,
+        "model_runs": [
+            {
+                "model": "MiniMax-current",
+                "purpose": "event_enrichment",
+                "outcome": "success",
+                "latency_ms": 12.5,
+                "error": "must-not-render",
+                "input_tokens": 999,
+            }
+        ],
+    }
     db_session.commit()
 
-    detail = EventQueryService(db_session).get_event(record.id)
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lower())
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        detail = EventQueryService(db_session).get_event(record.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
 
     assert detail is not None
-    assert detail.model_runs[0].model == "MiniMax-M2.7-highspeed"
+    assert detail.model_runs[0].model == "MiniMax-current"
     assert detail.model_runs[0].purpose == "event_enrichment"
     assert detail.model_runs[0].outcome == "success"
-    assert detail.model_runs[0].latency_ms == 321.5
+    assert detail.model_runs[0].latency_ms == 12.5
     assert "Authorization" not in repr(detail)
     assert "must-not-leak" not in repr(detail)
     assert "input_tokens" not in repr(detail)
+    assert not any("model_usage" in statement for statement in statements)
 
 
-def test_detail_treats_malformed_evidence_payload_as_untrusted_data(db_session):
+def test_current_detail_rejects_malformed_evidence_snapshot(db_session):
     from newsradar.web.event_queries import EventQueryService
 
     record = _event(
@@ -255,9 +321,107 @@ def test_detail_treats_malformed_evidence_payload_as_untrusted_data(db_session):
 
     detail = EventQueryService(db_session).get_event(record.id)
 
+    assert detail is None
+
+
+def test_current_detail_rejects_missing_score(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    record = _event(
+        db_session,
+        event_id=14,
+        status="confirmed",
+        title="缺少评分",
+        occurred_at=datetime.now(UTC),
+    )
+    score = db_session.scalar(
+        select(EventScoreRecord).where(EventScoreRecord.event_id == record.id)
+    )
+    db_session.delete(score)
+    db_session.commit()
+
+    assert EventQueryService(db_session).get_event(record.id) is None
+
+
+def test_evidence_members_respect_current_version_interval(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    record = _event(
+        db_session,
+        event_id=15,
+        status="confirmed",
+        title="成员版本区间",
+        occurred_at=datetime.now(UTC),
+    )
+    rows = []
+    for suffix in ("future", "scheduled-removal"):
+        raw = RawItemRecord(
+            source_id="github-openai-python",
+            external_id=f"interval-{suffix}",
+            canonical_url=f"https://example.com/{suffix}",
+            payload={},
+            title=suffix,
+        )
+        db_session.add(raw)
+        db_session.flush()
+        rows.append(raw)
+    db_session.add_all(
+        [
+            EventItemRecord(
+                event_id=record.id, raw_item_id=rows[0].id, added_version_number=2
+            ),
+            EventItemRecord(
+                event_id=record.id,
+                raw_item_id=rows[1].id,
+                added_version_number=1,
+                removed_version_number=2,
+            ),
+        ]
+    )
+    version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
+    payload = dict(version.payload)
+    payload["evidence"] = [*payload["evidence"], *(
+        {
+            "raw_item_id": raw.id,
+            "role": "professional_media",
+            "root_evidence_key": f"root:{raw.external_id}",
+            "independent": True,
+            "limitations": [],
+        }
+        for raw in rows
+    )]
+    version.payload = payload
+    db_session.commit()
+
+    detail = EventQueryService(db_session).get_event(record.id)
+
     assert detail is not None
-    assert detail.evidence[0].role == "unknown"
-    assert detail.event.independent_root_count == 0
+    titles = {row.title for row in detail.evidence}
+    assert "future" not in titles
+    assert "scheduled-removal" in titles
+
+
+def test_evidence_limitation_is_localized_once(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    record = _event(
+        db_session,
+        event_id=16,
+        status="confirmed",
+        title="限制本地化",
+        occurred_at=datetime.now(UTC),
+    )
+    version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
+    enrichment = {**version.payload["enrichment"], "limitations": []}
+    evidence = [{**version.payload["evidence"][0], "limitations": ["not_peer_reviewed"]}]
+    version.payload = {**version.payload, "enrichment": enrichment, "evidence": evidence}
+    db_session.commit()
+
+    detail = EventQueryService(db_session).get_event(record.id)
+
+    assert detail is not None
+    assert detail.evidence[0].limitations == ("未经同行评审",)
+    assert detail.limitations == ("未经同行评审",)
 
 
 def test_display_sanitizer_preserves_generic_model_terms_without_secret_assignments():
@@ -293,9 +457,19 @@ def test_detail_only_exposes_safe_evidence_links_and_evidence_audit_fields(db_se
     db_session.add(EventItemRecord(event_id=record.id, raw_item_id=raw.id, added_version_number=1))
     version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
     version.payload = {
-        "enrichment": {"origin": "rule_fallback"},
+        "enrichment": {
+            "origin": "rule_fallback",
+            "why_it_matters": "安全链接验证",
+            "limitations": [],
+        },
         "evidence": [
-            {"raw_item_id": raw.id, "root_evidence_key": "root:official", "independent": True}
+            {
+                "raw_item_id": raw.id,
+                "role": "official",
+                "root_evidence_key": "root:official",
+                "independent": True,
+                "limitations": [],
+            }
         ],
     }
     db_session.commit()
