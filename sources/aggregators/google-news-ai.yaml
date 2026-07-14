@@ -1,5 +1,5 @@
 id: google-news-ai
-name: Google News AI discovery
+name: Google News AI 模型与产品发现
 status: candidate
 nature: aggregator
 roles: [discovery]
@@ -12,7 +12,7 @@ access_methods:
     url: https://news.google.com/rss/search
     priority: 1
     params:
-      q: artificial intelligence
+      q: '(AI OR LLM) (model OR product OR release) when:2d'
       hl: en-US
       gl: US
       ceid: US:en

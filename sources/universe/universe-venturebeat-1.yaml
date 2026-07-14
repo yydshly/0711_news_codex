@@ -44,6 +44,9 @@ risk:
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  purpose: 初步获取 VentureBeat 的公开 RSS 报道。
+  wanted_information: [title, canonical_url, published_at, summary]
+  conclusion: 已确认具体 RSS 入口并允许初步抓取，深度审计后续完成。
+  risk_conclusion: RSS 报道可作专业媒体证据，仍需与其他来源交叉确认。
+  reviewed_at: '2026-07-14'

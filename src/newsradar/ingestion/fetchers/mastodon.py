@@ -55,7 +55,8 @@ class MastodonFetcher:
         is_local_timeline = (
             parsed.path == "/api/v1/timelines/public" and params.get("local", "").lower() == "true"
         )
-        if not is_account_timeline and not is_local_timeline:
+        is_tag_timeline = re.fullmatch(r"/api/v1/timelines/tag/[A-Za-z0-9_]+", parsed.path)
+        if not is_account_timeline and not is_local_timeline and not is_tag_timeline:
             raise ValueError("unbounded_mastodon_discovery")
         return parsed.hostname.lower()
 

@@ -181,6 +181,12 @@ def test_item_detail_loads_payload_versions_and_duplicate_candidates_only_on_dem
     session = _session()
     try:
         first = _item("reuters-ai", "one", title="First", published_at=NOW, first_seen_at=NOW)
+        first.authors = ["Reporter One"]
+        first.summary = "A concise summary"
+        first.discussion_url = "https://discussion.example.test/one"
+        first.engagement = {"score": 88, "comments": 21}
+        first.publisher_name = "Example Publisher"
+        first.origin_resolution_status = "resolved"
         second = _item("hn-ai", "two", title="Second", published_at=NOW, first_seen_at=NOW)
         session.add_all([first, second])
         session.flush()
@@ -205,6 +211,12 @@ def test_item_detail_loads_payload_versions_and_duplicate_candidates_only_on_dem
 
         assert detail is not None
         assert detail.payload["secret"] == "list-query-must-not-load-this"
+        assert detail.authors == ("Reporter One",)
+        assert detail.summary == "A concise summary"
+        assert detail.discussion_url == "https://discussion.example.test/one"
+        assert detail.engagement == {"score": 88, "comments": 21}
+        assert detail.publisher_name == "Example Publisher"
+        assert detail.origin_resolution_status == "resolved"
         assert [version.content_hash for version in detail.versions] == ["v2", "v1"]
         assert duplicates[0].left_item_id == first.id
         assert duplicates[0].right_item_id == second.id

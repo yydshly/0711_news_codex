@@ -1,0 +1,26 @@
+id: the-verge-bluesky
+name: The Verge Bluesky 媒体账号
+provider_id: bluesky
+target_type: account
+availability: ready
+coverage_mode: direct
+official_identity_url: https://bsky.app/profile/theverge.com
+reviewed_at: '2026-07-14'
+unlock_requirements: []
+status: candidate
+nature: social
+roles: [discovery, engagement, context]
+language: en
+topics: [artificial_intelligence, technology]
+authority_score: 3
+poll_interval_minutes: 15
+access_methods:
+  - kind: public_api
+    url: https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed
+    priority: 1
+    params: {actor: theverge.com}
+expected_fields: [title, canonical_url, published_at, author, content, engagement]
+risk: {terms: 1, authentication: 0, stability: 2, data_quality: 2, operating_cost: 0, evidence: [https://docs.bsky.app/docs/api/app-bsky-feed-get-author-feed, https://bsky.app/profile/theverge.com]}
+ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
+research: {status: needs_research, purpose: 初步获取 The Verge 的科技新闻发布与互动。, wanted_information: [title, canonical_url, published_at, author, content, engagement], conclusion: 已通过媒体域名 handle 确认具体账号并允许初步抓取。, risk_conclusion: 社交发布只作发现和热度信号，原文用于后续确认。, reviewed_at: '2026-07-14'}
+notes: 媒体域名 handle 提供身份信号；使用公开 AppView 作者 Feed；fallback 为无安全备用路径。

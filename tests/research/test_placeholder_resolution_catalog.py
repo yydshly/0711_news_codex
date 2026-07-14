@@ -41,8 +41,8 @@ def test_duplicate_placeholder_pairs_have_one_canonical_discovery_target() -> No
         assert str(duplicate.access_methods[0].url) == str(canonical.access_methods[0].url)
 
 
-def test_placeholder_resolution_keeps_catalog_and_enabled_sources_unchanged() -> None:
+def test_placeholder_resolution_reflects_expanded_mixed_source_catalog() -> None:
     sources = list(load_source_tree(Path("sources")))
 
-    assert len(sources) == 166
-    assert sum(source.ingestion.enabled for source in sources) == 54
+    assert len(sources) == 187
+    assert sum(source.ingestion.enabled for source in sources) == 80

@@ -695,11 +695,12 @@ async def test_non_trial_special_host_still_constructs_its_specialized_fetcher()
         {
             **valid_source(),
             "access_methods": [
-                {
-                    "kind": "rest_api",
-                    "url": "https://www.googleapis.com/youtube/v3/search",
-                    "priority": 1,
-                }
+                    {
+                        "kind": "rest_api",
+                        "url": "https://www.googleapis.com/youtube/v3/channels",
+                        "priority": 1,
+                        "params": {"id": "channel"},
+                    }
             ],
         }
     ).access_methods[0]

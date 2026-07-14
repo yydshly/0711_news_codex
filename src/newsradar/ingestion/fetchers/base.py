@@ -9,6 +9,7 @@ from typing import Protocol
 
 import httpx
 
+from newsradar.ingestion.header_policy import is_sensitive_request_header
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.settings import get_settings
 from newsradar.sources.schema import AccessKind, AccessMethod, SourceDefinition
@@ -136,17 +137,7 @@ class HttpPolicy:
 
 def public_headers(headers: dict[str, str]) -> dict[str, str]:
     """Keep public API requests free of configured credentials and cookies."""
-    blocked = {"authorization", "authentication", "cookie", "set-cookie", "proxy-authorization"}
-    sensitive_parts = ("api-key", "api_key", "token", "secret", "credential")
-    return {
-        name: value
-        for name, value in headers.items()
-        if name.lower() not in blocked
-        and "authorization" not in name.lower()
-        and "authentication" not in name.lower()
-        and not name.lower().startswith("x-auth")
-        and not any(part in name.lower() for part in sensitive_parts)
-    }
+    return {name: value for name, value in headers.items() if not is_sensitive_request_header(name)}
 
 
 def response_result(response: httpx.Response, **values: object) -> FetchResult:
@@ -213,12 +204,14 @@ class FetcherFactory:
             return GdeltFetcher(self.policy)
         if host == "oauth.reddit.com":
             return RedditFetcher(self.policy, self.credentials or EnvironmentCredentials())
-        if host == "www.googleapis.com" and path == "/youtube/v3/search":
+        if host == "www.googleapis.com" and path == "/youtube/v3/channels":
             return YouTubeFetcher(self.policy, self.credentials or EnvironmentCredentials())
         if host == "news.google.com" and method.kind is AccessKind.RSS:
             return GoogleNewsFetcher(self.policy)
         if method.kind is AccessKind.PUBLIC_API and (
-            path.startswith("/api/v1/accounts/") or path == "/api/v1/timelines/public"
+            path.startswith("/api/v1/accounts/")
+            or path == "/api/v1/timelines/public"
+            or path.startswith("/api/v1/timelines/tag/")
         ):
             return MastodonFetcher(self.policy)
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
@@ -241,5 +234,7 @@ class FetcherFactory:
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
             return True
         return method.kind is AccessKind.PUBLIC_API and (
-            path.startswith("/api/v1/accounts/") or path == "/api/v1/timelines/public"
+            path.startswith("/api/v1/accounts/")
+            or path == "/api/v1/timelines/public"
+            or path.startswith("/api/v1/timelines/tag/")
         )

@@ -85,12 +85,20 @@ class RedditFetcher:
         ):
             return None
         permalink = "https://www.reddit.com" + str(row["permalink"])
+        deleted_author = row.get("author") in {None, "[deleted]"}
+        body = row.get("selftext")
+        content = None if body in {None, "", "[deleted]", "[removed]"} else str(body)
+        safe_payload = {
+            key: value
+            for key, value in row.items()
+            if key not in {"access_token", "token", "selftext", "author"}
+        }
         return NormalizedRawItem(
             external_id=str(row["name"]),
             title=str(row["title"]),
             canonical_url=permalink,
-            authors=() if row.get("author") in {None, "[deleted]"} else (str(row["author"]),),
-            content=row.get("selftext") or None,
+            authors=() if deleted_author else (str(row["author"]),),
+            content=content,
             published_at=datetime.fromtimestamp(float(row["created_utc"]), UTC)
             if row.get("created_utc")
             else None,
@@ -100,5 +108,5 @@ class RedditFetcher:
             },
             item_kind="community_post",
             discussion_url=permalink,
-            raw_payload={k: v for k, v in row.items() if k not in {"access_token", "token"}},
+            raw_payload=safe_payload,
         )

@@ -39,6 +39,25 @@ def test_report_command_writes_markdown(tmp_path: Path) -> None:
     assert "Anthropic News" in output.read_text(encoding="utf-8")
 
 
+def test_mixed_report_command_writes_runtime_health_report(
+    monkeypatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "mixed-sources.md"
+    dashboard = object()
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr("newsradar.cli._build_mixed_source_dashboard", lambda session: dashboard)
+    monkeypatch.setattr(
+        "newsradar.cli.render_mixed_wave_report",
+        lambda value: "# 中文混合来源报告\n" if value is dashboard else "unexpected",
+    )
+
+    result = runner.invoke(app, ["sources", "mixed-report", "--output", str(output)])
+
+    assert result.exit_code == 0
+    assert output.read_text(encoding="utf-8") == "# 中文混合来源报告\n"
+    assert "Wrote mixed source health report" in result.stdout
+
+
 def test_research_audit_commands_are_read_only_and_chinese(tmp_path: Path) -> None:
     source_root = tmp_path / "sources"
     provider_root = tmp_path / "providers"

@@ -189,6 +189,82 @@ def test_requires_credentials_allows_configured_declared_credential_method() -> 
     assert decision.access_method.auth_env == "NEWS_API_TOKEN"
 
 
+def test_requires_credentials_uses_audited_credential_free_fallback() -> None:
+    source = make_source(
+        availability="requires_credentials",
+        access_methods=[
+            {
+                "kind": "rest_api",
+                "url": "https://www.googleapis.com/youtube/v3/channels",
+                "priority": 1,
+                "auth_env": "YOUTUBE_API_KEY",
+            },
+            {
+                "kind": "atom",
+                "url": "https://www.youtube.com/feeds/videos.xml",
+                "priority": 2,
+            },
+        ],
+    )
+
+    without_key = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env=set(),
+        hard_block_reason=None,
+    )
+    with_key = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env={"YOUTUBE_API_KEY"},
+        hard_block_reason=None,
+    )
+
+    assert without_key.allowed is True
+    assert without_key.access_method is not None
+    assert without_key.access_method.kind.value == "atom"
+    assert with_key.allowed is True
+    assert with_key.access_method is not None
+    assert with_key.access_method.kind.value == "rest_api"
+
+
+@pytest.mark.parametrize(
+    "header_name",
+    ["Authorization", "Authentication", "X-API-Key", "X-Auth-Token"],
+)
+def test_requires_credentials_never_uses_sensitive_header_fallback(
+    header_name: str,
+) -> None:
+    source = make_source(
+        availability="requires_credentials",
+        access_methods=[
+            {
+                "kind": "rest_api",
+                "url": "https://www.googleapis.com/youtube/v3/channels",
+                "priority": 1,
+                "auth_env": "YOUTUBE_API_KEY",
+            },
+            {
+                "kind": "atom",
+                "url": "https://www.youtube.com/feeds/videos.xml",
+                "priority": 2,
+                "headers": {header_name: "misconfigured-secret"},
+            },
+        ],
+    )
+
+    decision = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env=set(),
+        hard_block_reason=None,
+    )
+
+    assert decision.allowed is False
+    assert decision.error_code == "missing_credentials"
+    assert decision.access_method is None
+
+
 def test_requires_credentials_requires_every_declared_credential() -> None:
     source = make_source(
         availability="requires_credentials",

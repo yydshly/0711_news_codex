@@ -45,6 +45,9 @@ risk:
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  purpose: 初步获取 The Guardian Technology 的公开入口报道。
+  wanted_information: [title, canonical_url, published_at, summary]
+  conclusion: 已确认具体公开入口并允许初步抓取，深度审计后续完成。
+  risk_conclusion: 专业媒体报道仍需与其他来源交叉确认。
+  reviewed_at: '2026-07-14'

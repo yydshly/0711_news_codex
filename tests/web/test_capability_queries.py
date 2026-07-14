@@ -35,10 +35,10 @@ def test_current_yaml_catalog_is_loaded_as_the_capability_truth():
     assert catalog.readable is True
     assert catalog.provider_file_count == 67
     assert len(catalog.provider_ids) == 68
-    assert len(catalog.target_ids) == 166
-    assert len(catalog.direct_target_ids) == 48
-    assert len(catalog.indirect_target_ids) == 53
-    assert len(catalog.catalog_only_target_ids) == 65
+    assert len(catalog.target_ids) == 187
+    assert len(catalog.direct_target_ids) == 69
+    assert len(catalog.indirect_target_ids) == 58
+    assert len(catalog.catalog_only_target_ids) == 60
 
 
 def test_default_catalog_loading_is_independent_of_process_cwd(tmp_path, monkeypatch):
@@ -47,7 +47,7 @@ def test_default_catalog_loading_is_independent_of_process_cwd(tmp_path, monkeyp
     catalog = load_catalog_snapshot()
 
     assert catalog.readable is True
-    assert len(catalog.target_ids) == 166
+    assert len(catalog.target_ids) == 187
 
 
 def test_missing_or_invalid_catalog_is_reported_unavailable(tmp_path):

@@ -1,0 +1,43 @@
+id: cognitive-revolution-youtube
+name: The Cognitive Revolution YouTube 访谈频道
+provider_id: youtube
+target_type: channel
+availability: requires_credentials
+coverage_mode: direct
+official_identity_url: https://www.youtube.com/@CognitiveRevolutionPodcast
+reviewed_at: '2026-07-14'
+unlock_requirements: [配置免费的 YOUTUBE_API_KEY；无凭据时使用频道 Atom Feed]
+status: candidate
+nature: social
+roles: [discovery, engagement, context]
+language: en
+topics: [artificial_intelligence, research, expert_opinion]
+authority_score: 3
+poll_interval_minutes: 60
+access_methods:
+  - kind: rest_api
+    url: https://www.googleapis.com/youtube/v3/channels
+    priority: 1
+    auth_envs: [YOUTUBE_API_KEY]
+    params: {id: UCjNRVMBVI30Sak_p6HRWhIA}
+  - kind: atom
+    url: https://www.youtube.com/feeds/videos.xml
+    priority: 2
+    params: {channel_id: UCjNRVMBVI30Sak_p6HRWhIA}
+expected_fields: [title, canonical_url, published_at, author, summary, engagement]
+risk:
+  terms: 1
+  authentication: 1
+  stability: 1
+  data_quality: 2
+  operating_cost: 1
+  evidence: [https://www.youtube.com/@CognitiveRevolutionPodcast, https://developers.google.com/youtube/v3/docs/channels/list]
+ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
+research:
+  status: needs_research
+  purpose: 初步获取 AI 研究、产品和社会影响的深度访谈。
+  wanted_information: [title, canonical_url, published_at, author, summary, engagement]
+  conclusion: 已确认具体频道与稳定 Channel ID，允许初步抓取；观点内容只作发现和背景。
+  risk_conclusion: 只使用 YouTube Data API 或公开频道 Feed，不把单个访谈作为独立事实证据。
+  reviewed_at: '2026-07-14'
+notes: 专家观点来源；Atom Feed 为无凭据备用方式。

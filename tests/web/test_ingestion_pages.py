@@ -155,6 +155,10 @@ def test_ingestion_pages_project_runs_items_versions_and_duplicates(monkeypatch,
         title="First record",
         payload={"token": "must-not-appear-in-list"},
         content_hash="one",
+        discussion_url="https://discussion.example.test/one",
+        engagement={"score": 88, "comments": 21},
+        publisher_name="Example Publisher",
+        origin_resolution_status="resolved",
     )
     second = RawItemRecord(
         source_id="search-ai",
@@ -196,6 +200,11 @@ def test_ingestion_pages_project_runs_items_versions_and_duplicates(monkeypatch,
     assert "First record" in items.text
     assert "must-not-appear-in-list" not in items.text
     assert "https://example.test/one" in detail.text
+    assert "互动数据" in detail.text
+    assert "score" in detail.text and "88" in detail.text
+    assert "comments" in detail.text and "21" in detail.text
+    assert "Example Publisher" in detail.text
+    assert "https://discussion.example.test/one" in detail.text
     assert "canonical_url" in duplicates.text
 
 
