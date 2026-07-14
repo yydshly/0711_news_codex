@@ -88,7 +88,14 @@ def evaluate_fetch_eligibility(
                     access_method=method,
                 )
         fallback = (
-            next((method for method in automatic_methods if not method.auth_envs), None)
+            next(
+                (
+                    method
+                    for method in automatic_methods
+                    if not method.auth_envs and not has_sensitive_trial_headers(method)
+                ),
+                None,
+            )
             if credential_methods
             else None
         )

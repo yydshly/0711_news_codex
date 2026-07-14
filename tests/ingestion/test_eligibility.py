@@ -228,6 +228,37 @@ def test_requires_credentials_uses_audited_credential_free_fallback() -> None:
     assert with_key.access_method.kind.value == "rest_api"
 
 
+def test_requires_credentials_never_uses_sensitive_header_fallback() -> None:
+    source = make_source(
+        availability="requires_credentials",
+        access_methods=[
+            {
+                "kind": "rest_api",
+                "url": "https://www.googleapis.com/youtube/v3/channels",
+                "priority": 1,
+                "auth_env": "YOUTUBE_API_KEY",
+            },
+            {
+                "kind": "atom",
+                "url": "https://www.youtube.com/feeds/videos.xml",
+                "priority": 2,
+                "headers": {"Authorization": "Bearer misconfigured-secret"},
+            },
+        ],
+    )
+
+    decision = evaluate_fetch_eligibility(
+        source,
+        approved_only=False,
+        configured_env=set(),
+        hard_block_reason=None,
+    )
+
+    assert decision.allowed is False
+    assert decision.error_code == "missing_credentials"
+    assert decision.access_method is None
+
+
 def test_requires_credentials_requires_every_declared_credential() -> None:
     source = make_source(
         availability="requires_credentials",
