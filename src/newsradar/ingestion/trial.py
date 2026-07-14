@@ -5,17 +5,14 @@ from math import isfinite
 
 from pydantic import BaseModel, ConfigDict
 
+from newsradar.ingestion.header_policy import is_sensitive_request_header
 from newsradar.providers.schema import Availability, CoverageMode
 from newsradar.sources.schema import AccessKind, AccessMethod, SourceDefinition
-
-_SENSITIVE_TRIAL_HEADER_NAMES = frozenset(
-    {"authorization", "proxy-authorization", "cookie", "set-cookie"}
-)
 
 
 def has_sensitive_trial_headers(method: AccessMethod) -> bool:
     """Return whether a method carries headers forbidden for trial fetches."""
-    return any(name.lower() in _SENSITIVE_TRIAL_HEADER_NAMES for name in method.headers)
+    return any(is_sensitive_request_header(name) for name in method.headers)
 
 
 class ProbeSnapshot(BaseModel):

@@ -228,7 +228,13 @@ def test_requires_credentials_uses_audited_credential_free_fallback() -> None:
     assert with_key.access_method.kind.value == "rest_api"
 
 
-def test_requires_credentials_never_uses_sensitive_header_fallback() -> None:
+@pytest.mark.parametrize(
+    "header_name",
+    ["Authorization", "Authentication", "X-API-Key", "X-Auth-Token"],
+)
+def test_requires_credentials_never_uses_sensitive_header_fallback(
+    header_name: str,
+) -> None:
     source = make_source(
         availability="requires_credentials",
         access_methods=[
@@ -242,7 +248,7 @@ def test_requires_credentials_never_uses_sensitive_header_fallback() -> None:
                 "kind": "atom",
                 "url": "https://www.youtube.com/feeds/videos.xml",
                 "priority": 2,
-                "headers": {"Authorization": "Bearer misconfigured-secret"},
+                "headers": {header_name: "misconfigured-secret"},
             },
         ],
     )
