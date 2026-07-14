@@ -126,14 +126,14 @@ def audit_source_catalog(
 
     identities: dict[tuple[str, str], list[SourceDefinition]] = defaultdict(list)
     for source in sources:
-        if source.id.startswith("universe-") and source.id.rsplit("-", 1)[-1] in {"1", "2"}:
+        if source.research.status == ResearchStatus.PLACEHOLDER:
             findings.append(
                 AuditFinding(
                     code="placeholder_target",
                     severity="warning",
                     source_id=source.id,
                     provider_id=source.provider_id,
-                    message_zh="universe-*-1/2 命名仅提示可能的占位 Target，未自动改变研究状态。",
+                    message_zh="该 Target 只是平台或概念占位，尚未确认可独立探测的具体入口。",
                 )
             )
         provider = provider_by_id.get(source.provider_id)

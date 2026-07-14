@@ -42,14 +42,20 @@ def _verified_research(kind: str = "rss") -> dict[str, object]:
     }
 
 
-def test_audit_keeps_universe_placeholder_as_warning() -> None:
+def test_audit_does_not_treat_universe_id_as_placeholder() -> None:
     report = audit_source_catalog((), (_source(id="universe-social-1"),))
 
     assert report.status_counts == {"needs_research": 1}
-    assert any(
-        finding.code == "placeholder_target" and finding.severity == "warning"
-        for finding in report.findings
+    assert not any(finding.code == "placeholder_target" for finding in report.findings)
+
+
+def test_audit_flags_explicit_placeholder_status() -> None:
+    report = audit_source_catalog(
+        (),
+        (_source(id="real-placeholder", research={"status": "placeholder"}),),
     )
+
+    assert [finding.code for finding in report.findings] == ["placeholder_target"]
 
 
 def test_audit_flags_provider_homepage_as_generic_platform_target() -> None:

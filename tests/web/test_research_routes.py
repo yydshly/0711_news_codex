@@ -3,7 +3,9 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from newsradar.db.models import SourceResearchProfileRecord
 from newsradar.web.app import create_app
+from newsradar.web.queries import DashboardQueryService
 from newsradar.web.viewmodels import RemediationDashboardView, RemediationRowView
 
 
@@ -74,3 +76,39 @@ def test_remediation_console_renders_frozen_batch_summary_and_original_probe() -
 def test_research_target_unknown_is_404():
     app = create_app()
     assert any(route.path == "/research/targets/{source_id}" for route in app.routes)
+
+
+def test_research_target_explains_duplicate_and_needs_research_status(db_session) -> None:
+    db_session.add_all(
+        [
+            SourceResearchProfileRecord(
+                source_id="github-openai-python",
+                status="duplicate",
+                wanted_information=[],
+                conclusion="保留的历史目录项。",
+                no_fallback_reason=None,
+                reviewed_at=None,
+            ),
+            SourceResearchProfileRecord(
+                source_id="search-ai",
+                status="needs_research",
+                wanted_information=[],
+                conclusion="唯一保留的间接发现入口。",
+                no_fallback_reason=None,
+                reviewed_at=None,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    @contextmanager
+    def factory():
+        yield DashboardQueryService(db_session)
+
+    client = TestClient(create_app(factory))
+    duplicate = client.get("/research/targets/github-openai-python")
+    canonical = client.get("/research/targets/search-ai")
+
+    assert "历史目录项" in duplicate.text
+    assert "不会参与探测或抓取" in duplicate.text
+    assert "尚未完成样本、字段、条款和备用方式验证" in canonical.text
