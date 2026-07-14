@@ -14,6 +14,9 @@ language: en
 topics: [artificial_intelligence, technology]
 authority_score: 2
 poll_interval_minutes: 60
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
 - kind: atom
   url: https://www.youtube.com/feeds/videos.xml

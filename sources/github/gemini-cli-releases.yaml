@@ -11,10 +11,14 @@ topics:
 - developer_tools
 authority_score: 5
 poll_interval_minutes: 60
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
 - kind: rest_api
   url: https://api.github.com/repos/google-gemini/gemini-cli/releases
   priority: 1
+  auth_envs: [GITHUB_TOKEN]
 expected_fields:
 - title
 - canonical_url
@@ -31,7 +35,7 @@ risk:
   - https://docs.github.com/en/rest/releases/releases
 provider_id: github
 target_type: channel
-availability: ready
+availability: requires_credentials
 coverage_mode: direct
 official_identity_url: https://github.com/
 reviewed_at: '2026-07-11'
