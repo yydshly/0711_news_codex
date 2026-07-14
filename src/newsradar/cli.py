@@ -52,11 +52,13 @@ from newsradar.research.probes.factory import research_probe_for
 from newsradar.research.reporting import render_research_report
 from newsradar.runtime import RuntimeSupervisor
 from newsradar.settings import get_settings
+from newsradar.sources.mixed_wave_reporting import render_mixed_wave_report
 from newsradar.sources.probes.factory import ProbeFactory
 from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.reporting import render_source_report
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
+from newsradar.web.mixed_source_queries import MixedSourceQueryService
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
@@ -598,6 +600,20 @@ def report_sources(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_source_report(sources), encoding="utf-8")
     typer.echo(f"Wrote source report to {output}")
+
+
+@sources_app.command("mixed-report")
+def report_mixed_sources(
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        "reports/high-value-mixed-sources.md"
+    ),
+) -> None:
+    """输出高价值混合来源的目录、运行证据和下一步中文报告。"""
+    with create_session() as session:
+        dashboard = MixedSourceQueryService(session).build()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_mixed_wave_report(dashboard), encoding="utf-8")
+    typer.echo(f"Wrote mixed source health report to {output}")
 
 
 @sources_app.command("close-coverage")
