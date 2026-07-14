@@ -50,7 +50,7 @@ CONTEXTUAL_AI_TECH_TERMS = frozenset(
         "transformers",
     }
 )
-AI_ENTITY_TERMS = frozenset(
+AI_NATIVE_ENTITY_TERMS = frozenset(
     {
         "anthropic",
         "chatgpt",
@@ -63,9 +63,10 @@ AI_ENTITY_TERMS = frozenset(
         "mistral",
         "openai",
         "qwen",
-        "nvidia",
     }
 )
+CROSS_INDUSTRY_TECH_ENTITY_TERMS = frozenset({"nvidia"})
+CROSS_INDUSTRY_AI_CONTEXT_TERMS = frozenset({"gpu", "model"})
 AMBIGUOUS_TERMS = frozenset(
     {"agent", "agents", "api", "apis", "assistant", "automation", "chip", "gpu", "model"}
 )
@@ -171,7 +172,9 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
 
     strong_matches = _matching_terms(text, STRONG_AI_TERMS)
     contextual_tech_matches = _matching_terms(text, CONTEXTUAL_AI_TECH_TERMS)
-    ai_entities = _matching_terms(text, AI_ENTITY_TERMS)
+    native_ai_entities = _matching_terms(text, AI_NATIVE_ENTITY_TERMS)
+    cross_industry_entities = _matching_terms(text, CROSS_INDUSTRY_TECH_ENTITY_TERMS)
+    recognized_entities = native_ai_entities + cross_industry_entities
     ambiguous_matches = _matching_terms(text, AMBIGUOUS_TERMS)
     event_actions = _matching_terms(text, EVENT_ACTION_TERMS)
     contextual_source_signal = bool(
@@ -181,11 +184,22 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
         and _has_ai_source_context(source_topics)
     )
 
-    entity_action_signal = bool(not strong_matches and ai_entities and event_actions)
+    entity_action_signal = bool(
+        not strong_matches and native_ai_entities and event_actions
+    )
+    cross_industry_ai_signal = bool(
+        not strong_matches
+        and cross_industry_entities
+        and event_actions
+        and (
+            contextual_tech_matches
+            or _matching_terms(text, CROSS_INDUSTRY_AI_CONTEXT_TERMS)
+        )
+    )
     contextual_tech_signal = bool(
         not strong_matches
         and contextual_tech_matches
-        and (ai_entities or _matching_terms(text, RESEARCH_TERMS))
+        and (recognized_entities or _matching_terms(text, RESEARCH_TERMS))
     )
     qualified_ambiguous_signal = bool(
         not strong_matches and ambiguous_matches and contextual_source_signal
@@ -193,26 +207,22 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
     has_qualifying_signal = bool(
         strong_matches
         or entity_action_signal
+        or cross_industry_ai_signal
         or contextual_tech_signal
         or qualified_ambiguous_signal
     )
     score = min(
         100,
         60 * has_qualifying_signal
-        + 20 * bool(ai_entities)
+        + 20 * bool(recognized_entities)
         + 20 * bool(event_actions),
     )
     exclusion_reasons = _exclusion_reasons(
         text=text,
         has_qualifying_signal=has_qualifying_signal,
-        has_ai_entity=bool(ai_entities),
-        has_explicit_ai_event_subject=bool(
-            _matching_terms(subject_text, EVENT_ACTION_TERMS)
-            and (
-                _matching_terms(subject_text, STRONG_AI_TERMS)
-                or _matching_terms(subject_text, AI_ENTITY_TERMS)
-            )
-        ),
+        has_native_ai_entity=bool(native_ai_entities),
+        has_cross_industry_entity=bool(cross_industry_entities),
+        has_explicit_ai_event_subject=_has_explicit_ai_event_subject(subject_text),
         ambiguous_matches=ambiguous_matches,
         subject_text=subject_text,
     )
@@ -223,9 +233,10 @@ def evaluate_relevance(item: RawItemText) -> RelevanceDecision:
             for present, reason in (
                 (bool(strong_matches), "strong_ai_signal"),
                 (entity_action_signal, "qualified_ai_entity_action"),
+                (cross_industry_ai_signal, "qualified_cross_industry_ai_context"),
                 (contextual_tech_signal, "qualified_ai_technical_signal"),
                 (qualified_ambiguous_signal, "qualified_ambiguous_signal"),
-                (bool(ai_entities), "recognized_ai_entity"),
+                (bool(recognized_entities), "recognized_ai_entity"),
                 (bool(event_actions), "event_action"),
             )
             if present
@@ -255,7 +266,8 @@ def _exclusion_reasons(
     *,
     text: str,
     has_qualifying_signal: bool,
-    has_ai_entity: bool,
+    has_native_ai_entity: bool,
+    has_cross_industry_entity: bool,
     has_explicit_ai_event_subject: bool,
     ambiguous_matches: tuple[str, ...],
     subject_text: str,
@@ -268,21 +280,57 @@ def _exclusion_reasons(
         and not has_explicit_ai_event_subject
     ):
         reasons.append("game_or_entertainment")
-    if _matching_terms(text, ADVERTISEMENT_CTA_TERMS):
+    if _is_advertisement_or_subscription(
+        text, subject_text, has_explicit_ai_event_subject
+    ):
         reasons.append("advertisement_or_subscription")
     if _is_auto_repost_without_claim(text):
         reasons.append("auto_repost_without_claim")
-    if ambiguous_matches and not has_qualifying_signal and not has_ai_entity:
+    has_recognized_entity = has_native_ai_entity or has_cross_industry_entity
+    if ambiguous_matches and not has_qualifying_signal and not has_recognized_entity:
         reasons.append("ambiguous_term_only")
     elif (
         _matching_terms(text, GENERIC_TECHNOLOGY_TERMS)
         and not has_qualifying_signal
-        and not has_ai_entity
+        and not has_recognized_entity
     ):
         reasons.append("generic_technology")
-    elif not has_qualifying_signal and not has_ai_entity:
+    elif not has_qualifying_signal and has_native_ai_entity:
+        reasons.append("ai_entity_without_event_context")
+    elif not has_qualifying_signal and has_cross_industry_entity:
+        reasons.append("technology_entity_without_ai_context")
+    elif not has_qualifying_signal:
         reasons.append("no_ai_signal")
     return tuple(reasons)
+
+
+def _has_explicit_ai_event_subject(subject_text: str) -> bool:
+    actions = _matching_terms(subject_text, EVENT_ACTION_TERMS)
+    if not actions:
+        return False
+    if _matching_terms(subject_text, STRONG_AI_TERMS):
+        return True
+    if _matching_terms(subject_text, AI_NATIVE_ENTITY_TERMS):
+        return True
+    return bool(
+        _matching_terms(subject_text, CROSS_INDUSTRY_TECH_ENTITY_TERMS)
+        and (
+            _matching_terms(subject_text, CONTEXTUAL_AI_TECH_TERMS)
+            or _matching_terms(subject_text, CROSS_INDUSTRY_AI_CONTEXT_TERMS)
+        )
+    )
+
+
+def _is_advertisement_or_subscription(
+    text: str, subject_text: str, has_explicit_ai_event_subject: bool
+) -> bool:
+    subject_cta = _matching_terms(subject_text, ADVERTISEMENT_CTA_TERMS)
+    if subject_cta:
+        return True
+    return bool(
+        _matching_terms(text, ADVERTISEMENT_CTA_TERMS)
+        and not has_explicit_ai_event_subject
+    )
 
 
 def _is_auto_repost_without_claim(text: str) -> bool:
@@ -293,7 +341,7 @@ def _is_auto_repost_without_claim(text: str) -> bool:
 def _has_ai_source_context(source_topics: str) -> bool:
     return bool(
         _matching_terms(source_topics, STRONG_AI_TERMS)
-        or _matching_terms(source_topics, AI_ENTITY_TERMS)
+        or _matching_terms(source_topics, AI_NATIVE_ENTITY_TERMS)
     )
 
 

@@ -99,7 +99,26 @@ def test_ai_entity_without_event_action_is_not_automatically_included() -> None:
     result = evaluate_relevance(RawItemText(title="Anthropic Claude overview"))
 
     assert result.outcome == "excluded"
+    assert result.score == 20
+    assert result.reasons == ("ai_entity_without_event_context",)
+
+
+def test_cross_industry_technology_company_action_is_not_enough_for_ai_relevance() -> (
+    None
+):
+    result = evaluate_relevance(RawItemText(title="NVIDIA announces quarterly dividend"))
+
+    assert result.outcome == "excluded"
     assert result.score < 60
+
+
+def test_cross_industry_technology_company_keeps_explicit_gpu_event() -> None:
+    result = evaluate_relevance(
+        RawItemText(title="NVIDIA launches Blackwell GPU platform")
+    )
+
+    assert result.outcome == "included"
+    assert result.score >= 60
 
 
 def test_entertainment_word_does_not_override_explicit_ai_event_subject() -> None:
@@ -121,6 +140,18 @@ def test_entertainment_title_remains_subject_despite_ai_terms_in_summary() -> No
 
     assert result.outcome == "excluded"
     assert "game_or_entertainment" in result.reasons
+
+
+def test_newsletter_footer_does_not_override_explicit_ai_release_subject() -> None:
+    result = evaluate_relevance(
+        RawItemText(
+            title="OpenAI launches GPT-5 API",
+            content="The model adds new reasoning tools. Subscribe to our newsletter.",
+        )
+    )
+
+    assert result.outcome == "included"
+    assert "advertisement_or_subscription" not in result.reasons
 
 
 @pytest.mark.parametrize(
