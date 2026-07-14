@@ -19,6 +19,9 @@ topics:
 - technology
 authority_score: 4
 poll_interval_minutes: 60
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
 - kind: rss
   url: https://www.cnbc.com/id/19854910/device/rss/rss.html

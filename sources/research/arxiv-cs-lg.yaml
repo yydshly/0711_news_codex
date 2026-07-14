@@ -11,6 +11,9 @@ topics:
 - foundation_models
 authority_score: 4
 poll_interval_minutes: 180
+ingestion:
+  enabled: true
+  approved_at: 2026-07-14
 access_methods:
 - kind: atom
   url: https://export.arxiv.org/api/query?search_query=cat:cs.LG&sortBy=submittedDate&sortOrder=descending&max_results=5
