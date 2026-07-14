@@ -25,8 +25,11 @@ from newsradar.db.models import (
 from newsradar.events.schema import (
     CandidateCluster,
     ClusterItem,
+    EntityType,
     EventCategory,
+    EventStatus,
     EventVisibility,
+    EvidenceRole,
     ProcessingStage,
     PublishedEvent,
 )
@@ -366,25 +369,43 @@ class EventRepository:
 
 
 _STABLE_ENUM_VALUE = re.compile(r"[A-Za-z0-9_.:-]+")
-_SENSITIVE_DETAIL_KEY_PARTS = (
-    "apikey",
-    "token",
-    "authorization",
-    "cookie",
-    "secret",
-    "credential",
-    "password",
-    "header",
+_SENSITIVE_DETAIL_KEY_PATTERNS = (
+    ("api", "key"),
+    ("access", "token"),
+    ("authorization",),
+    ("session", "cookie"),
+    ("client", "secret"),
+    ("service", "credential"),
+    ("db", "password"),
+    ("request", "header"),
+    ("request", "headers"),
+    ("token",),
+    ("cookie",),
+    ("secret",),
+    ("credential",),
+    ("password",),
+    ("header",),
+    ("headers",),
 )
-_ALLOWED_DETAIL_ENUM_TYPES = (EventVisibility,)
+_ALLOWED_DETAIL_ENUM_TYPES = (
+    EventVisibility,
+    EventStatus,
+    ProcessingStage,
+    EventCategory,
+    EvidenceRole,
+    EntityType,
+)
 _DETAILS_VALUE_ERROR = "details values must be booleans, numbers, or enum members"
 
 
 def _normalize_processing_details(details: dict[str, object] | None) -> dict[str, object]:
     normalized: dict[str, object] = {}
     for key, value in (details or {}).items():
-        canonical_key = re.sub(r"[^a-z0-9]", "", key.casefold())
-        if any(part in canonical_key for part in _SENSITIVE_DETAIL_KEY_PARTS):
+        key_tokens = _detail_key_tokens(key)
+        if any(
+            len(key_tokens) >= len(pattern) and key_tokens[-len(pattern) :] == pattern
+            for pattern in _SENSITIVE_DETAIL_KEY_PATTERNS
+        ):
             raise ValueError(
                 f"{_DETAILS_VALUE_ERROR}; sensitive field names are forbidden"
             )
@@ -408,3 +429,9 @@ def _normalize_processing_details(details: dict[str, object] | None) -> dict[str
         else:
             raise ValueError(_DETAILS_VALUE_ERROR)
     return normalized
+
+
+def _detail_key_tokens(key: str) -> tuple[str, ...]:
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", separated)
+    return tuple(re.findall(r"[a-z0-9]+", separated.casefold()))

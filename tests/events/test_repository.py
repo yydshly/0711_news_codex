@@ -20,7 +20,11 @@ from newsradar.db.models import (
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import (
     CandidateCluster,
+    EntityType,
+    EventCategory,
     EventStatus,
+    EventVisibility,
+    EvidenceRole,
     ProcessingStage,
     PublishedEvent,
     ScoreBreakdown,
@@ -94,15 +98,11 @@ def test_stage_record_is_idempotent() -> None:
 
 
 def test_event_visibility_has_stable_current_and_legacy_values() -> None:
-    from newsradar.events.schema import EventVisibility
-
     assert EventVisibility.CURRENT.value == "current"
     assert EventVisibility.LEGACY.value == "legacy"
 
 
 def test_stage_record_updates_the_same_processing_decision() -> None:
-    from newsradar.events.schema import EventVisibility
-
     with session() as db:
         item = raw_item(db)
         repository = EventRepository(db)
@@ -171,11 +171,10 @@ def test_stage_record_rejects_sensitive_processing_details(details: dict[str, ob
         "client_secret",
         "service-Credential",
         "db_password",
+        "request_headers",
     ],
 )
 def test_stage_record_rejects_sensitive_detail_keys_even_for_safe_enum_values(key: str) -> None:
-    from newsradar.events.schema import EventVisibility
-
     with session() as db:
         item = raw_item(db)
 
@@ -186,6 +185,52 @@ def test_stage_record_rejects_sensitive_detail_keys_even_for_safe_enum_values(ke
                 "relevance-v2",
                 details={key: EventVisibility.LEGACY},
             )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        EventVisibility.LEGACY,
+        EventStatus.CONFIRMED,
+        ProcessingStage.RELEVANCE,
+        EventCategory.RESEARCH,
+        EvidenceRole.OFFICIAL,
+        EntityType.MODEL,
+    ],
+)
+def test_stage_record_accepts_project_defined_stable_audit_enums(value: Enum) -> None:
+    with session() as db:
+        item = raw_item(db)
+
+        record = EventRepository(db).record_stage(
+            item.id,
+            ProcessingStage.RELEVANCE,
+            "relevance-v2",
+            details={"decision": value},
+        )
+
+        assert record.details == {"decision": value.value}
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"matched_token_count": 3},
+        {"header_present": False},
+    ],
+)
+def test_stage_record_accepts_safe_metric_detail_keys(details: dict[str, object]) -> None:
+    with session() as db:
+        item = raw_item(db)
+
+        record = EventRepository(db).record_stage(
+            item.id,
+            ProcessingStage.RELEVANCE,
+            "relevance-v2",
+            details=details,
+        )
+
+        assert record.details == details
 
 
 def test_stage_record_rejects_credential_bearing_string_enum() -> None:
