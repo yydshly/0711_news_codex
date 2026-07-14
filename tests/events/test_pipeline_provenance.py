@@ -217,9 +217,10 @@ def test_pipeline_links_every_repair_attempt_to_the_final_event(monkeypatch) -> 
 
     monkeypatch.setattr(EventPipeline, "_enrich_candidate_async", staticmethod(enrichment))
     with Session(engine) as db:
-        event_id = EventPipeline.production(db).run(
+        result = EventPipeline.production(db).run(
             window_hours=24, operation_id=41, checkpoint=lambda _: None
-        ).current_event_ids[0]
+        )
+        event_id = result.current_event_ids[0]
 
     with Session(engine) as db:
         usages = tuple(db.scalars(select(ModelUsageRecord).order_by(ModelUsageRecord.id)))
@@ -227,6 +228,7 @@ def test_pipeline_links_every_repair_attempt_to_the_final_event(monkeypatch) -> 
 
     assert [usage.outcome for usage in usages] == ["retry", "success"]
     assert [usage.error for usage in usages] == ["invalid_response", None]
+    assert result.model_error_counts == {"invalid_response": 1}
     assert len(runs) == 2
     assert {run.event_id for run in runs} == {event_id}
     assert [run.model_usage_id for run in runs] == [usage.id for usage in usages]
@@ -240,9 +242,10 @@ def test_pipeline_persists_safe_no_api_key_usage_without_network(monkeypatch) ->
     )
 
     with Session(engine) as db:
-        event_id = EventPipeline.production(db).run(
+        result = EventPipeline.production(db).run(
             window_hours=24, operation_id=41, checkpoint=lambda _: None
-        ).current_event_ids[0]
+        )
+        event_id = result.current_event_ids[0]
 
     with Session(engine) as db:
         usage = db.scalar(select(ModelUsageRecord))
@@ -251,6 +254,7 @@ def test_pipeline_persists_safe_no_api_key_usage_without_network(monkeypatch) ->
     assert usage is not None
     assert usage.outcome == "fallback"
     assert usage.error == "no_api_key"
+    assert result.model_error_counts == {"no_api_key": 1}
     assert usage.input_tokens == 0
     assert usage.output_tokens == 0
     assert "Bearer" not in repr(usage.error)

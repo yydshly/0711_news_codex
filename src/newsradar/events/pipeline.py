@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from re import fullmatch
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -76,6 +77,7 @@ class PipelineResult:
     duplicate_root_suppressed_count: int
     model_success_count: int
     model_fallback_count: int
+    model_error_counts: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,7 @@ class EventPipeline:
             created_versions,
             model_success_count,
             model_fallback_count,
+            model_error_counts,
         ) = self._publish(
             candidates,
             operation_id,
@@ -150,6 +153,7 @@ class EventPipeline:
             duplicate_root_suppressed_count=duplicate_root_suppressed_count,
             model_success_count=model_success_count,
             model_fallback_count=model_fallback_count,
+            model_error_counts=model_error_counts,
         )
 
     def _select_and_classify_items(
@@ -402,6 +406,12 @@ class EventPipeline:
             for result in enrichment_results.values()
         )
         model_fallback_count = len(enrichment_results) - model_success_count
+        model_error_counts: Counter[str] = Counter()
+        for result in enrichment_results.values():
+            for model_run in result.model_runs:
+                error = model_run.usage.error
+                if isinstance(error, str) and fullmatch(r"[a-z][a-z0-9_]{0,63}", error):
+                    model_error_counts[error] += 1
 
         for candidate, score_input in publish_plans:
             checkpoint("before_event_publish_candidate")
@@ -458,7 +468,13 @@ class EventPipeline:
                 event_ids.append(published.event_id)
                 created += int(repository.last_publish_created_version is True)
                 session.commit()
-        return event_ids, created, model_success_count, model_fallback_count
+        return (
+            event_ids,
+            created,
+            model_success_count,
+            model_fallback_count,
+            dict(sorted(model_error_counts.items())),
+        )
 
     @staticmethod
     def _record_model_runs(

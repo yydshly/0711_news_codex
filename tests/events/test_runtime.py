@@ -170,6 +170,7 @@ def test_pipeline_worker_result_summary_contains_complete_quality_counts(monkeyp
                 duplicate_root_suppressed_count=1,
                 model_success_count=1,
                 model_fallback_count=1,
+                model_error_counts={"invalid_response": 2},
             )
 
     monkeypatch.setattr(
@@ -204,6 +205,7 @@ def test_pipeline_worker_result_summary_contains_complete_quality_counts(monkeyp
         "created_event_versions": 2,
         "model_success_count": 1,
         "model_fallback_count": 1,
+        "model_error_counts": {"invalid_response": 2},
         "processed_item_count": 4,
         "duplicate_root_suppressed_count": 1,
         "duration_ms": result.result_summary["duration_ms"],

@@ -11,6 +11,7 @@ from typing import Annotated
 
 import httpx
 import typer
+from sqlalchemy.exc import SQLAlchemyError
 
 from newsradar.db.models import (
     OperationRunRecord,
@@ -412,16 +413,26 @@ def show_event(event_id: int) -> None:
 
 @events_app.command("quality-report")
 def event_quality_report(
-    window_hours: Annotated[int, typer.Option("--window-hours", min=1)] = 72,
+    window_hours: Annotated[
+        int, typer.Option("--window-hours", min=1, max=720)
+    ] = 72,
     output: Annotated[Path, typer.Option("--output")] = Path(
         "reports/event-quality-closure-v2.md"
     ),
 ) -> None:
     """Write a read-only, secret-free Event Intelligence v2 acceptance report."""
-    with create_session() as session:
-        view = build_event_quality_report_view(session, window_hours=window_hours)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render_event_quality_report(view), encoding="utf-8")
+    try:
+        with create_session() as session:
+            view = build_event_quality_report_view(session, window_hours=window_hours)
+    except (RuntimeError, SQLAlchemyError):
+        typer.echo("事件质量报告读取失败（report_database_unavailable）", err=True)
+        raise typer.Exit(1) from None
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(render_event_quality_report(view), encoding="utf-8")
+    except OSError:
+        typer.echo("事件质量报告写入失败（report_write_failed）", err=True)
+        raise typer.Exit(1) from None
     typer.echo(f"已生成事件质量报告：{output}")
 
 

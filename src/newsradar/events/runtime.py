@@ -118,6 +118,7 @@ class EventOperationHandler:
                     "duplicate_root_suppressed_count": result.duplicate_root_suppressed_count,
                     "model_success_count": result.model_success_count,
                     "model_fallback_count": result.model_fallback_count,
+                    "model_error_counts": result.model_error_counts,
                     "duration_ms": round((monotonic() - started) * 1000, 3),
                     "retry_count": 1 if "retry_of_operation_id" in lease.requested_scope else 0,
                 }

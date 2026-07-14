@@ -11,6 +11,7 @@ from newsradar.events.reporting import (
 def sample_quality_view() -> EventQualityReportView:
     return EventQualityReportView(
         generated_at=datetime(2026, 7, 15, 8, 0, tzinfo=UTC),
+        snapshot_at=datetime(2026, 7, 15, 7, 0, tzinfo=UTC),
         window_hours=72,
         selected_count=12,
         processed_count=12,
@@ -60,6 +61,7 @@ def test_quality_report_is_chinese_auditable_and_secret_free() -> None:
         "MiniMax 降级",
         "剩余问题",
         "321",
+        "Operation 快照时间",
     ):
         assert expected in report
     for forbidden in (
@@ -86,3 +88,35 @@ def test_quality_report_never_renders_untrusted_issue_or_error_text() -> None:
     assert "Authorization" not in report
     assert "未知安全错误码" in report
     assert "存在未分类问题（内容已隐藏）" in report
+
+
+def test_empty_report_does_not_claim_complete_coverage() -> None:
+    view = replace(
+        sample_quality_view(),
+        snapshot_at=None,
+        selected_count=0,
+        processed_count=0,
+        included_count=0,
+        excluded_count=0,
+        candidate_count=0,
+        visibility_counts=(),
+        status_counts=(),
+        score_snapshot_count=0,
+        latest_operation_id=None,
+        latest_operation_status=None,
+        remaining_issue_codes=("no_input",),
+    )
+
+    report = render_event_quality_report(view)
+
+    assert "规则处理覆盖率：0.0%" in report
+    assert "当前快照没有输入 RawItem" in report
+
+
+def test_report_always_displays_current_and_legacy_operation_counts() -> None:
+    view = replace(sample_quality_view(), visibility_counts=(("current", 2),))
+
+    report = render_event_quality_report(view)
+
+    assert "current：2" in report
+    assert "legacy：0" in report

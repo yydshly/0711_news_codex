@@ -608,6 +608,61 @@ def test_events_quality_report_is_read_only_and_writes_only_requested_output(
     ]
 
 
+def test_events_quality_report_rejects_window_above_safe_limit(monkeypatch) -> None:
+    called = False
+
+    def fail_if_called():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("newsradar.cli.create_session", fail_if_called)
+
+    result = runner.invoke(app, ["events", "quality-report", "--window-hours", "721"])
+
+    assert result.exit_code == 2
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    ("failure_at", "expected_code"),
+    [
+        ("database", "report_database_unavailable"),
+        ("filesystem", "report_write_failed"),
+    ],
+)
+def test_events_quality_report_redacts_database_and_filesystem_errors(
+    monkeypatch, tmp_path: Path, failure_at: str, expected_code: str
+) -> None:
+    secret = "sensitive-database-or-filesystem-detail?token=secret"
+    output = tmp_path / "report.md"
+    if failure_at == "database":
+        monkeypatch.setattr(
+            "newsradar.cli.create_session",
+            lambda: (_ for _ in ()).throw(RuntimeError(secret)),
+        )
+    else:
+        monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+        monkeypatch.setattr(
+            "newsradar.cli.build_event_quality_report_view", lambda session, **kwargs: object()
+        )
+        monkeypatch.setattr("newsradar.cli.render_event_quality_report", lambda view: "safe")
+        monkeypatch.setattr(
+            Path,
+            "write_text",
+            lambda self, *args, **kwargs: (_ for _ in ()).throw(OSError(secret)),
+        )
+
+    result = runner.invoke(
+        app,
+        ["events", "quality-report", "--output", str(output)],
+    )
+
+    assert result.exit_code == 1
+    output_text = result.stdout + result.stderr
+    assert expected_code in output_text
+    assert secret not in output_text
+
+
 def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "sources"
     write_source(root)
