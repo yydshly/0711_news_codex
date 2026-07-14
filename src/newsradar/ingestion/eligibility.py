@@ -87,6 +87,17 @@ def evaluate_fetch_eligibility(
                     reason=f"允许抓取：已选择已审核的 {method.kind.value} 访问方式。",
                     access_method=method,
                 )
+        fallback = (
+            next((method for method in automatic_methods if not method.auth_envs), None)
+            if credential_methods
+            else None
+        )
+        if fallback is not None:
+            return EligibilityDecision(
+                allowed=True,
+                reason=f"允许抓取：凭据不可用，已选择已审核的 {fallback.kind.value} 备用方式。",
+                access_method=fallback,
+            )
         return _blocked("missing_credentials", "禁止抓取：缺少所选访问方式需要的凭据。")
 
     for method in automatic_methods:

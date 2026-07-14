@@ -35,6 +35,7 @@ def render_mixed_wave_report(dashboard: MixedSourceDashboard) -> str:
         f"| 等待凭据或权限 | {summary.blocked_count} |",
         f"| 降级运行 | {summary.degraded_count} |",
         f"| 抓取失败 | {summary.failed_count} |",
+        f"| 入口可用，暂无样本 | {summary.empty_count} |",
         f"| 尚未运行 | {summary.not_run_count} |",
         f"| 连续三轮稳定 | {summary.three_run_stable_count} |",
         "",
@@ -46,8 +47,8 @@ def render_mixed_wave_report(dashboard: MixedSourceDashboard) -> str:
             continue
         lines.extend(
             [
-                "| 目标 | 当前结论 | 接入 | 最近三轮 | 原始条目 | 说明与下一步 |",
-                "|---|---|---|---|---:|---|",
+                "| 目标 | 当前结论 | 接入 | 最近三轮 | 原始条目 | 最新样本 | 说明与下一步 |",
+                "|---|---|---|---|---:|---|---|",
             ]
         )
         lines.extend(_target_row(target) for target in group.targets)
@@ -64,12 +65,14 @@ def _target_row(target: MixedSourceTarget) -> str:
     if safe_url:
         access = f"{access}<br>{safe_url}"
     explanation = f"{target.conclusion_zh}<br>下一步：{target.next_action_zh}"
+    samples = "<br>".join(sample.title for sample in target.recent_items) or "尚无样本"
     cells = (
         f"{target.name}<br>`{target.source_id}`",
         target.state_label,
         access,
         runs,
         str(target.raw_item_count),
+        samples,
         explanation,
     )
     return "| " + " | ".join(_escape(cell) for cell in cells) + " |"

@@ -4,6 +4,7 @@ from newsradar.sources.mixed_wave_reporting import render_mixed_wave_report
 from newsradar.web.mixed_source_queries import (
     MixedSourceDashboard,
     MixedSourceGroup,
+    MixedSourceSample,
     MixedSourceSummary,
     MixedSourceTarget,
 )
@@ -23,6 +24,7 @@ def _target(**overrides) -> MixedSourceTarget:
         "access_kind": "rest_api",
         "access_url": "https://www.googleapis.com/youtube/v3/channels",
         "recent_runs": (),
+        "recent_items": (),
         "three_run_outcomes": (),
         "three_run_stable": False,
         "raw_item_count": 0,
@@ -45,12 +47,11 @@ def test_report_explains_scope_runtime_evidence_and_next_action_in_chinese() -> 
             blocked_count=3,
             degraded_count=2,
             failed_count=1,
+            empty_count=0,
             not_run_count=15,
             three_run_stable_count=12,
         ),
-        groups=(
-            MixedSourceGroup(key="youtube", label="YouTube 视频", targets=(_target(),)),
-        ),
+        groups=(MixedSourceGroup(key="youtube", label="YouTube 视频", targets=(_target(),)),),
     )
 
     report = render_mixed_wave_report(dashboard)
@@ -72,7 +73,7 @@ def test_report_never_exposes_credentials_or_query_secrets() -> None:
         next_action_zh="配置环境变量，不要记录真实密钥。",
     )
     dashboard = MixedSourceDashboard(
-        summary=MixedSourceSummary(1, 1, 0, 0, 1, 0, 0, 0, 0),
+        summary=MixedSourceSummary(1, 1, 0, 0, 1, 0, 0, 0, 0, 0),
         groups=(MixedSourceGroup("youtube", "YouTube 视频", (target,)),),
     )
 
@@ -81,3 +82,23 @@ def test_report_never_exposes_credentials_or_query_secrets() -> None:
     assert "secret-value" not in report
     assert "?key=" not in report
     assert "https://example.com/feed" in report
+
+
+def test_report_lists_the_latest_samples_without_payloads() -> None:
+    target = _target(
+        recent_items=(
+            MixedSourceSample(
+                raw_item_id=42,
+                title="A verified mixed-source sample",
+                published_at=None,
+            ),
+        )
+    )
+    dashboard = MixedSourceDashboard(
+        summary=MixedSourceSummary(1, 1, 0, 0, 1, 0, 0, 0, 0, 0),
+        groups=(MixedSourceGroup("youtube", "YouTube 视频", (target,)),),
+    )
+
+    report = render_mixed_wave_report(dashboard)
+
+    assert "A verified mixed-source sample" in report

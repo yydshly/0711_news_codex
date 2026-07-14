@@ -36,6 +36,7 @@ class MixedSourceState(StrEnum):
     BLOCKED = "blocked"
     DEGRADED = "degraded"
     FAILED = "failed"
+    EMPTY = "empty"
     NOT_RUN = "not_run"
 
 
@@ -45,6 +46,7 @@ _STATE_LABELS = {
     MixedSourceState.BLOCKED: "等待凭据或权限",
     MixedSourceState.DEGRADED: "降级运行",
     MixedSourceState.FAILED: "抓取失败",
+    MixedSourceState.EMPTY: "入口可用，暂无样本",
     MixedSourceState.NOT_RUN: "尚未运行",
 }
 
@@ -55,6 +57,13 @@ class MixedSourceRun:
     finished_at: datetime | None
     item_count: int
     error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MixedSourceSample:
+    raw_item_id: int
+    title: str
+    published_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +80,7 @@ class MixedSourceTarget:
     access_kind: str | None
     access_url: str | None
     recent_runs: tuple[MixedSourceRun, ...]
+    recent_items: tuple[MixedSourceSample, ...]
     three_run_outcomes: tuple[str, ...]
     three_run_stable: bool
     raw_item_count: int
@@ -96,6 +106,7 @@ class MixedSourceSummary:
     blocked_count: int
     degraded_count: int
     failed_count: int
+    empty_count: int
     not_run_count: int
     three_run_stable_count: int
 
@@ -128,6 +139,7 @@ class MixedSourceQueryService:
         methods = self._primary_methods(set(sources))
         runs = self._recent_runs(set(sources))
         raw_counts = self._raw_counts(set(sources))
+        recent_items = self._recent_items(set(sources))
 
         groups: list[MixedSourceGroup] = []
         states: Counter[str] = Counter()
@@ -140,6 +152,7 @@ class MixedSourceQueryService:
                     methods.get(source_id),
                     runs.get(source_id, ()),
                     raw_counts.get(source_id, (0, None)),
+                    recent_items.get(source_id, ()),
                 )
                 for source_id in source_ids
                 if source_id in sources
@@ -163,6 +176,7 @@ class MixedSourceQueryService:
                 blocked_count=states[MixedSourceState.BLOCKED],
                 degraded_count=states[MixedSourceState.DEGRADED],
                 failed_count=states[MixedSourceState.FAILED],
+                empty_count=states[MixedSourceState.EMPTY],
                 not_run_count=states[MixedSourceState.NOT_RUN],
                 three_run_stable_count=stable_count,
             ),
@@ -232,6 +246,55 @@ class MixedSourceQueryService:
             )
         }
 
+    def _recent_items(self, source_ids: set[str]) -> dict[str, tuple[MixedSourceSample, ...]]:
+        if not source_ids:
+            return {}
+        ranked = (
+            select(
+                RawItemRecord.id.label("raw_item_id"),
+                RawItemRecord.source_id,
+                RawItemRecord.title,
+                RawItemRecord.published_at,
+                RawItemRecord.fetched_at,
+                func.row_number()
+                .over(
+                    partition_by=RawItemRecord.source_id,
+                    order_by=(
+                        func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at).desc(),
+                        RawItemRecord.id.desc(),
+                    ),
+                )
+                .label("sample_rank"),
+            )
+            .where(RawItemRecord.source_id.in_(source_ids))
+            .subquery()
+        )
+        rows = self._session.execute(
+            select(
+                ranked.c.raw_item_id,
+                ranked.c.source_id,
+                ranked.c.title,
+                ranked.c.published_at,
+                ranked.c.fetched_at,
+            )
+            .where(ranked.c.sample_rank <= 5)
+            .order_by(
+                ranked.c.source_id,
+                func.coalesce(ranked.c.published_at, ranked.c.fetched_at).desc(),
+                ranked.c.raw_item_id.desc(),
+            )
+        )
+        by_source: dict[str, list[MixedSourceSample]] = defaultdict(list)
+        for row in rows:
+            by_source[row.source_id].append(
+                MixedSourceSample(
+                    raw_item_id=row.raw_item_id,
+                    title=row.title or "（无标题）",
+                    published_at=_aware(row.published_at or row.fetched_at),
+                )
+            )
+        return {source_id: tuple(values) for source_id, values in by_source.items()}
+
     @staticmethod
     def _target(
         group: str,
@@ -239,6 +302,7 @@ class MixedSourceQueryService:
         method: SourceAccessMethodRecord | None,
         runs: tuple[FetchRunRecord, ...],
         raw: tuple[int, datetime | None],
+        recent_items: tuple[MixedSourceSample, ...],
     ) -> MixedSourceTarget:
         latest = runs[0] if runs else None
         run_views = tuple(
@@ -252,7 +316,12 @@ class MixedSourceQueryService:
         )
         outcomes = tuple(run.outcome for run in runs)
         stable = len(outcomes) == 3 and all(value in _STABLE_OUTCOMES for value in outcomes)
-        state = _classify(source, latest, three_run_stable=stable)
+        state = _classify(
+            source,
+            latest,
+            three_run_stable=stable,
+            has_content=raw[0] > 0,
+        )
         conclusion, next_action = _explain(state, source, latest)
         return MixedSourceTarget(
             source_id=source.id,
@@ -267,6 +336,7 @@ class MixedSourceQueryService:
             access_kind=method.kind if method else None,
             access_url=method.url if method else None,
             recent_runs=run_views,
+            recent_items=recent_items,
             three_run_outcomes=outcomes,
             three_run_stable=stable,
             raw_item_count=raw[0],
@@ -282,6 +352,7 @@ def _classify(
     latest: FetchRunRecord | None,
     *,
     three_run_stable: bool,
+    has_content: bool,
 ) -> MixedSourceState:
     if latest and latest.outcome == "blocked":
         return MixedSourceState.BLOCKED
@@ -292,6 +363,8 @@ def _classify(
     if latest and latest.outcome in _STABLE_OUTCOMES:
         if source.status == "degraded" and not three_run_stable:
             return MixedSourceState.DEGRADED
+        if not has_content:
+            return MixedSourceState.EMPTY
         return (
             MixedSourceState.INDIRECT_READY
             if source.coverage_mode == "indirect"
@@ -323,6 +396,11 @@ def _explain(
     if state is MixedSourceState.FAILED:
         code = latest.error_code if latest and latest.error_code else "unknown"
         return f"最近一次真实抓取失败（{code}）。", "查看抓取记录并按有限重试策略处理。"
+    if state is MixedSourceState.EMPTY:
+        return (
+            "最近抓取成功，但数据库中尚无内容样本。",
+            "确认目标身份、活跃度与查询条件；继续保留覆盖缺口。",
+        )
     return "目录已登记，但尚无真实抓取记录。", "排队一次受控抓取以确认内容能力。"
 
 

@@ -8,6 +8,7 @@ from newsradar.web.app import create_app
 from newsradar.web.mixed_source_queries import (
     MixedSourceDashboard,
     MixedSourceGroup,
+    MixedSourceSample,
     MixedSourceSummary,
     MixedSourceTarget,
 )
@@ -27,6 +28,13 @@ def _dashboard() -> MixedSourceDashboard:
         access_kind="rest_api",
         access_url="https://youtube.example/channels?key=secret-value",
         recent_runs=(),
+        recent_items=(
+            MixedSourceSample(
+                raw_item_id=42,
+                title="A verified mixed-source sample",
+                published_at=None,
+            ),
+        ),
         three_run_outcomes=(),
         three_run_stable=False,
         raw_item_count=18,
@@ -36,7 +44,7 @@ def _dashboard() -> MixedSourceDashboard:
         next_action_zh="配置本地环境变量后运行受控抓取。",
     )
     return MixedSourceDashboard(
-        summary=MixedSourceSummary(45, 45, 16, 8, 3, 2, 1, 15, 12),
+        summary=MixedSourceSummary(45, 45, 16, 8, 3, 2, 1, 0, 15, 12),
         groups=(MixedSourceGroup("youtube", "YouTube 视频", (target,)),),
     )
 
@@ -66,6 +74,8 @@ def test_mixed_sources_page_explains_scope_evidence_and_next_steps(monkeypatch) 
     assert 'href="/mixed-sources" aria-current="page"' in response.text
     assert 'href="/items?source_id=openai-youtube"' in response.text
     assert 'href="/fetch-runs?source_id=openai-youtube"' in response.text
+    assert 'href="/items/42"' in response.text
+    assert "A verified mixed-source sample" in response.text
 
 
 def test_mixed_sources_page_does_not_expose_urls_or_credentials(monkeypatch) -> None:
