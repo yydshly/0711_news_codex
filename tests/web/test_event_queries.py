@@ -3,10 +3,19 @@ from datetime import UTC, datetime, timedelta
 from newsradar.db.models import EventRecord, EventScoreRecord, EventVersionRecord
 
 
-def _event(session, *, event_id: int, status: str, title: str, occurred_at: datetime):
+def _event(
+    session,
+    *,
+    event_id: int,
+    status: str,
+    title: str,
+    occurred_at: datetime,
+    visibility: str = "current",
+):
     record = EventRecord(
         id=event_id,
         canonical_key=f"event-{event_id}",
+        visibility=visibility,
         status=status,
         occurred_at=occurred_at,
         current_version_number=1,
@@ -27,6 +36,33 @@ def _event(session, *, event_id: int, status: str, title: str, occurred_at: date
     )
     session.commit()
     return record
+
+
+def test_event_query_defaults_to_current_and_can_show_legacy(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    current = _event(
+        db_session,
+        event_id=6,
+        status="confirmed",
+        title="当前事件",
+        occurred_at=now,
+    )
+    legacy = _event(
+        db_session,
+        event_id=7,
+        status="confirmed",
+        title="旧版事件",
+        occurred_at=now,
+        visibility="legacy",
+    )
+
+    service = EventQueryService(db_session)
+    assert [row.event_id for row in service.list_events().events] == [current.id]
+    assert [row.event_id for row in service.list_events({"visibility": "legacy"}).events] == [
+        legacy.id
+    ]
 
 
 def test_home_only_returns_recent_confirmed_complete_events(db_session):

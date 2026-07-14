@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from enum import Enum
+from math import isfinite
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
@@ -35,9 +38,23 @@ class EventRepository:
         self.session = session
 
     def record_stage(
-        self, raw_item_id: int, stage: ProcessingStage, algorithm_version: str
+        self,
+        raw_item_id: int,
+        stage: ProcessingStage,
+        algorithm_version: str,
+        *,
+        outcome: str | None = None,
+        score: int | None = None,
+        reason_codes: tuple[str, ...] = (),
+        details: dict[str, object] | None = None,
     ) -> RawItemProcessingRecord:
         now = datetime.now(UTC)
+        decision_values = {
+            "outcome": outcome,
+            "score": score,
+            "reason_codes": list(reason_codes),
+            "details": _normalize_processing_details(details),
+        }
         self.session.execute(
             self._insert(RawItemProcessingRecord)
             .values(
@@ -45,15 +62,21 @@ class EventRepository:
                 stage=stage.value,
                 algorithm_version=algorithm_version,
                 created_at=now,
+                **decision_values,
             )
-            .on_conflict_do_nothing(index_elements=["raw_item_id", "stage", "algorithm_version"])
+            .on_conflict_do_update(
+                index_elements=["raw_item_id", "stage", "algorithm_version"],
+                set_=decision_values,
+            )
         )
         record = self.session.scalar(
-            select(RawItemProcessingRecord).where(
+            select(RawItemProcessingRecord)
+            .where(
                 RawItemProcessingRecord.raw_item_id == raw_item_id,
                 RawItemProcessingRecord.stage == stage.value,
                 RawItemProcessingRecord.algorithm_version == algorithm_version,
             )
+            .execution_options(populate_existing=True)
         )
         assert record is not None
         return record
@@ -339,3 +362,31 @@ class EventRepository:
             )
 
         return insert(record_type)
+
+
+_STABLE_ENUM_VALUE = re.compile(r"[A-Za-z0-9_.:-]+")
+
+
+def _normalize_processing_details(details: dict[str, object] | None) -> dict[str, object]:
+    normalized: dict[str, object] = {}
+    for key, value in (details or {}).items():
+        if isinstance(value, Enum):
+            enum_value = value.value
+            if not isinstance(enum_value, (str, bool, int, float)):
+                raise ValueError(
+                    "details values must be booleans, numbers, or enum members"
+                )
+            if isinstance(enum_value, str) and (
+                len(enum_value) > 120 or _STABLE_ENUM_VALUE.fullmatch(enum_value) is None
+            ):
+                raise ValueError(
+                    "details values must be booleans, numbers, or enum members"
+                )
+            normalized[key] = enum_value
+        elif isinstance(value, (bool, int)):
+            normalized[key] = value
+        elif isinstance(value, float) and isfinite(value):
+            normalized[key] = value
+        else:
+            raise ValueError("details values must be booleans, numbers, or enum members")
+    return normalized

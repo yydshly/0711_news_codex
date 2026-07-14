@@ -80,8 +80,14 @@ class EventQueryService:
         }
         return EventHomeView(events=self._list(filters))
 
-    def list_events(self, filters: dict[str, object] | None = None) -> EventPage:
+    def list_events(
+        self,
+        filters: dict[str, object] | None = None,
+        *,
+        visibility: str = "current",
+    ) -> EventPage:
         active = dict(filters or {})
+        active.setdefault("visibility", visibility)
         return EventPage(events=self._list(active), filters=active)
 
     def list_emerging(self, limit: int = 50) -> EventPage:
@@ -140,7 +146,10 @@ class EventQueryService:
         return EventDetailView(row, evidence, algorithm_version, model_versions, degraded)
 
     def _list(self, filters: dict[str, object]) -> tuple[EventRow, ...]:
-        statement = select(EventRecord.id).where(EventRecord.current_version_number > 0)
+        statement = select(EventRecord.id).where(
+            EventRecord.current_version_number > 0,
+            EventRecord.visibility == filters.get("visibility", "current"),
+        )
         if status := filters.get("status"):
             statement = statement.where(EventRecord.status == status)
         if since := filters.get("since"):

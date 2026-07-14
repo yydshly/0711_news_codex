@@ -6,6 +6,114 @@ from alembic.config import Config
 from sqlalchemy import TEXT, create_engine, inspect, text
 
 
+def _sqlite_url(path: Path) -> str:
+    return f"sqlite:///{path.as_posix()}"
+
+
+def _upgrade(database_url: str, revision: str) -> None:
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, revision)
+
+
+def _seed_event_history(database_url: str) -> dict[str, int]:
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_providers (
+                    id, name, category, homepage, docs_url, terms_url, auth_mode, cost_tier,
+                    availability, capabilities, required_env, reviewed_at, evidence,
+                    unlock_requirements, definition_hash, created_at, updated_at
+                ) VALUES (
+                    'independent', 'Independent', 'publisher', 'https://example.com',
+                    'https://example.com/docs', 'https://example.com/terms', 'none', 'free',
+                    'ready', '[]', '[]', '2026-07-13', '[]', '[]', 'provider-hash',
+                    '2026-07-13T00:00:00+00:00', '2026-07-13T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_definitions (
+                    id, name, status, nature, language, roles, topics, authority_score,
+                    poll_interval_minutes, expected_fields, definition_hash, created_at, updated_at,
+                    provider_id, target_type, availability, coverage_mode, unlock_requirements
+                ) VALUES (
+                    'legacy-source', 'Legacy Source', 'approved', 'publisher', 'zh', '[]', '[]', 80,
+                    60, '[]', 'source-hash', '2026-07-13T00:00:00+00:00',
+                    '2026-07-13T00:00:00+00:00', 'independent', 'publisher_feed', 'ready',
+                    'direct', '[]'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO raw_items (
+                    id, source_id, external_id, canonical_url, payload, fetched_at
+                ) VALUES (
+                    101, 'legacy-source', 'legacy-item', 'https://example.com/legacy-item', '{}',
+                    '2026-07-13T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO events (
+                    id, canonical_key, status, occurred_at, current_version_number,
+                    created_at, updated_at
+                ) VALUES (
+                    1, 'legacy-release', 'confirmed', '2026-07-13T00:00:00+00:00', 2,
+                    '2026-07-13T00:00:00+00:00', '2026-07-13T01:00:00+00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO event_versions (
+                    event_id, version_number, zh_title, zh_summary, payload, created_at
+                ) VALUES
+                    (1, 1, '旧事件第一版', '第一版摘要', '{}', '2026-07-13T00:00:00+00:00'),
+                    (1, 2, '旧事件第二版', '第二版摘要', '{}', '2026-07-13T01:00:00+00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO event_items (
+                    event_id, raw_item_id, added_version_number, removed_version_number, created_at
+                ) VALUES
+                    (1, 101, 1, NULL, '2026-07-13T00:00:00+00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO event_scores (
+                    event_id, version_number, heat, breakdown, created_at
+                ) VALUES
+                    (1, 1, 60, '{}', '2026-07-13T00:00:00+00:00'),
+                    (1, 2, 80, '{}', '2026-07-13T01:00:00+00:00')
+                """
+            )
+        )
+        return {
+            table_name: connection.execute(text(f"SELECT count(*) FROM {table_name}")).scalar_one()
+            for table_name in ("events", "event_versions", "event_items", "event_scores")
+        }
+
+
 def test_full_offline_migration_creates_provider_tables_once() -> None:
     result = subprocess.run(
         ["uv", "run", "alembic", "upgrade", "head", "--sql"],
@@ -341,3 +449,41 @@ def test_event_intelligence_migration_creates_event_tables_and_preserves_raw_ite
     with engine.connect() as connection:
         assert "events" not in inspect(connection).get_table_names()
         assert connection.execute(text("SELECT external_id FROM raw_items")).scalar_one() == "raw-1"
+
+
+def test_event_quality_v2_migration_preserves_history_and_marks_it_legacy(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "event-quality.db")
+    _upgrade(database_url, "20260713_0013")
+    counts_before = _seed_event_history(database_url)
+
+    _upgrade(database_url, "head")
+
+    with create_engine(database_url).connect() as connection:
+        inspector = inspect(connection)
+        assert connection.execute(text("SELECT count(*) FROM events")).scalar_one() == (
+            counts_before["events"]
+        )
+        assert connection.execute(text("SELECT count(*) FROM event_versions")).scalar_one() == (
+            counts_before["event_versions"]
+        )
+        assert connection.execute(text("SELECT count(*) FROM event_items")).scalar_one() == (
+            counts_before["event_items"]
+        )
+        assert connection.execute(text("SELECT count(*) FROM event_scores")).scalar_one() == (
+            counts_before["event_scores"]
+        )
+        legacy_visibilities = connection.execute(
+            text("SELECT DISTINCT visibility FROM events")
+        ).scalars()
+        assert legacy_visibilities.all() == ["legacy"]
+        event_columns = {column["name"]: column for column in inspector.get_columns("events")}
+        assert event_columns["visibility"]["nullable"] is False
+        assert {index["name"] for index in inspector.get_indexes("events")} >= {
+            "ix_events_visibility_status_occurred_at"
+        }
+        processing_columns = {
+            column["name"] for column in inspector.get_columns("raw_item_processing")
+        }
+        assert {"outcome", "score", "reason_codes", "details"} <= processing_columns

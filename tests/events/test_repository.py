@@ -12,6 +12,7 @@ from newsradar.db.models import (
     EventItemRecord,
     EventRecord,
     EventVersionRecord,
+    RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
@@ -89,6 +90,74 @@ def test_stage_record_is_idempotent() -> None:
         db.commit()
 
         assert first.id == second.id
+
+
+def test_event_visibility_has_stable_current_and_legacy_values() -> None:
+    from newsradar.events.schema import EventVisibility
+
+    assert EventVisibility.CURRENT.value == "current"
+    assert EventVisibility.LEGACY.value == "legacy"
+
+
+def test_stage_record_updates_the_same_processing_decision() -> None:
+    from newsradar.events.schema import EventVisibility
+
+    with session() as db:
+        item = raw_item(db)
+        repository = EventRepository(db)
+
+        first = repository.record_stage(
+            item.id,
+            ProcessingStage.RELEVANCE,
+            "relevance-v2",
+            outcome="included",
+            score=82,
+            reason_codes=("ai_product_action",),
+            details={"threshold": 60, "matched": True},
+        )
+        second = repository.record_stage(
+            item.id,
+            ProcessingStage.RELEVANCE,
+            "relevance-v2",
+            outcome="excluded",
+            score=18,
+            reason_codes=("off_topic",),
+            details={"threshold": 60, "matched": False, "visibility": EventVisibility.LEGACY},
+        )
+        db.commit()
+
+        records = db.scalars(select(RawItemProcessingRecord)).all()
+        assert first.id == second.id
+        assert len(records) == 1
+        assert records[0].outcome == "excluded"
+        assert records[0].score == 18
+        assert records[0].reason_codes == ["off_topic"]
+        assert records[0].details == {
+            "threshold": 60,
+            "matched": False,
+            "visibility": "legacy",
+        }
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"body": "full article text"},
+        {"url": "https://example.test/private"},
+        {"request_headers": {"Authorization": "secret"}},
+    ],
+)
+def test_stage_record_rejects_sensitive_processing_details(details: dict[str, object]) -> None:
+    with session() as db:
+        item = raw_item(db)
+
+        with pytest.raises(ValueError, match="booleans, numbers, or enum members"):
+            EventRepository(db).record_stage(
+                item.id,
+                ProcessingStage.RELEVANCE,
+                "relevance-v2",
+                details=details,
+            )
 
 
 def test_claim_statement_uses_conditional_live_lease_guard() -> None:

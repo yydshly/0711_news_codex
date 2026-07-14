@@ -11,6 +11,11 @@ class _Schema(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class EventVisibility(StrEnum):
+    CURRENT = "current"
+    LEGACY = "legacy"
+
+
 class EventStatus(StrEnum):
     EMERGING = "emerging"
     CONFIRMED = "confirmed"

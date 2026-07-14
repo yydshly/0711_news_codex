@@ -556,6 +556,14 @@ class RawItemProcessingRecord(Base):
     raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"), nullable=False)
     stage: Mapped[str] = mapped_column(String(32), nullable=False)
     algorithm_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(16))
+    score: Mapped[int | None] = mapped_column(Integer)
+    reason_codes: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    details: Mapped[dict[str, object]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -592,10 +600,21 @@ class EventCandidateItemRecord(Base):
 
 class EventRecord(Base):
     __tablename__ = "events"
-    __table_args__ = (Index("ix_events_status_occurred_at", "status", "occurred_at"),)
+    __table_args__ = (
+        Index("ix_events_status_occurred_at", "status", "occurred_at"),
+        Index(
+            "ix_events_visibility_status_occurred_at",
+            "visibility",
+            "status",
+            "occurred_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     canonical_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    visibility: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="current", server_default="current"
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     category: Mapped[str | None] = mapped_column(String(32))
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
