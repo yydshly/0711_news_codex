@@ -7,6 +7,14 @@ from newsradar.providers.schema import ProviderDefinition
 from .test_provider_schema import valid_provider
 
 
+class _Credentials:
+    def __init__(self, names: set[str]) -> None:
+        self.names = names
+
+    def configured_names(self) -> set[str]:
+        return self.names
+
+
 def provider(**updates) -> ProviderDefinition:
     data = valid_provider()
     data.update(updates)
@@ -43,7 +51,7 @@ async def test_paid_provider_is_blocked_without_network_request() -> None:
 async def test_missing_required_env_is_blocked(monkeypatch) -> None:
     monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
     async with httpx.AsyncClient() as client:
-        result = await ProviderProbe(client).probe(
+        result = await ProviderProbe(client, credentials=_Credentials(set())).probe(
             provider(
                 id="youtube",
                 name="YouTube",
@@ -57,6 +65,33 @@ async def test_missing_required_env_is_blocked(monkeypatch) -> None:
 
     assert result.outcome == "blocked"
     assert "YOUTUBE_API_KEY" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_settings_backed_credentials_allow_capability_probe_without_os_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProviderProbe(
+            client, credentials=_Credentials({"YOUTUBE_API_KEY"})
+        ).probe(
+            provider(
+                id="youtube",
+                name="YouTube",
+                availability="requires_credentials",
+                auth_mode="api_key",
+                cost_tier="free_quota",
+                required_env=["YOUTUBE_API_KEY"],
+                unlock_requirements=["Create a Google API key"],
+            )
+        )
+
+    assert result.outcome == "success"
 
 
 @pytest.mark.asyncio
