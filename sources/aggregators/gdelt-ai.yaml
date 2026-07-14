@@ -16,7 +16,8 @@ access_methods:
   url: https://api.gdeltproject.org/api/v2/doc/doc
   priority: 1
   params:
-    query: artificial intelligence
+    query: '("artificial intelligence" OR "large language model") sourcelang:english'
+    timespan: 2d
     mode: artlist
     maxrecords: '5'
     format: json

@@ -31,7 +31,12 @@ class GdeltFetcher:
         response = await self.policy.get(
             str(method.url),
             headers=public_headers({"User-Agent": "NewsRadarIngestion/0.1", **method.headers}),
-            params={**method.params, "mode": "artlist", "format": "json", "maxrecords": str(limit)},
+            params={
+                **method.params,
+                "mode": "artlist",
+                "format": "json",
+                "maxrecords": str(min(limit, 50)),
+            },
         )
         if response.status_code == 429:
             return response_result(
@@ -42,7 +47,14 @@ class GdeltFetcher:
             )
         response.raise_for_status()
         payload = response.json()
-        articles = payload.get("articles", []) if isinstance(payload, dict) else []
+        if not isinstance(payload, dict) or not isinstance(payload.get("articles"), list):
+            return response_result(
+                response,
+                outcome=FetchOutcome.PARTIAL,
+                error_code="schema_drift",
+                warnings=("missing_articles",),
+            )
+        articles = payload["articles"]
         items, warnings = [], []
         for article in articles[:limit]:
             try:

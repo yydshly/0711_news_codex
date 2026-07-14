@@ -58,6 +58,24 @@ async def test_gdelt_reports_rate_limit_without_raising() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_gdelt_clamps_records_and_reports_schema_drift() -> None:
+    route = respx.get("https://api.gdeltproject.org/api/v2/doc/doc").mock(
+        return_value=httpx.Response(200, json={"unexpected": []})
+    )
+    item_source = source()
+    async with httpx.AsyncClient() as client:
+        result = await GdeltFetcher(HttpPolicy(client)).fetch(
+            item_source, item_source.access_methods[0], FetchState(), 100
+        )
+
+    assert route.calls[0].request.url.params["maxrecords"] == "50"
+    assert result.outcome is FetchOutcome.PARTIAL
+    assert result.error_code == "schema_drift"
+    assert result.warnings == ("missing_articles",)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_gdelt_uses_url_derived_stable_identity_across_queries() -> None:
     route = respx.get("https://api.gdeltproject.org/api/v2/doc/doc").mock(
         return_value=httpx.Response(
