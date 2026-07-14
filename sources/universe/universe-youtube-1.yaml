@@ -2,12 +2,12 @@ id: openai-youtube
 name: OpenAI YouTube
 provider_id: youtube
 target_type: account
-availability: ready
+availability: requires_credentials
 coverage_mode: direct
 official_identity_url: https://www.youtube.com/@OpenAI
 reviewed_at: '2026-07-12'
 unlock_requirements: []
-status: candidate
+status: degraded
 nature: social
 roles: [discovery, engagement, context]
 language: en
@@ -20,8 +20,9 @@ access_methods:
   priority: 1
   params: {channel_id: UCXZCJLdBC09xxGZ6gcdrc6A}
 - kind: rest_api
-  url: https://www.googleapis.com/youtube/v3/videos
+  url: https://www.googleapis.com/youtube/v3/search
   priority: 2
+  params: {channelId: UCXZCJLdBC09xxGZ6gcdrc6A}
   auth_envs: [YOUTUBE_API_KEY]
 expected_fields: [title, canonical_url, published_at, summary]
 risk:
@@ -33,7 +34,7 @@ risk:
   evidence:
   - https://developers.google.com/youtube/v3
   - https://www.youtube.com/static?template=terms
-notes: 'Fallback: YouTube Data API requires the documented YOUTUBE_API_KEY; do not use browser sessions or cookies.'
+notes: 'The verified official channel Atom URL returned HTTP 404 on 2026-07-14. Primary automated access now requires the documented YOUTUBE_API_KEY; do not use browser sessions or cookies.'
 
 research:
   status: verified
