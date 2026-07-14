@@ -44,10 +44,8 @@ def test_mixed_report_command_writes_runtime_health_report(
 ) -> None:
     output = tmp_path / "mixed-sources.md"
     dashboard = object()
-    service = Mock()
-    service.build.return_value = dashboard
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
-    monkeypatch.setattr("newsradar.cli.MixedSourceQueryService", lambda session: service)
+    monkeypatch.setattr("newsradar.cli._build_mixed_source_dashboard", lambda session: dashboard)
     monkeypatch.setattr(
         "newsradar.cli.render_mixed_wave_report",
         lambda value: "# 中文混合来源报告\n" if value is dashboard else "unexpected",

@@ -62,10 +62,12 @@ def test_coverage_closure_catalog_facts_are_explicit() -> None:
     assert "engagement" in youtube.research.wanted_information
     assert youtube.availability is Availability.REQUIRES_CREDENTIALS
     assert youtube.status is SourceStatus.DEGRADED
-    assert youtube.access_methods[1].kind.value == "rest_api"
-    assert str(youtube.access_methods[1].url) == "https://www.googleapis.com/youtube/v3/search"
-    assert youtube.access_methods[1].params == {"channelId": "UCXZCJLdBC09xxGZ6gcdrc6A"}
-    assert youtube.access_methods[1].auth_envs == ("YOUTUBE_API_KEY",)
+    youtube_api = next(
+        method for method in youtube.access_methods if method.kind.value == "rest_api"
+    )
+    assert str(youtube_api.url) == "https://www.googleapis.com/youtube/v3/channels"
+    assert youtube_api.params == {"id": "UCXZCJLdBC09xxGZ6gcdrc6A"}
+    assert youtube_api.auth_envs == ("YOUTUBE_API_KEY",)
 
     qwen = sources["qwen3-releases"]
     assert qwen.availability is Availability.UNAVAILABLE

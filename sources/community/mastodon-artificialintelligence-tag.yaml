@@ -19,4 +19,4 @@ expected_fields: [title, canonical_url, published_at, author, content, engagemen
 risk: {terms: 1, authentication: 0, stability: 3, data_quality: 4, operating_cost: 0, evidence: [https://docs.joinmastodon.org/methods/timelines/, https://mastodon.social/tags/ArtificialIntelligence]}
 ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
 research: {status: needs_research, purpose: 初步发现 Mastodon 中的人工智能讨论与热度。, wanted_information: [title, canonical_url, published_at, author, content, engagement], conclusion: 已确认具体实例和标签入口，允许初步抓取。, risk_conclusion: 标签内容噪声较高，只作发现和互动信号，不独立确认新闻事实。, reviewed_at: '2026-07-14'}
-notes: 绑定 mastodon.social 实例与 ArtificialIntelligence 标签，不进行无限制全站抓取。
+notes: 绑定 mastodon.social 实例与 ArtificialIntelligence 标签；fallback 为无安全备用路径。

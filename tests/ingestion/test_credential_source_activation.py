@@ -38,7 +38,10 @@ def test_credential_sources_keep_official_authentication_requirements() -> None:
     ]
 
     assert youtube.availability.value == "requires_credentials"
-    assert youtube.access_methods[1].auth_envs == ("YOUTUBE_API_KEY",)
+    youtube_api = next(
+        method for method in youtube.access_methods if method.kind.value == "rest_api"
+    )
+    assert youtube_api.auth_envs == ("YOUTUBE_API_KEY",)
     assert all(source.availability.value == "requires_credentials" for source in github_sources)
     assert all(
         source.access_methods[0].auth_envs == ("GITHUB_TOKEN",)

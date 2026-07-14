@@ -23,4 +23,4 @@ expected_fields: [title, canonical_url, published_at, author, content, engagemen
 risk: {terms: 1, authentication: 0, stability: 2, data_quality: 2, operating_cost: 0, evidence: [https://docs.bsky.app/docs/api/app-bsky-feed-get-author-feed, https://bsky.app/profile/simonwillison.net]}
 ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
 research: {status: needs_research, purpose: 初步获取独立 AI 工程研究与工具观察。, wanted_information: [title, canonical_url, published_at, author, content, engagement], conclusion: 已通过个人域名 handle 确认具体账号并允许初步抓取。, risk_conclusion: 专家观点只作发现和背景，不独立确认新闻事实。, reviewed_at: '2026-07-14'}
-notes: 个人域名 handle 提供身份信号；使用公开 AppView 作者 Feed。
+notes: 个人域名 handle 提供身份信号；使用公开 AppView 作者 Feed；fallback 为无安全备用路径。

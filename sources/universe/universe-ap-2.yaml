@@ -23,4 +23,4 @@ expected_fields: [title, canonical_url, published_at, summary]
 risk: {terms: 2, authentication: 0, stability: 3, data_quality: 2, operating_cost: 1, evidence: [https://apnews.com/technology, https://news.google.com/rss]}
 ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
 research: {status: needs_research, purpose: 通过 Google News 间接发现 Associated Press 的 AI 报道。, wanted_information: [title, canonical_url, published_at, summary], conclusion: 已确认发布者限定查询入口；这不代表 AP 官方 API 已解锁。, risk_conclusion: 只保留间接发现身份，必须解析并回到 AP 原文确认。, reviewed_at: '2026-07-14'}
-notes: Google News 间接发现；不自动抓取 AP HTML，不代表直接覆盖 AP。
+notes: Google News 间接发现；fallback 为无安全直连路径，不抓取 AP HTML，不代表直接覆盖。

@@ -35,6 +35,7 @@ def source_with(method: dict, expected_fields: list[str] | None = None) -> Sourc
 async def test_openai_youtube_atom_is_successful_without_engagement_requirement() -> None:
     sources = {source.id: source for source in load_source_tree(Path("sources"))}
     source = sources["openai-youtube"]
+    method = next(method for method in source.access_methods if method.kind.value == "atom")
 
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -50,9 +51,7 @@ async def test_openai_youtube_atom_is_successful_without_engagement_requirement(
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await ProbeFactory(client).create(source.access_methods[0]).probe(
-            source, source.access_methods[0]
-        )
+        result = await ProbeFactory(client).create(method).probe(source, method)
 
     assert result.outcome is ProbeOutcome.SUCCESS
     assert result.field_completeness == 1.0

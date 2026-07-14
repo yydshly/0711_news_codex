@@ -23,4 +23,4 @@ expected_fields: [title, canonical_url, published_at, summary]
 risk: {terms: 2, authentication: 0, stability: 3, data_quality: 4, operating_cost: 1, evidence: [https://news.google.com/rss, https://support.google.com/googlenews/answer/9005749]}
 ingestion: {enabled: true, approved_at: '2026-07-14', max_items_per_run: 20}
 research: {status: needs_research, purpose: 发现 AI 芯片、GPU、算力和数据中心报道。, wanted_information: [title, canonical_url, published_at, summary], conclusion: 已确认公开 RSS 查询入口，允许初步抓取并必须解析原始媒体。, risk_conclusion: 聚合结果只作发现，不独立作为新闻事实证据。, reviewed_at: '2026-07-14'}
-notes: 保留 Google News 发现地址，并解析原始媒体与最终原文地址。
+notes: 保留 Google News 发现地址并解析原始媒体；fallback 为无安全备用路径，只记录失败。

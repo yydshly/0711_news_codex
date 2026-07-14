@@ -58,7 +58,6 @@ from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.reporting import render_source_report
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
-from newsradar.web.mixed_source_queries import MixedSourceQueryService
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
@@ -610,10 +609,17 @@ def report_mixed_sources(
 ) -> None:
     """输出高价值混合来源的目录、运行证据和下一步中文报告。"""
     with create_session() as session:
-        dashboard = MixedSourceQueryService(session).build()
+        dashboard = _build_mixed_source_dashboard(session)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_mixed_wave_report(dashboard), encoding="utf-8")
     typer.echo(f"Wrote mixed source health report to {output}")
+
+
+def _build_mixed_source_dashboard(session):
+    # CLI 基础导入不能把 FastAPI 等 Web 运行时作为硬依赖加载。
+    from newsradar.web.mixed_source_queries import MixedSourceQueryService
+
+    return MixedSourceQueryService(session).build()
 
 
 @sources_app.command("close-coverage")

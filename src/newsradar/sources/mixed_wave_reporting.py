@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
-from newsradar.web.mixed_source_queries import MixedSourceDashboard, MixedSourceTarget
+if TYPE_CHECKING:
+    from newsradar.web.mixed_source_queries import MixedSourceDashboard, MixedSourceTarget
 
 _OUTCOME_LABELS = {
     "succeeded": "成功",
