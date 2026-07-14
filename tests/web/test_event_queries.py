@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import event, select
+from sqlalchemy.dialects import postgresql
 
 from newsradar.db.models import (
     EventItemRecord,
@@ -202,6 +203,72 @@ def test_home_only_returns_current_recent_confirmed_complete_relevant_events(db_
     ]
     assert len(eligible_queries) == 1
     assert " limit " not in eligible_queries[0]
+
+
+def test_postgres_home_relevance_gate_checks_json_type_before_numeric_cast():
+    from newsradar.web.event_queries import _safe_ai_relevance_expression
+
+    expression = _safe_ai_relevance_expression("postgresql") >= 60
+    compiled = str(
+        expression.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    ).lower()
+
+    assert "case when" in compiled
+    assert "json_typeof" in compiled
+    assert "cast" in compiled
+
+
+def test_malformed_score_json_is_excluded_without_breaking_event_pages(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    valid = _event(
+        db_session,
+        event_id=20,
+        status="confirmed",
+        title="有效评分事件",
+        occurred_at=now,
+    )
+    malformed_values = ("80", True, None, [80], float("nan"), float("inf"))
+    malformed_ids: list[int] = []
+    for offset, value in enumerate(malformed_values, start=21):
+        record = _event(
+            db_session,
+            event_id=offset,
+            status="confirmed",
+            title=f"畸形分数 {offset}",
+            occurred_at=now,
+        )
+        score = db_session.scalar(
+            select(EventScoreRecord).where(EventScoreRecord.event_id == record.id)
+        )
+        score.breakdown = {**COMPLETE_BREAKDOWN, "ai_relevance": value}
+        malformed_ids.append(record.id)
+    for event_id, value in ((30, None), (31, ["not", "a", "mapping"])):
+        record = _event(
+            db_session,
+            event_id=event_id,
+            status="confirmed",
+            title=f"畸形快照 {event_id}",
+            occurred_at=now,
+        )
+        score = db_session.scalar(
+            select(EventScoreRecord).where(EventScoreRecord.event_id == record.id)
+        )
+        score.breakdown = value
+        malformed_ids.append(record.id)
+    db_session.commit()
+
+    service = EventQueryService(db_session)
+    home = service.home(now=now)
+    page = service.list_events()
+
+    assert [row.event_id for row in home.events] == [valid.id]
+    assert valid.id in {row.event_id for row in page.events}
+    for event_id in malformed_ids:
+        assert service.get_event(event_id) is None
 
 
 def test_detail_exposes_score_and_degradation_state(db_session):

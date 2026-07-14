@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from math import isfinite
 from urllib.parse import urlsplit, urlunsplit
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Float, Select, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -265,7 +265,7 @@ class EventQueryService:
         )
         enrichment = payload.get("enrichment")
         enrichment = enrichment if isinstance(enrichment, dict) else {}
-        breakdown = dict(score.breakdown)
+        breakdown = _score_breakdown(score)
         scores = tuple(
             ScoreDimensionView(
                 key=key,
@@ -319,7 +319,7 @@ class EventQueryService:
             statement = statement.where(EventRecord.occurred_at <= until)
         if min_ai_relevance := filters.get("min_ai_relevance"):
             statement = statement.where(
-                EventScoreRecord.breakdown["ai_relevance"].as_float()
+                _safe_ai_relevance_expression(self.session.get_bind().dialect.name)
                 >= float(min_ai_relevance)
             )
         statement = statement.order_by(
@@ -349,7 +349,7 @@ class EventQueryService:
         payload = version.payload if isinstance(version.payload, dict) else {}
         enrichment = payload.get("enrichment")
         enrichment = enrichment if isinstance(enrichment, dict) else {}
-        breakdown = dict(score.breakdown)
+        breakdown = _score_breakdown(score)
         return EventRow(
             event_id=event.id,
             visibility=event.visibility,
@@ -378,7 +378,7 @@ class EventQueryService:
     ) -> bool:
         _event, version, score = snapshot
         payload = version.payload if isinstance(version.payload, dict) else {}
-        breakdown = dict(score.breakdown)
+        breakdown = _score_breakdown(score)
         evidence = payload.get("evidence")
         evidence_complete = isinstance(evidence, (list, tuple)) and bool(evidence) and all(
             isinstance(item, dict)
@@ -391,13 +391,34 @@ class EventQueryService:
         return bool(
             version.zh_title
             and version.zh_summary
-            and all(isinstance(breakdown.get(key), (int, float)) for key in SCORE_DIMENSION_KEYS)
+            and all(_is_finite_number(breakdown.get(key)) for key in SCORE_DIMENSION_KEYS)
             and isinstance(payload.get("enrichment"), dict)
             and evidence_complete
         )
 
 def _numeric_score(value: object) -> float:
-    return float(value) if isinstance(value, (int, float)) else 0.0
+    return float(value) if _is_finite_number(value) else 0.0
+
+
+def _is_finite_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and isfinite(float(value))
+    )
+
+
+def _score_breakdown(score: EventScoreRecord) -> dict[str, object]:
+    return score.breakdown if isinstance(score.breakdown, dict) else {}
+
+
+def _safe_ai_relevance_expression(dialect_name: str):  # type: ignore[no-untyped-def]
+    value = EventScoreRecord.breakdown["ai_relevance"]
+    if dialect_name == "postgresql":
+        is_numeric = func.json_typeof(value) == "number"
+    else:
+        is_numeric = func.json_type(value).in_(("integer", "real"))
+    return case((is_numeric, cast(value.as_string(), Float)), else_=None)
 
 
 def _published_snapshot_statement() -> Select:
