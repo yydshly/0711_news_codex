@@ -160,6 +160,7 @@ def test_pipeline_worker_result_summary_contains_complete_quality_counts(monkeyp
             del kwargs
             return PipelineResult(
                 current_event_ids=(10, 11),
+                event_version_snapshots=((10, 2), (11, 3)),
                 created_event_versions=2,
                 candidate_count=3,
                 processed_item_count=4,
@@ -194,6 +195,10 @@ def test_pipeline_worker_result_summary_contains_complete_quality_counts(monkeyp
     assert result.status is OperationStatus.SUCCEEDED
     assert result.result_summary == {
         "event_ids": [10, 11],
+        "event_version_snapshots": [
+            {"event_id": 10, "version_number": 2},
+            {"event_id": 11, "version_number": 3},
+        ],
         "selected_item_count": 7,
         "included_item_count": 4,
         "excluded_item_count": 3,

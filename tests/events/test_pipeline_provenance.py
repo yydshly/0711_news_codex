@@ -229,6 +229,7 @@ def test_pipeline_links_every_repair_attempt_to_the_final_event(monkeypatch) -> 
     assert [usage.outcome for usage in usages] == ["retry", "success"]
     assert [usage.error for usage in usages] == ["invalid_response", None]
     assert result.model_error_counts == {"invalid_response": 1}
+    assert result.event_version_snapshots == ((event_id, 1),)
     assert len(runs) == 2
     assert {run.event_id for run in runs} == {event_id}
     assert [run.model_usage_id for run in runs] == [usage.id for usage in usages]

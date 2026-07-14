@@ -11,7 +11,7 @@ from re import fullmatch
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import EventRecord, EventScoreRecord, OperationRunRecord
+from newsradar.db.models import EventScoreRecord, EventVersionRecord, OperationRunRecord
 from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 
 _MAX_WINDOW_HOURS = 720
@@ -44,6 +44,7 @@ _REASON_LABELS = {
     "insufficient_text": "文本信息不足",
 }
 _ISSUE_LABELS = {
+    "event_snapshot_incomplete": "Operation 输出事件缺少完整的历史版本快照。",
     "no_input": "当前快照没有输入 RawItem，不能声明处理覆盖完成。",
     "operation_snapshot_invalid": "Operation 结果快照缺失或结构无效。",
     "coverage_incomplete": "Operation 快照中的 relevance-v2 结论未覆盖全部输入。",
@@ -82,6 +83,7 @@ class EventQualityReportView:
     candidate_count: int
     visibility_counts: tuple[tuple[str, int], ...]
     status_counts: tuple[tuple[str, int], ...]
+    category_counts: tuple[tuple[str, int], ...]
     score_snapshot_count: int
     score_averages: ScoreAverages
     minimax_success_count: int
@@ -101,11 +103,22 @@ class _OperationFacts:
     exclusion_reasons: tuple[tuple[str, int], ...] = ()
     candidate_count: int = 0
     event_ids: tuple[int, ...] = ()
+    event_version_snapshots: tuple[tuple[int, int], ...] = ()
+    has_event_version_snapshots: bool = False
     model_success_count: int = 0
     model_fallback_count: int = 0
     model_error_counts: tuple[tuple[str, int], ...] = ()
     valid: bool = False
     model_errors_attributable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _EventSnapshot:
+    event_id: int
+    version_number: int
+    status: str
+    category: str
+    occurred_at: datetime
 
 
 def build_event_quality_report_view(
@@ -119,47 +132,52 @@ def build_event_quality_report_view(
         raise ValueError(f"window_hours must be between 1 and {_MAX_WINDOW_HOURS}")
     generated_at = _aware_utc(now or datetime.now(UTC))
     operation = _latest_pipeline_operation(session, window_hours, now=generated_at)
-    snapshot_at = _operation_window_end(operation, now=generated_at)
+    window_end = _operation_window_end(operation, now=generated_at)
+    snapshot_at = _operation_completion_at(operation, now=generated_at)
     facts = _operation_facts(operation)
-    since = snapshot_at - timedelta(hours=window_hours) if snapshot_at else None
+    since = window_end - timedelta(hours=window_hours) if window_end else None
 
     visibility_counts: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
-    current_event_ids: list[int] = []
-    if since is not None and facts.event_ids:
-        statement = (
-            select(EventRecord)
-            .where(
-                EventRecord.id.in_(facts.event_ids),
-                EventRecord.occurred_at >= since,
-                EventRecord.occurred_at <= snapshot_at,
-            )
-            .order_by(EventRecord.id)
-            .execution_options(yield_per=200)
+    category_counts: Counter[str] = Counter()
+    event_snapshots: tuple[_EventSnapshot, ...] = ()
+    event_snapshots_complete = True
+    if snapshot_at is not None and facts.event_ids:
+        event_snapshots, event_snapshots_complete = _resolve_event_snapshots(
+            session, facts, snapshot_at=snapshot_at
         )
-        for event in session.scalars(statement):
-            if event.visibility not in {"current", "legacy"}:
+    current_snapshots: list[_EventSnapshot] = []
+    if since is not None and window_end is not None:
+        for event in event_snapshots:
+            if not since <= event.occurred_at <= window_end:
                 continue
-            visibility_counts[event.visibility] += 1
-            if fullmatch(_SAFE_CODE, event.status or ""):
-                status_counts[event.status] += 1
-            if event.visibility == "current" and event.current_version_number > 0:
-                current_event_ids.append(event.id)
+            visibility_counts["current"] += 1
+            status_counts[event.status] += 1
+            category_counts[event.category] += 1
+            current_snapshots.append(event)
 
     valid_scores: dict[int, tuple[float, ...]] = {}
-    if current_event_ids:
+    if current_snapshots and snapshot_at is not None:
+        expected_versions = {
+            event.event_id: event.version_number for event in current_snapshots
+        }
         statement = (
             select(EventScoreRecord)
-            .join(EventRecord, EventRecord.id == EventScoreRecord.event_id)
             .where(
-                EventRecord.id.in_(current_event_ids),
-                EventScoreRecord.version_number == EventRecord.current_version_number,
+                EventScoreRecord.event_id.in_(expected_versions),
+                EventScoreRecord.created_at <= snapshot_at,
             )
-            .order_by(EventScoreRecord.event_id, EventScoreRecord.id.desc())
+            .order_by(
+                EventScoreRecord.event_id,
+                EventScoreRecord.created_at.desc(),
+                EventScoreRecord.id.desc(),
+            )
             .execution_options(yield_per=200)
         )
         seen_event_ids: set[int] = set()
         for score in session.scalars(statement):
+            if score.version_number != expected_versions.get(score.event_id):
+                continue
             if score.event_id in seen_event_ids:
                 continue
             seen_event_ids.add(score.event_id)
@@ -178,17 +196,19 @@ def build_event_quality_report_view(
     )
 
     issues: list[str] = []
-    if operation is None or snapshot_at is None or not facts.valid:
+    if operation is None or window_end is None or snapshot_at is None or not facts.valid:
         issues.append("operation_snapshot_invalid")
+    if facts.event_ids and not event_snapshots_complete:
+        issues.append("event_snapshot_incomplete")
     if facts.selected_count == 0:
         issues.append("no_input")
     if facts.included_count + facts.excluded_count != facts.selected_count:
         issues.append("coverage_incomplete")
-    if not current_event_ids:
+    if not current_snapshots:
         issues.append("no_current_events")
-    if current_event_ids and not valid_scores:
+    if current_snapshots and not valid_scores:
         issues.append("no_score_snapshots")
-    elif len(valid_scores) < len(current_event_ids):
+    elif len(valid_scores) < len(current_snapshots):
         issues.append("score_snapshot_incomplete")
     if facts.model_fallback_count:
         issues.append("model_fallback_present")
@@ -211,6 +231,7 @@ def build_event_quality_report_view(
         candidate_count=facts.candidate_count,
         visibility_counts=tuple(sorted(visibility_counts.items())),
         status_counts=tuple(sorted(status_counts.items())),
+        category_counts=tuple(sorted(category_counts.items())),
         score_snapshot_count=len(valid_scores),
         score_averages=score_averages,
         minimax_success_count=facts.model_success_count,
@@ -236,8 +257,8 @@ def render_event_quality_report(view: EventQualityReportView) -> str:
         "# Event Intelligence v2 事件质量验收报告",
         "",
         f"生成时间：{_aware_utc(view.generated_at).isoformat()}",
-        f"Operation 快照时间：{snapshot_label}",
-        f"统计窗口：快照前 {view.window_hours} 小时 RawItem（含上下界）",
+        f"Operation 完成快照时间：{snapshot_label}",
+        f"统计窗口：Operation 请求窗口末端前 {view.window_hours} 小时 RawItem（含上下界）",
         "",
         "## 输入与处理结论",
         "",
@@ -271,6 +292,13 @@ def render_event_quality_report(view: EventQualityReportView) -> str:
                 for label, count in _safe_counts(
                     view.status_counts,
                     {"confirmed", "emerging", "developing", "disputed", "stale", "rejected"},
+                )
+            ],
+            *[
+                f"- 分类 {label}：{count}"
+                for label, count in _safe_counts(
+                    view.category_counts,
+                    {"product_model", "research", "developer_tool", "company", "uncategorized"},
                 )
             ],
             "",
@@ -360,6 +388,114 @@ def _operation_window_end(
     return parsed if parsed <= now else None
 
 
+def _operation_completion_at(
+    operation: OperationRunRecord | None, *, now: datetime
+) -> datetime | None:
+    if operation is None or operation.finished_at is None:
+        return None
+    finished_at = _aware_utc(operation.finished_at)
+    return finished_at if finished_at <= now else None
+
+
+def _resolve_event_snapshots(
+    session: Session,
+    facts: _OperationFacts,
+    *,
+    snapshot_at: datetime,
+) -> tuple[tuple[_EventSnapshot, ...], bool]:
+    requested_versions: dict[int, int]
+    if facts.has_event_version_snapshots:
+        requested_versions = dict(facts.event_version_snapshots)
+        if len(requested_versions) != len(facts.event_ids):
+            return (), False
+    else:
+        requested_versions = {}
+
+    statement = (
+        select(EventVersionRecord)
+        .where(
+            EventVersionRecord.event_id.in_(facts.event_ids),
+            EventVersionRecord.created_at <= snapshot_at,
+        )
+        .order_by(
+            EventVersionRecord.event_id,
+            EventVersionRecord.created_at.desc(),
+            EventVersionRecord.version_number.desc(),
+            EventVersionRecord.id.desc(),
+        )
+        .execution_options(yield_per=200)
+    )
+    selected: dict[int, EventVersionRecord] = {}
+    for version in session.scalars(statement):
+        if version.event_id in selected:
+            continue
+        requested_version = requested_versions.get(version.event_id)
+        if requested_version is not None and version.version_number != requested_version:
+            continue
+        selected[version.event_id] = version
+
+    snapshots: list[_EventSnapshot] = []
+    for event_id in facts.event_ids:
+        version = selected.get(event_id)
+        if version is None:
+            continue
+        safe_payload = _safe_event_version_payload(version.payload)
+        if safe_payload is None:
+            continue
+        status, category, occurred_at = safe_payload
+        snapshots.append(
+            _EventSnapshot(
+                event_id=event_id,
+                version_number=version.version_number,
+                status=status,
+                category=category,
+                occurred_at=occurred_at,
+            )
+        )
+    return tuple(snapshots), len(snapshots) == len(facts.event_ids)
+
+
+def _safe_event_version_payload(
+    payload: object,
+) -> tuple[str, str, datetime] | None:
+    if not isinstance(payload, dict):
+        return None
+    status = payload.get("status")
+    if status not in {
+        "confirmed",
+        "emerging",
+        "developing",
+        "disputed",
+        "stale",
+        "rejected",
+    }:
+        return None
+    category = payload.get("category")
+    if category is None:
+        category = "uncategorized"
+    if category not in {
+        "product_model",
+        "research",
+        "developer_tool",
+        "company",
+        "uncategorized",
+    }:
+        return None
+    occurred_at = payload.get("occurred_at")
+    if isinstance(occurred_at, datetime):
+        parsed_occurred_at = _aware_utc(occurred_at)
+    elif isinstance(occurred_at, str) and len(occurred_at) <= 64:
+        try:
+            parsed_occurred_at = _aware_utc(
+                datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+            )
+        except ValueError:
+            return None
+    else:
+        return None
+    return status, category, parsed_occurred_at
+
+
 def _operation_facts(operation: OperationRunRecord | None) -> _OperationFacts:
     summary = operation.result_summary if operation else None
     if not isinstance(summary, dict):
@@ -388,6 +524,17 @@ def _operation_facts(operation: OperationRunRecord | None) -> _OperationFacts:
     if event_ids is None:
         valid = False
         event_ids = ()
+    raw_event_version_snapshots = summary.get("event_version_snapshots")
+    has_event_version_snapshots = raw_event_version_snapshots is not None
+    if has_event_version_snapshots:
+        event_version_snapshots = _safe_event_version_snapshots(
+            raw_event_version_snapshots, event_ids
+        )
+        if event_version_snapshots is None:
+            valid = False
+            event_version_snapshots = ()
+    else:
+        event_version_snapshots = ()
     raw_error_counts = summary.get("model_error_counts")
     model_errors_attributable = True
     if raw_error_counts is None:
@@ -411,6 +558,8 @@ def _operation_facts(operation: OperationRunRecord | None) -> _OperationFacts:
         exclusion_reasons=reasons,
         candidate_count=counts["candidate_count"],
         event_ids=event_ids,
+        event_version_snapshots=event_version_snapshots,
+        has_event_version_snapshots=has_event_version_snapshots,
         model_success_count=counts["model_success_count"],
         model_fallback_count=counts["model_fallback_count"],
         model_error_counts=error_counts,
@@ -437,6 +586,35 @@ def _safe_event_ids(value: object) -> tuple[int, ...] | None:
         return None
     unique = tuple(dict.fromkeys(value))
     return unique if len(unique) == len(value) else None
+
+
+def _safe_event_version_snapshots(
+    value: object, event_ids: tuple[int, ...]
+) -> tuple[tuple[int, int], ...] | None:
+    if not isinstance(value, list) or len(value) > _MAX_EVENT_IDS:
+        return None
+    snapshots: list[tuple[int, int]] = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"event_id", "version_number"}:
+            return None
+        event_id = item.get("event_id")
+        version_number = item.get("version_number")
+        if (
+            isinstance(event_id, bool)
+            or not isinstance(event_id, int)
+            or event_id <= 0
+            or isinstance(version_number, bool)
+            or not isinstance(version_number, int)
+            or version_number <= 0
+        ):
+            return None
+        snapshots.append((event_id, version_number))
+    unique = tuple(dict.fromkeys(snapshots))
+    if len(unique) != len(snapshots):
+        return None
+    if len(unique) != len(event_ids) or {event_id for event_id, _ in unique} != set(event_ids):
+        return None
+    return unique
 
 
 def _safe_code_counts(value: object) -> tuple[tuple[str, int], ...] | None:

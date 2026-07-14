@@ -21,6 +21,7 @@ def sample_quality_view() -> EventQualityReportView:
         candidate_count=3,
         visibility_counts=(("current", 2), ("legacy", 72)),
         status_counts=(("confirmed", 1), ("emerging", 1)),
+        category_counts=(("product_model", 1), ("research", 1)),
         score_snapshot_count=2,
         score_averages=ScoreAverages(
             ai_relevance=88.0,
@@ -61,7 +62,7 @@ def test_quality_report_is_chinese_auditable_and_secret_free() -> None:
         "MiniMax 降级",
         "剩余问题",
         "321",
-        "Operation 快照时间",
+        "Operation 完成快照时间",
     ):
         assert expected in report
     for forbidden in (

@@ -1,8 +1,8 @@
 # Event Intelligence v2 事件质量验收报告
 
-生成时间：2026-07-14T17:40:11.513364+00:00
-Operation 快照时间：2026-07-14T17:11:51.881776+00:00
-统计窗口：快照前 72 小时 RawItem（含上下界）
+生成时间：2026-07-14T17:53:54.518414+00:00
+Operation 完成快照时间：2026-07-14T17:12:37.192660+00:00
+统计窗口：Operation 请求窗口末端前 72 小时 RawItem（含上下界）
 
 ## 输入与处理结论
 
@@ -30,6 +30,10 @@ Operation 快照时间：2026-07-14T17:11:51.881776+00:00
 - legacy：0
 - 状态 confirmed：3
 - 状态 emerging：195
+- 分类 company：6
+- 分类 developer_tool：14
+- 分类 product_model：157
+- 分类 research：21
 
 ## 本次 current 事件六项平均评分
 

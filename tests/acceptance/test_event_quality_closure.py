@@ -9,6 +9,7 @@ from newsradar.db.models import (
     EventModelRunRecord,
     EventRecord,
     EventScoreRecord,
+    EventVersionRecord,
     ModelUsageRecord,
     OperationRunRecord,
 )
@@ -50,6 +51,18 @@ def _event(
     )
     session.add(event)
     session.flush()
+    session.add(
+        EventVersionRecord(
+            event_id=event.id,
+            version_number=1,
+            payload={
+                "status": status,
+                "category": "product_model",
+                "occurred_at": occurred_at.isoformat(),
+            },
+            created_at=occurred_at,
+        )
+    )
     if breakdown is not None:
         session.add(
             EventScoreRecord(
@@ -103,6 +116,10 @@ def _operation(
             "exclusion_reasons": {"generic_technology": 1},
             "candidate_count": 1,
             "event_ids": event_ids,
+            "event_version_snapshots": [
+                {"event_id": event_id, "version_number": 1}
+                for event_id in event_ids
+            ],
             "model_success_count": 1,
             "model_fallback_count": 0,
             "model_error_counts": {},
@@ -188,7 +205,7 @@ def test_report_uses_operation_snapshot_not_mutable_or_future_database_rows() ->
         )
 
     assert view.latest_operation_id == operation_id
-    assert view.snapshot_at == NOW
+    assert view.snapshot_at == NOW + timedelta(minutes=1)
     assert view.selected_count == 2
     assert view.processed_count == 1
     assert view.included_count == 1
@@ -197,11 +214,78 @@ def test_report_uses_operation_snapshot_not_mutable_or_future_database_rows() ->
     assert view.exclusion_reasons == (("generic_technology", 1),)
     assert view.visibility_counts == (("current", 1),)
     assert view.status_counts == (("confirmed", 1),)
+    assert view.category_counts == (("product_model", 1),)
     assert view.score_snapshot_count == 1
     assert view.score_averages.ai_relevance == 95
     assert view.minimax_success_count == 1
     assert view.minimax_fallback_count == 0
     assert view.minimax_error_counts == ()
+
+
+def test_historical_report_uses_version_and_score_at_operation_completion() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        event = _event(
+            session,
+            "historical",
+            occurred_at=NOW - timedelta(hours=1),
+            status="emerging",
+            breakdown=_score(**{field: 10 for field in SCORE_FIELDS}),
+        )
+        operation = _operation(
+            session,
+            event_ids=[event.id],
+            summary={
+                "selected_item_count": 1,
+                "processed_item_count": 1,
+                "included_item_count": 1,
+                "excluded_item_count": 0,
+                "exclusion_reasons": {},
+                "candidate_count": 1,
+                "event_ids": [event.id],
+                "model_success_count": 1,
+                "model_fallback_count": 0,
+                "model_error_counts": {},
+            },
+        )
+        session.flush()
+
+        event.status = "confirmed"
+        event.current_version_number = 2
+        event.updated_at = NOW + timedelta(minutes=2)
+        session.add(
+            EventVersionRecord(
+                event_id=event.id,
+                version_number=2,
+                payload={
+                    "status": "confirmed",
+                    "category": "research",
+                    "occurred_at": (NOW - timedelta(hours=1)).isoformat(),
+                },
+                created_at=NOW + timedelta(minutes=2),
+            )
+        )
+        session.add(
+            EventScoreRecord(
+                event_id=event.id,
+                version_number=2,
+                heat=100,
+                breakdown=_score(**{field: 100 for field in SCORE_FIELDS}),
+                created_at=NOW + timedelta(minutes=2),
+            )
+        )
+        session.commit()
+
+        view = build_event_quality_report_view(
+            session, window_hours=72, now=GENERATED_AT
+        )
+
+    assert view.latest_operation_id == operation.id
+    assert view.snapshot_at == NOW + timedelta(minutes=1)
+    assert view.status_counts == (("emerging", 1),)
+    assert view.category_counts == (("product_model", 1),)
+    assert view.score_snapshot_count == 1
+    assert view.score_averages.ai_relevance == 10
 
 
 def test_report_accepts_zero_score_v2_but_rejects_v1_and_malformed_snapshots() -> None:
@@ -358,3 +442,41 @@ def test_report_bounds_and_validates_operation_event_ids() -> None:
 
     assert view.visibility_counts == ()
     assert "operation_snapshot_invalid" in view.remaining_issue_codes
+
+
+def test_report_rejects_incomplete_version_manifest_without_current_fallback() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        event = _event(
+            session,
+            "manifest-gap",
+            occurred_at=NOW - timedelta(hours=1),
+            breakdown=_score(),
+        )
+        _operation(
+            session,
+            event_ids=[event.id],
+            summary={
+                "selected_item_count": 1,
+                "processed_item_count": 1,
+                "included_item_count": 1,
+                "excluded_item_count": 0,
+                "exclusion_reasons": {},
+                "candidate_count": 1,
+                "event_ids": [event.id],
+                "event_version_snapshots": [],
+                "model_success_count": 1,
+                "model_fallback_count": 0,
+                "model_error_counts": {},
+            },
+        )
+        session.commit()
+
+        view = build_event_quality_report_view(
+            session, window_hours=72, now=GENERATED_AT
+        )
+
+    assert view.visibility_counts == ()
+    assert view.score_snapshot_count == 0
+    assert "operation_snapshot_invalid" in view.remaining_issue_codes
+    assert "event_snapshot_incomplete" in view.remaining_issue_codes

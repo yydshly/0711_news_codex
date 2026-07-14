@@ -67,6 +67,7 @@ ALGORITHM_VERSIONS = EVENT_ALGORITHM_VERSIONS
 @dataclass(frozen=True)
 class PipelineResult:
     current_event_ids: tuple[int, ...]
+    event_version_snapshots: tuple[tuple[int, int], ...]
     created_event_versions: int
     candidate_count: int
     processed_item_count: int
@@ -90,6 +91,17 @@ class SelectionResult:
     included_texts: tuple[RawItemText, ...]
     authority_by_item: dict[int, object]
     engagement_by_item: dict[int, dict[str, object]]
+
+
+def _capture_event_version(
+    snapshots: dict[int, int], event: EventRecord
+) -> None:
+    """Capture the exact reader-visible version produced or reused by this run."""
+    if event.current_version_number <= 0:
+        raise EventPublicationConflict(
+            "Event output does not have a reader-visible version"
+        )
+    snapshots[event.id] = event.current_version_number
 
 
 class EventPipeline:
@@ -124,6 +136,7 @@ class EventPipeline:
         )
         (
             event_ids,
+            event_version_snapshots,
             created_versions,
             model_success_count,
             model_fallback_count,
@@ -142,7 +155,8 @@ class EventPipeline:
         )
         checkpoint("after_event_publish")
         return PipelineResult(
-            current_event_ids=tuple(sorted(event_ids)),
+            current_event_ids=tuple(sorted(set(event_ids))),
+            event_version_snapshots=event_version_snapshots,
             created_event_versions=created_versions,
             candidate_count=len(candidates),
             processed_item_count=len(selection.included),
@@ -353,6 +367,7 @@ class EventPipeline:
         now: datetime,
     ):
         event_ids: list[int] = []
+        event_version_snapshots: dict[int, int] = {}
         created = 0
         publish_plans: list[tuple[CandidateCluster, EventScoreInput]] = []
         for candidate in candidates:
@@ -375,6 +390,7 @@ class EventPipeline:
                 if same_membership:
                     assert existing is not None
                     event_ids.append(existing.id)
+                    _capture_event_version(event_version_snapshots, existing)
                 session.commit()
                 if same_membership:
                     continue
@@ -428,6 +444,7 @@ class EventPipeline:
                         repository, existing.id, enrichment_result.model_runs
                     )
                     event_ids.append(existing.id)
+                    _capture_event_version(event_version_snapshots, existing)
                     session.commit()
                     continue
                 claimed_event_id: int | None = None
@@ -450,6 +467,7 @@ class EventPipeline:
                         )
                         repository.release_event(existing.id, operation_id)
                         event_ids.append(existing.id)
+                        _capture_event_version(event_version_snapshots, existing)
                         session.commit()
                         continue
                 published = EventPublisher(repository).publish_snapshot(
@@ -466,10 +484,14 @@ class EventPipeline:
                     repository.release_event(claimed_event_id, operation_id)
                 assert published.event_id is not None
                 event_ids.append(published.event_id)
+                published_record = session.get(EventRecord, published.event_id)
+                assert published_record is not None
+                _capture_event_version(event_version_snapshots, published_record)
                 created += int(repository.last_publish_created_version is True)
                 session.commit()
         return (
             event_ids,
+            tuple(sorted(event_version_snapshots.items())),
             created,
             model_success_count,
             model_fallback_count,

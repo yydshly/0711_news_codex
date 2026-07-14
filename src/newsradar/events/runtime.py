@@ -108,6 +108,10 @@ class EventOperationHandler:
             return OperationResult(
                 result_summary={
                     "event_ids": list(result.current_event_ids),
+                    "event_version_snapshots": [
+                        {"event_id": event_id, "version_number": version_number}
+                        for event_id, version_number in result.event_version_snapshots
+                    ],
                     "selected_item_count": result.selected_item_count,
                     "included_item_count": result.included_item_count,
                     "excluded_item_count": result.excluded_item_count,
