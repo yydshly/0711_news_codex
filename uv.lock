@@ -496,10 +496,12 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "requests" },
     { name = "respx" },
     { name = "ruff" },
 ]
 research = [
+    { name = "requests" },
     { name = "youtube-transcript-api" },
 ]
 
@@ -518,6 +520,8 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0,<2" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.2,<7" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "requests", marker = "extra == 'dev'", specifier = ">=2.32,<3" },
+    { name = "requests", marker = "extra == 'research'", specifier = ">=2.32,<3" },
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.22,<1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12,<1" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },

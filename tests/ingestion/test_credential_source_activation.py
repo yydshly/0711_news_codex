@@ -2,7 +2,6 @@ from pathlib import Path
 
 from newsradar.sources.yaml_loader import load_source_tree
 
-
 CREDENTIAL_SOURCE_IDS = {
     "openai-youtube",
     "anthropic-sdk-releases",
