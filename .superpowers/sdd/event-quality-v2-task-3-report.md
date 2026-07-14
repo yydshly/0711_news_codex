@@ -5,7 +5,7 @@
 - 状态：完成
 - 分支：`codex/event-quality-closure`
 - 初始实现提交：`ae9d0b34804bf7c38f6a083ab47877b6f36c9315`
-- 范围：Event Intelligence v2 Task 3 及独立复审指出的 A–G 闭环
+- 范围：Event Intelligence v2 Task 3、独立复审 A–G 以及最终四项小范围闭环
 - 未修改：来源 YAML、Web 页面、MiniMax 适配器
 
 ## 最终实现
@@ -53,6 +53,29 @@
 - 100/200 条密集同主题性能回归对 `_find` 调用数设置二次上界。
 - 旧实现运行超过 60 秒仍未完成；优化后两个规模用例合计约 1.6 秒。
 
+### H. Operation v2 版本身份
+
+- 新增不可变共享版本映射，Pipeline 与 Operation command 同时消费 `relevance-v2/entities-v2/cluster-v2/score-v2`。
+- Operation scope 与幂等键均包含完整四项版本；精确 `window_end` 只写 scope，小时 bucket 只参与幂等身份。
+- 同一小时已有旧 v1 Operation 时，v2 请求生成不同幂等键，不会复用旧身份。
+
+### I. Reclustering 原事件 novelty
+
+- runtime 构造每个 split candidate 的 score 输入时显式传入原 `EventRecord`。
+- 原事件当前版本的独立 evidence roots 作为 prior roots；原成员拆分属于纯重复，两个 candidate 均为 novelty 0 / `novelty:pure_repeat`。
+- 常规 Pipeline 的 30 天核心身份查询保持不变；真正出现新独立根时仍由既有 quality 规则得到 novelty 50。
+
+### J. 论文与开源动作归一
+
+- `publish/publishes/published` 统一映射到 launch/release 动作。
+- `open source/open sources/open sourced` 及连字符变体统一映射；单独、非相邻的 `open` 或 `source` 不构成动作。
+- 同 paper 或同 `owner/repo` 的跨 URL 报道在 48 小时内可以稳定匹配。
+
+### K. Engagement 截断顺序
+
+- quality 暴露共享白名单过滤函数，Pipeline 与 score 构建共同使用。
+- 先过滤白名单及非法数值，再应用最多 20 字段限制，垃圾字段不能挤掉 `views`、`score` 等有效互动。
+
 ## RED 证据
 
 - Operation：未来数据被选中；缺失 Operation 回退墙钟。
@@ -62,6 +85,7 @@
 - Snapshot：并发替换 persisted candidate members 后发布了错误成员。
 - Safety：`error_count` 被当作 engagement，缺失 relevance/authority 静默计 0。
 - Performance：100/200 密集组件旧实现超过 60 秒未结束。
+- 最终复审 RED：Operation 仍写 v1 三版本；两个 recluster split novelty 错为 100；publish/open-source 动作未识别；20 个垃圾字段先占满 engagement 上限。
 
 ## GREEN 证据
 
@@ -73,12 +97,16 @@
   - 结果：35 passed。
 - 全量回归：
   - `.venv\\Scripts\\python.exe -m pytest -q`
-  - 结果：880 collected，877 passed，3 skipped，约 64.1 秒；仅既有 Starlette/Alembic 弃用警告。
+  - 最终结果：891 collected，888 passed，3 skipped；仅既有 Starlette/Alembic 弃用警告。
 - 静态检查：Ruff `All checks passed!`。
 - 差异检查：`git diff --check` 通过；仅 Windows LF/CRLF 提示。
+- 最终四项 RED/GREEN 聚焦：首轮 9 failures（另 2 个裸词负例按预期通过），最小修复后 12 passed。
+- 最终四项相关回归：127 passed；仅既有 Starlette 弃用警告。
+- 最终串行验证门（Ruff、diff-check、全量 pytest）总耗时约 70.1 秒，exit 0。
 
 ## 边界说明
 
 - Source authority 的生产契约为 0–5；旧测试 fixture 中的 90 会安全 clamp 到 5，再映射为 100。
 - Operation scope 缺失 `window_end` 只允许回退到该 Operation 自身的稳定 `created_at`，绝不回退墙钟。
 - 没有可靠核心对象的 candidate 不参与跨事件 novelty 身份匹配。
+- 首次并发发布触发 Event 唯一键竞争时的 loser retry 属于 Task 4 可靠性范围，本轮按复审决定不扩展。

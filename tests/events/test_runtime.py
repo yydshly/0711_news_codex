@@ -25,6 +25,8 @@ from newsradar.events.runtime import EventOperationHandler
 from newsradar.events.schema import (
     EventEnrichment,
     EventStatus,
+    EvidenceAssessment,
+    EvidenceRole,
     ProcessingStage,
     PublishedEvent,
     ScoreBreakdown,
@@ -125,6 +127,15 @@ def _seed_published_event(
                     confidence=0.8 if origin == "model" else 0,
                 ),
                 score=_score(),
+                evidence=tuple(
+                    EvidenceAssessment(
+                        raw_item_id=raw_id,
+                        role=EvidenceRole.OFFICIAL,
+                        root_evidence_key=f"https://official.test/{raw_id}",
+                        independent=True,
+                    )
+                    for raw_id in raw_ids
+                ),
                 source_item_ids=tuple(raw_ids),
             ),
             operation_id=1,
@@ -205,9 +216,15 @@ def test_recluster_splits_incompatible_members_and_publishes_changed_versions() 
         assert scores[event_id]["rule_version"] == "score-v2"
         assert scores[event_id]["ai_relevance"] == 100
         assert scores[event_id]["engagement_velocity"] > 0
+        assert scores[event_id]["novelty"] == 0
+        assert "novelty:pure_repeat" in scores[event_id]["reasons"]
+        assert "novelty:no_prior_event" not in scores[event_id]["reasons"]
         assert scores[split_id]["rule_version"] == "score-v2"
         assert scores[split_id]["ai_relevance"] == 60
         assert scores[split_id]["engagement_velocity"] == 0
+        assert scores[split_id]["novelty"] == 0
+        assert "novelty:pure_repeat" in scores[split_id]["reasons"]
+        assert "novelty:no_prior_event" not in scores[split_id]["reasons"]
 
 
 def test_recluster_missing_real_quality_input_preserves_old_version() -> None:

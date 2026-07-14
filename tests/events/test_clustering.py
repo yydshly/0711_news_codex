@@ -325,6 +325,63 @@ def test_real_gpt5_titles_with_different_urls_cluster_by_model_and_action() -> N
     assert "model:gpt-5" in right_entities
 
 
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Research team publishes a new paper", "launch"),
+        ("Research team published a new paper", "launch"),
+        ("Acme open-sources its toolkit", "launch"),
+        ("Acme open sourced its toolkit", "launch"),
+        ("Acme open source toolkit", "launch"),
+        ("Open research source report", None),
+        ("Acme opens source office", None),
+    ],
+)
+def test_release_action_recognizes_publish_and_open_source_phrases_only(
+    title: str, expected: str | None
+) -> None:
+    assert clustering._action(title) == expected
+
+
+@pytest.mark.parametrize(
+    ("entity", "left_title", "right_title"),
+    [
+        (
+            "paper:interpretable-agents",
+            "Team publishes Interpretable Agents paper",
+            "Interpretable Agents paper published by Team",
+        ),
+        (
+            "project:openai/codex",
+            "OpenAI open-sources openai/codex",
+            "openai/codex was open sourced by OpenAI",
+        ),
+    ],
+)
+def test_publish_and_open_source_reports_cluster_across_urls_within_48_hours(
+    entity: str, left_title: str, right_title: str
+) -> None:
+    clusters = cluster_candidates(
+        (
+            item(
+                raw_item_id=1,
+                title=left_title,
+                canonical_url="https://official.test/release",
+                entities=(entity,),
+            ),
+            item(
+                raw_item_id=2,
+                title=right_title,
+                canonical_url="https://media.test/story",
+                entities=(entity,),
+                published_at=NOW + timedelta(hours=3),
+            ),
+        )
+    )
+
+    assert [cluster.raw_item_ids for cluster in clusters] == [(1, 2)]
+
+
 def test_shared_generic_entity_is_not_a_blocking_key() -> None:
     left = item(raw_item_id=1, entities=("organization:model",))
     right = item(raw_item_id=2, entities=("organization:model",))

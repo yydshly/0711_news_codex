@@ -496,7 +496,10 @@ def _recluster_event(
         )
         score_inputs = {
             candidate.candidate_key: build_candidate_score_input(
-                repository.session, candidate, now=snapshot_now
+                repository.session,
+                candidate,
+                now=snapshot_now,
+                prior_event=event,
             )
             for candidate in candidates
         }

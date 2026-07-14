@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
+from json import dumps
 
 import pytest
 from sqlalchemy import create_engine
@@ -111,3 +113,52 @@ def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> No
         assert record.requested_scope["window_end"] == now.isoformat()
         assert record.requested_scope["algorithm_versions"]
         assert record.requested_scope["idempotency_key"]
+
+
+def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
+    now = datetime(2026, 7, 12, 0, 37, 12, tzinfo=UTC)
+    bucket = now.replace(minute=0, second=0, microsecond=0)
+    v1_versions = {
+        "relevance": "relevance-v1",
+        "entities": "entities-v1",
+        "cluster": "cluster-v1",
+    }
+    old_key = "event-pipeline:" + sha256(
+        dumps(
+            {
+                "window_end": bucket.isoformat(),
+                "window_hours": 24,
+                "versions": v1_versions,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    with session() as db:
+        old = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="cli",
+            status="queued",
+            requested_scope={
+                "window_hours": 24,
+                "algorithm_versions": v1_versions,
+                "window_end": now.isoformat(),
+                "idempotency_key": old_key,
+            },
+        )
+        db.add(old)
+        db.commit()
+
+        new_id = OperationCommandService(
+            db, utcnow=lambda: now
+        ).enqueue_event_pipeline(window_hours=24, trigger="cli")
+        new = db.get(OperationRunRecord, new_id)
+
+        assert new is not None
+        assert new.id != old.id
+        assert new.requested_scope["algorithm_versions"] == {
+            "relevance": "relevance-v2",
+            "entities": "entities-v2",
+            "cluster": "cluster-v2",
+            "score": "score-v2",
+        }
+        assert new.requested_scope["idempotency_key"] != old_key

@@ -16,7 +16,11 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
-from newsradar.events.pipeline import ALGORITHM_VERSIONS, EventPipeline
+from newsradar.events.pipeline import (
+    ALGORITHM_VERSIONS,
+    EventPipeline,
+    _bounded_engagement,
+)
 from newsradar.events.publishing import rule_enrichment
 from newsradar.events.relevance import (
     CONTENT_MAX_CHARS,
@@ -59,6 +63,13 @@ def test_pipeline_exposes_all_v2_rule_versions() -> None:
         "cluster": "cluster-v2",
         "score": "score-v2",
     }
+
+
+def test_bounded_engagement_filters_whitelist_before_field_limit() -> None:
+    values = {f"aaa_noise_{index:02d}": index for index in range(20)}
+    values.update({"views": 500, "score": 20})
+
+    assert _bounded_engagement(values, max_count=1) == {"score": 20}
 
 
 def test_pipeline_scores_from_real_fields_using_operation_window_end() -> None:

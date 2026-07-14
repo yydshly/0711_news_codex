@@ -20,6 +20,9 @@ _ACTION_GROUPS = {
             "launch",
             "launches",
             "launched",
+            "publish",
+            "publishes",
+            "published",
             "release",
             "releases",
             "released",
@@ -243,7 +246,10 @@ def _same_publisher_or_root(left: ClusterItem, right: ClusterItem) -> bool:
 
 
 def _action(title: str) -> str | None:
-    tokens = set(re.findall(r"[a-z0-9]+", title.casefold().replace("-", " ")))
+    normalized = title.casefold()
+    if re.search(r"\bopen(?:-|\s)+sourc(?:e|es|ed)\b", normalized):
+        return "launch"
+    tokens = set(re.findall(r"[a-z0-9]+", normalized.replace("-", " ")))
     return next((name for name, words in _ACTION_GROUPS.items() if tokens & words), None)
 
 

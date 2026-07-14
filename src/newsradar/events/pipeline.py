@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -26,7 +26,7 @@ from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
 from newsradar.events.evidence import assess_evidence, count_suppressed_independent_roots
 from newsradar.events.minimax import EventMiniMaxAdapter, EventModelRun
 from newsradar.events.publishing import EventPublisher, rule_enrichment
-from newsradar.events.quality import build_score_input
+from newsradar.events.quality import build_score_input, filter_engagement_fields
 from newsradar.events.relevance import (
     CONTENT_MAX_CHARS,
     ITEM_KIND_MAX_CHARS,
@@ -47,15 +47,10 @@ from newsradar.events.schema import (
     RawItemText,
     RelevanceDecision,
 )
-from newsradar.events.scoring import SCORE_RULE_VERSION
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.settings import get_settings
 
-ALGORITHM_VERSIONS = {
-    "relevance": RELEVANCE_RULE_VERSION,
-    "entities": ENTITY_RULE_VERSION,
-    "cluster": CLUSTER_RULE_VERSION,
-    "score": SCORE_RULE_VERSION,
-}
+ALGORITHM_VERSIONS = EVENT_ALGORITHM_VERSIONS
 
 
 @dataclass(frozen=True)
@@ -483,6 +478,7 @@ def build_candidate_score_input(
     candidate: CandidateCluster,
     *,
     now: datetime,
+    prior_event: EventRecord | None = None,
 ) -> EventScoreInput:
     """Rebuild score-v2 inputs from persisted facts for one candidate snapshot."""
     member_ids = candidate.raw_item_ids
@@ -518,9 +514,13 @@ def build_candidate_score_input(
         raw_item_id: _bounded_engagement(engagement)
         for raw_item_id, engagement, _ in quality_rows
     }
-    prior_event_exists, prior_evidence_roots = _prior_quality_state(
-        session, candidate, now
-    )
+    if prior_event is None:
+        prior_event_exists, prior_evidence_roots = _prior_quality_state(
+            session, candidate, now
+        )
+    else:
+        prior_event_exists = True
+        prior_evidence_roots = _prior_evidence_roots(session, prior_event)
     evidence = assess_evidence(candidate.items)
     return build_score_input(
         candidate=candidate,
@@ -553,15 +553,7 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _bounded_engagement(values: object, *, max_count: int = 20) -> dict[str, object]:
-    if not isinstance(values, Mapping):
-        return {}
-    return {
-        key[:120]: value
-        for key, value in sorted(values.items())[:max_count]
-        if isinstance(key, str)
-        and isinstance(value, (int, float))
-        and not isinstance(value, bool)
-    }
+    return filter_engagement_fields(values, max_count=max_count)
 
 
 def _prior_evidence_roots(

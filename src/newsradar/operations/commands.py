@@ -14,6 +14,7 @@ from newsradar.db.models import (
     SourceRemediationBatchRecord,
     SourceRemediationMemberRecord,
 )
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.retry_policy import is_retryable_error
 from newsradar.operations.schema import OperationStatus, OperationType
@@ -185,7 +186,7 @@ class OperationCommandService:
         if window_hours <= 0:
             raise ValueError("window_hours must be positive")
         now = self._utcnow()
-        versions = {"relevance": "relevance-v1", "entities": "entities-v1", "cluster": "cluster-v1"}
+        versions = dict(EVENT_ALGORITHM_VERSIONS)
         window_bucket = now.replace(minute=0, second=0, microsecond=0)
         key_parts = {
             "window_end": window_bucket.isoformat(),

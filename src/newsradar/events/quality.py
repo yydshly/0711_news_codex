@@ -84,9 +84,10 @@ def build_score_input(
     engagement_values = tuple(
         value
         for raw_item_id in sorted(set(member_ids))
-        for key, raw_value in sorted(engagement_by_item.get(raw_item_id, {}).items())
-        if _is_engagement_field(key)
-        and (value := _engagement_value(raw_value)) is not None
+        for raw_value in filter_engagement_fields(
+            engagement_by_item.get(raw_item_id, {})
+        ).values()
+        if (value := _engagement_value(raw_value)) is not None
     )
     occurred_at = candidate.occurred_at or min(
         (item.published_at for item in candidate.items if item.published_at is not None),
@@ -208,6 +209,22 @@ def _required_scores(
 def _engagement_value(value: object) -> float | None:
     number = _finite_number(value)
     return number if number is not None and number >= 0 else None
+
+
+def filter_engagement_fields(
+    values: object, *, max_count: int = 20
+) -> dict[str, object]:
+    """Keep valid whitelisted engagement facts before applying the field bound."""
+    if not isinstance(values, Mapping) or max_count <= 0:
+        return {}
+    bounded: dict[str, object] = {}
+    for key, value in sorted(values.items()):
+        if not _is_engagement_field(key) or _engagement_value(value) is None:
+            continue
+        bounded[key[:120]] = value
+        if len(bounded) == max_count:
+            break
+    return bounded
 
 
 def _is_engagement_field(key: object) -> bool:
