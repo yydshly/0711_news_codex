@@ -172,6 +172,7 @@ class MiniMaxClient:
                     f"{json.dumps(response_type.model_json_schema())}"
                 )
             started = time.perf_counter()
+            usage_payload: dict = {}
             try:
                 response = await self.http.post(
                     f"{self.settings.minimax_base_url.rstrip('/')}/v1/text/chatcompletion_v2",
@@ -192,6 +193,8 @@ class MiniMaxClient:
                 )
                 response.raise_for_status()
                 payload = response.json()
+                if isinstance(payload, dict):
+                    usage_payload = payload
                 content = self._response_content(payload)
                 first_content = first_content or str(content)
                 result = response_type.model_validate_json(strip_json_fence(str(content)))
@@ -208,14 +211,25 @@ class MiniMaxClient:
                 repairable = isinstance(
                     exc, (KeyError, IndexError, TypeError, ValueError, ValidationError)
                 )
+                error_code = self._bounded_error_code(exc)
+                if repairable and attempt == 0:
+                    self._record_usage(
+                        purpose,
+                        model,
+                        usage_payload,
+                        started,
+                        "retry",
+                        error_code,
+                    )
+                    continue
                 if not repairable or attempt == 1:
                     self._record_usage(
                         purpose,
                         model,
-                        {},
+                        usage_payload,
                         started,
                         "fallback",
-                        self._bounded_error_code(exc),
+                        error_code,
                     )
                     break
         return fallback

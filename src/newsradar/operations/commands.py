@@ -185,11 +185,10 @@ class OperationCommandService:
     def enqueue_event_pipeline(self, *, window_hours: int, trigger: str) -> int:
         if window_hours <= 0:
             raise ValueError("window_hours must be positive")
-        now = self._utcnow()
+        window_end = self._utcnow()
         versions = dict(EVENT_ALGORITHM_VERSIONS)
-        window_bucket = now.replace(minute=0, second=0, microsecond=0)
         key_parts = {
-            "window_end": window_bucket.isoformat(),
+            "window_end": window_end.isoformat(),
             "window_hours": window_hours,
             "versions": versions,
         }
@@ -197,11 +196,11 @@ class OperationCommandService:
             "actor": trigger,
             "window_hours": window_hours,
             "algorithm_versions": versions,
-            "window_end": now.isoformat(),
+            "window_end": window_end.isoformat(),
             "idempotency_key": "event-pipeline:"
             + sha256(dumps(key_parts, sort_keys=True).encode()).hexdigest(),
             "deadline_at": (
-                now + timedelta(seconds=self._settings.operation_timeout_seconds)
+                window_end + timedelta(seconds=self._settings.operation_timeout_seconds)
             ).isoformat(),
         }
         record = OperationRepository(self.session).enqueue(

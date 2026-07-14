@@ -1,14 +1,29 @@
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, delete, select
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import OperationAttemptRecord, OperationEventRecord, OperationRunRecord
+from newsradar.db.models import (
+    EventRecord,
+    EventScoreRecord,
+    EventVersionRecord,
+    OperationAttemptRecord,
+    OperationEventRecord,
+    OperationRunRecord,
+)
+from newsradar.events.repository import EventRepository
 from newsradar.events.runtime import EventOperationHandler
+from newsradar.events.schema import (
+    EventEnrichment,
+    EventStatus,
+    PublishedEvent,
+    ScoreBreakdown,
+)
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.router import OperationRouter
@@ -68,7 +83,9 @@ def test_postgres_competing_workers_claim_event_pipeline_once() -> None:
             second = pool.submit(consume, f"event-owner-b-{suffix}")
             second_processed = second.result(timeout=5)
             release_first.set()
-            first_processed = first.result(timeout=5)
+            # The winner executes the real event pipeline over the project-local
+            # dataset; only the competing SKIP LOCKED claimant must return quickly.
+            first_processed = first.result(timeout=60)
 
         with Session(engine) as verify:
             operation = verify.get(OperationRunRecord, operation_id)
@@ -100,5 +117,95 @@ def test_postgres_competing_workers_claim_event_pipeline_once() -> None:
                 cleanup.execute(
                     delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
                 )
+                cleanup.commit()
+        engine.dispose()
+
+
+def test_postgres_concurrent_first_publish_of_same_canonical_event_is_idempotent() -> None:
+    engine = _postgres_engine_or_skip()
+    canonical_key = f"contention-{uuid4().hex}"
+    insertion_barrier = Barrier(2)
+
+    def snapshot() -> PublishedEvent:
+        return PublishedEvent(
+            canonical_key=canonical_key,
+            status=EventStatus.EMERGING,
+            enrichment=EventEnrichment(
+                zh_title="并发事件",
+                zh_summary="两个 Operation 同时首次发布同一事件。",
+                why_it_matters="唯一键竞争必须安全收敛。",
+                origin="rule_fallback",
+                confidence=0,
+            ),
+            score=ScoreBreakdown(
+                ai_relevance=80,
+                source_coverage=35,
+                source_authority=80,
+                recency=100,
+                engagement_velocity=0,
+                novelty=100,
+                importance=70,
+                credibility=35,
+                heat=56,
+                rule_version="score-v2",
+                reasons=("fixture",),
+            ),
+        )
+
+    def publish(operation_id: int) -> int:
+        with Session(engine) as session:
+            def synchronize_first_insert(session, flush_context, instances) -> None:
+                del flush_context, instances
+                if any(
+                    isinstance(row, EventRecord)
+                    and row.canonical_key == canonical_key
+                    for row in session.new
+                ):
+                    insertion_barrier.wait(timeout=10)
+
+            sqlalchemy_event.listen(session, "before_flush", synchronize_first_insert)
+            record = EventRepository(session).publish_complete_event(
+                snapshot(), operation_id
+            )
+            event_id = record.id
+            session.commit()
+            return event_id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = tuple(pool.submit(publish, operation_id) for operation_id in (901, 902))
+            event_ids = tuple(future.result(timeout=20) for future in futures)
+
+        with Session(engine) as verify:
+            event_rows = tuple(
+                verify.scalars(
+                    select(EventRecord).where(EventRecord.canonical_key == canonical_key)
+                )
+            )
+            version_rows = tuple(
+                verify.scalars(
+                    select(EventVersionRecord).where(
+                        EventVersionRecord.event_id == event_rows[0].id
+                    )
+                )
+            )
+
+        assert len(set(event_ids)) == 1
+        assert len(event_rows) == 1
+        assert event_rows[0].current_version_number == 1
+        assert len(version_rows) == 1
+    finally:
+        with Session(engine) as cleanup:
+            event_id = cleanup.scalar(
+                select(EventRecord.id).where(EventRecord.canonical_key == canonical_key)
+            )
+            if event_id is not None:
+                cleanup.execute(
+                    delete(EventScoreRecord).where(EventScoreRecord.event_id == event_id)
+                )
+                cleanup.execute(
+                    delete(EventVersionRecord).where(EventVersionRecord.event_id == event_id)
+                )
+                cleanup.execute(delete(EventRecord).where(EventRecord.id == event_id))
                 cleanup.commit()
         engine.dispose()

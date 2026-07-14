@@ -1,4 +1,6 @@
 from datetime import UTC, datetime, timedelta
+from threading import Lock
+from time import sleep
 
 import pytest
 from sqlalchemy import create_engine, event, select, text
@@ -31,7 +33,7 @@ from newsradar.events.relevance import (
     TITLE_MAX_CHARS,
     evaluate_relevance,
 )
-from newsradar.events.repository import EventRepository
+from newsradar.events.repository import EventPublicationConflict, EventRepository
 from newsradar.events.schema import ProcessingStage
 from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
@@ -63,6 +65,158 @@ def test_pipeline_exposes_all_v2_rule_versions() -> None:
         "cluster": "cluster-v2",
         "score": "score-v2",
     }
+
+
+def test_pipeline_batch_enrichment_is_bounded_to_two_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(_source_record())
+        for index, title in enumerate(
+            (
+                "OpenAI launches Alpha AI model",
+                "Anthropic releases Beta AI model",
+                "Google unveils Gamma AI model",
+                "Meta debuts Delta AI model",
+                "Mistral introduces Epsilon AI model",
+            ),
+            start=1,
+        ):
+            db.add(
+                RawItemRecord(
+                    source_id="source",
+                    external_id=str(index),
+                    canonical_url=f"https://example.test/{index}",
+                    payload={},
+                    title=title,
+                    published_at=now,
+                )
+            )
+        _seed_operation(db, 101, window_end=now)
+        db.commit()
+
+    lock = Lock()
+    active = 0
+    maximum_active = 0
+
+    def tracked_enrichment(candidate):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        sleep(0.03)
+        with lock:
+            active -= 1
+        return (
+            rule_enrichment(candidate).model_copy(update={"origin": "model"}),
+            (),
+        )
+
+    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(tracked_enrichment))
+    monkeypatch.setattr(
+        "newsradar.events.pipeline.get_settings",
+        lambda: Settings(event_model_max_concurrency=2),
+    )
+    with Session(engine) as db:
+        result = EventPipeline.production(db).run(
+            window_hours=24,
+            operation_id=101,
+            checkpoint=lambda _: None,
+        )
+
+    assert result.candidate_count == 5
+    assert maximum_active == 2
+    assert result.model_success_count == 5
+    assert result.model_fallback_count == 0
+
+
+def test_pipeline_records_all_required_stage_checkpoints() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(_source_record())
+        db.add(
+            RawItemRecord(
+                source_id="source",
+                external_id="checkpoint",
+                canonical_url="https://example.test/checkpoint",
+                payload={},
+                title="OpenAI launches checkpoint AI model",
+                published_at=now,
+            )
+        )
+        _seed_operation(db, 102, window_end=now)
+        db.commit()
+
+    checkpoints: list[str] = []
+    with Session(engine) as db:
+        EventPipeline.production(db).run(
+            window_hours=24,
+            operation_id=102,
+            checkpoint=checkpoints.append,
+        )
+
+    assert {
+        "after_event_selection",
+        "after_event_relevance",
+        "after_event_cluster",
+        "after_event_enrichment",
+        "after_event_publish",
+    }.issubset(checkpoints)
+
+
+def test_pipeline_enrichment_batch_receives_only_rule_included_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(_source_record())
+        db.add_all(
+            (
+                RawItemRecord(
+                    source_id="source",
+                    external_id="included-model",
+                    canonical_url="https://example.test/included-model",
+                    payload={},
+                    title="OpenAI launches included AI model",
+                    published_at=now,
+                ),
+                RawItemRecord(
+                    source_id="source",
+                    external_id="excluded-game",
+                    canonical_url="https://example.test/excluded-game",
+                    payload={},
+                    title="Agent 64 game review",
+                    published_at=now,
+                ),
+            )
+        )
+        _seed_operation(db, 103, window_end=now)
+        db.commit()
+
+    enriched_item_ids: list[tuple[int, ...]] = []
+
+    def observe(candidate):
+        enriched_item_ids.append(candidate.raw_item_ids)
+        return rule_enrichment(candidate), ()
+
+    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(observe))
+    with Session(engine) as db:
+        result = EventPipeline.production(db).run(
+            window_hours=24,
+            operation_id=103,
+            checkpoint=lambda _: None,
+        )
+
+    assert result.included_item_count == 1
+    assert result.excluded_item_count == 1
+    assert enriched_item_ids == [(1,)]
 
 
 def test_bounded_engagement_filters_whitelist_before_field_limit() -> None:
@@ -738,6 +892,58 @@ def test_pipeline_replay_does_not_duplicate_versions() -> None:
         assert db.query(EventVersionRecord).count() == 1
 
 
+def test_pipeline_returns_retryable_conflict_when_publication_lease_is_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(_source_record())
+        db.add(
+            RawItemRecord(
+                source_id="source",
+                external_id="first-lease",
+                canonical_url="https://example.test/first-lease",
+                payload={},
+                title="OpenAI launches Lease AI model",
+                title_fingerprint="openai-launches-lease-ai-model",
+                published_at=now,
+            )
+        )
+        _seed_operation(db, 201, window_end=now)
+        _seed_operation(db, 202, window_end=now)
+        db.commit()
+        EventPipeline.production(db).run(
+            window_hours=24,
+            operation_id=201,
+            checkpoint=lambda _: None,
+        )
+        db.add(
+            RawItemRecord(
+                source_id="source",
+                external_id="second-lease",
+                canonical_url="https://example.test/second-lease",
+                payload={},
+                title="OpenAI launches Lease AI model",
+                title_fingerprint="openai-launches-lease-ai-model",
+                published_at=now,
+            )
+        )
+        db.commit()
+
+    monkeypatch.setattr(EventRepository, "claim_event", lambda *args: False)
+    with Session(engine) as db:
+        with pytest.raises(EventPublicationConflict, match="lease") as raised:
+            EventPipeline.production(db).run(
+                window_hours=24,
+                operation_id=202,
+                checkpoint=lambda _: None,
+            )
+
+    assert raised.value.retryable is True
+
+
 def test_pipeline_persists_audited_evidence_for_web_detail() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -865,8 +1071,10 @@ def test_pipeline_keeps_event_identity_and_source_publication_time_when_new_sour
 
 def test_minimax_invocation_has_no_open_session_or_event_lease_before_publication(
     monkeypatch,
+    tmp_path,
 ) -> None:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    database_path = (tmp_path / "model-transaction-boundary.db").as_posix()
+    engine = create_engine(f"sqlite+pysqlite:///{database_path}")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         db.add(

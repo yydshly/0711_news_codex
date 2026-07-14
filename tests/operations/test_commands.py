@@ -111,8 +111,24 @@ def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> No
         assert record.operation_type == "event_pipeline"
         assert record.requested_scope["window_hours"] == 24
         assert record.requested_scope["window_end"] == now.isoformat()
-        assert record.requested_scope["algorithm_versions"]
-        assert record.requested_scope["idempotency_key"]
+        versions = {
+            "relevance": "relevance-v2",
+            "entities": "entities-v2",
+            "cluster": "cluster-v2",
+            "score": "score-v2",
+        }
+        assert record.requested_scope["algorithm_versions"] == versions
+        expected_key = "event-pipeline:" + sha256(
+            dumps(
+                {
+                    "window_end": now.isoformat(),
+                    "window_hours": 24,
+                    "versions": versions,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        assert record.requested_scope["idempotency_key"] == expected_key
 
 
 def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:

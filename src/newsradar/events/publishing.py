@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.events.evidence import assess_evidence
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import (
@@ -40,12 +41,17 @@ class EventPublisher:
         *,
         score_input: EventScoreInput,
         enrichment: EventEnrichment | None = None,
+        model_usages: tuple[ModelUsage, ...] = (),
     ) -> PublishedEvent:
         """Publish the exact immutable candidate snapshot that was scored."""
         published = self.assemble_snapshot(
             candidate, score_input=score_input, enrichment=enrichment
         )
-        event = self.repository.publish_complete_event(published, operation_id)
+        event = self.repository.publish_complete_event(
+            published,
+            operation_id,
+            model_usages=model_usages,
+        )
         return published.model_copy(update={"event_id": event.id})
 
     def assemble(

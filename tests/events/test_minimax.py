@@ -6,7 +6,11 @@ import json
 import httpx
 import pytest
 
-from newsradar.events.minimax import EventMiniMaxAdapter
+from newsradar.events.minimax import (
+    EventEnrichmentBatch,
+    EventEnrichmentResult,
+    EventMiniMaxAdapter,
+)
 from newsradar.events.schema import (
     CandidateCluster,
     ClusterItem,
@@ -49,19 +53,83 @@ def rule_fallback() -> EventEnrichment:
     )
 
 
+def batch_candidate(index: int) -> CandidateCluster:
+    return CandidateCluster(
+        candidate_key=f"candidate-{index}",
+        title=f"OpenAI launches model {index}",
+        items=(ClusterItem(raw_item_id=index + 1, title=f"Evidence {index}"),),
+    )
+
+
+@pytest.mark.asyncio
+async def test_enrichment_batch_limits_concurrency_and_isolates_one_failure() -> None:
+    active = 0
+    maximum_active = 0
+    release = asyncio.Event()
+
+    async def adapter(candidate: CandidateCluster, fallback: EventEnrichment):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await release.wait()
+        active -= 1
+        if candidate.candidate_key == "candidate-1":
+            raise RuntimeError("Bearer secret-value https://unsafe.test/?token=secret")
+        return EventEnrichmentResult(
+            enrichment=fallback.model_copy(update={"origin": "model"})
+        )
+
+    batch = EventEnrichmentBatch(adapter=adapter, max_concurrency=2)
+    task = asyncio.create_task(
+        batch.enrich(tuple(batch_candidate(index) for index in range(5)))
+    )
+    while maximum_active < 2:
+        await asyncio.sleep(0)
+    release.set()
+    results = await task
+
+    assert len(results) == 5
+    assert maximum_active == 2
+    assert results["candidate-1"].enrichment.origin == "rule_fallback"
+    assert results["candidate-1"].model_runs[0].usage.error == "unexpected_error"
+    assert sum(result.enrichment.origin == "model" for result in results.values()) == 4
+
+
+@pytest.mark.asyncio
+async def test_enrichment_batch_isolates_invalid_adapter_result() -> None:
+    async def adapter(candidate: CandidateCluster, fallback: EventEnrichment):
+        if candidate.candidate_key == "candidate-0":
+            return object()
+        return EventEnrichmentResult(enrichment=fallback)
+
+    results = await EventEnrichmentBatch(adapter=adapter).enrich(
+        (batch_candidate(0), batch_candidate(1))
+    )
+
+    assert results["candidate-0"].enrichment.origin == "rule_fallback"
+    assert results["candidate-0"].model_runs[0].usage.error == "unexpected_error"
+    assert results["candidate-1"].enrichment.origin == "rule_fallback"
+
+
 @pytest.mark.asyncio
 async def test_no_key_returns_rule_fallback_without_http_call() -> None:
+    runs = []
+
     async def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("HTTP must not be called without a MiniMax API key")
 
     settings = Settings(minimax_api_key=None)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        result = await EventMiniMaxAdapter(settings, http).enrich_event(
+        result = await EventMiniMaxAdapter(settings, http, runs.append).enrich_event(
             candidate_context(), rule_fallback()
         )
 
     assert result == rule_fallback()
     assert result.origin == "rule_fallback"
+    assert len(runs) == 1
+    assert runs[0].usage.outcome == "fallback"
+    assert runs[0].usage.error == "no_api_key"
+    assert "secret" not in repr(runs[0].usage)
 
 
 @pytest.mark.asyncio
@@ -96,8 +164,62 @@ async def test_enrich_event_uses_fast_model_with_bounded_untrusted_context() -> 
 
 
 @pytest.mark.asyncio
+async def test_prompt_uses_five_bounded_titles_without_urls_or_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UNRELATED_SECRET", "environment-secret-value")
+    items = tuple(
+        ClusterItem(
+            raw_item_id=index,
+            title=(
+                f"Evidence {index} https://title.test/{index}?token=title-secret-{index} "
+                + "x" * 600
+            ),
+            canonical_url=f"https://evidence.test/{index}?token=url-secret-{index}",
+            original_url=f"https://origin.test/{index}?key=original-secret-{index}",
+        )
+        for index in range(1, 8)
+    )
+    candidate = CandidateCluster(
+        candidate_key="https://candidate.test/event?credential=candidate-secret",
+        title="Candidate " + "y" * 600,
+        items=items,
+        raw_item_ids=tuple(range(1, 8)),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        assert "untrusted internet data" in prompt
+        assert "environment-secret-value" not in prompt
+        assert "candidate-secret" not in prompt
+        assert "url-secret" not in prompt
+        assert "original-secret" not in prompt
+        assert "title-secret" not in prompt
+        assert "Evidence 5" in prompt
+        assert "Evidence 6" not in prompt
+        assert "x" * 501 not in prompt
+        assert "y" * 501 not in prompt
+        return httpx.Response(
+            200,
+            json=response_payload(
+                '{"zh_title":"标题","zh_summary":"摘要","why_it_matters":"影响",'
+                '"limitations":[],"origin":"model","confidence":0.9}'
+            ),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await EventMiniMaxAdapter(
+            Settings(minimax_api_key="secret"), http
+        ).enrich_event(candidate, rule_fallback())
+
+    assert result.origin == "model"
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_repairs_once_then_falls_back() -> None:
     calls = 0
+    runs = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
@@ -106,12 +228,14 @@ async def test_invalid_json_repairs_once_then_falls_back() -> None:
 
     settings = Settings(minimax_api_key="secret")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        result = await EventMiniMaxAdapter(settings, http).enrich_event(
+        result = await EventMiniMaxAdapter(settings, http, runs.append).enrich_event(
             candidate_context(), rule_fallback()
         )
 
     assert calls == 2
     assert result.origin == "rule_fallback"
+    assert [run.usage.error for run in runs] == ["invalid_response", "invalid_response"]
+    assert [run.usage.outcome for run in runs] == ["retry", "fallback"]
 
 
 @pytest.mark.asyncio
@@ -217,9 +341,21 @@ async def test_only_conflict_explanations_use_deep_model() -> None:
 
     settings = Settings(minimax_api_key="secret")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        result = await EventMiniMaxAdapter(settings, http).explain_conflict(candidate_context())
+        disputed = candidate_context().model_copy(update={"metadata": {"disputed": True}})
+        result = await EventMiniMaxAdapter(settings, http).explain_conflict(disputed)
 
     assert result.summary == "Sources disagree"
+
+
+@pytest.mark.asyncio
+async def test_conflict_explanation_rejects_candidate_not_marked_disputed() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("M3 must not be called for a non-disputed candidate")
+
+    settings = Settings(minimax_api_key="secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ValueError, match="disputed"):
+            await EventMiniMaxAdapter(settings, http).explain_conflict(candidate_context())
 
 
 @pytest.mark.asyncio

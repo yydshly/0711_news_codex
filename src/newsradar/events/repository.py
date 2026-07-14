@@ -6,6 +6,7 @@ from enum import Enum
 from math import isfinite
 
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import ModelUsage
@@ -36,11 +37,26 @@ from newsradar.events.schema import (
 )
 
 
+class EventPublicationConflict(RuntimeError):
+    """A concurrent event write changed the canonical snapshot; retry safely."""
+
+    error_code = "event_publication_conflict"
+    retryable = True
+
+
+class EventModelAuditError(RuntimeError):
+    """Model attempt metadata could not be durably linked to its event."""
+
+    error_code = "event_model_audit_failed"
+    retryable = True
+
+
 class EventRepository:
     """Small transactional operations for durable event processing state."""
 
     def __init__(self, session: Session):
         self.session = session
+        self.last_publish_created_version: bool | None = None
 
     def record_stage(
         self,
@@ -254,10 +270,17 @@ class EventRepository:
             )
         )
 
-    def publish_complete_event(self, event: PublishedEvent, operation_id: int) -> EventRecord:
+    def publish_complete_event(
+        self,
+        event: PublishedEvent,
+        operation_id: int,
+        *,
+        model_usages: tuple[ModelUsage, ...] = (),
+    ) -> EventRecord:
         """Write a complete version before exposing it through the current-version pointer."""
         # Reservation is handled by the worker; this is the short write transaction.
         del operation_id
+        self.last_publish_created_version = None
         now = datetime.now(UTC)
         with self.session.begin_nested():
             record = self.session.scalar(
@@ -266,18 +289,43 @@ class EventRepository:
                 .with_for_update()
             )
             if record is None:
-                record = EventRecord(
-                    canonical_key=event.canonical_key,
-                    visibility=EventVisibility.CURRENT.value,
-                    status=event.status.value,
-                    category=event.category.value if event.category else None,
-                    occurred_at=event.occurred_at,
-                    current_version_number=0,
-                    created_at=now,
-                    updated_at=now,
-                )
-                self.session.add(record)
-                self.session.flush()
+                try:
+                    with self.session.begin_nested():
+                        record = EventRecord(
+                            canonical_key=event.canonical_key,
+                            visibility=EventVisibility.CURRENT.value,
+                            status=event.status.value,
+                            category=event.category.value if event.category else None,
+                            occurred_at=event.occurred_at,
+                            current_version_number=0,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        self.session.add(record)
+                        self.session.flush()
+                except IntegrityError as error:
+                    if not _is_event_canonical_collision(error):
+                        raise
+                    record = self.session.scalar(
+                        select(EventRecord)
+                        .where(EventRecord.canonical_key == event.canonical_key)
+                        .with_for_update()
+                    )
+                    if record is None:
+                        raise EventPublicationConflict(
+                            "Concurrent canonical event creation could not be resolved"
+                        ) from error
+                    if (
+                        record.current_version_number > 0
+                        and self._has_same_active_membership(
+                            record.id, event.source_item_ids
+                        )
+                    ):
+                        self.last_publish_created_version = False
+                        return record
+                    raise EventPublicationConflict(
+                        "Concurrent canonical event publication changed the candidate snapshot"
+                    ) from error
 
             next_version = record.current_version_number + 1
             version = EventVersionRecord(
@@ -298,6 +346,13 @@ class EventRepository:
                     breakdown=event.score.model_dump(mode="json"),
                 )
             )
+            try:
+                for usage in model_usages:
+                    self.record_model_run(record.id, usage)
+            except Exception as error:
+                raise EventModelAuditError(
+                    "Model attempt audit could not be linked to the published event"
+                ) from error
             self.session.flush()
             self.before_current_version_switch(record, version)
             record.status = event.status.value
@@ -307,7 +362,21 @@ class EventRepository:
             record.current_version_number = next_version
             record.updated_at = now
             self.session.flush()
+            self.last_publish_created_version = True
         return record
+
+    def _has_same_active_membership(
+        self, event_id: int, source_item_ids: tuple[int, ...]
+    ) -> bool:
+        active_ids = set(
+            self.session.scalars(
+                select(EventItemRecord.raw_item_id).where(
+                    EventItemRecord.event_id == event_id,
+                    EventItemRecord.removed_version_number.is_(None),
+                )
+            )
+        )
+        return active_ids == set(source_item_ids)
 
     def record_model_run(self, event_id: int, usage: ModelUsage) -> None:
         """Best-effort caller boundary: this short write never affects publication."""
@@ -473,3 +542,10 @@ def _detail_key_tokens(key: str) -> tuple[str, ...]:
     separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
     separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", separated)
     return tuple(re.findall(r"[a-z0-9]+", separated.casefold()))
+
+
+def _is_event_canonical_collision(error: IntegrityError) -> bool:
+    diagnostic = getattr(error.orig, "diag", None)
+    if getattr(diagnostic, "constraint_name", None) == "events_canonical_key_key":
+        return True
+    return str(error.orig) == "UNIQUE constraint failed: events.canonical_key"

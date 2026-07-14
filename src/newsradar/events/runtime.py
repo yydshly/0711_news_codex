@@ -18,13 +18,14 @@ from newsradar.db.models import (
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
 from newsradar.events.entities import extract_entities
 from newsradar.events.pipeline import (
+    EventModelAuditError,
     EventPipeline,
     build_candidate_score_input,
     load_operation_window_end,
 )
 from newsradar.events.publishing import EventPublisher
 from newsradar.events.quality import QualityInputUnavailable
-from newsradar.events.repository import EventRepository
+from newsradar.events.repository import EventPublicationConflict, EventRepository
 from newsradar.events.schema import (
     CandidateCluster,
     ClusterItem,
@@ -88,15 +89,34 @@ class EventOperationHandler:
                 )
             except OperationTimedOut as error:
                 return _timeout_result(error)
+            except EventPublicationConflict as error:
+                return OperationResult(
+                    status=OperationStatus.FAILED,
+                    error_code=error.error_code,
+                    error_message=str(error),
+                    retryable=error.retryable,
+                )
+            except EventModelAuditError as error:
+                return OperationResult(
+                    status=OperationStatus.FAILED,
+                    error_code=error.error_code,
+                    error_message=str(error),
+                    retryable=error.retryable,
+                )
             finally:
                 session.close()
             return OperationResult(
                 result_summary={
                     "event_ids": list(result.current_event_ids),
+                    "selected_item_count": result.selected_item_count,
+                    "included_item_count": result.included_item_count,
+                    "excluded_item_count": result.excluded_item_count,
+                    "exclusion_reasons": result.exclusion_reasons,
                     "created_event_versions": result.created_event_versions,
                     "candidate_count": result.candidate_count,
                     "processed_item_count": result.processed_item_count,
                     "duplicate_root_suppressed_count": result.duplicate_root_suppressed_count,
+                    "model_success_count": result.model_success_count,
                     "model_fallback_count": result.model_fallback_count,
                     "duration_ms": round((monotonic() - started) * 1000, 3),
                     "retry_count": 1 if "retry_of_operation_id" in lease.requested_scope else 0,
@@ -121,9 +141,17 @@ class EventOperationHandler:
         except (OperationTimedOut, ValueError) as error:
             return _timeout_result(error)
         if lease.operation_type == OperationType.EVENT_ENRICH.value:
-            return _handle_event_enrich(
-                self._session_factory, lease, checkpoint, deadline, event_id
-            )
+            try:
+                return _handle_event_enrich(
+                    self._session_factory, lease, checkpoint, deadline, event_id
+                )
+            except EventModelAuditError as error:
+                return OperationResult(
+                    status=OperationStatus.FAILED,
+                    error_code=error.error_code,
+                    error_message=str(error),
+                    retryable=error.retryable,
+                )
         session = self._session_factory()
         if session is None:
             return OperationResult(
@@ -421,16 +449,13 @@ def _handle_event_enrich(
         changed = _enrichment(repository, event) != enrichment
         if changed:
             repository.publish_complete_event(
-                _snapshot(repository, event, enrichment=enrichment), lease.operation_id
+                _snapshot(repository, event, enrichment=enrichment),
+                lease.operation_id,
+                model_usages=tuple(model_run.usage for model_run in model_runs),
             )
-        persisted_model_runs = 0
-        for model_run in model_runs:
-            try:
-                with session.begin_nested():
-                    repository.record_model_run(event_id, model_run.usage)
-                persisted_model_runs += 1
-            except Exception:
-                continue
+        else:
+            EventPipeline._record_model_runs(repository, event_id, model_runs)
+        persisted_model_runs = len(model_runs)
         deadline.check("after_event_mutation")
         repository.release_event(event_id, lease.operation_id)
         session.commit()

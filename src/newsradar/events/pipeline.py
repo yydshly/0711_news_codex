@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     EventCandidateRecord,
     EventItemRecord,
@@ -24,7 +25,12 @@ from newsradar.db.models import (
 from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
 from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
 from newsradar.events.evidence import assess_evidence, count_suppressed_independent_roots
-from newsradar.events.minimax import EventMiniMaxAdapter, EventModelRun
+from newsradar.events.minimax import (
+    EventEnrichmentBatch,
+    EventEnrichmentResult,
+    EventMiniMaxAdapter,
+    EventModelRun,
+)
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.quality import build_score_input, filter_engagement_fields
 from newsradar.events.relevance import (
@@ -37,7 +43,11 @@ from newsradar.events.relevance import (
     TITLE_MAX_CHARS,
     evaluate_relevance,
 )
-from newsradar.events.repository import EventRepository
+from newsradar.events.repository import (
+    EventModelAuditError,
+    EventPublicationConflict,
+    EventRepository,
+)
 from newsradar.events.schema import (
     CandidateCluster,
     ClusterItem,
@@ -64,6 +74,7 @@ class PipelineResult:
     excluded_item_count: int
     exclusion_reasons: dict[str, int]
     duplicate_root_suppressed_count: int
+    model_success_count: int
     model_fallback_count: int
 
 
@@ -100,6 +111,7 @@ class EventPipeline:
         selection = self._select_and_classify_items(window_hours, now=snapshot_now)
         checkpoint("after_event_selection")
         self._record_relevance_decisions(selection)
+        checkpoint("after_event_relevance")
         items = self._extract_and_record_entities(selection)
         checkpoint("after_event_rules")
         candidates = self._cluster(items)
@@ -108,7 +120,12 @@ class EventPipeline:
             count_suppressed_independent_roots(assess_evidence(candidate.items))
             for candidate in candidates
         )
-        event_ids, created_versions, model_fallback_count = self._publish(
+        (
+            event_ids,
+            created_versions,
+            model_success_count,
+            model_fallback_count,
+        ) = self._publish(
             candidates,
             operation_id,
             checkpoint,
@@ -131,6 +148,7 @@ class EventPipeline:
             excluded_item_count=selection.excluded_count,
             exclusion_reasons=dict(selection.exclusion_reasons),
             duplicate_root_suppressed_count=duplicate_root_suppressed_count,
+            model_success_count=model_success_count,
             model_fallback_count=model_fallback_count,
         )
 
@@ -332,9 +350,8 @@ class EventPipeline:
     ):
         event_ids: list[int] = []
         created = 0
-        model_fallback_count = 0
+        publish_plans: list[tuple[CandidateCluster, EventScoreInput]] = []
         for candidate in candidates:
-            checkpoint("before_event_publish_candidate")
             # Persist/read the bounded candidate context first, then close the DB
             # transaction before optional HTTP work.  No event lease exists here.
             with self._session_factory() as session:
@@ -348,14 +365,14 @@ class EventPipeline:
                 prior_event_exists, prior_evidence_roots = _prior_quality_state(
                     session, candidate, now
                 )
-                if existing is not None and self._has_same_membership(
+                same_membership = existing is not None and self._has_same_membership(
                     session, existing.id, candidate.raw_item_ids
-                ):
+                )
+                if same_membership:
+                    assert existing is not None
                     event_ids.append(existing.id)
                 session.commit()
-                if existing is not None and self._has_same_membership(
-                    session, existing.id, candidate.raw_item_ids
-                ):
+                if same_membership:
                     continue
 
             evidence = assess_evidence(candidate.items)
@@ -369,55 +386,120 @@ class EventPipeline:
                 prior_event_exists=prior_event_exists,
                 prior_evidence_roots=prior_evidence_roots,
             )
+            publish_plans.append((candidate, score_input))
 
-            # Network/model work is deliberately between short DB sessions.
-            enrichment, model_runs = self._enrich(candidate)
-            if enrichment.origin == "rule_fallback":
-                model_fallback_count += 1
+        # Optional network work is complete before any publication transaction.
+        enrichment_results = self._enrich_candidates(
+            tuple(candidate for candidate, _ in publish_plans)
+        )
+        checkpoint("after_event_enrichment")
+        model_success_count = sum(
+            result.enrichment.origin == "model"
+            for result in enrichment_results.values()
+        )
+        model_fallback_count = len(enrichment_results) - model_success_count
+
+        for candidate, score_input in publish_plans:
+            checkpoint("before_event_publish_candidate")
+            enrichment_result = enrichment_results[candidate.candidate_key]
             with self._session_factory() as session:
                 repository = EventRepository(session)
                 existing = session.scalar(
                     select(EventRecord).where(EventRecord.canonical_key == candidate.candidate_key)
                 )
+                if existing is not None and self._has_same_membership(
+                    session, existing.id, candidate.raw_item_ids
+                ):
+                    self._record_model_runs(
+                        repository, existing.id, enrichment_result.model_runs
+                    )
+                    event_ids.append(existing.id)
+                    session.commit()
+                    continue
                 claimed_event_id: int | None = None
                 if existing is not None:
                     claimed_event_id = existing.id
                     if not repository.claim_event(
                         existing.id, operation_id, datetime.now(UTC) + timedelta(minutes=5)
                     ):
-                        event_ids.append(existing.id)
-                        session.commit()
-                        continue
+                        raise EventPublicationConflict(
+                            "Event publication lease is held by another Operation"
+                        )
                 published = EventPublisher(repository).publish_snapshot(
                     candidate,
                     operation_id,
                     score_input=score_input,
-                    enrichment=enrichment,
+                    enrichment=enrichment_result.enrichment,
+                    model_usages=tuple(
+                        model_run.usage
+                        for model_run in enrichment_result.model_runs
+                    ),
                 )
                 if claimed_event_id is not None:
                     repository.release_event(claimed_event_id, operation_id)
                 assert published.event_id is not None
-                for model_run in model_runs:
-                    try:
-                        with session.begin_nested():
-                            repository.record_model_run(published.event_id, model_run.usage)
-                    except Exception:
-                        # Provenance is best effort; never roll back a published event.
-                        continue
                 event_ids.append(published.event_id)
-                created += 1
+                created += int(repository.last_publish_created_version is True)
                 session.commit()
-        return event_ids, created, model_fallback_count
+        return event_ids, created, model_success_count, model_fallback_count
+
+    @staticmethod
+    def _record_model_runs(
+        repository: EventRepository,
+        event_id: int,
+        model_runs: tuple[EventModelRun, ...],
+    ) -> None:
+        try:
+            with repository.session.begin_nested():
+                for model_run in model_runs:
+                    repository.record_model_run(event_id, model_run.usage)
+        except Exception as error:
+            raise EventModelAuditError(
+                "Model attempt audit could not be linked to the published event"
+            ) from error
+
+    @staticmethod
+    def _enrich_candidates(
+        candidates: tuple[CandidateCluster, ...]
+    ) -> dict[str, EventEnrichmentResult]:
+        settings = get_settings()
+
+        async def adapter(candidate, fallback):
+            del fallback
+            enrichment, model_runs = await asyncio.to_thread(
+                EventPipeline._enrich, candidate
+            )
+            return EventEnrichmentResult(
+                enrichment=enrichment,
+                model_runs=tuple(model_runs),
+            )
+
+        async def run():
+            return await EventEnrichmentBatch(
+                adapter=adapter,
+                max_concurrency=settings.event_model_max_concurrency,
+                fallback_model=settings.minimax_fast_model,
+            ).enrich(candidates)
+
+        return asyncio.run(run())
 
     @staticmethod
     def _enrich(candidate):
         """Call MiniMax only in the Worker pipeline; hard fallback remains publishable."""
         fallback = rule_enrichment(candidate)
         settings = get_settings()
-        if not settings.minimax_api_key:
-            return fallback, ()
-
         runs: list[EventModelRun] = []
+        if not settings.minimax_api_key:
+            usage = ModelUsage(
+                purpose="event_enrichment",
+                model=settings.minimax_fast_model,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=0,
+                outcome="fallback",
+                error="no_api_key",
+            )
+            return fallback, (EventModelRun(stage=usage.purpose, usage=usage),)
 
         async def run():
             import httpx
@@ -430,6 +512,17 @@ class EventPipeline:
         try:
             return asyncio.run(run()), tuple(runs)
         except Exception:
+            if not runs:
+                usage = ModelUsage(
+                    purpose="event_enrichment",
+                    model=settings.minimax_fast_model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=0,
+                    outcome="fallback",
+                    error="unexpected_error",
+                )
+                runs.append(EventModelRun(stage=usage.purpose, usage=usage))
             return fallback, tuple(runs)
 
     @staticmethod

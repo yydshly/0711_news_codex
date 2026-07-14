@@ -18,9 +18,9 @@ from newsradar.db.models import (
     SourceDefinitionRecord,
 )
 from newsradar.events.minimax import EventModelRun
-from newsradar.events.pipeline import EventPipeline
+from newsradar.events.pipeline import EventPipeline, PipelineResult
 from newsradar.events.publishing import rule_enrichment
-from newsradar.events.repository import EventRepository
+from newsradar.events.repository import EventModelAuditError, EventRepository
 from newsradar.events.runtime import EventOperationHandler
 from newsradar.events.schema import (
     EventEnrichment,
@@ -150,6 +150,65 @@ def test_event_handler_rejects_invalid_pipeline_scope() -> None:
 
     assert result.status is OperationStatus.FAILED
     assert result.error_code == "invalid_event_scope"
+
+
+def test_pipeline_worker_result_summary_contains_complete_quality_counts(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    class FakePipeline:
+        def run(self, **kwargs):
+            del kwargs
+            return PipelineResult(
+                current_event_ids=(10, 11),
+                created_event_versions=2,
+                candidate_count=3,
+                processed_item_count=4,
+                selected_item_count=7,
+                included_item_count=4,
+                excluded_item_count=3,
+                exclusion_reasons={"generic_technology": 2, "insufficient_text": 1},
+                duplicate_root_suppressed_count=1,
+                model_success_count=1,
+                model_fallback_count=1,
+            )
+
+    monkeypatch.setattr(
+        EventPipeline,
+        "production",
+        classmethod(lambda cls, session: FakePipeline()),
+    )
+    deadline = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1,
+            1,
+            1,
+            "worker",
+            {"window_hours": 72, "deadline_at": deadline},
+            "event_pipeline",
+        ),
+        lambda _: None,
+    )
+
+    assert result.status is OperationStatus.SUCCEEDED
+    assert result.result_summary == {
+        "event_ids": [10, 11],
+        "selected_item_count": 7,
+        "included_item_count": 4,
+        "excluded_item_count": 3,
+        "exclusion_reasons": {
+            "generic_technology": 2,
+            "insufficient_text": 1,
+        },
+        "candidate_count": 3,
+        "created_event_versions": 2,
+        "model_success_count": 1,
+        "model_fallback_count": 1,
+        "processed_item_count": 4,
+        "duplicate_root_suppressed_count": 1,
+        "duration_ms": result.result_summary["duration_ms"],
+        "retry_count": 0,
+    }
 
 
 def test_event_action_rejects_unknown_event_id() -> None:
@@ -372,6 +431,51 @@ def test_enrich_publishes_deterministic_rule_fallback_after_model_degradation(mo
         assert current is not None
         assert current.payload["enrichment"]["origin"] == "rule_fallback"
         assert current.payload["enrichment"]["zh_title"] == "Current title"
+
+
+def test_enrich_audit_failure_rolls_back_new_version_and_releases_lease(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    event_id = _seed_published_event(engine, ("OpenAI launches Alpha model",))
+
+    def model_enrichment(candidate):
+        usage = ModelUsage(
+            purpose="event_enrichment",
+            model="MiniMax-M2.7-highspeed",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            outcome="success",
+        )
+        return (
+            rule_enrichment(candidate).model_copy(update={"origin": "model"}),
+            (EventModelRun(stage=usage.purpose, usage=usage),),
+        )
+
+    def fail_audit(self, event_id, usage):
+        del self, event_id, usage
+        raise RuntimeError("audit storage unavailable")
+
+    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(model_enrichment))
+    monkeypatch.setattr(EventRepository, "record_model_run", fail_audit)
+    result = EventOperationHandler(lambda: Session(engine))(
+        OperationLease(
+            1, 5, 1, "worker", {"event_id": event_id, "actor": "web"}, "event_enrich"
+        ),
+        lambda _: None,
+    )
+
+    assert result.status is OperationStatus.FAILED
+    assert result.error_code == EventModelAuditError.error_code
+    assert result.retryable is True
+    with Session(engine) as db:
+        event = db.get(EventRecord, event_id)
+        assert event is not None
+        assert event.current_version_number == 1
+        assert event.lease_operation_id is None
+        assert db.query(ModelUsageRecord).count() == 0
 
 
 def test_exclude_action_marks_event_rejected_and_releases_lease() -> None:

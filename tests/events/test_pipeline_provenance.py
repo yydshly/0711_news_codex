@@ -8,15 +8,17 @@ from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     Base,
     EventModelRunRecord,
+    EventRecord,
     ModelUsageRecord,
     OperationRunRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
 from newsradar.events.minimax import EventModelRun
-from newsradar.events.pipeline import EventPipeline
+from newsradar.events.pipeline import EventModelAuditError, EventPipeline
 from newsradar.events.publishing import rule_enrichment
 from newsradar.events.repository import EventRepository
+from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
 
 
@@ -136,7 +138,9 @@ def test_event_detail_projects_persisted_model_provenance(monkeypatch) -> None:
     assert detail.minimax_degraded is False
 
 
-def test_model_provenance_sink_failure_does_not_block_publication(monkeypatch) -> None:
+def test_model_provenance_sink_failure_rolls_back_publication_and_is_retryable(
+    monkeypatch,
+) -> None:
     engine = _engine_with_candidate()
 
     def enrichment(candidate):
@@ -156,14 +160,86 @@ def test_model_provenance_sink_failure_does_not_block_publication(monkeypatch) -
 
     monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(enrichment))
     monkeypatch.setattr(EventRepository, "record_model_run", fail_sink)
-    with Session(engine) as db:
-        result = EventPipeline.production(db).run(
+    with Session(engine) as db, pytest.raises(EventModelAuditError) as raised:
+        EventPipeline.production(db).run(
             window_hours=24, operation_id=43, checkpoint=lambda _: None
         )
 
-    assert result.created_event_versions == 1
+    assert raised.value.retryable is True
     with Session(engine) as db:
-        detail = EventQueryService(db).get_event(result.current_event_ids[0])
-        assert detail is not None
+        assert db.scalar(select(EventRecord)) is None
         assert db.scalar(select(ModelUsageRecord)) is None
         assert db.scalar(select(EventModelRunRecord)) is None
+
+
+def test_pipeline_links_every_repair_attempt_to_the_final_event(monkeypatch) -> None:
+    engine = _engine_with_candidate()
+
+    def enrichment(candidate):
+        fallback = rule_enrichment(candidate).model_copy(update={"origin": "model"})
+        usages = (
+            ModelUsage(
+                purpose="event_enrichment",
+                model="MiniMax-M2.7-highspeed",
+                input_tokens=10,
+                output_tokens=3,
+                latency_ms=2,
+                outcome="retry",
+                error="invalid_response",
+            ),
+            ModelUsage(
+                purpose="event_enrichment",
+                model="MiniMax-M2.7-highspeed",
+                input_tokens=11,
+                output_tokens=4,
+                latency_ms=3,
+                outcome="success",
+            ),
+        )
+        return fallback, tuple(
+            EventModelRun(stage=usage.purpose, usage=usage) for usage in usages
+        )
+
+    monkeypatch.setattr(EventPipeline, "_enrich", staticmethod(enrichment))
+    with Session(engine) as db:
+        event_id = EventPipeline.production(db).run(
+            window_hours=24, operation_id=41, checkpoint=lambda _: None
+        ).current_event_ids[0]
+
+    with Session(engine) as db:
+        usages = tuple(db.scalars(select(ModelUsageRecord).order_by(ModelUsageRecord.id)))
+        runs = tuple(db.scalars(select(EventModelRunRecord).order_by(EventModelRunRecord.id)))
+
+    assert [usage.outcome for usage in usages] == ["retry", "success"]
+    assert [usage.error for usage in usages] == ["invalid_response", None]
+    assert len(runs) == 2
+    assert {run.event_id for run in runs} == {event_id}
+    assert [run.model_usage_id for run in runs] == [usage.id for usage in usages]
+
+
+def test_pipeline_persists_safe_no_api_key_usage_without_network(monkeypatch) -> None:
+    engine = _engine_with_candidate()
+    monkeypatch.setattr(
+        "newsradar.events.pipeline.get_settings",
+        lambda: Settings(minimax_api_key=None),
+    )
+
+    with Session(engine) as db:
+        event_id = EventPipeline.production(db).run(
+            window_hours=24, operation_id=41, checkpoint=lambda _: None
+        ).current_event_ids[0]
+
+    with Session(engine) as db:
+        usage = db.scalar(select(ModelUsageRecord))
+        run = db.scalar(select(EventModelRunRecord))
+
+    assert usage is not None
+    assert usage.outcome == "fallback"
+    assert usage.error == "no_api_key"
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
+    assert "Bearer" not in repr(usage.error)
+    assert "?" not in usage.error
+    assert run is not None
+    assert run.event_id == event_id
+    assert run.model_usage_id == usage.id

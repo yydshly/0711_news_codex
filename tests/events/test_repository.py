@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -410,3 +412,27 @@ def test_insert_rejects_unsupported_database_dialect() -> None:
 
     with pytest.raises(ValueError, match="Unsupported event repository dialect: mysql"):
         repository._insert(EventRecord)
+
+
+def test_publish_does_not_swallow_unrelated_integrity_error() -> None:
+    class OtherConstraintError(Exception):
+        diag = SimpleNamespace(
+            constraint_name="event_versions_event_id_version_number_key"
+        )
+
+    with session() as db:
+        def fail_unrelated_constraint(session, flush_context, instances) -> None:
+            del flush_context, instances
+            if any(isinstance(row, EventRecord) for row in session.new):
+                raise IntegrityError(
+                    "INSERT INTO events",
+                    {},
+                    OtherConstraintError("unrelated unique violation"),
+                )
+
+        sqlalchemy_event.listen(db, "before_flush", fail_unrelated_constraint)
+
+        with pytest.raises(IntegrityError, match="unrelated unique violation"):
+            EventRepository(db).publish_complete_event(
+                published_event(), operation_id=1
+            )
