@@ -218,7 +218,9 @@ class FetcherFactory:
         if host == "news.google.com" and method.kind is AccessKind.RSS:
             return GoogleNewsFetcher(self.policy)
         if method.kind is AccessKind.PUBLIC_API and (
-            path.startswith("/api/v1/accounts/") or path == "/api/v1/timelines/public"
+            path.startswith("/api/v1/accounts/")
+            or path == "/api/v1/timelines/public"
+            or path.startswith("/api/v1/timelines/tag/")
         ):
             return MastodonFetcher(self.policy)
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
@@ -241,5 +243,7 @@ class FetcherFactory:
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
             return True
         return method.kind is AccessKind.PUBLIC_API and (
-            path.startswith("/api/v1/accounts/") or path == "/api/v1/timelines/public"
+            path.startswith("/api/v1/accounts/")
+            or path == "/api/v1/timelines/public"
+            or path.startswith("/api/v1/timelines/tag/")
         )

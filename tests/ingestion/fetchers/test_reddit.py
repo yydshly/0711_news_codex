@@ -80,3 +80,43 @@ async def test_reddit_missing_credentials_is_blocked() -> None:
             source, source.access_methods[0], FetchState(), 5
         )
     assert result.outcome is FetchOutcome.BLOCKED and result.error_code == "missing_credential"
+
+
+def test_reddit_does_not_retain_deleted_author_or_body() -> None:
+    item = RedditFetcher._item(
+        {
+            "name": "t3_1",
+            "title": "Deleted post",
+            "permalink": "/r/test/comments/1/deleted/",
+            "author": "[deleted]",
+            "selftext": "[deleted]",
+            "created_utc": 1,
+            "score": 0,
+            "num_comments": 0,
+        }
+    )
+
+    assert item is not None
+    assert item.authors == ()
+    assert item.content is None
+    assert "[deleted]" not in str(item.raw_payload)
+
+
+def test_reddit_does_not_retain_removed_body() -> None:
+    item = RedditFetcher._item(
+        {
+            "name": "t3_2",
+            "title": "Removed post",
+            "permalink": "/r/test/comments/2/removed/",
+            "author": "alice",
+            "selftext": "[removed]",
+            "created_utc": 1,
+            "score": 0,
+            "num_comments": 0,
+        }
+    )
+
+    assert item is not None
+    assert item.authors == ("alice",)
+    assert item.content is None
+    assert "[removed]" not in str(item.raw_payload)

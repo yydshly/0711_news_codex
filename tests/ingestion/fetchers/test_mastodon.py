@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from newsradar.ingestion.fetchers.base import FetchState, HttpPolicy
+from newsradar.ingestion.fetchers.base import FetcherFactory, FetchState, HttpPolicy
 from newsradar.ingestion.fetchers.mastodon import MastodonFetcher
 from newsradar.ingestion.schema import FetchOutcome
 from newsradar.sources.schema import SourceDefinition
@@ -106,6 +106,38 @@ async def test_mastodon_allows_only_local_configured_public_timeline() -> None:
                 source,
                 source.access_methods[0],
                 FetchState(cursor="https://other.example/api/v1/accounts/42/statuses"),
+                5,
+            )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_mastodon_allows_only_a_registered_tag_timeline() -> None:
+    source = mastodon_source("/api/v1/timelines/tag/AI")
+    respx.get(str(source.access_methods[0].url)).mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    async with httpx.AsyncClient() as client:
+        result = await MastodonFetcher(HttpPolicy(client)).fetch(
+            source, source.access_methods[0], FetchState(), 5
+        )
+        fetcher = FetcherFactory(HttpPolicy(client)).for_method(source.access_methods[0])
+
+    assert result.outcome is FetchOutcome.SUCCEEDED
+    assert isinstance(fetcher, MastodonFetcher)
+
+
+@pytest.mark.asyncio
+async def test_mastodon_tag_cursor_cannot_switch_tags() -> None:
+    source = mastodon_source("/api/v1/timelines/tag/AI")
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ValueError, match="unregistered_mastodon_instance"):
+            await MastodonFetcher(HttpPolicy(client)).fetch(
+                source,
+                source.access_methods[0],
+                FetchState(
+                    cursor="https://social.example/api/v1/timelines/tag/LLM?max_id=8"
+                ),
                 5,
             )
 
