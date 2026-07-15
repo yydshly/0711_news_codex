@@ -332,3 +332,116 @@ def test_postgres_catalog_handler_cancellation_stops_after_current_probe() -> No
                 )
                 cleanup.commit()
         engine.dispose()
+
+
+def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> None:
+    """Recovery reclaims an expired wave without re-probing a successful member."""
+    engine = _postgres_engine_or_skip()
+    operation_id: int | None = None
+    worker_id = "catalog-recovery-acceptance"
+    calls: list[str] = []
+    try:
+        sources = load_source_tree(Path("sources"))[:2]
+        handler = CatalogRefreshHandler(sources, [], lambda: Session(engine))
+        with Session(engine) as setup:
+            operation = OperationRunRecord(
+                operation_type="source_catalog_refresh",
+                trigger="acceptance",
+                status="running",
+                requested_scope={
+                    "catalog_count": 2,
+                    "deadline_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                },
+                result_summary={},
+                progress_total=2,
+                attempt_count=1,
+                lease_expires_at=datetime(2000, 1, 1, tzinfo=UTC),
+            )
+            setup.add(operation)
+            setup.flush()
+            operation_id = operation.id
+            snapshots = [
+                CatalogRefreshMemberSnapshot(
+                    source_id=source.id,
+                    provider_id=source.provider_id,
+                    definition_hash=handler.definition_hash(source, []),
+                    availability="ready",
+                    coverage_mode="direct",
+                    access_kind=source.access_methods[0].kind.value,
+                    lane=CatalogRefreshLane.CONTENT,
+                )
+                for source in sources
+            ]
+            repository = CatalogRefreshRepository(setup)
+            repository.create_members(operation_id, CatalogRefreshPlan.from_members(snapshots))
+            prior = SourceProbeRunRecord(
+                operation_run_id=operation_id,
+                source_id=sources[0].id,
+                access_kind=sources[0].access_methods[0].kind.value,
+                access_url=str(sources[0].access_methods[0].url),
+                outcome="succeeded",
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+                response_headers={},
+                metrics={},
+                suggested_status="candidate",
+                reason="prior success",
+            )
+            setup.add(prior)
+            setup.flush()
+            repository.finish_member(
+                operation_id,
+                sources[0].id,
+                CatalogMemberState.SUCCEEDED,
+                None,
+                "prior success",
+                content_probe_run_ids=[prior.id],
+            )
+            repository.start_member(operation_id, sources[1].id)
+            setup.commit()
+
+        async def probe(source, method) -> ProbeResult:
+            calls.append(source.id)
+            return await _content_success(source, method)
+
+        handler = CatalogRefreshHandler(sources, [], lambda: Session(engine), probe)
+        with Session(engine) as worker_session:
+            assert Worker(OperationRepository(worker_session), worker_id).run_once(handler)
+        with Session(engine) as verification:
+            operation = verification.get(OperationRunRecord, operation_id)
+            assert operation is not None
+            assert operation.status == "succeeded"
+            assert operation.result_summary["catalog_count"] == 2
+            assert operation.result_summary["completed_count"] == 2
+            successful_probes = verification.scalars(
+                select(SourceProbeRunRecord).where(
+                    SourceProbeRunRecord.operation_run_id == operation_id,
+                    SourceProbeRunRecord.source_id == sources[0].id,
+                )
+            ).all()
+            assert len(successful_probes) == 1
+        assert calls == [sources[1].id] * 3
+    finally:
+        if operation_id is not None:
+            with Session(engine) as cleanup:
+                cleanup.execute(
+                    delete(SourceProbeRunRecord).where(
+                        SourceProbeRunRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationEventRecord).where(
+                        OperationEventRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationAttemptRecord).where(
+                        OperationAttemptRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
+                )
+                cleanup.execute(delete(WorkerRecord).where(WorkerRecord.worker_id == worker_id))
+                cleanup.commit()
+        engine.dispose()
