@@ -3,7 +3,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import Base, SourceCatalogRefreshMemberRecord
+from newsradar.db.models import Base, OperationRunRecord, SourceCatalogRefreshMemberRecord
 from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
     CatalogRefreshLane,
@@ -92,6 +92,29 @@ def test_start_finish_and_unfinished_members_exclude_terminal_records(session: S
     assert started.started_at is not None
     assert finished.finished_at is not None
     assert [record.source_id for record in repository.unfinished_members(11)] == ["b"]
+
+
+def test_finishing_a_member_advances_operation_progress_once(session: Session) -> None:
+    session.add(
+        OperationRunRecord(
+            id=11,
+            operation_type="source_catalog_refresh",
+            trigger="test",
+            status="running",
+            requested_scope={},
+            result_summary={},
+            progress_current=0,
+            progress_total=2,
+            attempt_count=1,
+        )
+    )
+    session.commit()
+    repository = CatalogRefreshRepository(session)
+    repository.create_members(11, plan(member("a"), member("b")))
+    repository.finish_member(11, "a", CatalogMemberState.SUCCEEDED, None, "完成")
+    repository.finish_member(11, "a", CatalogMemberState.SUCCEEDED, None, "重复完成")
+
+    assert session.get(OperationRunRecord, 11).progress_current == 1
 
 
 def test_start_missing_member_raises_lookup_error(session: Session) -> None:

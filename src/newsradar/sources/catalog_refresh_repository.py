@@ -7,7 +7,11 @@ from collections import Counter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import SourceCatalogRefreshMemberRecord, utcnow
+from newsradar.db.models import (
+    OperationRunRecord,
+    SourceCatalogRefreshMemberRecord,
+    utcnow,
+)
 
 from .catalog_refresh import (
     CatalogMemberState,
@@ -91,6 +95,7 @@ class CatalogRefreshRepository:
         provider_probe_run_id: int | None = None,
     ) -> SourceCatalogRefreshMemberRecord:
         record = self._get_member(operation_run_id, source_id)
+        was_unfinished = record.state in _UNFINISHED_STATES
         record.state = state.value
         record.result_code = result_code.value if result_code else None
         record.conclusion = conclusion
@@ -99,6 +104,16 @@ class CatalogRefreshRepository:
         if provider_probe_run_id is not None:
             record.provider_probe_run_id = provider_probe_run_id
         record.finished_at = utcnow()
+        # The operation view is the live, durable progress surface.  Count a member
+        # exactly once when it first leaves a resumable state; recovery must never
+        # inflate the total by revisiting an already terminal member.
+        if was_unfinished:
+            operation = self.session.get(OperationRunRecord, operation_run_id)
+            if operation is not None:
+                operation.progress_current = min(
+                    (operation.progress_current or 0) + 1,
+                    operation.progress_total or (operation.progress_current or 0) + 1,
+                )
         self.session.flush()
         return record
 

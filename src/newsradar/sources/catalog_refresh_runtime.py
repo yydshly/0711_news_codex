@@ -13,6 +13,7 @@ from typing import Protocol
 import httpx
 from sqlalchemy.orm import Session
 
+from newsradar.db.models import OperationRunRecord
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
@@ -140,6 +141,9 @@ class CatalogRefreshHandler:
         outcomes = [*content_outcomes, *capability_outcomes, *catalog_outcomes]
         deadline.check("after_catalog_refresh")
         summary = Counter(outcome.state.value for outcome in outcomes)
+        with self._create_session() as session:
+            operation = session.get(OperationRunRecord, lease.operation_id)
+            completed_count = operation.progress_current if operation is not None else 0
         return OperationResult(
             status=(
                 OperationStatus.SUCCEEDED
@@ -147,7 +151,11 @@ class CatalogRefreshHandler:
                 or all(outcome.state is CatalogMemberState.SUCCEEDED for outcome in outcomes)
                 else OperationStatus.PARTIAL
             ),
-            result_summary={"content_members": len(outcomes), **dict(sorted(summary.items()))},
+            result_summary={
+                "catalog_count": len(outcomes),
+                "completed_count": completed_count,
+                **dict(sorted(summary.items())),
+            },
             retryable=False,
         )
 
