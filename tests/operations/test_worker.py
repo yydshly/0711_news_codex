@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from threading import Event, Thread
 
 from sqlalchemy import create_engine, select
@@ -56,6 +57,27 @@ def test_worker_without_operation_persists_idle_heartbeat() -> None:
         assert record.status == "idle"
         assert record.current_operation_run_id is None
         assert record.last_heartbeat_at is not None
+
+
+def test_idle_heartbeat_clears_missing_operation_reference() -> None:
+    with session() as db:
+        db.add(
+            WorkerRecord(
+                worker_id="orphan-worker",
+                hostname="local",
+                started_at=datetime.now(UTC),
+                last_heartbeat_at=datetime.now(UTC),
+                status="running",
+                current_operation_run_id=999,
+            )
+        )
+        db.commit()
+
+        assert Worker(OperationRepository(db), "orphan-worker").run_once(lambda *_: None) is False
+
+        record = db.get(WorkerRecord, "orphan-worker")
+        assert record.status == "idle"
+        assert record.current_operation_run_id is None
 
 
 def test_finished_operation_returns_worker_to_idle() -> None:

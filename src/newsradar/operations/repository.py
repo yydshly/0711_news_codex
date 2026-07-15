@@ -143,7 +143,12 @@ class OperationRepository:
         with self._transaction():
             worker = self._ensure_worker(worker_id)
             if worker.current_operation_run_id is not None and status == "idle":
-                return
+                operation = self.session.get(
+                    OperationRunRecord, worker.current_operation_run_id
+                )
+                if operation is not None and operation.status == OperationStatus.RUNNING.value:
+                    return
+                worker.current_operation_run_id = None
             worker.last_heartbeat_at = self._now()
             worker.status = status
 
