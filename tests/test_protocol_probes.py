@@ -197,6 +197,44 @@ async def test_mastodon_probe_normalizes_public_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mastodon_probe_uses_reblog_content_when_status_content_is_empty() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "boost-100",
+                    "url": "https://mastodon.social/@mastodon/boost-100",
+                    "created_at": "2026-07-10T12:00:00Z",
+                    "account": {"display_name": "Mastodon", "acct": "mastodon"},
+                    "content": "",
+                    "replies_count": 0,
+                    "reblogs_count": 1,
+                    "favourites_count": 2,
+                    "reblog": {"content": "<p>Original public update</p>"},
+                }
+            ],
+            request=request,
+        )
+
+    source = source_with(
+        {
+            "kind": "public_api",
+            "url": "https://mastodon.social/api/v1/accounts/13179/statuses",
+            "priority": 1,
+        },
+        ["title", "canonical_url", "published_at", "author", "content", "engagement"],
+    )
+    method = source.access_methods[0]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProbeFactory(client).create(method).probe(source, method)
+
+    assert result.outcome is ProbeOutcome.SUCCESS
+    assert result.samples[0].title == "Original public update"
+    assert result.samples[0].content == "Original public update"
+
+
+@pytest.mark.asyncio
 async def test_reddit_probe_blocks_without_oauth_credentials() -> None:
     class MissingCredentials:
         def require(self, name: str) -> str:

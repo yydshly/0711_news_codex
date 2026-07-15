@@ -138,7 +138,8 @@ class MastodonProbe(JsonApiProbe):
             if not isinstance(status, dict):
                 continue
             account = status.get("account") if isinstance(status.get("account"), dict) else {}
-            content = html_to_text(status.get("content"))
+            reblog = status.get("reblog") if isinstance(status.get("reblog"), dict) else {}
+            content = html_to_text(status.get("content")) or html_to_text(reblog.get("content"))
             flattened.append(
                 {
                     "id": status.get("id"),
