@@ -20,11 +20,16 @@ def response_payload(content: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_classification_uses_fast_model_and_validates_json() -> None:
+async def test_classification_uses_current_chat_api_and_validates_json() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        assert request.url.path == "/v1/chat/completions"
         assert body["model"] == "MiniMax-M2.7-highspeed"
-        assert body["tools"] == []
+        assert body["reasoning_split"] is True
+        assert body["max_completion_tokens"] == 4096
+        assert body["temperature"] == 1.0
+        assert "response_format" not in body
+        assert "tools" not in body
         assert request.headers["authorization"] == "Bearer secret"
         return httpx.Response(
             200,

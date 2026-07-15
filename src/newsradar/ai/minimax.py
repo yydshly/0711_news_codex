@@ -210,7 +210,7 @@ class MiniMaxClient:
             usage_payload: dict = {}
             try:
                 request = self.http.post(
-                    f"{self.settings.minimax_base_url.rstrip('/')}/v1/text/chatcompletion_v2",
+                    f"{self.settings.minimax_base_url.rstrip('/')}/v1/chat/completions",
                     headers={
                         "Authorization": (
                             f"Bearer {self.settings.minimax_api_key.get_secret_value()}"
@@ -220,9 +220,9 @@ class MiniMaxClient:
                     json={
                         "model": model,
                         "messages": [{"role": "user", "content": attempt_prompt}],
-                        "tools": [],
-                        "tool_choice": "none",
-                        "temperature": 0.1,
+                        "reasoning_split": True,
+                        "max_completion_tokens": 4096,
+                        "temperature": 1.0,
                     },
                     timeout=remaining_timeout,
                 )
