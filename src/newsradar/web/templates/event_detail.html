@@ -2,7 +2,9 @@
 {% block title %}{{ event_detail.event.zh_title }} · News Codex{% endblock %}
 {% block header %}<h1>事件详情</h1>{% endblock %}
 {% block content %}
-{% if event_detail.event.visibility == 'legacy' %}
+{% if event_detail.snapshot %}
+<section class="panel" role="status"><strong>固定运行快照 · Operation #{{ event_detail.snapshot.operation_id }}</strong><p>本页展示该次运行固定的事件版本，不会随全局 current 指针变化。</p></section>
+{% elif event_detail.event.visibility == 'legacy' %}
 <section class="panel diagnostic-warning" role="status"><strong>旧版算法结果，不参与当前首页</strong><p>此详情仅供历史追溯。</p></section>
 {% elif event_detail.minimax_degraded %}
 <section class="panel diagnostic-warning" role="status"><strong>MiniMax 已降级</strong><p>当前使用规则中文回退；证据、确认状态与评分未由模型决定。</p></section>
@@ -47,5 +49,5 @@
   </ul>
 </section>
 
-<section class="panel"><h2>受控操作</h2><p>操作只会入队，由 Worker 执行；网页不访问模型或外部网络。</p>{% for action, label in [('recluster','重新聚类'),('enrich','补充摘要'),('exclude','排除事件')] %}<form method="post" action="/events/{{ event_detail.event.event_id }}/{{ action }}"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">{{ label }}</button></form>{% endfor %}</section>
+{% if not event_detail.snapshot %}<section class="panel"><h2>受控操作</h2><p>操作只会入队，由 Worker 执行；网页不访问模型或外部网络。</p>{% for action, label in [('recluster','重新聚类'),('enrich','补充摘要'),('exclude','排除事件')] %}<form method="post" action="/events/{{ event_detail.event.event_id }}/{{ action }}"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">{{ label }}</button></form>{% endfor %}</section>{% endif %}
 {% endblock %}

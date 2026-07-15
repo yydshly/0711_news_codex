@@ -1,52 +1,47 @@
 {% extends "base.html" %}
-{% set is_legacy = event_page.filters.get('visibility') == 'legacy' %}
-{% block title %}{{ '历史旧版事件' if is_legacy else '当前事件' }} · News Codex{% endblock %}
-{% block header %}<h1>{{ '历史旧版事件' if is_legacy else '当前事件' }}</h1>{% endblock %}
+{% set filters = event_page.filters if event_page else {} %}
+{% set is_legacy = filters.get('visibility') == 'legacy' %}
+{% set is_snapshot = event_scope == 'latest' and filters.get('visibility', 'current') == 'current' and event_page and not snapshot_unavailable %}
+{% block title %}{{ '最新运行事件' if is_snapshot else ('历史旧版事件' if is_legacy else '全局 current 目录') }} · News Codex{% endblock %}
+{% block header %}<h1>{{ '最新运行事件' if is_snapshot else ('历史旧版事件' if is_legacy else '全局 current 目录') }}</h1>{% endblock %}
 {% block content %}
-{% if is_legacy %}
+{% if snapshot_unavailable %}
 <section class="panel diagnostic-warning" role="status">
-  <strong>旧版算法结果，不参与当前首页</strong>
-  <p>此处仅保留历史可追溯记录；评分、中文摘要和证据完整度可能不符合 Event Intelligence v2 门槛。</p>
+  <strong>尚无可展示的完整事件运行快照</strong>
+  <p>系统不会把全局 current 目录冒充为最新运行结果。请先完成一次成功的事件构建，或查看全局目录。</p>
+  <p><a href="/events?scope=current_catalog">查看全局 current 目录</a> · <a href="/events?scope=catalog&amp;visibility=legacy">查看历史旧版事件</a></p>
 </section>
+{% else %}
+{% if is_snapshot %}
+<section class="panel" role="status">
+  <strong>最新完整运行快照 · Operation #{{ event_page.snapshot.operation_id }}</strong>
+  <p>窗口截至 {{ event_page.snapshot.window_end|format_datetime_zh }}，完成于 {{ event_page.snapshot.finished_at|format_datetime_zh }}。列表和详情均固定到该次运行的事件版本。</p>
+  {% if event_page.snapshot.skipped_newer_count %}<p>已跳过 {{ event_page.snapshot.skipped_newer_count }} 次较新的不完整运行。</p>{% endif %}
+</section>
+{% elif is_legacy %}
+<section class="panel diagnostic-warning" role="status"><strong>旧版算法结果，不参与当前首页</strong><p>此处仅保留历史可追溯记录；评分、中文摘要和证据完整度可能不符合 Event Intelligence v2 门槛。</p></section>
+{% else %}
+<section class="panel diagnostic-warning" role="status"><strong>全局 current 目录</strong><p>此目录用于排查全部当前记录，可能不同于某次最新运行快照。</p></section>
 {% endif %}
 <section class="panel">
-  <p><a href="/">返回事件首页</a> · <a href="/events">当前事件</a> · <a href="/events?visibility=legacy">历史旧版事件</a> · <a href="/emerging">新兴线索</a></p>
+  <p><a href="/">返回事件首页</a> · <a href="/events">最新运行事件</a> · <a href="/events?scope=current_catalog">全局 current 目录</a> · <a href="/events?scope=catalog&amp;visibility=legacy">历史旧版事件</a> · <a href="/emerging">新兴线索</a></p>
   <form method="get" action="/events" aria-label="事件筛选">
-    <input type="hidden" name="visibility" value="{{ event_page.filters.get('visibility', 'current') }}">
-    <label>状态
-      <select name="status">
-        <option value="">全部状态</option>
-        {% for value in ('confirmed', 'emerging', 'developing', 'disputed', 'stale', 'rejected') %}<option value="{{ value }}"{% if event_page.filters.get('status') == value %} selected{% endif %}>{{ value|zh_label('event_status') }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>类别
-      <select name="category">
-        <option value="">全部类别</option>
-        {% for value in ('product_model', 'research', 'developer_tool', 'company') %}<option value="{{ value }}"{% if event_page.filters.get('category') == value %} selected{% endif %}>{{ value|zh_label('event_category') }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>展示层级
-      <select name="tier">
-        <option value="">全部层级</option>
-        {% for value in ('hotspot', 'signal', 'audit_only') %}<option value="{{ value }}"{% if event_page.filters.get('display_tier') == value %} selected{% endif %}>{{ value|zh_label('event_tier') }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>时间范围
-      <select name="hours">
-        <option value="">全部时间</option>
-        {% for value, label in ((24, '最近 24 小时'), (72, '最近 72 小时'), (168, '最近 7 天')) %}<option value="{{ value }}"{% if event_page.filters.get('hours') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
-      </select>
-    </label>
+    <input type="hidden" name="scope" value="{{ event_scope }}">
+    <input type="hidden" name="visibility" value="{{ filters.get('visibility', 'current') }}">
+    <label>状态 <select name="status"><option value="">全部状态</option>{% for value in ('confirmed', 'emerging', 'developing', 'disputed', 'stale', 'rejected') %}<option value="{{ value }}"{% if filters.get('status') == value %} selected{% endif %}>{{ value|zh_label('event_status') }}</option>{% endfor %}</select></label>
+    <label>类别 <select name="category"><option value="">全部类别</option>{% for value in ('product_model', 'research', 'developer_tool', 'company') %}<option value="{{ value }}"{% if filters.get('category') == value %} selected{% endif %}>{{ value|zh_label('event_category') }}</option>{% endfor %}</select></label>
+    <label>展示层级 <select name="tier"><option value="">全部层级</option>{% for value in ('hotspot', 'signal', 'audit_only') %}<option value="{{ value }}"{% if filters.get('display_tier') == value %} selected{% endif %}>{{ value|zh_label('event_tier') }}</option>{% endfor %}</select></label>
+    <label>时间范围 <select name="hours"><option value="">全部时间</option>{% for value, label in ((24, '最近 24 小时'), (72, '最近 72 小时'), (168, '最近 7 天')) %}<option value="{{ value }}"{% if filters.get('hours') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
     <button type="submit">应用筛选</button>
   </form>
   {% for event in event_page.events %}
   <article class="event-card">
     <p class="eyebrow">{{ event.display_tier|zh_label('event_tier') }} · {{ event.visibility|zh_label('event_visibility') }} · {{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %}</p>
-    <h2><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h2>
-    <p>{{ event.zh_summary }}</p>
-    <p><strong>为何值得关注：</strong>{{ event.why_it_matters }}</p>
+    <h2><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h2>
+    <p>{{ event.zh_summary }}</p><p><strong>为何值得关注：</strong>{{ event.why_it_matters }}</p>
     <small>排名 {{ event.rank_score|round(1) }} · 独立证据 {{ event.independent_root_count }} · 重要度 {{ event.importance|round(1) }} · 可信度 {{ event.credibility|round(1) }} · 热度 {{ event.heat|round(1) }}</small>
   </article>
   {% else %}<p>此视图暂无事件。</p>{% endfor %}
 </section>
+{% endif %}
 {% endblock %}

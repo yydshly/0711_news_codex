@@ -8,6 +8,7 @@ from newsradar.db.models import (
     EventVersionRecord,
     OperationRunRecord,
 )
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.web.app import create_app
 
 
@@ -20,6 +21,7 @@ def _add_event(
     display_tier=None,
     rank_score=80,
 ):
+    occurred_at = datetime.now(UTC)
     session.add(
         EventRecord(
             id=event_id,
@@ -28,7 +30,7 @@ def _add_event(
             display_tier=display_tier or ("hotspot" if status == "confirmed" else "signal"),
             rank_score=rank_score,
             status=status,
-            occurred_at=datetime.now(UTC),
+            occurred_at=occurred_at,
             current_version_number=1,
         )
     )
@@ -39,6 +41,13 @@ def _add_event(
             zh_title=title,
             zh_summary="已核验摘要",
             payload={
+                "status": status,
+                "category": "uncategorized",
+                "occurred_at": occurred_at.isoformat(),
+                "publication": {
+                    "tier": display_tier
+                    or ("hotspot" if status == "confirmed" else "signal")
+                },
                 "enrichment": {
                     "why_it_matters": "影响行业采用。",
                     "limitations": [],
@@ -78,6 +87,31 @@ def _add_event(
     session.commit()
 
 
+def _add_pipeline_snapshot(session, refs: list[tuple[int, int]]):
+    now = datetime.now(UTC)
+    operation = OperationRunRecord(
+        operation_type="event_pipeline",
+        trigger="manual",
+        status="succeeded",
+        requested_scope={
+            "window_hours": 72,
+            "window_end": now.isoformat(),
+            "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+        },
+        result_summary={
+            "event_version_snapshots": [
+                {"event_id": event_id, "version_number": version_number}
+                for event_id, version_number in refs
+            ]
+        },
+        created_at=now,
+        finished_at=now,
+    )
+    session.add(operation)
+    session.commit()
+    return operation.id
+
+
 def test_home_shows_confirmed_events_and_not_social_only(db_session, monkeypatch):
     _add_event(db_session)
     _add_event(db_session, 42, "emerging", "社交线索")
@@ -102,6 +136,7 @@ def test_emerging_page_labels_unconfirmed_social_signal(db_session, monkeypatch)
 def test_events_can_filter_hotspots_and_signals(db_session, monkeypatch):
     _add_event(db_session, 45, "confirmed", "热点事件", display_tier="hotspot")
     _add_event(db_session, 46, "emerging", "信号事件", display_tier="signal")
+    _add_pipeline_snapshot(db_session, [(45, 1), (46, 1)])
     monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
 
     with TestClient(create_app()) as client:
@@ -112,23 +147,43 @@ def test_events_can_filter_hotspots_and_signals(db_session, monkeypatch):
     assert "热点事件" not in response.text
 
 
-def test_events_defaults_to_current_and_legacy_entry_warns(db_session, monkeypatch):
+def test_events_defaults_to_latest_operation_and_keeps_catalog_entry(db_session, monkeypatch):
     _add_event(db_session, 43, "confirmed", "当前事件")
     _add_event(db_session, 44, "confirmed", "历史事件", visibility="legacy")
+    operation_id = _add_pipeline_snapshot(db_session, [(43, 1)])
     monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
 
     with TestClient(create_app()) as client:
         current = client.get("/events")
+        catalog = client.get("/events?scope=current_catalog")
         legacy = client.get("/events?visibility=legacy")
 
     assert "当前事件" in current.text
     assert "历史事件" not in current.text
+    assert f"Operation #{operation_id}" in current.text
     assert 'name="status"' in current.text
     assert 'name="category"' in current.text
     assert 'name="hours"' in current.text
+    assert "全局 current 目录" in catalog.text
     assert "历史事件" in legacy.text
     assert '<h2><a href="/events/43">当前事件</a></h2>' not in legacy.text
     assert "旧版算法结果，不参与当前首页" in legacy.text
+
+
+def test_event_detail_requires_complete_operation_version_pair(db_session, monkeypatch):
+    _add_event(db_session, 47, "confirmed", "固定详情事件")
+    operation_id = _add_pipeline_snapshot(db_session, [(47, 1)])
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    with TestClient(create_app()) as client:
+        fixed = client.get(f"/events/47?operation={operation_id}&version=1")
+        partial = client.get(f"/events/47?operation={operation_id}")
+        missing = client.get(f"/events/47?operation={operation_id}&version=2")
+
+    assert fixed.status_code == 200
+    assert f"Operation #{operation_id}" in fixed.text
+    assert partial.status_code == 400
+    assert missing.status_code == 404
 
 
 def test_recluster_post_only_enqueues_operation(db_session, monkeypatch):

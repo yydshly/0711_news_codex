@@ -77,6 +77,7 @@ TargetType = Literal[
 ]
 CoverageMode = Literal["direct", "indirect", "catalog_only"]
 EventVisibilityMode = Literal["current", "legacy"]
+EventScopeMode = Literal["latest", "current_catalog", "catalog"]
 EventTierMode = Literal["hotspot", "signal", "audit_only"]
 ProbeType = Literal["capability", "content"]
 QueryResult = TypeVar("QueryResult")
@@ -364,6 +365,7 @@ def create_app(
         category: str | None = None,
         tier: EventTierMode | None = None,
         visibility: EventVisibilityMode = "current",
+        scope: EventScopeMode = "latest",
         hours: Annotated[int | None, Query(ge=1, le=8760)] = None,
     ) -> HTMLResponse:
         query_now = datetime.now(UTC)
@@ -371,15 +373,22 @@ def create_app(
             status=status,
             category=category,
             display_tier=tier,
-            visibility=visibility,
         )
-        filters["until"] = query_now
         if hours is not None:
-            filters["since"] = query_now - timedelta(hours=hours)
             filters["hours"] = hours
         try:
             with create_session() as session:
-                event_page = EventQueryService(session).list_events(filters)
+                service = EventQueryService(session)
+                if scope == "latest" and visibility == "current":
+                    event_page = service.latest_operation_page(filters, now=query_now)
+                    snapshot_unavailable = event_page is None
+                else:
+                    filters["visibility"] = visibility
+                    filters["until"] = query_now
+                    if hours is not None:
+                        filters["since"] = query_now - timedelta(hours=hours)
+                    event_page = service.list_events(filters, visibility=visibility)
+                    snapshot_unavailable = False
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         return templates.TemplateResponse(
@@ -387,6 +396,8 @@ def create_app(
             name="events.html",
             context={
                 "event_page": event_page,
+                "event_scope": scope,
+                "snapshot_unavailable": snapshot_unavailable,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
@@ -412,10 +423,22 @@ def create_app(
         )
 
     @app.get("/events/{event_id}", response_class=HTMLResponse)
-    def event_detail(request: Request, event_id: int) -> HTMLResponse:
+    def event_detail(
+        request: Request,
+        event_id: int,
+        operation: int | None = None,
+        version: int | None = None,
+    ) -> HTMLResponse:
+        if (operation is None) != (version is None):
+            raise HTTPException(status_code=400, detail="operation_and_version_required")
         try:
             with create_session() as session:
-                event_detail = EventQueryService(session).get_event(event_id)
+                service = EventQueryService(session)
+                event_detail = (
+                    service.get_operation_event(event_id, operation, version)
+                    if operation is not None and version is not None
+                    else service.get_event(event_id)
+                )
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         if event_detail is None:
