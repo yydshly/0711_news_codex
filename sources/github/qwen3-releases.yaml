@@ -36,19 +36,19 @@ coverage_mode: direct
 official_identity_url: https://github.com/QwenLM/Qwen3
 reviewed_at: '2026-07-11'
 unlock_requirements:
-- Official QwenLM/Qwen3 repository publishes at least one GitHub Release and the content probe succeeds.
-notes: 'Fallback: no automatic fallback. The official releases endpoint currently returns no Release items; wait for an official Release and re-probe. Do not substitute commits, events, HTML, cookies, or browser sessions.'
+- QwenLM/Qwen3 官方仓库至少发布一个 GitHub Release，且内容探测成功。
+notes: 'Fallback: 不自动回退。官方 Releases 接口当前没有 Release 条目；等待官方发布后重新探测，不用提交、事件、HTML、Cookie 或浏览器会话替代 Release。'
 
 research:
   status: needs_research
-  purpose: Collect AI and technology news-discovery and attribution leads for this named Target.
+  purpose: 获取 Qwen3 官方 GitHub Release，用于发现正式版本发布和发布说明。
   wanted_information:
   - title
   - canonical_url
   - published_at
   - summary
-  conclusion: Official QwenLM/Qwen3 repository identity is confirmed, but the Releases endpoint currently has no items to fetch; do not treat an HTTP 200 empty array as content coverage.
-  risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
+  conclusion: 已确认 QwenLM/Qwen3 官方仓库，但 Releases 接口当前没有条目；HTTP 200 空数组不能视为内容覆盖。
+  risk_conclusion: 只使用 GitHub 官方 API；未认证访问可能限流，不使用 Cookie、登录态或网页抓取替代。
   reviewed_at: '2026-07-13'
   candidates:
   - key: github-releases-api

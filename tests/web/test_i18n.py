@@ -30,6 +30,11 @@ def test_failure_explanation_is_deterministic():
     assert explain_failure("missing token", 401, None) == "需要有效凭据才能访问"
 
 
+def test_failure_explanation_distinguishes_empty_and_incomplete_content():
+    assert explain_failure("", 200, "no_content") == "入口正常，当前没有可用内容"
+    assert explain_failure("", 200, "incomplete_fields") == "已获取内容，但缺少必要字段"
+
+
 def test_format_duration_ms_uses_readable_units():
     assert format_duration_ms(245.0) == "245 毫秒"
     assert format_duration_ms(22_538.2334) == "22.5 秒"

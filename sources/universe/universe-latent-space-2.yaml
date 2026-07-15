@@ -1,9 +1,9 @@
 id: universe-latent-space-2
-name: Latent Space AI discovery
+name: Latent Space 官方通讯
 provider_id: latent-space
-target_type: search_query
+target_type: publisher_feed
 availability: ready
-coverage_mode: indirect
+coverage_mode: direct
 official_identity_url: https://www.latent.space/
 reviewed_at: '2026-07-11'
 unlock_requirements: []
@@ -20,7 +20,7 @@ authority_score: 2
 poll_interval_minutes: 60
 access_methods:
 - kind: rss
-  url: https://news.google.com/rss/search?q=AI+technology+source%3A%22Latent+Space%22
+  url: https://www.latent.space/feed
   priority: 1
 expected_fields:
 - title
@@ -37,9 +37,25 @@ risk:
   - https://www.latent.space/feed
   - https://substack.com/tos
   hard_block_reason: null
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
+notes: '使用 Latent Space 官方 RSS。Fallback: 当前没有经过审核的备用方式。'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  purpose: 获取 Latent Space 发布的 AI 工程通讯和播客文章，用于技术趋势发现和背景信息。
+  wanted_information: [title, canonical_url, published_at, summary]
+  conclusion: 已确认官方 RSS 返回标准 XML，目标已从空的聚合搜索入口切换为可独立探测的官方 feed；仍需连续样本验证。
+  risk_conclusion: 通讯属于专业观点和背景来源，不能单独确认新闻事实；只使用公开 RSS，不抓取订阅邮件或登录页面。
+  reviewed_at: '2026-07-15'
+  candidates:
+  - key: official-feed
+    kind: rss
+    implementation: feedparser
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [观点类内容需要与官方来源或独立专业媒体交叉确认]
+    evidence: [https://www.latent.space/feed, https://www.latent.space/]
+    reviewed_at: '2026-07-15'
+    sample_status: partial
+    decision: primary

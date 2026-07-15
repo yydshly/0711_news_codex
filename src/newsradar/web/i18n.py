@@ -234,6 +234,10 @@ def format_duration_ms(value: float | None) -> str:
 
 
 def explain_failure(reason: str, http_status: int | None, error_code: str | None) -> str:
+    if error_code == "no_content":
+        return "入口正常，当前没有可用内容"
+    if error_code == "incomplete_fields":
+        return "已获取内容，但缺少必要字段"
     normalized = f"{reason} {error_code or ''}".lower()
     if http_status == 429 or "rate" in normalized:
         return "触发远端限流，请等待后重试"

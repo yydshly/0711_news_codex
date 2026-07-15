@@ -17,17 +17,18 @@ ingestion:
   enabled: true
   approved_at: '2026-07-12'
   max_items_per_run: 5
+notes: 'Fallback: 当前没有经过审核的备用方式。'
 
 research:
   status: needs_research
-  purpose: Collect AI and technology news-discovery and attribution leads for this named Target.
+  purpose: 获取 Hugging Face 官方博客和社区技术文章，用于开源模型、工具和研究动态发现。
   wanted_information:
   - title
   - canonical_url
   - published_at
   - summary
-  conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
-  risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
+  conclusion: 已确认官方博客及 RSS 入口，但需区分官方产品声明和社区文章，因此暂不标记为已验证。
+  risk_conclusion: 只使用公开 RSS；内容性质需要后续分类，不使用 Cookie、登录态或浏览器绕过。
   reviewed_at: '2026-07-13'
   candidates:
   - key: official-feed

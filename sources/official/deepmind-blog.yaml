@@ -40,18 +40,18 @@ ingestion:
   enabled: true
   approved_at: '2026-07-12'
   max_items_per_run: 5
-notes: 'Fallback: no additional audited method.'
+notes: 'Fallback: 当前没有经过审核的备用方式。'
 
 research:
   status: needs_research
-  purpose: Collect AI and technology news-discovery and attribution leads for this named Target.
+  purpose: 获取 Google DeepMind 官方研究、产品和机构动态，用于新闻发现与事实确认。
   wanted_information:
   - title
   - canonical_url
   - published_at
   - summary
-  conclusion: The Target identity and configured entry exist, but independent samples, terms, and fallback methods are not yet complete; do not mark verified.
-  risk_conclusion: Do not use cookies, login, proxies, or browser bypasses; credentialed, paid, and dynamic access remain research risks.
+  conclusion: 已确认官方博客及 RSS 入口，但仍需持续验证日期和摘要字段稳定性，因此暂不标记为已验证。
+  risk_conclusion: 只使用官方 RSS；正文和后续修改仍需回到官方页面人工确认，不使用 Cookie 或登录态抓取。
   reviewed_at: '2026-07-13'
   candidates:
   - key: official-feed
