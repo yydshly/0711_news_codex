@@ -42,6 +42,7 @@ class EvidenceRole(StrEnum):
 
 class ProcessingStage(StrEnum):
     RELEVANCE = "relevance"
+    NEWSWORTHINESS = "newsworthiness"
     ENTITIES = "entities"
     CLUSTER = "cluster"
     ENRICH = "enrich"
@@ -88,6 +89,13 @@ class RelevanceDecision(_Schema):
     score: int = Field(ge=0, le=100)
     topics: tuple[str, ...]
     reasons: tuple[str, ...]
+
+
+class NewsworthinessDecision(_Schema):
+    outcome: Literal["included", "excluded"]
+    score: int = Field(ge=0, le=100)
+    action: str | None = None
+    reason_codes: tuple[str, ...]
 
 
 class ExtractedEntity(_Schema):

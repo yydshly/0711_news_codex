@@ -32,6 +32,7 @@ from newsradar.events.schema import (
     EventStatus,
     EventVisibility,
     EvidenceRole,
+    NewsworthinessDecision,
     ProcessingStage,
     PublishedEvent,
     RelevanceDecision,
@@ -462,6 +463,41 @@ class EventRepository:
         record = self.get_pair_decision(left, right, algorithm_version, input_fingerprint)
         assert record is not None
         return record
+
+    def record_newsworthiness_decisions(
+        self,
+        decisions: tuple[tuple[int, NewsworthinessDecision], ...],
+        algorithm_version: str,
+    ) -> None:
+        """Bulk-upsert newsworthiness outcomes for relevant raw items."""
+        if not decisions:
+            return
+        now = datetime.now(UTC)
+        rows = [
+            {
+                "raw_item_id": raw_item_id,
+                "stage": ProcessingStage.NEWSWORTHINESS.value,
+                "algorithm_version": algorithm_version,
+                "outcome": decision.outcome,
+                "score": decision.score,
+                "reason_codes": list(decision.reason_codes),
+                "details": {"action": decision.action},
+                "created_at": now,
+            }
+            for raw_item_id, decision in decisions
+        ]
+        statement = self._insert(RawItemProcessingRecord).values(rows)
+        self.session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["raw_item_id", "stage", "algorithm_version"],
+                set_={
+                    "outcome": statement.excluded.outcome,
+                    "score": statement.excluded.score,
+                    "reason_codes": statement.excluded.reason_codes,
+                    "details": statement.excluded.details,
+                },
+            )
+        )
 
     def record_pair_model_run(self, pair_decision_id: int, usage: ModelUsage) -> None:
         model_usage = self._add_model_usage(usage)

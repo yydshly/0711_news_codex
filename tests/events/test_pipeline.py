@@ -63,6 +63,7 @@ def _seed_operation(
 def test_pipeline_exposes_all_v2_rule_versions() -> None:
     assert ALGORITHM_VERSIONS == {
         "relevance": "relevance-v2",
+        "newsworthiness": "newsworthiness-v1",
         "entities": "entities-v2",
         "cluster": "cluster-v2",
         "score": "score-v2",
@@ -169,11 +170,68 @@ def test_pipeline_records_all_required_stage_checkpoints() -> None:
     assert {
         "after_event_selection",
         "after_event_relevance",
+        "after_event_newsworthiness",
         "after_event_cluster",
         "before_event_enrichment",
         "after_event_enrichment",
         "after_event_publish",
     }.issubset(checkpoints)
+
+
+def test_pipeline_excludes_relevant_item_without_a_discrete_news_action() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(_source_record())
+        db.add_all(
+            (
+                RawItemRecord(
+                    source_id="source",
+                    external_id="status-update",
+                    canonical_url="https://example.test/status-update",
+                    payload={},
+                    title="OpenAI safety update",
+                    published_at=now,
+                ),
+                RawItemRecord(
+                    source_id="source",
+                    external_id="product-release",
+                    canonical_url="https://example.test/product-release",
+                    payload={},
+                    title="OpenAI launches an AI API",
+                    published_at=now,
+                ),
+            )
+        )
+        _seed_operation(db, 103, window_end=now)
+        db.commit()
+
+    with Session(engine) as db:
+        result = EventPipeline.production(db).run(
+            window_hours=24,
+            operation_id=103,
+            checkpoint=lambda _: None,
+        )
+
+    assert result.selected_item_count == 2
+    assert result.included_item_count == 1
+    assert result.newsworthy_item_count == 1
+    assert result.non_newsworthy_item_count == 1
+    assert result.newsworthiness_reasons == {"no_event_action": 1}
+    with Session(engine) as db:
+        records = tuple(
+            db.scalars(
+                select(RawItemProcessingRecord).where(
+                    RawItemProcessingRecord.stage == "newsworthiness"
+                )
+            )
+        )
+
+    assert {(record.raw_item_id, record.outcome) for record in records} == {
+        (1, "excluded"),
+        (2, "included"),
+    }
 
 
 def test_pipeline_checkpoint_cancels_inflight_async_enrichment_promptly(

@@ -32,6 +32,10 @@ from newsradar.events.minimax import (
     EventMiniMaxAdapter,
     EventModelRun,
 )
+from newsradar.events.newsworthiness import (
+    NEWSWORTHINESS_RULE_VERSION,
+    evaluate_newsworthiness,
+)
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.quality import build_score_input, filter_engagement_fields
 from newsradar.events.relevance import (
@@ -54,6 +58,7 @@ from newsradar.events.schema import (
     ClusterItem,
     EventCategory,
     EventScoreInput,
+    NewsworthinessDecision,
     ProcessingStage,
     RawItemText,
     RelevanceDecision,
@@ -75,6 +80,9 @@ class PipelineResult:
     included_item_count: int
     excluded_item_count: int
     exclusion_reasons: dict[str, int]
+    newsworthy_item_count: int
+    non_newsworthy_item_count: int
+    newsworthiness_reasons: dict[str, int]
     duplicate_root_suppressed_count: int
     model_success_count: int
     model_fallback_count: int
@@ -88,6 +96,8 @@ class SelectionResult:
     excluded_count: int
     exclusion_reasons: dict[str, int]
     decisions: tuple[tuple[int, RelevanceDecision], ...]
+    newsworthiness_decisions: tuple[tuple[int, NewsworthinessDecision], ...]
+    newsworthiness_reasons: dict[str, int]
     included_texts: tuple[RawItemText, ...]
     authority_by_item: dict[int, object]
     engagement_by_item: dict[int, dict[str, object]]
@@ -126,6 +136,8 @@ class EventPipeline:
         checkpoint("after_event_selection")
         self._record_relevance_decisions(selection)
         checkpoint("after_event_relevance")
+        self._record_newsworthiness_decisions(selection)
+        checkpoint("after_event_newsworthiness")
         items = self._extract_and_record_entities(selection)
         checkpoint("after_event_rules")
         candidates = self._cluster(items)
@@ -164,6 +176,11 @@ class EventPipeline:
             included_item_count=len(selection.included),
             excluded_item_count=selection.excluded_count,
             exclusion_reasons=dict(selection.exclusion_reasons),
+            newsworthy_item_count=len(selection.included),
+            non_newsworthy_item_count=(
+                len(selection.newsworthiness_decisions) - len(selection.included)
+            ),
+            newsworthiness_reasons=dict(selection.newsworthiness_reasons),
             duplicate_root_suppressed_count=duplicate_root_suppressed_count,
             model_success_count=model_success_count,
             model_fallback_count=model_fallback_count,
@@ -237,7 +254,9 @@ class EventPipeline:
         included: list[ClusterItem] = []
         included_texts: list[RawItemText] = []
         decisions: list[tuple[int, RelevanceDecision]] = []
+        newsworthiness_decisions: list[tuple[int, NewsworthinessDecision]] = []
         exclusion_reasons: Counter[str] = Counter()
+        newsworthiness_reasons: Counter[str] = Counter()
         authority_by_item: dict[int, object] = {}
         engagement_by_item: dict[int, dict[str, object]] = {}
         for row in rows:
@@ -254,6 +273,19 @@ class EventPipeline:
             decisions.append((row["raw_item_id"], decision))
             if decision.outcome == "excluded":
                 exclusion_reasons.update(decision.reasons)
+                continue
+            try:
+                newsworthiness = evaluate_newsworthiness(text)
+            except Exception:
+                newsworthiness = NewsworthinessDecision(
+                    outcome="excluded",
+                    score=0,
+                    reason_codes=("newsworthiness_rule_failed",),
+                )
+            newsworthiness_decisions.append((row["raw_item_id"], newsworthiness))
+            if newsworthiness.outcome == "excluded":
+                exclusion_reasons.update(newsworthiness.reason_codes)
+                newsworthiness_reasons.update(newsworthiness.reason_codes)
                 continue
             included_texts.append(text)
             authority_by_item[row["raw_item_id"]] = row["authority_score"]
@@ -281,6 +313,8 @@ class EventPipeline:
             excluded_count=len(rows) - len(included),
             exclusion_reasons=dict(sorted(exclusion_reasons.items())),
             decisions=tuple(decisions),
+            newsworthiness_decisions=tuple(newsworthiness_decisions),
+            newsworthiness_reasons=dict(sorted(newsworthiness_reasons.items())),
             included_texts=tuple(included_texts),
             authority_by_item=authority_by_item,
             engagement_by_item=engagement_by_item,
@@ -302,6 +336,15 @@ class EventPipeline:
             repository = EventRepository(session)
             repository.record_relevance_decisions(
                 selection.decisions, RELEVANCE_RULE_VERSION
+            )
+            session.commit()
+
+    def _record_newsworthiness_decisions(self, selection: SelectionResult) -> None:
+        with self._session_factory() as session:
+            repository = EventRepository(session)
+            repository.record_newsworthiness_decisions(
+                selection.newsworthiness_decisions,
+                NEWSWORTHINESS_RULE_VERSION,
             )
             session.commit()
 
