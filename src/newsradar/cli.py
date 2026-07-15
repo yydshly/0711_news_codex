@@ -676,6 +676,28 @@ def enqueue_catalog_refresh(
     typer.echo(f"已创建来源目录刷新任务：{operation_id}")
 
 
+@sources_app.command("refresh-recover-abandoned")
+def recover_abandoned_catalog_refresh(
+    operation_id: Annotated[int, typer.Argument(min=1)],
+    confirm_abandoned: Annotated[bool, typer.Option("--confirm-abandoned")] = False,
+) -> None:
+    """After confirming an old Worker stopped, clone only its stuck members into a new batch."""
+    with create_session() as session:
+        try:
+            recovery_id = OperationCommandService(session).recover_abandoned_source_catalog_refresh(
+                operation_id, trigger="cli", confirm_abandoned=confirm_abandoned
+            )
+        except ValueError as error:
+            if str(error) == "confirm_abandoned_required":
+                typer.echo(
+                    "安全优先：请先确认旧 Worker 已停止，并传入 --confirm-abandoned。", err=True
+                )
+            else:
+                typer.echo(str(error), err=True)
+            raise typer.Exit(2) from None
+    typer.echo(f"已创建仅包含已确认遗弃成员的重试批次：{recovery_id}")
+
+
 def _load_catalog_refresh_operation(operation_id: int):
     with create_session() as session:
         operation = session.get(OperationRunRecord, operation_id)

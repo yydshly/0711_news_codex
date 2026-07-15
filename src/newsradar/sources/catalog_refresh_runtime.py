@@ -137,7 +137,9 @@ class CatalogRefreshHandler:
             checkpoint(f"before_catalog_capability_probe:{provider_id}")
             deadline.check("before_capability_probe")
             capability_outcomes.extend(
-                await self._run_capability_group(lease.operation_id, provider_id, source_ids)
+                await self._run_capability_group(
+                    lease.operation_id, provider_id, source_ids, lease.attempt_id
+                )
             )
             checkpoint(f"after_catalog_capability_probe:{provider_id}")
         catalog_outcomes = [
@@ -206,7 +208,11 @@ class CatalogRefreshHandler:
             ]
 
     async def _run_capability_group(
-        self, operation_run_id: int, provider_id: str, source_ids: list[str]
+        self,
+        operation_run_id: int,
+        provider_id: str,
+        source_ids: list[str],
+        claim_attempt_id: int,
     ) -> list[ContentMemberOutcome]:
         provider = next((item for item in self._providers if item.id == provider_id), None)
         if provider is None:
@@ -243,30 +249,45 @@ class CatalogRefreshHandler:
         current_ids = [source_id for source_id in source_ids if source_id not in stale_ids]
         if not current_ids:
             return outcomes
+        with self._create_session() as session:
+            claimed = CatalogRefreshRepository(session).claim_members(
+                operation_run_id, current_ids, claim_attempt_id=claim_attempt_id
+            )
+            session.commit()
+        if not claimed:
+            # A recovered lease must never repeat a ProviderProbe while an earlier
+            # claimant may still be in flight; explicit recovery creates a new batch.
+            return outcomes
+        token = _active_claim_attempt_id.set(claim_attempt_id)
         try:
-            result = await self._probe_provider(provider)
-        except OperationTimedOut:
-            raise
-        except Exception:
-            result = ProviderProbeResult(
-                provider_id=provider.id,
-                outcome="failed",
-                availability=provider.availability.value,
-                reason="Capability check transport failure",
-                checked_at=datetime.now(UTC),
-                evidence_url=str(provider.docs_url),
-            )
-        provider_run_id = self._save_provider_probe(operation_run_id, result)
-        for source_id in current_ids:
-            state, code, conclusion = self._capability_conclusion(
-                operation_run_id, source_id, result
-            )
-            outcomes.append(
-                self._finish_with_provider_probe(
-                    operation_run_id, source_id, state, code, conclusion, provider_run_id
+            try:
+                result = await self._probe_provider(provider)
+            except OperationTimedOut:
+                raise
+            except Exception:
+                result = ProviderProbeResult(
+                    provider_id=provider.id,
+                    outcome="failed",
+                    availability=provider.availability.value,
+                    reason="Capability check transport failure",
+                    checked_at=datetime.now(UTC),
+                    evidence_url=str(provider.docs_url),
                 )
+            provider_run_id = self._save_provider_probe(
+                operation_run_id, result, current_ids, claim_attempt_id
             )
-        return outcomes
+            for source_id in current_ids:
+                state, code, conclusion = self._capability_conclusion(
+                    operation_run_id, source_id, result
+                )
+                outcomes.append(
+                    self._finish_with_provider_probe(
+                        operation_run_id, source_id, state, code, conclusion, provider_run_id
+                    )
+                )
+            return outcomes
+        finally:
+            _active_claim_attempt_id.reset(token)
 
     async def _probe_provider(self, provider: ProviderDefinition) -> ProviderProbeResult:
         if self._provider_probe_factory is not None:
@@ -274,8 +295,20 @@ class CatalogRefreshHandler:
         async with httpx.AsyncClient(timeout=20.0) as client:
             return await ProviderProbe(client).probe(provider)
 
-    def _save_provider_probe(self, operation_run_id: int, result: ProviderProbeResult) -> int:
+    def _save_provider_probe(
+        self,
+        operation_run_id: int,
+        result: ProviderProbeResult,
+        source_ids: list[str],
+        claim_attempt_id: int,
+    ) -> int:
         with self._create_session() as session:
+            members = [
+                CatalogRefreshRepository(session)._get_member(operation_run_id, source_id)
+                for source_id in source_ids
+            ]
+            if any(member.claim_attempt_id != claim_attempt_id for member in members):
+                raise PermissionError("catalog refresh capability claim lost")
             record = ProviderRepository(session).save_probe(
                 operation_run_id=operation_run_id, **result.model_dump()
             )
@@ -346,6 +379,7 @@ class CatalogRefreshHandler:
                 result_code,
                 conclusion,
                 provider_probe_run_id=provider_probe_run_id,
+                claim_attempt_id=_active_claim_attempt_id.get(),
             )
             session.commit()
         return ContentMemberOutcome(state, result_code, conclusion, ())

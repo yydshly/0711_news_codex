@@ -955,6 +955,27 @@ def create_app(
             return database_error_response(request, error)
         return RedirectResponse(url=f"/source-waves/{retry_id}", status_code=303)
 
+    @app.post("/source-waves/{operation_id}/recover-abandoned")
+    async def recover_abandoned_source_wave(
+        request: Request, operation_id: int
+    ) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            with create_session() as session:
+                try:
+                    retry_id = OperationCommandService(
+                        session
+                    ).recover_abandoned_source_catalog_refresh(
+                        operation_id,
+                        trigger="web",
+                        confirm_abandoned=values.get("confirm_abandoned") == "true",
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from error
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/source-waves/{retry_id}", status_code=303)
+
     @app.post("/operations/fetch")
     async def enqueue_fetch(request: Request) -> RedirectResponse:
         values = await require_safe_action(request)

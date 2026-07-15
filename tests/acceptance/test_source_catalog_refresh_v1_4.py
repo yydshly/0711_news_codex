@@ -549,3 +549,129 @@ def test_postgres_recovered_lease_never_duplicates_a_blocked_inflight_probe() ->
                 )
                 cleanup.commit()
         engine.dispose()
+
+
+def test_postgres_recovered_lease_never_duplicates_a_blocked_provider_probe() -> None:
+    """Capability groups are claim-fenced before ProviderProbe reaches the network boundary."""
+    engine = _postgres_engine_or_skip()
+    operation_id: int | None = None
+    started, release = Event(), Event()
+    calls = 0
+    old_thread: Thread | None = None
+    try:
+        sources = load_source_tree(Path("sources"))[:2]
+        providers = load_provider_tree(Path("providers"))
+        provider = next(item for item in providers if item.id == sources[0].provider_id)
+        sources = [source.model_copy(update={"provider_id": provider.id}) for source in sources]
+        snapshots = [
+            CatalogRefreshMemberSnapshot(
+                source_id=source.id,
+                provider_id=provider.id,
+                definition_hash=CatalogRefreshHandler.definition_hash(source, [provider]),
+                provider_definition_hash=canonical_provider(provider)[1],
+                availability="requires_credentials",
+                coverage_mode=source.coverage_mode.value,
+                access_kind="public_api",
+                lane=CatalogRefreshLane.CAPABILITY,
+            )
+            for source in sources
+        ]
+        with Session(engine) as setup:
+            operation = OperationRunRecord(
+                operation_type="source_catalog_refresh",
+                trigger="acceptance",
+                status="queued",
+                requested_scope={
+                    "catalog_count": 2,
+                    "deadline_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                },
+                result_summary={},
+                progress_total=2,
+                attempt_count=0,
+            )
+            setup.add(operation)
+            setup.flush()
+            operation_id = operation.id
+            CatalogRefreshRepository(setup).create_members(
+                operation_id, CatalogRefreshPlan.from_members(snapshots)
+            )
+            setup.commit()
+
+        async def blocked_provider_probe(candidate) -> ProviderProbeResult:
+            nonlocal calls
+            calls += 1
+            started.set()
+            assert release.wait(10)
+            return await _capability_success(candidate)
+
+        old_handler = CatalogRefreshHandler(
+            sources,
+            [provider],
+            lambda: Session(engine),
+            provider_probe_factory=blocked_provider_probe,
+        )
+
+        def run_old_worker() -> None:
+            with Session(engine) as session:
+                Worker(OperationRepository(session), "catalog-provider-old-claim").run_once(
+                    old_handler
+                )
+
+        old_thread = Thread(target=run_old_worker)
+        old_thread.start()
+        assert started.wait(10)
+        with Session(engine) as session:
+            operation = session.get(OperationRunRecord, operation_id)
+            assert operation is not None
+            operation.lease_expires_at = datetime(2000, 1, 1, tzinfo=UTC)
+            session.commit()
+
+        async def unexpected_provider_probe(candidate) -> ProviderProbeResult:
+            nonlocal calls
+            calls += 1
+            return await _capability_success(candidate)
+
+        new_handler = CatalogRefreshHandler(
+            sources,
+            [provider],
+            lambda: Session(engine),
+            provider_probe_factory=unexpected_provider_probe,
+        )
+        with Session(engine) as session:
+            assert Worker(OperationRepository(session), "catalog-provider-new-claim").run_once(
+                new_handler
+            )
+        assert calls == 1
+    finally:
+        release.set()
+        if old_thread is not None:
+            old_thread.join(10)
+        if operation_id is not None:
+            with Session(engine) as cleanup:
+                cleanup.execute(
+                    delete(ProviderProbeRunRecord).where(
+                        ProviderProbeRunRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationEventRecord).where(
+                        OperationEventRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationAttemptRecord).where(
+                        OperationAttemptRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
+                )
+                cleanup.execute(
+                    delete(WorkerRecord).where(
+                        WorkerRecord.worker_id.in_(
+                            ["catalog-provider-old-claim", "catalog-provider-new-claim"]
+                        )
+                    )
+                )
+                cleanup.commit()
+        engine.dispose()

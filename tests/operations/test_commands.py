@@ -111,9 +111,7 @@ def test_enqueue_catalog_refresh_rejects_active_operation_without_members() -> N
             service.enqueue_source_catalog_refresh(catalog_plan(catalog_member("b")), trigger="cli")
 
         assert (
-            db.query(SourceCatalogRefreshMemberRecord)
-            .filter_by(operation_run_id=first_id)
-            .count()
+            db.query(SourceCatalogRefreshMemberRecord).filter_by(operation_run_id=first_id).count()
             == 1
         )
         assert db.query(SourceCatalogRefreshMemberRecord).filter_by(source_id="b").count() == 0
@@ -144,8 +142,9 @@ def test_retry_catalog_refresh_only_copies_transient_failed_members() -> None:
         )
         members = {
             member.source_id: member
-            for member in db.query(SourceCatalogRefreshMemberRecord)
-            .filter_by(operation_run_id=original_id)
+            for member in db.query(SourceCatalogRefreshMemberRecord).filter_by(
+                operation_run_id=original_id
+            )
         }
         members["timeout"].state = CatalogMemberState.FAILED.value
         members["timeout"].result_code = CatalogResultCode.TIMEOUT.value
@@ -180,6 +179,61 @@ def test_retry_catalog_refresh_rejects_an_empty_retry_plan() -> None:
 
         with pytest.raises(ValueError, match="catalog_refresh_retry_not_allowed"):
             service.retry_source_catalog_refresh(original_id, trigger="web")
+
+
+def test_recover_abandoned_catalog_refresh_requires_explicit_confirmation() -> None:
+    with session() as db:
+        service = OperationCommandService(db)
+        original_id = service.enqueue_source_catalog_refresh(
+            catalog_plan(catalog_member("stuck"), catalog_member("finished")), trigger="cli"
+        )
+        members = {
+            member.source_id: member
+            for member in db.query(SourceCatalogRefreshMemberRecord).filter_by(
+                operation_run_id=original_id
+            )
+        }
+        members["stuck"].state = CatalogMemberState.RUNNING.value
+        members["finished"].state = CatalogMemberState.SUCCEEDED.value
+        db.get(OperationRunRecord, original_id).status = "partial"
+        db.commit()
+
+        with pytest.raises(ValueError, match="confirm_abandoned_required"):
+            service.recover_abandoned_source_catalog_refresh(
+                original_id, trigger="cli", confirm_abandoned=False
+            )
+
+
+def test_recover_abandoned_catalog_refresh_clones_only_confirmed_running_members() -> None:
+    with session() as db:
+        service = OperationCommandService(db)
+        original_id = service.enqueue_source_catalog_refresh(
+            catalog_plan(catalog_member("stuck"), catalog_member("finished")), trigger="cli"
+        )
+        members = {
+            member.source_id: member
+            for member in db.query(SourceCatalogRefreshMemberRecord).filter_by(
+                operation_run_id=original_id
+            )
+        }
+        members["stuck"].state = CatalogMemberState.RUNNING.value
+        members["finished"].state = CatalogMemberState.SUCCEEDED.value
+        db.get(OperationRunRecord, original_id).status = "partial"
+        db.commit()
+
+        recovery_id = service.recover_abandoned_source_catalog_refresh(
+            original_id, trigger="cli", confirm_abandoned=True
+        )
+
+        recovery = db.get(OperationRunRecord, recovery_id)
+        assert recovery is not None
+        assert recovery.requested_scope["abandoned_recovery_of_operation_id"] == original_id
+        assert [
+            member.source_id
+            for member in db.query(SourceCatalogRefreshMemberRecord).filter_by(
+                operation_run_id=recovery_id
+            )
+        ] == ["stuck"]
 
 
 def test_enqueue_fetch_records_complete_scope() -> None:
@@ -282,16 +336,19 @@ def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> No
             "score": "score-v2",
         }
         assert record.requested_scope["algorithm_versions"] == versions
-        expected_key = "event-pipeline:" + sha256(
-            dumps(
-                {
-                    "window_end": now.isoformat(),
-                    "window_hours": 24,
-                    "versions": versions,
-                },
-                sort_keys=True,
-            ).encode()
-        ).hexdigest()
+        expected_key = (
+            "event-pipeline:"
+            + sha256(
+                dumps(
+                    {
+                        "window_end": now.isoformat(),
+                        "window_hours": 24,
+                        "versions": versions,
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+        )
         assert record.requested_scope["idempotency_key"] == expected_key
 
 
@@ -303,16 +360,19 @@ def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
         "entities": "entities-v1",
         "cluster": "cluster-v1",
     }
-    old_key = "event-pipeline:" + sha256(
-        dumps(
-            {
-                "window_end": bucket.isoformat(),
-                "window_hours": 24,
-                "versions": v1_versions,
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
+    old_key = (
+        "event-pipeline:"
+        + sha256(
+            dumps(
+                {
+                    "window_end": bucket.isoformat(),
+                    "window_hours": 24,
+                    "versions": v1_versions,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+    )
     with session() as db:
         old = OperationRunRecord(
             operation_type="event_pipeline",
@@ -328,9 +388,9 @@ def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
         db.add(old)
         db.commit()
 
-        new_id = OperationCommandService(
-            db, utcnow=lambda: now
-        ).enqueue_event_pipeline(window_hours=24, trigger="cli")
+        new_id = OperationCommandService(db, utcnow=lambda: now).enqueue_event_pipeline(
+            window_hours=24, trigger="cli"
+        )
         new = db.get(OperationRunRecord, new_id)
 
         assert new is not None

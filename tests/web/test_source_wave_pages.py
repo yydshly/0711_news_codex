@@ -98,7 +98,7 @@ def test_active_wave_disables_create_and_detail_uses_chinese_outcome_labels(
         page = client.get("/source-waves")
         detail = client.get(f"/source-waves/{active.id}")
 
-    assert 'disabled' in page.text
+    assert "disabled" in page.text
     assert "已有活动批次" in page.text
     assert detail.status_code == 200
     assert "内容成功" in detail.text
@@ -186,3 +186,51 @@ def test_source_wave_cancel_rejects_other_operation_type_without_mutation(
 
     assert response.status_code == 404
     assert db_session.get(OperationRunRecord, other.id).cancel_requested_at is None
+
+
+def test_source_wave_abandoned_recovery_requires_confirmation_and_safe_action(
+    monkeypatch, db_session
+) -> None:
+    wave = OperationRunRecord(
+        operation_type="source_catalog_refresh",
+        trigger="test",
+        status="partial",
+        requested_scope={},
+        result_summary={},
+    )
+    db_session.add(wave)
+    db_session.flush()
+    db_session.add(
+        SourceCatalogRefreshMemberRecord(
+            operation_run_id=wave.id,
+            source_id="github-openai-python",
+            provider_id="github",
+            definition_hash="a" * 64,
+            availability_snapshot="ready",
+            coverage_mode_snapshot="direct",
+            access_kind_snapshot="rss",
+            lane="content",
+            state="running",
+            content_probe_run_ids=[],
+            attempt_count=1,
+        )
+    )
+    db_session.commit()
+    with _client(monkeypatch, db_session) as client:
+        token = _token(client.get(f"/source-waves/{wave.id}").text)
+        rejected = client.post(
+            f"/source-waves/{wave.id}/recover-abandoned",
+            data={"action_token": token},
+            headers={"origin": "http://127.0.0.1"},
+            follow_redirects=False,
+        )
+        token = _token(client.get(f"/source-waves/{wave.id}").text)
+        recovered = client.post(
+            f"/source-waves/{wave.id}/recover-abandoned",
+            data={"action_token": token, "confirm_abandoned": "true"},
+            headers={"origin": "http://127.0.0.1"},
+            follow_redirects=False,
+        )
+
+    assert rejected.status_code == 409
+    assert recovered.status_code == 303

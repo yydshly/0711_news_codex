@@ -157,6 +157,7 @@ class OperationCommandService:
         global_concurrency: int = 8,
         provider_concurrency: int = 2,
         retry_of_operation_id: int | None = None,
+        abandoned_recovery_of_operation_id: int | None = None,
     ) -> int:
         if not 1 <= global_concurrency <= 16 or not 1 <= provider_concurrency <= 8:
             raise ValueError("invalid_catalog_refresh_concurrency")
@@ -173,6 +174,7 @@ class OperationCommandService:
                     global_concurrency=global_concurrency,
                     provider_concurrency=provider_concurrency,
                     retry_of_operation_id=retry_of_operation_id,
+                    abandoned_recovery_of_operation_id=abandoned_recovery_of_operation_id,
                 ),
                 trigger=trigger,
                 in_transaction=True,
@@ -192,6 +194,28 @@ class OperationCommandService:
             retry_of_operation_id=operation_id,
         )
 
+    def recover_abandoned_source_catalog_refresh(
+        self, operation_id: int, *, trigger: str, confirm_abandoned: bool
+    ) -> int:
+        """Create a small new batch only after an operator confirms old claimants stopped."""
+        if not confirm_abandoned:
+            raise ValueError("confirm_abandoned_required")
+        original = self.session.get(OperationRunRecord, operation_id)
+        if (
+            original is None
+            or original.operation_type != OperationType.SOURCE_CATALOG_REFRESH.value
+            or original.status in {OperationStatus.QUEUED.value, OperationStatus.RUNNING.value}
+        ):
+            raise ValueError("catalog_refresh_abandoned_recovery_not_allowed")
+        plan = CatalogRefreshRepository(self.session).abandoned_plan(operation_id)
+        if not plan.members:
+            raise ValueError("catalog_refresh_abandoned_recovery_not_allowed")
+        return self.enqueue_source_catalog_refresh(
+            plan,
+            trigger=trigger,
+            abandoned_recovery_of_operation_id=operation_id,
+        )
+
     def _active_catalog_refresh_id(self) -> int | None:
         return self.session.scalar(
             select(OperationRunRecord.id).where(
@@ -205,9 +229,7 @@ class OperationCommandService:
     def _lock_catalog_refresh_enqueue(self) -> None:
         if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
             self.session.execute(
-                text(
-                    "SELECT pg_advisory_xact_lock(hashtext('newsradar:catalog-refresh-enqueue'))"
-                )
+                text("SELECT pg_advisory_xact_lock(hashtext('newsradar:catalog-refresh-enqueue'))")
             )
 
     def _catalog_refresh_scope(
@@ -217,6 +239,7 @@ class OperationCommandService:
         global_concurrency: int,
         provider_concurrency: int,
         retry_of_operation_id: int | None,
+        abandoned_recovery_of_operation_id: int | None,
     ) -> dict[str, object]:
         deadline_at = self._utcnow() + timedelta(seconds=self._settings.operation_timeout_seconds)
         scope: dict[str, object] = {
@@ -230,6 +253,8 @@ class OperationCommandService:
         }
         if retry_of_operation_id is not None:
             scope["retry_of_operation_id"] = retry_of_operation_id
+        if abandoned_recovery_of_operation_id is not None:
+            scope["abandoned_recovery_of_operation_id"] = abandoned_recovery_of_operation_id
         return scope
 
     def retry_source_remediation(self, operation_id: int, *, trigger: str) -> int:

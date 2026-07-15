@@ -195,6 +195,47 @@ class CatalogRefreshRepository:
             self.snapshot_from_record(record) for record in records
         )
 
+    def abandoned_plan(self, operation_run_id: int) -> CatalogRefreshPlan:
+        """Return only explicitly abandoned in-flight snapshots for a new batch."""
+        records = self.session.scalars(
+            select(SourceCatalogRefreshMemberRecord)
+            .where(
+                SourceCatalogRefreshMemberRecord.operation_run_id == operation_run_id,
+                SourceCatalogRefreshMemberRecord.state == CatalogMemberState.RUNNING.value,
+            )
+            .order_by(SourceCatalogRefreshMemberRecord.source_id)
+        )
+        return CatalogRefreshPlan.from_members(
+            self.snapshot_from_record(record) for record in records
+        )
+
+    def claim_members(
+        self, operation_run_id: int, source_ids: list[str], *, claim_attempt_id: int | None
+    ) -> bool:
+        """All-or-nothing fence for one capability ProviderProbe group."""
+        records = list(
+            self.session.scalars(
+                select(SourceCatalogRefreshMemberRecord)
+                .where(
+                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_run_id,
+                    SourceCatalogRefreshMemberRecord.source_id.in_(source_ids),
+                )
+                .order_by(SourceCatalogRefreshMemberRecord.source_id)
+                .with_for_update()
+            )
+        )
+        if len(records) != len(source_ids) or any(
+            record.state != CatalogMemberState.PENDING.value for record in records
+        ):
+            return False
+        for record in records:
+            record.state = CatalogMemberState.RUNNING.value
+            record.claim_attempt_id = claim_attempt_id
+            record.attempt_count += 1
+            record.started_at = record.started_at or utcnow()
+        self.session.flush()
+        return True
+
     @staticmethod
     def snapshot_from_record(
         record: SourceCatalogRefreshMemberRecord,

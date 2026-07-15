@@ -262,6 +262,60 @@ def test_capability_lane_probes_each_provider_once_and_shares_record_id() -> Non
         assert len(db_session.scalars(select(ProviderProbeRunRecord)).all()) == 1
 
 
+def test_capability_group_does_not_probe_when_any_member_has_an_old_claim() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        first, second = source("capability-a"), source("capability-b")
+        provider = provider_for(first)
+        CatalogRefreshRepository(db_session).create_members(
+            1,
+            CatalogRefreshPlan.from_members(
+                [
+                    frozen_member(
+                        first,
+                        provider,
+                        CatalogRefreshLane.CAPABILITY,
+                        "requires_credentials",
+                        "public_api",
+                    ),
+                    frozen_member(
+                        second,
+                        provider,
+                        CatalogRefreshLane.CAPABILITY,
+                        "requires_credentials",
+                        "public_api",
+                    ),
+                ]
+            ),
+        )
+        old_claim = db_session.get(SourceCatalogRefreshMemberRecord, 1)
+        assert old_claim is not None
+        old_claim.state = CatalogMemberState.RUNNING.value
+        old_claim.claim_attempt_id = 99
+        db_session.commit()
+        capability_probe = RecordingProviderProbe()
+        handler = CatalogRefreshHandler(
+            [first, second],
+            [provider],
+            lambda: db_session,
+            provider_probe_factory=capability_probe,
+        )
+        lease = OperationLease(
+            1,
+            2,
+            2,
+            "replacement-worker",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        handler(lease, lambda _: None)
+
+        assert capability_probe.calls == 0
+        assert db_session.query(ProviderProbeRunRecord).count() == 0
+
+
 def test_catalog_lane_validates_without_any_http() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -634,7 +688,9 @@ def test_capability_group_probes_current_members_when_sibling_is_stale() -> None
         )
 
         CatalogRefreshHandler(
-            [changed_stale, current], [provider], lambda: db_session,
+            [changed_stale, current],
+            [provider],
+            lambda: db_session,
             provider_probe_factory=provider_probe,
         )(lease, lambda _: None)
 
@@ -724,9 +780,14 @@ def test_catalog_loop_cancellation_propagates_before_next_member_validation(monk
         validations: list[str] = []
         monkeypatch.setattr(
             "newsradar.sources.catalog_refresh_runtime.validate_catalog_entry",
-            lambda source, provider: validations.append(source.id) or type(
-                "Validation", (), {"code": CatalogResultCode.CATALOG_VERIFIED, "conclusion": "ok"}
-            )(),
+            lambda source, provider: (
+                validations.append(source.id)
+                or type(
+                    "Validation",
+                    (),
+                    {"code": CatalogResultCode.CATALOG_VERIFIED, "conclusion": "ok"},
+                )()
+            ),
         )
         lease = OperationLease(
             1,
@@ -749,7 +810,9 @@ def test_catalog_loop_cancellation_propagates_before_next_member_validation(monk
 
         assert validations == ["a"]
         records = db_session.scalars(
-            select(SourceCatalogRefreshMemberRecord).order_by(SourceCatalogRefreshMemberRecord.source_id)
+            select(SourceCatalogRefreshMemberRecord).order_by(
+                SourceCatalogRefreshMemberRecord.source_id
+            )
         ).all()
         assert [record.state for record in records] == ["succeeded", "pending"]
 
