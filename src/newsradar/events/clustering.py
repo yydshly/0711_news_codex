@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
 
-from newsradar.events.schema import CandidateCluster, ClusterDecision, ClusterItem
+from newsradar.events.schema import (
+    CandidateCluster,
+    ClusterDecision,
+    ClusterItem,
+    PairDecisionKind,
+    PairFinalDecision,
+    PairRuleDecision,
+)
 
 CLUSTER_RULE_VERSION = "cluster-v2"
 _CANDIDATE_WINDOW_SECONDS = 48 * 60 * 60
@@ -56,7 +64,51 @@ def compare_items(left: ClusterItem, right: ClusterItem) -> ClusterDecision:
     return _decision(score >= 1.0, score, tuple(reasons))
 
 
-def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster, ...]:
+def candidate_pairs(
+    items: tuple[ClusterItem, ...],
+) -> tuple[tuple[ClusterItem, ClusterItem], ...]:
+    """Return only time-and-identity-blocked pairs, never a global cross product."""
+    ordered = tuple(sorted(items, key=lambda item: item.raw_item_id))
+    return tuple(
+        (ordered[left_index], ordered[right_index])
+        for left_index, right_index in _candidate_pairs(ordered)
+    )
+
+
+def evaluate_pair_rules(left: ClusterItem, right: ClusterItem) -> PairRuleDecision:
+    """Classify a bounded pair into direct or model-boundary treatment."""
+    compared = compare_items(left, right)
+    structural_anchor = bool(
+        {
+            "same_evidence_root",
+            "same_canonical_url",
+            "same_repository_id",
+            "same_paper_id",
+            "shared_object_entity",
+            "same_action",
+        }
+        & set(compared.reasons)
+    )
+    if compared.score >= 0.80 and structural_anchor:
+        kind = PairDecisionKind.DIRECT_MERGE
+    elif compared.score <= 0.45 or not structural_anchor:
+        kind = PairDecisionKind.DIRECT_SEPARATE
+    else:
+        kind = PairDecisionKind.MODEL_BOUNDARY
+    return PairRuleDecision(
+        left_raw_item_id=min(left.raw_item_id, right.raw_item_id),
+        right_raw_item_id=max(left.raw_item_id, right.raw_item_id),
+        score=compared.score,
+        reasons=compared.reasons,
+        structural_anchor=structural_anchor,
+        kind=kind,
+    )
+
+
+def cluster_candidates(
+    items: tuple[ClusterItem, ...],
+    pair_decisions: Mapping[tuple[int, int], PairFinalDecision] | None = None,
+) -> tuple[CandidateCluster, ...]:
     """Union matching pairs only when a blocking key and 48-hour window permit it."""
     ordered = tuple(sorted(items, key=lambda item: item.raw_item_id))
     parents = list(range(len(ordered)))
@@ -64,8 +116,18 @@ def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster
     component_max = [item.published_at for item in ordered]
     reasons_by_index: list[set[str]] = [set() for _ in ordered]
     for left_index, right_index in _candidate_pairs(ordered):
-        decision = compare_items(ordered[left_index], ordered[right_index])
-        if decision.matched and _can_union_within_window(
+        left, right = ordered[left_index], ordered[right_index]
+        if pair_decisions is None:
+            compared = compare_items(left, right)
+            should_merge = compared.matched
+            reasons = compared.reasons
+        else:
+            pair = pair_decisions.get(
+                (min(left.raw_item_id, right.raw_item_id), max(left.raw_item_id, right.raw_item_id))
+            )
+            should_merge = pair is not None and pair.decision == "merge"
+            reasons = pair.rule_reasons if pair is not None else ()
+        if should_merge and _can_union_within_window(
             parents,
             component_min,
             component_max,
@@ -79,8 +141,8 @@ def cluster_candidates(items: tuple[ClusterItem, ...]) -> tuple[CandidateCluster
                 left_index,
                 right_index,
             )
-            reasons_by_index[left_index].update(decision.reasons)
-            reasons_by_index[right_index].update(decision.reasons)
+            reasons_by_index[left_index].update(reasons)
+            reasons_by_index[right_index].update(reasons)
 
     grouped: dict[int, list[int]] = {}
     for index in range(len(ordered)):

@@ -23,7 +23,12 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
-from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates
+from newsradar.events.clustering import (
+    CLUSTER_RULE_VERSION,
+    candidate_pairs,
+    cluster_candidates,
+    evaluate_pair_rules,
+)
 from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
 from newsradar.events.evidence import assess_evidence, count_suppressed_independent_roots
 from newsradar.events.minimax import (
@@ -35,6 +40,11 @@ from newsradar.events.minimax import (
 from newsradar.events.newsworthiness import (
     NEWSWORTHINESS_RULE_VERSION,
     evaluate_newsworthiness,
+)
+from newsradar.events.pairing import (
+    finalize_pair_decision,
+    pair_candidate,
+    pair_input_fingerprint,
 )
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.quality import build_score_input, filter_engagement_fields
@@ -59,6 +69,8 @@ from newsradar.events.schema import (
     EventCategory,
     EventScoreInput,
     NewsworthinessDecision,
+    PairDecisionKind,
+    PairFinalDecision,
     ProcessingStage,
     RawItemText,
     RelevanceDecision,
@@ -112,6 +124,19 @@ def _capture_event_version(
             "Event output does not have a reader-visible version"
         )
     snapshots[event.id] = event.current_version_number
+
+
+def _stored_pair_decision(record) -> PairFinalDecision:
+    return PairFinalDecision(
+        left_raw_item_id=record.left_raw_item_id,
+        right_raw_item_id=record.right_raw_item_id,
+        input_fingerprint=record.input_fingerprint,
+        rule_score=record.rule_score,
+        rule_reasons=tuple(record.rule_reasons),
+        decision=record.final_decision,
+        model_same_event=record.model_same_event,
+        model_confidence=record.model_confidence,
+    )
 
 
 class EventPipeline:
@@ -382,9 +407,10 @@ class EventPipeline:
         return tuple(items)
 
     def _cluster(self, items: tuple[ClusterItem, ...]):
+        pair_decisions = self._resolve_pair_decisions(items)
         candidates = tuple(
             candidate.model_copy(update={"category": _category(candidate.items)})
-            for candidate in cluster_candidates(items)
+            for candidate in cluster_candidates(items, pair_decisions)
         )
         with self._session_factory() as session:
             repository = EventRepository(session)
@@ -397,6 +423,72 @@ class EventPipeline:
                     )
             session.commit()
         return candidates
+
+    def _resolve_pair_decisions(self, items: tuple[ClusterItem, ...]):
+        """Persist deterministic pair outcomes before clustering can union members."""
+        decisions = {}
+        for left, right in candidate_pairs(items):
+            fingerprint = pair_input_fingerprint(left, right)
+            with self._session_factory() as session:
+                repository = EventRepository(session)
+                existing = repository.get_pair_decision(
+                    left.raw_item_id,
+                    right.raw_item_id,
+                    CLUSTER_RULE_VERSION,
+                    fingerprint,
+                )
+                if existing is not None:
+                    decisions[(existing.left_raw_item_id, existing.right_raw_item_id)] = (
+                        _stored_pair_decision(existing)
+                    )
+                    continue
+            rule = evaluate_pair_rules(left, right)
+            semantic = None
+            model_runs: tuple[EventModelRun, ...] = ()
+            if rule.kind is PairDecisionKind.MODEL_BOUNDARY:
+                semantic, model_runs = self._compare_pair(left, right)
+            final = finalize_pair_decision(rule, semantic, fingerprint)
+            with self._session_factory() as session:
+                repository = EventRepository(session)
+                record = repository.record_pair_decision(
+                    left.raw_item_id,
+                    right.raw_item_id,
+                    CLUSTER_RULE_VERSION,
+                    fingerprint,
+                    rule_score=final.rule_score,
+                    rule_reasons=final.rule_reasons,
+                    model_same_event=final.model_same_event,
+                    model_confidence=final.model_confidence,
+                    final_decision=final.decision,
+                )
+                for model_run in model_runs:
+                    repository.record_pair_model_run(record.id, model_run.usage)
+                session.commit()
+            decisions[(final.left_raw_item_id, final.right_raw_item_id)] = final
+        return decisions
+
+    @staticmethod
+    def _compare_pair(
+        left: ClusterItem, right: ClusterItem
+    ) -> tuple[object, tuple[EventModelRun, ...]]:
+        """Run bounded optional HTTP work without holding a database session."""
+
+        async def run():
+            import httpx
+
+            runs: list[EventModelRun] = []
+            async with httpx.AsyncClient() as http:
+                adapter = EventMiniMaxAdapter(
+                    get_settings(),
+                    http,
+                    event_run_sink=runs.append,
+                )
+                semantic = await adapter.compare_candidate_pair(
+                    pair_candidate(left), pair_candidate(right)
+                )
+            return semantic, tuple(runs)
+
+        return asyncio.run(run())
 
     def _publish(
         self,

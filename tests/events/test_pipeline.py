@@ -11,6 +11,7 @@ from newsradar.db.models import (
     EventCandidateRecord,
     EventItemRecord,
     EventModelRunRecord,
+    EventPairDecisionRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
@@ -36,7 +37,12 @@ from newsradar.events.relevance import (
     evaluate_relevance,
 )
 from newsradar.events.repository import EventPublicationConflict, EventRepository
-from newsradar.events.schema import CandidateCluster, ClusterItem, ProcessingStage
+from newsradar.events.schema import (
+    CandidateCluster,
+    ClusterItem,
+    PairSemanticDecision,
+    ProcessingStage,
+)
 from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
 
@@ -232,6 +238,107 @@ def test_pipeline_excludes_relevant_item_without_a_discrete_news_action() -> Non
         (1, "excluded"),
         (2, "included"),
     }
+
+
+def test_pipeline_records_direct_pair_decision_before_clustering() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    items = (
+        ClusterItem(
+            raw_item_id=1,
+            title="OpenAI launches Orion model",
+            canonical_url="https://official.example.test/orion",
+            published_at=now,
+        ),
+        ClusterItem(
+            raw_item_id=2,
+            title="OpenAI launches Orion model",
+            canonical_url="https://official.example.test/orion",
+            published_at=now,
+        ),
+    )
+
+    with Session(engine) as db:
+        decisions = EventPipeline.production(db)._resolve_pair_decisions(items)
+
+    assert decisions[(1, 2)].decision == "merge"
+    with Session(engine) as db:
+        record = db.scalar(select(EventPairDecisionRecord))
+
+    assert record is not None
+    assert record.final_decision == "merge"
+
+
+def test_pipeline_reuses_audited_pair_decision_on_replay() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    items = (
+        ClusterItem(
+            raw_item_id=1,
+            title="OpenAI launches Orion model",
+            canonical_url="https://official.example.test/orion",
+            published_at=now,
+        ),
+        ClusterItem(
+            raw_item_id=2,
+            title="OpenAI launches Orion model",
+            canonical_url="https://official.example.test/orion",
+            published_at=now,
+        ),
+    )
+
+    with Session(engine) as db:
+        pipeline = EventPipeline.production(db)
+        first = pipeline._resolve_pair_decisions(items)
+        second = pipeline._resolve_pair_decisions(items)
+
+    assert first == second
+    with Session(engine) as db:
+        assert db.query(EventPairDecisionRecord).count() == 1
+
+
+def test_pipeline_uses_model_only_for_anchored_boundary_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    items = (
+        ClusterItem(
+            raw_item_id=1,
+            title="OpenAI launches Orion model",
+            entities=("model:orion",),
+            published_at=now,
+        ),
+        ClusterItem(
+            raw_item_id=2,
+            title="OpenAI Orion model overview",
+            entities=("model:orion",),
+            published_at=now,
+        ),
+    )
+    calls: list[tuple[int, int]] = []
+
+    async def compare(self, left, right):
+        del self
+        calls.append((left.raw_item_ids[0], right.raw_item_ids[0]))
+        return PairSemanticDecision(
+            same_event=True,
+            confidence=0.91,
+            rationale="same launch",
+            origin="model",
+        )
+
+    monkeypatch.setattr(
+        "newsradar.events.pipeline.EventMiniMaxAdapter.compare_candidate_pair", compare
+    )
+    with Session(engine) as db:
+        decisions = EventPipeline.production(db)._resolve_pair_decisions(items)
+
+    assert calls == [(1, 2)]
+    assert decisions[(1, 2)].decision == "merge"
 
 
 def test_pipeline_checkpoint_cancels_inflight_async_enrichment_promptly(
