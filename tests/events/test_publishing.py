@@ -112,6 +112,24 @@ def test_publish_snapshot_materializes_tier_and_rank_in_version_and_event(
     assert version.payload["publication"]["tier"] == "signal"
 
 
+def test_publish_snapshot_persists_explainable_heat_and_trend(db_session: Session) -> None:
+    publisher = EventPublisher(EventRepository(db_session))
+
+    published = publisher.publish_snapshot(
+        CandidateCluster(candidate_key="heat-release", title="OpenAI launches Orion"),
+        operation_id=1,
+        score_input=real_score_input(),
+    )
+
+    version = db_session.scalar(
+        select(EventVersionRecord).where(EventVersionRecord.event_id == published.event_id)
+    )
+    assert version.payload["heat_breakdown"]["heat"] == published.score.heat
+    assert version.payload["heat_breakdown"]["engagement_velocity"] == 40
+    assert version.payload["trend"]["direction"] == "rising"
+    assert version.payload["trend"]["reason"] == "trend:first_snapshot"
+
+
 def test_publish_snapshot_passes_safe_model_summary_into_same_version(db_session: Session) -> None:
     publisher = EventPublisher(EventRepository(db_session))
     usage = ModelUsage(

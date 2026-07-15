@@ -37,6 +37,7 @@ from newsradar.events.schema import (
     PublishedEvent,
     RelevanceDecision,
 )
+from newsradar.events.trends import HeatSnapshot
 
 
 class EventPublicationConflict(RuntimeError):
@@ -270,6 +271,27 @@ class EventRepository:
                 EventRecord.id == event_id,
                 EventVersionRecord.version_number == EventRecord.current_version_number,
             )
+        )
+
+    def heat_history(
+        self, canonical_key: str, *, before: datetime
+    ) -> tuple[HeatSnapshot, ...]:
+        """Read only previously persisted score snapshots for one canonical event."""
+        event = self.session.scalar(
+            select(EventRecord).where(EventRecord.canonical_key == canonical_key)
+        )
+        if event is None:
+            return ()
+        rows = self.session.scalars(
+            select(EventScoreRecord)
+            .where(
+                EventScoreRecord.event_id == event.id,
+                EventScoreRecord.created_at <= before,
+            )
+            .order_by(EventScoreRecord.created_at, EventScoreRecord.id)
+        )
+        return tuple(
+            HeatSnapshot(observed_at=row.created_at, heat=round(row.heat)) for row in rows
         )
 
     def publish_complete_event(

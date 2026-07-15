@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from newsradar.ai.minimax import ModelUsage
 from newsradar.events.evidence import assess_evidence
 from newsradar.events.ranking import decide_event_tier
@@ -13,6 +15,7 @@ from newsradar.events.schema import (
     PublishedEvent,
 )
 from newsradar.events.scoring import decide_publication, score_event, summarize_evidence
+from newsradar.events.trends import HeatSnapshot, assess_trend
 
 
 class EventPublisher:
@@ -28,9 +31,13 @@ class EventPublisher:
         *,
         score_input: EventScoreInput,
         enrichment: EventEnrichment | None = None,
+        snapshot_at: datetime | None = None,
     ) -> PublishedEvent:
         published = self.assemble(
-            candidate_id, score_input=score_input, enrichment=enrichment
+            candidate_id,
+            score_input=score_input,
+            enrichment=enrichment,
+            snapshot_at=snapshot_at,
         )
         event = self.repository.publish_complete_event(published, operation_id)
         return published.model_copy(update={"event_id": event.id})
@@ -43,10 +50,14 @@ class EventPublisher:
         score_input: EventScoreInput,
         enrichment: EventEnrichment | None = None,
         model_usages: tuple[ModelUsage, ...] = (),
+        snapshot_at: datetime | None = None,
     ) -> PublishedEvent:
         """Publish the exact immutable candidate snapshot that was scored."""
         published = self.assemble_snapshot(
-            candidate, score_input=score_input, enrichment=enrichment
+            candidate,
+            score_input=score_input,
+            enrichment=enrichment,
+            snapshot_at=snapshot_at,
         )
         event = self.repository.publish_complete_event(
             published,
@@ -61,12 +72,16 @@ class EventPublisher:
         *,
         score_input: EventScoreInput,
         enrichment: EventEnrichment | None = None,
+        snapshot_at: datetime | None = None,
     ) -> PublishedEvent:
         """Build the complete deterministic snapshot without making it reader-visible."""
         candidate, source_item_ids = self.repository.get_candidate_for_publication(candidate_id)
         candidate = candidate.model_copy(update={"raw_item_ids": source_item_ids})
         return self.assemble_snapshot(
-            candidate, score_input=score_input, enrichment=enrichment
+            candidate,
+            score_input=score_input,
+            enrichment=enrichment,
+            snapshot_at=snapshot_at,
         )
 
     def assemble_snapshot(
@@ -75,12 +90,18 @@ class EventPublisher:
         *,
         score_input: EventScoreInput,
         enrichment: EventEnrichment | None = None,
+        snapshot_at: datetime | None = None,
     ) -> PublishedEvent:
         """Assemble evidence, score, and members from one immutable candidate value."""
         evidence = assess_evidence(candidate.items)
         decision = decide_publication(candidate, evidence)
         score = score_event(score_input.model_copy(update={"evidence": evidence}))
         tier = decide_event_tier(candidate, score, evidence)
+        snapshot_at = _utc(snapshot_at or datetime.now(UTC))
+        trend = assess_trend(
+            HeatSnapshot(snapshot_at, round(score.heat)),
+            self.repository.heat_history(candidate.candidate_key, before=snapshot_at),
+        )
         # A model is editorial assistance only.  This deterministic original-title
         # fallback is always complete, so an absent key or a model outage cannot
         # block a confirmed event or leave NULL reader-facing fields.
@@ -97,7 +118,31 @@ class EventPublisher:
             source_item_ids=candidate.raw_item_ids,
             display_tier=tier.tier,
             rank_score=tier.rank_score,
+            heat_breakdown={
+                **score.model_dump(mode="json"),
+                "velocity_input": score.engagement_velocity,
+                "independent_root_count": score.independent_root_count,
+                "engagement_field_whitelist": list(score.engagement_fields),
+                "credibility_reasons": [
+                    reason for reason in score.reasons if reason.startswith("credibility:")
+                ],
+            },
+            trend={
+                "direction": trend.direction.value,
+                "delta": trend.delta,
+                "current_heat": trend.current_heat,
+                "baseline_heat": trend.baseline_heat,
+                "snapshot_count": trend.snapshot_count,
+                "reason": trend.reason,
+                "baseline_observed_at": trend.baseline_observed_at.isoformat()
+                if trend.baseline_observed_at
+                else None,
+            },
         )
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 def rule_enrichment(candidate) -> EventEnrichment:
     title = candidate.title.strip() or "未命名 AI 事件"
     return EventEnrichment(

@@ -674,6 +674,7 @@ class EventPipeline:
                         model_run.usage
                         for model_run in enrichment_result.model_runs
                     ),
+                    snapshot_at=now,
                 )
                 if claimed_event_id is not None:
                     repository.release_event(claimed_event_id, operation_id)

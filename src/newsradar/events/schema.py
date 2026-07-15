@@ -187,6 +187,8 @@ class EventScoreInput(_Schema):
     novelty: float = Field(ge=0, le=100)
     evidence: tuple[EvidenceAssessment, ...] = ()
     reasons: tuple[str, ...] = ()
+    independent_root_count: int = Field(default=0, ge=0)
+    engagement_fields: tuple[str, ...] = ()
 
 
 class ScoreBreakdown(_Schema):
@@ -201,6 +203,8 @@ class ScoreBreakdown(_Schema):
     heat: float = Field(ge=0, le=100)
     rule_version: str
     reasons: tuple[str, ...]
+    independent_root_count: int = Field(default=0, ge=0)
+    engagement_fields: tuple[str, ...] = ()
 
 
 class TierDecision(_Schema):
@@ -279,3 +283,5 @@ class PublishedEvent(_Schema):
     source_item_ids: tuple[int, ...] = ()
     display_tier: EventTier = EventTier.SIGNAL
     rank_score: float = Field(default=0, ge=0, le=100)
+    heat_breakdown: dict = Field(default_factory=dict)
+    trend: dict = Field(default_factory=dict)

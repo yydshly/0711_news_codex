@@ -69,3 +69,19 @@ def test_preprint_stays_signal_without_independent_confirmation() -> None:
 
     assert decision.tier is EventTier.SIGNAL
     assert "preprint_not_peer_reviewed" in decision.reasons
+
+
+def test_community_velocity_cannot_promote_unconfirmed_event() -> None:
+    decision = decide_event_tier(
+        CandidateCluster(candidate_key="community", title="Community rumor"),
+        score_breakdown(engagement_velocity=100, importance=100, credibility=35),
+        (
+            EvidenceAssessment(
+                role=EvidenceRole.COMMUNITY,
+                independent=True,
+                root_evidence_key="community:thread",
+            ),
+        ),
+    )
+
+    assert decision.tier is EventTier.SIGNAL

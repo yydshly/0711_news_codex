@@ -52,6 +52,8 @@ def score_event(input: EventScoreInput) -> ScoreBreakdown:
         credibility=credibility,
         heat=heat,
         rule_version=SCORE_RULE_VERSION,
+        independent_root_count=input.independent_root_count,
+        engagement_fields=input.engagement_fields,
         reasons=(
             "importance:versioned_weights",
             *input.reasons,
