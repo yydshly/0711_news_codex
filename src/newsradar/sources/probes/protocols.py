@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from html.parser import HTMLParser
 from urllib.parse import quote
 
 import httpx
@@ -9,6 +10,29 @@ from newsradar.sources.schema import SourceStatus
 
 from .base import ProbeOutcome, utcnow
 from .json_api import JsonApiProbe
+
+
+class _TextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        if text := data.strip():
+            self.parts.append(text)
+
+
+def html_to_text(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parser = _TextExtractor()
+    parser.feed(value)
+    text = " ".join(parser.parts).strip()
+    return text or None
+
+
+def engagement_total(*values: object) -> int:
+    return sum(value for value in values if isinstance(value, int))
 
 
 def synthetic_response(original: httpx.Response, payload: object) -> httpx.Response:
@@ -95,10 +119,44 @@ class BlueskyProbe(JsonApiProbe):
                     "url": f"https://bsky.app/profile/{quote(handle)}/post/{quote(rkey)}"
                     if handle and rkey
                     else None,
-                    "likes": post.get("likeCount"),
+                    "likes": engagement_total(
+                        post.get("likeCount"),
+                        post.get("repostCount"),
+                        post.get("replyCount"),
+                    ),
                 }
             )
         safe = synthetic_response(response, {"items": flattened, "cursor": payload.get("cursor")})
+        return await super().parse(source, method, safe, started, latency_ms)
+
+
+class MastodonProbe(JsonApiProbe):
+    async def parse(self, source, method, response, started, latency_ms):
+        payload = response.json()
+        flattened = []
+        for status in payload if isinstance(payload, list) else []:
+            if not isinstance(status, dict):
+                continue
+            account = status.get("account") if isinstance(status.get("account"), dict) else {}
+            content = html_to_text(status.get("content"))
+            flattened.append(
+                {
+                    "id": status.get("id"),
+                    "title": content,
+                    "content": content,
+                    "published_at": status.get("created_at"),
+                    "author": account.get("display_name")
+                    or account.get("acct")
+                    or account.get("username"),
+                    "url": status.get("url") or status.get("uri"),
+                    "likes": engagement_total(
+                        status.get("replies_count"),
+                        status.get("reblogs_count"),
+                        status.get("favourites_count"),
+                    ),
+                }
+            )
+        safe = synthetic_response(response, {"items": flattened})
         return await super().parse(source, method, safe, started, latency_ms)
 
 

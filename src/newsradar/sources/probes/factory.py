@@ -7,7 +7,7 @@ from newsradar.sources.schema import AccessKind, AccessMethod
 
 from .base import BaseProbe, UnsupportedProbe
 from .json_api import JsonApiProbe
-from .protocols import BlueskyProbe, HackerNewsProbe, RedditProbe, YouTubeProbe
+from .protocols import BlueskyProbe, HackerNewsProbe, MastodonProbe, RedditProbe, YouTubeProbe
 from .rss import RssProbe
 
 
@@ -26,6 +26,8 @@ class ProbeFactory:
                 return YouTubeProbe(self.client, self.credentials)
             if host == "public.api.bsky.app":
                 return BlueskyProbe(self.client, self.credentials)
+            if host == "mastodon.social" and method.url.path.startswith("/api/v1/"):
+                return MastodonProbe(self.client, self.credentials)
             if host == "oauth.reddit.com":
                 return RedditProbe(self.client, self.credentials)
             return JsonApiProbe(self.client, self.credentials)
