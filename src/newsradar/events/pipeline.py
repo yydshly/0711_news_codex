@@ -95,6 +95,11 @@ class PipelineResult:
     newsworthy_item_count: int
     non_newsworthy_item_count: int
     newsworthiness_reasons: dict[str, int]
+    pair_direct_merge_count: int
+    pair_model_merge_count: int
+    pair_separate_count: int
+    pair_cache_hit_count: int
+    pair_model_error_counts: dict[str, int]
     duplicate_root_suppressed_count: int
     model_success_count: int
     model_fallback_count: int
@@ -144,6 +149,8 @@ class EventPipeline:
 
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self._session_factory = session_factory
+        self._pair_metrics: Counter[str] = Counter()
+        self._pair_model_error_counts: Counter[str] = Counter()
 
     @classmethod
     def production(cls, session: Session) -> EventPipeline:
@@ -155,6 +162,8 @@ class EventPipeline:
     ) -> PipelineResult:
         if window_hours <= 0:
             raise ValueError("window_hours must be positive")
+        self._pair_metrics = Counter()
+        self._pair_model_error_counts = Counter()
         snapshot_now = self._operation_window_end(operation_id, checkpoint=checkpoint)
         checkpoint("before_event_selection")
         selection = self._select_and_classify_items(window_hours, now=snapshot_now)
@@ -206,6 +215,11 @@ class EventPipeline:
                 len(selection.newsworthiness_decisions) - len(selection.included)
             ),
             newsworthiness_reasons=dict(selection.newsworthiness_reasons),
+            pair_direct_merge_count=self._pair_metrics["direct_merge"],
+            pair_model_merge_count=self._pair_metrics["model_merge"],
+            pair_separate_count=self._pair_metrics["separate"],
+            pair_cache_hit_count=self._pair_metrics["cache_hit"],
+            pair_model_error_counts=dict(sorted(self._pair_model_error_counts.items())),
             duplicate_root_suppressed_count=duplicate_root_suppressed_count,
             model_success_count=model_success_count,
             model_fallback_count=model_fallback_count,
@@ -438,6 +452,7 @@ class EventPipeline:
                     fingerprint,
                 )
                 if existing is not None:
+                    self._pair_metrics["cache_hit"] += 1
                     decisions[(existing.left_raw_item_id, existing.right_raw_item_id)] = (
                         _stored_pair_decision(existing)
                     )
@@ -448,6 +463,19 @@ class EventPipeline:
             if rule.kind is PairDecisionKind.MODEL_BOUNDARY:
                 semantic, model_runs = self._compare_pair(left, right)
             final = finalize_pair_decision(rule, semantic, fingerprint)
+            if final.decision == "merge":
+                metric = (
+                    "direct_merge"
+                    if rule.kind is PairDecisionKind.DIRECT_MERGE
+                    else "model_merge"
+                )
+                self._pair_metrics[metric] += 1
+            else:
+                self._pair_metrics["separate"] += 1
+            for model_run in model_runs:
+                error = model_run.usage.error
+                if isinstance(error, str) and fullmatch(r"[a-z][a-z0-9_]{0,63}", error):
+                    self._pair_model_error_counts[error] += 1
             with self._session_factory() as session:
                 repository = EventRepository(session)
                 record = repository.record_pair_decision(
