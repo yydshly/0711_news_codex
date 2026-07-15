@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -245,3 +245,90 @@ def test_postgres_concurrent_terminal_completion_counts_one_member_once() -> Non
                 cleanup.commit()
         engine.dispose()
 
+
+def test_postgres_catalog_handler_cancellation_stops_after_current_probe() -> None:
+    """A cancellation observed at a handler checkpoint leaves its member resumable."""
+    engine = _postgres_engine_or_skip()
+    operation_id: int | None = None
+    calls = 0
+    try:
+        source = load_source_tree(Path("sources"))[0]
+        handler = CatalogRefreshHandler([source], [], lambda: Session(engine))
+        with Session(engine) as setup:
+            operation = OperationRunRecord(
+                operation_type="source_catalog_refresh",
+                trigger="acceptance",
+                status="queued",
+                requested_scope={
+                    "catalog_count": 1,
+                    "deadline_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                },
+                result_summary={},
+                progress_total=1,
+                attempt_count=0,
+            )
+            setup.add(operation)
+            setup.flush()
+            operation_id = operation.id
+            CatalogRefreshRepository(setup).create_members(
+                operation_id,
+                CatalogRefreshPlan.from_members(
+                    [
+                        CatalogRefreshMemberSnapshot(
+                            source_id=source.id,
+                            provider_id=source.provider_id,
+                            definition_hash=handler.definition_hash(source, []),
+                            availability="ready",
+                            coverage_mode="direct",
+                            access_kind=source.access_methods[0].kind.value,
+                            lane=CatalogRefreshLane.CONTENT,
+                        )
+                    ]
+                ),
+            )
+            setup.commit()
+
+        async def cancel_after_first_probe(source, method) -> ProbeResult:
+            nonlocal calls
+            calls += 1
+            with Session(engine) as session:
+                assert OperationRepository(session).request_cancel(operation_id)
+            return await _content_success(source, method)
+
+        handler = CatalogRefreshHandler(
+            [source], [], lambda: Session(engine), cancel_after_first_probe
+        )
+        with Session(engine) as worker_session:
+            worker = Worker(OperationRepository(worker_session), "cancel-acceptance")
+            assert not worker.run_once(handler)
+        with Session(engine) as verification:
+            operation = verification.get(OperationRunRecord, operation_id)
+            member = verification.scalar(
+                select(SourceCatalogRefreshMemberRecord).where(
+                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id
+                )
+            )
+            assert operation is not None and operation.status == "cancelled"
+            assert member is not None and member.state == "running"
+        assert calls == 1
+    finally:
+        if operation_id is not None:
+            with Session(engine) as cleanup:
+                cleanup.execute(
+                    delete(OperationEventRecord).where(
+                        OperationEventRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationAttemptRecord).where(
+                        OperationAttemptRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
+                )
+                cleanup.execute(
+                    delete(WorkerRecord).where(WorkerRecord.worker_id == "cancel-acceptance")
+                )
+                cleanup.commit()
+        engine.dispose()
