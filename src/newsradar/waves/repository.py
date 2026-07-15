@@ -6,6 +6,7 @@ from sqlalchemy import case, select, update
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import HighValueWaveMemberRecord, OperationRunRecord, utcnow
+from newsradar.operations.logging import redact
 
 from .planning import WavePlan
 
@@ -32,7 +33,7 @@ class WaveRepository:
                 access_kind_snapshot=member.access_kind,
                 fetchable=member.fetchable,
                 state="pending",
-                conclusion=member.blocked_reason,
+                conclusion=redact(member.blocked_reason) if member.blocked_reason else None,
             )
             for member in plan.members
         ]
@@ -86,7 +87,11 @@ class WaveRepository:
                 f"high value wave member claim lost: {operation_run_id}/{source_id}"
             )
         was_unfinished = record.state in _UNFINISHED_STATES
-        record.state, record.result_code, record.conclusion = state, result_code, conclusion
+        record.state, record.result_code, record.conclusion = (
+            state,
+            result_code,
+            redact(conclusion) if conclusion else None,
+        )
         if fetch_run_id is not None:
             record.fetch_run_id = fetch_run_id
         record.finished_at = utcnow()

@@ -132,7 +132,11 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
                 "fetchable": True,
                 "state": "succeeded",
                 "result_code": "success",
-                "conclusion": "Authorization: must-not-leak",
+                "conclusion": (
+                    "DATABASE_URL=postgresql://user:database-secret@db/news "
+                    "MINIMAX_API_KEY=minimax-secret GITHUB_TOKEN=github-secret "
+                    "YOUTUBE_API_KEY=youtube-secret Authorization: Bearer authorization-secret"
+                ),
             },
         )()
     ]
@@ -170,7 +174,16 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
     assert status.exit_code == 0
     assert "2/3" in status.stdout
     assert report.exit_code == 0
-    assert "must-not-leak" not in output.read_text(encoding="utf-8")
+    rendered = output.read_text(encoding="utf-8")
+    for secret in (
+        "database-secret",
+        "minimax-secret",
+        "github-secret",
+        "youtube-secret",
+        "authorization-secret",
+    ):
+        assert secret not in rendered
+    assert "Authorization: [REDACTED]" in rendered
 
 
 def write_source(root: Path) -> None:

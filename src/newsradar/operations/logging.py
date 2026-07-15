@@ -20,9 +20,18 @@ _SECRET_PATTERNS = (
         re.compile(r"(?i)\b(api[_-]?key|token|password)\s*[=:]\s*[^\s,&;]+"),
         lambda match: f"{match.group(1)}=[REDACTED]",
     ),
+    (
+        re.compile(
+            r"(?i)\b((?:[a-z][a-z0-9_]*_)?(?:api[_-]?key|token|secret)|database_url)"
+            r"\s*[=:]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,&;]+)"
+        ),
+        lambda match: f"{match.group(1)}=[REDACTED]",
+    ),
     (re.compile(r"(?i)(?:postgres(?:ql)?|mysql)://[^\s'\"]+"), "[REDACTED_DATABASE_URL]"),
 )
-_SENSITIVE_FIELD = re.compile(r"(?i)(authorization|cookie|api[_-]?key|token|password|secret)")
+_SENSITIVE_FIELD = re.compile(
+    r"(?i)(authorization|cookie|api[_-]?key|token|password|secret|database[_-]?url)"
+)
 
 
 def redact(value: object, env: dict[str, str] | None = None) -> str:

@@ -93,6 +93,51 @@ def test_finish_member_fences_stale_claim_and_advances_progress_once(session: Se
     assert session.get(OperationRunRecord, 11).progress_current == 1
 
 
+def test_finish_member_scrubs_environment_style_secrets_before_persistence(
+    session: Session,
+) -> None:
+    session.add(
+        OperationRunRecord(
+            id=13,
+            operation_type="high_value_news_wave",
+            trigger="test",
+            status="running",
+            requested_scope={},
+            result_summary={},
+            progress_total=1,
+        )
+    )
+    session.commit()
+    repository = WaveRepository(session)
+    repository.create_members(13, plan(member("a")))
+    repository.claim_member(13, "a", claim_attempt_id=1)
+
+    raw_conclusion = (
+        "DATABASE_URL=postgresql://user:database-secret@db/news "
+        "MINIMAX_API_KEY=minimax-secret GITHUB_TOKEN=github-secret "
+        "YOUTUBE_API_KEY=youtube-secret Authorization: Bearer authorization-secret"
+    )
+    repository.finish_member(
+        13,
+        "a",
+        state="failed",
+        result_code="internal",
+        conclusion=raw_conclusion,
+        claim_attempt_id=1,
+    )
+
+    stored = WaveRepository(session).members(13)[0].conclusion or ""
+    for secret in (
+        "database-secret",
+        "minimax-secret",
+        "github-secret",
+        "youtube-secret",
+        "authorization-secret",
+    ):
+        assert secret not in stored
+    assert "Authorization: [REDACTED]" in stored
+
+
 def test_blocked_member_is_claimable_then_finishes_once_without_network(session: Session) -> None:
     session.add(
         OperationRunRecord(

@@ -44,6 +44,21 @@ def test_jsonl_redacts_sensitive_extra_field_values(tmp_path: object) -> None:
     assert payload["api_key"] == "[REDACTED]"
 
 
+def test_jsonl_redacts_database_url_extra_field(tmp_path: object) -> None:
+    logger = configure_logging(tmp_path)  # type: ignore[arg-type]
+    logger.info(
+        "operation complete",
+        extra={"correlation_id": "op-1", "DATABASE_URL": "postgresql://user:database-secret@db/news"},
+    )
+    for handler in logger.handlers:
+        handler.flush()
+
+    payload = json.loads(
+        (tmp_path / ".local" / "logs" / "newsradar.log").read_text().splitlines()[-1]  # type: ignore[operator]
+    )
+    assert payload["DATABASE_URL"] == "[REDACTED]"
+
+
 def test_configure_logging_writes_jsonl_and_rotates(tmp_path: object) -> None:
     logger = configure_logging(tmp_path)  # type: ignore[arg-type]
     logger.info("finished", extra={"correlation_id": "op-1", "token": "Bearer abc"})
