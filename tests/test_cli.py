@@ -951,6 +951,7 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     write_source(root)
     handler = object()
     remediation_handler = object()
+    wave_handler = object()
     calls: list[object] = []
 
     class FakeWorker:
@@ -974,6 +975,9 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
 
     monkeypatch.setattr("newsradar.cli.FetchOperationHandler.production", lambda sources: handler)
     monkeypatch.setattr(
+        "newsradar.cli.HighValueWaveHandler.production", lambda sources: wave_handler
+    )
+    monkeypatch.setattr(
         "newsradar.cli.SourceRemediationHandler.production",
         lambda sources, create_session: remediation_handler,
     )
@@ -992,6 +996,7 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     assert len(calls) == 1
     assert calls[0].__class__.__name__ == "OperationRouter"
     assert calls[0]._handlers["source_remediation"] is remediation_handler
+    assert calls[0]._handlers["high_value_news_wave"] is wave_handler
     assert "processed 1 operation" in result.stdout
 
 

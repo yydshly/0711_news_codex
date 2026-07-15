@@ -54,7 +54,13 @@ class WaveRepository:
     ) -> tuple[HighValueWaveMemberRecord, bool]:
         self._require_claim_attempt_id(claim_attempt_id)
         record = self._locked_member(operation_run_id, source_id)
-        if record.state != "pending":
+        if record.state == "running" and record.claim_attempt_id == claim_attempt_id:
+            return record, False
+        if record.state not in {"pending", "running"}:
+            return record, False
+        if record.state == "running" and (
+            record.claim_attempt_id is None or record.claim_attempt_id >= claim_attempt_id
+        ):
             return record, False
         record.state = "running"
         record.claim_attempt_id = claim_attempt_id

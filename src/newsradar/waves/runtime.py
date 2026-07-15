@@ -17,7 +17,7 @@ from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.fetch_runtime import FetchExecutor, execute_production_fetch
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
-from newsradar.operations.worker import OperationResult
+from newsradar.operations.worker import OperationCancelled, OperationResult
 from newsradar.sources.repository import canonical_definition
 from newsradar.sources.schema import SourceDefinition
 from newsradar.waves.repository import WaveRepository
@@ -76,8 +76,6 @@ class HighValueWaveHandler:
             if "deadline_at" in lease.requested_scope
             else None
         )
-        if deadline is not None:
-            deadline.check("before_high_value_wave")
         members = self._unfinished_members(lease.operation_id)
         global_semaphore = asyncio.Semaphore(6)
         provider_semaphores: defaultdict[str, asyncio.Semaphore] = defaultdict(
@@ -87,8 +85,6 @@ class HighValueWaveHandler:
         async def run_one(source_id: str, provider_id: str) -> WaveMemberOutcome:
             async with global_semaphore:
                 async with provider_semaphores[provider_id]:
-                    if deadline is not None:
-                        deadline.check("before_wave_member")
                     return await self._run_member(
                         lease.operation_id, source_id, checkpoint, deadline, lease.attempt_id
                     )
@@ -96,8 +92,6 @@ class HighValueWaveHandler:
         await asyncio.gather(
             *(run_one(source_id, provider_id) for source_id, provider_id in members)
         )
-        if deadline is not None:
-            deadline.check("after_high_value_wave")
         return self._operation_result(lease.operation_id)
 
     def _unfinished_members(self, operation_id: int) -> list[tuple[str, str]]:
@@ -150,24 +144,52 @@ class HighValueWaveHandler:
                 )
                 session.commit()
                 return outcome
+            if deadline is not None and deadline.remaining_seconds() <= 0:
+                outcome = self._finish_in_session(
+                    repository,
+                    operation_id,
+                    source_id,
+                    "timeout",
+                    "operation_timeout",
+                    "波次截止时间已到，未发起网络抓取",
+                    attempt_id,
+                )
+                session.commit()
+                return outcome
             session.commit()
 
         checkpoint(f"before_wave_fetch:{source_id}")
-        if deadline is not None:
-            deadline.check("before_wave_fetch")
+        if deadline is not None and deadline.remaining_seconds() <= 0:
+            return self._finish(
+                operation_id,
+                source_id,
+                "timeout",
+                "operation_timeout",
+                "波次截止时间已到，未发起网络抓取",
+                attempt_id,
+            )
         try:
             summary = await asyncio.to_thread(
                 self._executor, source, operation_id, checkpoint, {"wave": True}
             )
         except OperationTimedOut:
             raise
+        except OperationCancelled:
+            raise
         except Exception as error:
             return self._finish(
                 operation_id, source_id, "failed", "internal", str(error), attempt_id
             )
         checkpoint(f"after_wave_fetch:{source_id}")
-        if deadline is not None:
-            deadline.check("after_wave_fetch")
+        if deadline is not None and deadline.remaining_seconds() <= 0:
+            return self._finish(
+                operation_id,
+                source_id,
+                "timeout",
+                "operation_timeout",
+                "波次截止时间已到，抓取结果未采纳",
+                attempt_id,
+            )
         return self._finish_from_summary(operation_id, source_id, summary, attempt_id)
 
     def _finish_from_summary(

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from threading import Event, Lock, Thread
+
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from newsradar.db.models import Base, HighValueWaveMemberRecord, OperationRunRecord
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.ingestion.service import SourceFetchSummary
 from newsradar.operations.repository import OperationLease, OperationRepository
 from newsradar.operations.schema import OperationType
+from newsradar.operations.worker import OperationCancelled
 from newsradar.sources.repository import canonical_definition
 from newsradar.sources.schema import SourceDefinition
 from tests.operations.test_fetch_runtime import _source
@@ -108,3 +114,123 @@ def test_claim_failure_performs_no_network_io() -> None:
 
         assert result.result_code == "already_claimed"
         assert calls == []
+
+
+@pytest.mark.parametrize("boundary", ["before_network", "fetch_checkpoint", "after_item"])
+def test_wave_propagates_worker_cancellation_from_shared_fetch_callbacks(boundary: str) -> None:
+    from newsradar.waves.runtime import HighValueWaveHandler
+
+    source = _source("source")
+    with _session() as db:
+        operation_id = _freeze(db, source)
+
+        def execute(source, operation_id, checkpoint, scope):
+            checkpoint(boundary)
+            raise AssertionError("cancellation must leave the executor immediately")
+
+        with pytest.raises(OperationCancelled):
+            HighValueWaveHandler([source], lambda: db, execute)(
+                _lease(operation_id), lambda _: (_ for _ in ()).throw(OperationCancelled())
+            )
+
+
+def test_deadline_finishes_all_members_without_starting_more_network() -> None:
+    from newsradar.waves.runtime import HighValueWaveHandler
+
+    first, second = _source("first"), _source("second")
+    calls: list[str] = []
+    with _session() as db:
+        operation_id = _freeze(db, first, second)
+        lease = OperationLease(
+            operation_id,
+            1,
+            1,
+            "worker",
+            {"deadline_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()},
+            OperationType.HIGH_VALUE_NEWS_WAVE,
+        )
+        result = HighValueWaveHandler(
+            [first, second],
+            lambda: db,
+            lambda source, *args: calls.append(source.id),
+        )(lease, lambda _: None)
+
+        assert result.status.value == "partial"
+        assert calls == []
+        assert {member.state for member in db.query(HighValueWaveMemberRecord)} == {"timeout"}
+        assert db.get(OperationRunRecord, operation_id).progress_current == 2
+
+
+@pytest.mark.parametrize(
+    ("source_count", "provider_count", "expected_limit"), [(7, 7, 6), (3, 1, 2)]
+)
+def test_wave_applies_global_and_provider_network_limits(
+    source_count: int, provider_count: int, expected_limit: int
+) -> None:
+    from newsradar.waves.runtime import HighValueWaveHandler
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    sources = [
+        _source(f"source-{index}").model_copy(update={"provider_id": f"p-{index % provider_count}"})
+        for index in range(source_count)
+    ]
+    active = maximum = 0
+    lock, started, release = Lock(), Event(), Event()
+
+    def execute(source, operation_id, checkpoint, scope):
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+            if maximum >= expected_limit:
+                started.set()
+        assert release.wait(2)
+        with lock:
+            active -= 1
+        return SourceFetchSummary(source.id, FetchResult(outcome=FetchOutcome.SUCCEEDED))
+
+    with Session(engine) as db:
+        operation_id = _freeze(db, *sources)
+        handler = HighValueWaveHandler(sources, lambda: Session(engine), execute)
+        thread = Thread(target=lambda: handler(_lease(operation_id), lambda _: None))
+        thread.start()
+        assert started.wait(1)
+        assert maximum <= expected_limit
+        release.set()
+        thread.join(3)
+        assert not thread.is_alive()
+
+
+def test_rate_limit_and_member_error_do_not_block_other_wave_members() -> None:
+    from newsradar.waves.runtime import HighValueWaveHandler
+
+    limited, broken, good = _source("limited"), _source("broken"), _source("good")
+    with _session() as db:
+        operation_id = _freeze(db, limited, broken, good)
+
+        def execute(source, operation_id, checkpoint, scope):
+            if source.id == "limited":
+                return SourceFetchSummary(
+                    source.id,
+                    FetchResult(
+                        outcome=FetchOutcome.FAILED,
+                        http_status=429,
+                        error_code="rate_limited",
+                    ),
+                )
+            if source.id == "broken":
+                raise RuntimeError("isolated")
+            return SourceFetchSummary(source.id, FetchResult(outcome=FetchOutcome.SUCCEEDED))
+
+        result = HighValueWaveHandler([limited, broken, good], lambda: db, execute)(
+            _lease(operation_id), lambda _: None
+        )
+        states = {member.source_id: member.state for member in db.query(HighValueWaveMemberRecord)}
+
+        assert result.status.value == "partial"
+        assert states == {"limited": "failed", "broken": "failed", "good": "succeeded"}

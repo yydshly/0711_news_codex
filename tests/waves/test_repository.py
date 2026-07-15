@@ -142,6 +142,37 @@ def test_claim_requires_positive_operation_attempt_id(
         repository.claim_member(11, "a", claim_attempt_id=attempt_id)
 
 
+def test_new_attempt_reclaims_running_member_and_fences_old_finisher(session: Session) -> None:
+    repository = WaveRepository(session)
+    session.add(
+        OperationRunRecord(
+            id=12,
+            operation_type="high_value_news_wave",
+            trigger="test",
+            status="running",
+            requested_scope={},
+            result_summary={},
+            progress_total=1,
+        )
+    )
+    session.commit()
+    repository.create_members(12, plan(member("a")))
+    repository.claim_member(12, "a", claim_attempt_id=7)
+
+    record, claimed = repository.claim_member(12, "a", claim_attempt_id=8)
+
+    assert claimed is True
+    assert record.claim_attempt_id == 8
+    with pytest.raises(PermissionError):
+        repository.finish_member(
+            12, "a", state="failed", result_code="late", conclusion="late", claim_attempt_id=7
+        )
+    repository.finish_member(
+        12, "a", state="succeeded", result_code=None, conclusion="winner", claim_attempt_id=8
+    )
+    assert session.get(OperationRunRecord, 12).progress_current == 1
+
+
 def test_terminal_finish_requires_positive_operation_attempt_id(session: Session) -> None:
     repository = WaveRepository(session)
     repository.create_members(11, plan(member("a")))
