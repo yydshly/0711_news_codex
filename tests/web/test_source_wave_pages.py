@@ -162,3 +162,27 @@ def test_source_wave_cancel_and_retry_reuse_safe_action_boundary(monkeypatch, db
     assert db_session.get(OperationRunRecord, queued.id).cancel_requested_at is not None
     assert retried.status_code == 303
     assert retried.headers["location"] != f"/source-waves/{failed.id}"
+
+
+def test_source_wave_cancel_rejects_other_operation_type_without_mutation(
+    monkeypatch, db_session
+) -> None:
+    other = OperationRunRecord(
+        operation_type="fetch",
+        trigger="test",
+        status="queued",
+        requested_scope={},
+        result_summary={},
+    )
+    db_session.add(other)
+    db_session.commit()
+    with _client(monkeypatch, db_session) as client:
+        token = _token(client.get("/source-waves").text)
+        response = client.post(
+            f"/source-waves/{other.id}/cancel",
+            data={"action_token": token},
+            headers={"origin": "http://127.0.0.1"},
+        )
+
+    assert response.status_code == 404
+    assert db_session.get(OperationRunRecord, other.id).cancel_requested_at is None

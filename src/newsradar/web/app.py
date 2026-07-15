@@ -19,7 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
 from newsradar.credentials import SettingsCredentials
-from newsradar.db.models import SourceDefinitionRecord
+from newsradar.db.models import OperationRunRecord, SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
@@ -931,6 +931,9 @@ def create_app(
         await require_safe_action(request)
         try:
             with create_session() as session:
+                operation = session.get(OperationRunRecord, operation_id)
+                if operation is None or operation.operation_type != "source_catalog_refresh":
+                    raise HTTPException(status_code=404)
                 if not OperationCommandService(session).cancel(operation_id):
                     raise HTTPException(status_code=409, detail="operation cannot be cancelled")
         except (OperationalError, ProgrammingError) as error:
