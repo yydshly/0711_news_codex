@@ -747,6 +747,9 @@ def test_serve_runs_runtime_supervisor(monkeypatch) -> None:
     calls: list[str] = []
 
     class FakeSupervisor:
+        def __init__(self, *, host, port, worker_id) -> None:
+            assert (host, port, worker_id) == ("127.0.0.1", 8765, None)
+
         def run(self) -> int:
             calls.append("run")
             return 0

@@ -136,6 +136,17 @@ class OperationRepository:
                 operation.operation_type,
             )
 
+    def heartbeat_worker(self, worker_id: str, *, status: str = "idle") -> None:
+        """Persist liveness even when the durable queue is empty."""
+        if status not in {"idle", "running"}:
+            raise ValueError("worker status must be idle or running")
+        with self._transaction():
+            worker = self._ensure_worker(worker_id)
+            if worker.current_operation_run_id is not None and status == "idle":
+                return
+            worker.last_heartbeat_at = self._now()
+            worker.status = status
+
     def renew_lease(self, lease: OperationLease, lease_seconds: float = 60) -> bool:
         with self._transaction():
             operation = self.session.get(
@@ -218,7 +229,7 @@ class OperationRepository:
                 worker.last_heartbeat_at = self._now()
                 if worker.current_operation_run_id == operation.id:
                     worker.current_operation_run_id = None
-                worker.status = "running"
+                worker.status = "idle"
             if final == OperationStatus.QUEUED:
                 operation.next_attempt_at = self._now() + timedelta(
                     seconds=self._retry_delay_seconds(operation.attempt_count, retry_after_seconds)
@@ -271,7 +282,7 @@ class OperationRepository:
                 hostname=worker_id,
                 started_at=self._now(),
                 last_heartbeat_at=self._now(),
-                status="running",
+                status="idle",
             )
             self.session.add(worker)
             self.session.flush()

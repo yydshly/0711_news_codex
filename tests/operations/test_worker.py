@@ -6,7 +6,7 @@ from threading import Event, Thread
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import Base, OperationEventRecord, OperationRunRecord
+from newsradar.db.models import Base, OperationEventRecord, OperationRunRecord, WorkerRecord
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.operations.worker import Worker
@@ -43,6 +43,34 @@ def test_worker_closes_claim_transaction_before_running_handler() -> None:
         )
 
         assert transaction_states == [False]
+
+
+def test_worker_without_operation_persists_idle_heartbeat() -> None:
+    with session() as db:
+        worker = Worker(OperationRepository(db), "idle-worker")
+
+        assert worker.run_once(lambda *_: None) is False
+
+        record = db.get(WorkerRecord, "idle-worker")
+        assert record is not None
+        assert record.status == "idle"
+        assert record.current_operation_run_id is None
+        assert record.last_heartbeat_at is not None
+
+
+def test_finished_operation_returns_worker_to_idle() -> None:
+    with session() as db:
+        operation = OperationRepository(db).enqueue(OperationType.FETCH, {})
+
+        assert Worker(OperationRepository(db), "worker-a").run_once(lambda *_: None) is True
+
+        record = db.get(WorkerRecord, "worker-a")
+        completed = db.get(OperationRunRecord, operation.id)
+        assert record is not None
+        assert record.status == "idle"
+        assert record.current_operation_run_id is None
+        assert completed is not None
+        assert completed.status == OperationStatus.SUCCEEDED
 
 
 def test_worker_uses_injected_clock_for_deterministic_heartbeat_timing() -> None:

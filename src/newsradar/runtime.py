@@ -35,16 +35,22 @@ class RuntimeSupervisor:
         self,
         process_factory: ProcessFactory | None = None,
         *,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        worker_id: str | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._process_factory = process_factory or self._spawn
+        self.host = host
+        self.port = port
+        self.worker_id = worker_id
         self._sleeper = sleeper
         self.children: list[ManagedProcess] = []
 
     def start(self) -> None:
         if self.children:
             raise RuntimeError("runtime supervisor has already started")
-        self.children = [self._process_factory(spec.args) for spec in self._specifications()]
+        self.children = [self._process_factory(spec.args) for spec in self.specifications()]
 
     def stop(self, signum: int = signal.SIGTERM) -> None:
         for child in self.children:
@@ -78,10 +84,25 @@ class RuntimeSupervisor:
     def _spawn(args: tuple[str, ...]) -> ManagedProcess:
         return subprocess.Popen(args)  # noqa: S603
 
-    @staticmethod
-    def _specifications() -> tuple[ChildSpec, ChildSpec]:
+    def specifications(self) -> tuple[ChildSpec, ChildSpec]:
         invoke_cli = "from newsradar.cli import app; app()"
+        worker_args = [sys.executable, "-c", invoke_cli, "worker"]
+        if self.worker_id:
+            worker_args.extend(["--worker-id", self.worker_id])
+        worker_args.append("--forever")
         return (
-            ChildSpec("web", (sys.executable, "-c", invoke_cli, "web")),
-            ChildSpec("worker", (sys.executable, "-c", invoke_cli, "worker", "--forever")),
+            ChildSpec(
+                "web",
+                (
+                    sys.executable,
+                    "-c",
+                    invoke_cli,
+                    "web",
+                    "--host",
+                    self.host,
+                    "--port",
+                    str(self.port),
+                ),
+            ),
+            ChildSpec("worker", tuple(worker_args)),
         )

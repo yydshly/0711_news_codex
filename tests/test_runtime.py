@@ -58,3 +58,12 @@ def test_supervisor_forwards_interrupt_to_both_children() -> None:
 
     assert web.signal_received == signal.SIGINT
     assert worker.signal_received == signal.SIGINT
+
+
+def test_supervisor_passes_runtime_options_to_children() -> None:
+    specs = RuntimeSupervisor(
+        host="127.0.0.1", port=8766, worker_id="newsradar-local"
+    ).specifications()
+
+    assert specs[0].args[-5:] == ("web", "--host", "127.0.0.1", "--port", "8766")
+    assert specs[1].args[-3:] == ("--worker-id", "newsradar-local", "--forever")

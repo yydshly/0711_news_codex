@@ -481,9 +481,13 @@ def event_quality_report(
 
 
 @app.command("serve")
-def serve() -> None:
+def serve(
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8765,
+    worker_id: Annotated[str | None, typer.Option()] = None,
+) -> None:
     """Start the local Web UI and durable Worker together."""
-    exit_code = RuntimeSupervisor().run()
+    exit_code = RuntimeSupervisor(host=host, port=port, worker_id=worker_id).run()
     if exit_code:
         raise typer.Exit(exit_code)
 
