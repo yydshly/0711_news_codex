@@ -110,6 +110,22 @@ def test_enqueue_wave_rejects_active_batch_and_rolls_back_member_failure(
         assert db.query(OperationRunRecord).count() == 0
 
 
+def test_enqueue_all_blocked_wave_starts_at_zero_and_is_worker_claimable() -> None:
+    with session() as db:
+        operation_id = OperationCommandService(db).enqueue_high_value_wave(
+            plan=wave_plan(wave_member("blocked", fetchable=False)), trigger="web"
+        )
+
+        operation = db.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        assert (operation.progress_current, operation.progress_total) == (0, 1)
+        member, claimed = WaveRepository(db).claim_member(
+            operation_id, "blocked", claim_attempt_id=1
+        )
+        assert claimed is True
+        assert member.state == "running"
+
+
 def test_enqueue_catalog_refresh_freezes_members_and_scope() -> None:
     now = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
     with session() as db:

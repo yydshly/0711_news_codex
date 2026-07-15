@@ -31,7 +31,7 @@ class WaveRepository:
                 availability_snapshot=member.availability,
                 access_kind_snapshot=member.access_kind,
                 fetchable=member.fetchable,
-                state="pending" if member.fetchable else "blocked",
+                state="pending",
                 conclusion=member.blocked_reason,
             )
             for member in plan.members
@@ -52,6 +52,7 @@ class WaveRepository:
     def claim_member(
         self, operation_run_id: int, source_id: str, *, claim_attempt_id: int | None = None
     ) -> tuple[HighValueWaveMemberRecord, bool]:
+        self._require_claim_attempt_id(claim_attempt_id)
         record = self._locked_member(operation_run_id, source_id)
         if record.state != "pending":
             return record, False
@@ -72,8 +73,9 @@ class WaveRepository:
         fetch_run_id: int | None = None,
         claim_attempt_id: int | None = None,
     ) -> HighValueWaveMemberRecord:
+        self._require_claim_attempt_id(claim_attempt_id)
         record = self._locked_member(operation_run_id, source_id)
-        if claim_attempt_id is not None and record.claim_attempt_id != claim_attempt_id:
+        if record.claim_attempt_id != claim_attempt_id:
             raise PermissionError(
                 f"high value wave member claim lost: {operation_run_id}/{source_id}"
             )
@@ -115,3 +117,8 @@ class WaveRepository:
         if record is None:
             raise LookupError(f"high value wave member not found: {operation_run_id}/{source_id}")
         return record
+
+    @staticmethod
+    def _require_claim_attempt_id(claim_attempt_id: int | None) -> None:
+        if claim_attempt_id is None or claim_attempt_id <= 0:
+            raise ValueError("claim_attempt_id_required")

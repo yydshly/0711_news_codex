@@ -42,7 +42,7 @@ def test_create_members_freezes_wave_plan(session: Session) -> None:
     assert [record.source_id for record in records] == ["a", "b"]
     assert records[0].roles_snapshot == ["discovery"]
     assert records[0].fetchable is False
-    assert records[0].state == "blocked"
+    assert records[0].state == "pending"
 
 
 def test_unique_operation_source_constraint_rejects_duplicate_member(session: Session) -> None:
@@ -91,3 +91,62 @@ def test_finish_member_fences_stale_claim_and_advances_progress_once(session: Se
         11, "a", state="succeeded", result_code=None, conclusion="again", claim_attempt_id=7
     )
     assert session.get(OperationRunRecord, 11).progress_current == 1
+
+
+def test_blocked_member_is_claimable_then_finishes_once_without_network(session: Session) -> None:
+    session.add(
+        OperationRunRecord(
+            id=11,
+            operation_type="high_value_news_wave",
+            trigger="test",
+            status="running",
+            requested_scope={},
+            result_summary={},
+            progress_total=1,
+        )
+    )
+    session.commit()
+    repository = WaveRepository(session)
+    repository.create_members(11, plan(member("blocked", fetchable=False)))
+
+    record, claimed = repository.claim_member(11, "blocked", claim_attempt_id=7)
+    assert claimed is True
+    assert record.state == "running"
+    repository.finish_member(
+        11,
+        "blocked",
+        state="blocked",
+        result_code="missing_credentials",
+        conclusion="missing_credentials",
+        claim_attempt_id=7,
+    )
+    repository.finish_member(
+        11,
+        "blocked",
+        state="blocked",
+        result_code="missing_credentials",
+        conclusion="duplicate",
+        claim_attempt_id=7,
+    )
+    assert session.get(OperationRunRecord, 11).progress_current == 1
+
+
+@pytest.mark.parametrize("attempt_id", [None, 0, -1])
+def test_claim_requires_positive_operation_attempt_id(
+    session: Session, attempt_id: int | None
+) -> None:
+    repository = WaveRepository(session)
+    repository.create_members(11, plan(member("a")))
+
+    with pytest.raises(ValueError, match="claim_attempt_id_required"):
+        repository.claim_member(11, "a", claim_attempt_id=attempt_id)
+
+
+def test_terminal_finish_requires_positive_operation_attempt_id(session: Session) -> None:
+    repository = WaveRepository(session)
+    repository.create_members(11, plan(member("a")))
+
+    with pytest.raises(ValueError, match="claim_attempt_id_required"):
+        repository.finish_member(
+            11, "a", state="blocked", result_code="blocked", conclusion="blocked"
+        )

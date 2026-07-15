@@ -26,3 +26,10 @@
 ## Commit
 
 - Task-only commit: `feat: persist frozen high-value waves`.
+
+## Review fix
+
+- Review found that non-fetchable members were stored as `blocked` before a Worker could claim or complete them, leaving operation progress permanently below `progress_total`.
+- Member creation now persists every snapshot as `pending`; non-fetchable members retain `fetchable=false` and the frozen blocked reason in `conclusion`. Task 3 can claim them and finish them as `blocked` without network I/O, advancing progress exactly once.
+- Claims and finishes now require a positive `claim_attempt_id`; finish also requires that the persisted claimant matches, so a caller cannot bypass the operation-attempt fence.
+- TDD RED: the new blocked-member tests failed because records started as `blocked` and invalid/missing attempt ids were accepted. GREEN: `tests/waves/test_repository.py tests/operations/test_commands.py` passed after the minimal repository change.
