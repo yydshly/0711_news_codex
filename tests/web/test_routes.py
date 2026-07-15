@@ -641,7 +641,7 @@ def test_target_metric_filters_are_forwarded(client, fake_service):
 
     response = client.get("/targets?three_success=true")
     assert response.status_code == 200
-    assert fake_service.target_filters == {"three_success": True}
+    assert fake_service.target_filters == {"three_success": True, "catalog_state": "current"}
 
 
 def test_independent_targets_do_not_link_to_a_missing_provider(client, fake_service):
