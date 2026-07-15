@@ -243,6 +243,9 @@ def test_historical_report_uses_version_and_score_at_operation_completion() -> N
                 "exclusion_reasons": {},
                 "candidate_count": 1,
                 "event_ids": [event.id],
+                "event_version_snapshots": [
+                    {"event_id": event.id, "version_number": 1}
+                ],
                 "model_success_count": 1,
                 "model_fallback_count": 0,
                 "model_error_counts": {},
@@ -354,6 +357,7 @@ def test_report_does_not_guess_model_errors_from_concurrent_usage() -> None:
                 "exclusion_reasons": {"generic_technology": 1},
                 "candidate_count": 0,
                 "event_ids": [],
+                "event_version_snapshots": [],
                 "model_success_count": 0,
                 "model_fallback_count": 2,
             },
@@ -401,6 +405,7 @@ def test_legacy_summary_without_errors_is_valid_when_no_model_fallback_occurred(
                 "exclusion_reasons": {"generic_technology": 1},
                 "candidate_count": 0,
                 "event_ids": [],
+                "event_version_snapshots": [],
                 "model_success_count": 0,
                 "model_fallback_count": 0,
             },

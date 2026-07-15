@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import EventScoreRecord, EventVersionRecord, OperationRunRecord
-from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
+from newsradar.events.operation_snapshots import latest_complete_event_snapshot
 
 _MAX_WINDOW_HOURS = 720
 _MAX_EVENT_IDS = 10_000
@@ -439,28 +439,10 @@ def render_event_quality_report(view: EventQualityReportView) -> str:
 def _latest_pipeline_operation(
     session: Session, window_hours: int, *, now: datetime
 ) -> OperationRunRecord | None:
-    statement = (
-        select(OperationRunRecord)
-        .where(
-            OperationRunRecord.operation_type == "event_pipeline",
-            OperationRunRecord.created_at <= now,
-        )
-        .order_by(OperationRunRecord.id.desc())
-        .execution_options(yield_per=100)
+    snapshot = latest_complete_event_snapshot(
+        session, now=now, window_hours=window_hours
     )
-    versions = dict(EVENT_ALGORITHM_VERSIONS)
-    for operation in session.scalars(statement):
-        scope = operation.requested_scope
-        scope_window = scope.get("window_hours") if isinstance(scope, dict) else None
-        if (
-            isinstance(scope, dict)
-            and isinstance(scope_window, int)
-            and not isinstance(scope_window, bool)
-            and scope_window == window_hours
-            and scope.get("algorithm_versions") == versions
-        ):
-            return operation
-    return None
+    return session.get(OperationRunRecord, snapshot.operation_id) if snapshot else None
 
 
 def _operation_window_end(
