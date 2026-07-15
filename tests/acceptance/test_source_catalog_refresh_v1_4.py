@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Thread
 from uuid import uuid4
 
 import pytest
@@ -150,9 +151,10 @@ def test_postgres_web_wave_worker_reaches_frozen_terminal_detail(monkeypatch) ->
                 )
             ).all()
             assert len(members) == 187
-            assert sum(
-                member.lane in {"content", "capability", "catalog"} for member in members
-            ) == 187
+            assert (
+                sum(member.lane in {"content", "capability", "catalog"} for member in members)
+                == 187
+            )
             assert all(member.state not in {"pending", "running"} for member in members)
         assert "187" in detail.text
     finally:
@@ -284,11 +286,7 @@ def test_postgres_catalog_handler_cancellation_stops_after_current_probe() -> No
             operation_id = operation.id
             CatalogRefreshRepository(setup).create_members(
                 operation_id,
-                CatalogRefreshPlan.from_members(
-                    [
-                        _frozen_content_member(source, providers)
-                    ]
-                ),
+                CatalogRefreshPlan.from_members([_frozen_content_member(source, providers)]),
             )
             setup.commit()
 
@@ -338,8 +336,8 @@ def test_postgres_catalog_handler_cancellation_stops_after_current_probe() -> No
         engine.dispose()
 
 
-def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> None:
-    """Recovery reclaims an expired wave without re-probing a successful member."""
+def test_postgres_expired_lease_does_not_reprobe_an_abandoned_running_member() -> None:
+    """A recovered lease leaves an in-flight member fenced until its claimant finishes."""
     engine = _postgres_engine_or_skip()
     operation_id: int | None = None
     worker_id = "catalog-recovery-acceptance"
@@ -413,8 +411,12 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
             assert operation is not None
             assert operation.status == "partial"
             assert operation.result_summary["catalog_count"] == 3
-            assert operation.result_summary["completed_count"] == 3
+            assert operation.result_summary["completed_count"] == 2
             assert operation.result_summary["degraded"] == 1
+            assert operation.result_summary["recovery_note"] == (
+                "存在尚未安全完成的成员认领，本次未重复探测；等待原认领完成，"
+                "或在确认其已停止后新建批次重试。"
+            )
             successful_probes = verification.scalars(
                 select(SourceProbeRunRecord).where(
                     SourceProbeRunRecord.operation_run_id == operation_id,
@@ -422,7 +424,7 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
                 )
             ).all()
             assert len(successful_probes) == 1
-        assert calls == [sources[1].id] * 3
+        assert calls == []
     finally:
         if operation_id is not None:
             with Session(engine) as cleanup:
@@ -445,5 +447,105 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
                     delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
                 )
                 cleanup.execute(delete(WorkerRecord).where(WorkerRecord.worker_id == worker_id))
+                cleanup.commit()
+        engine.dispose()
+
+
+def test_postgres_recovered_lease_never_duplicates_a_blocked_inflight_probe() -> None:
+    """A replacement Worker observes the old attempt's fence and performs no second probe."""
+    engine = _postgres_engine_or_skip()
+    operation_id: int | None = None
+    started, release = Event(), Event()
+    calls = 0
+    old_thread: Thread | None = None
+    try:
+        source = load_source_tree(Path("sources"))[0]
+        providers = load_provider_tree(Path("providers"))
+        with Session(engine) as setup:
+            operation = OperationRunRecord(
+                operation_type="source_catalog_refresh",
+                trigger="acceptance",
+                status="queued",
+                requested_scope={
+                    "catalog_count": 1,
+                    "deadline_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                },
+                result_summary={},
+                progress_total=1,
+                attempt_count=0,
+            )
+            setup.add(operation)
+            setup.flush()
+            operation_id = operation.id
+            CatalogRefreshRepository(setup).create_members(
+                operation_id,
+                CatalogRefreshPlan.from_members([_frozen_content_member(source, providers)]),
+            )
+            setup.commit()
+
+        async def blocked_probe(source, method) -> ProbeResult:
+            nonlocal calls
+            calls += 1
+            started.set()
+            assert release.wait(10)
+            return await _content_success(source, method)
+
+        old_handler = CatalogRefreshHandler(
+            [source], providers, lambda: Session(engine), blocked_probe
+        )
+
+        def run_old_worker() -> None:
+            with Session(engine) as session:
+                Worker(OperationRepository(session), "catalog-old-claim").run_once(old_handler)
+
+        old_thread = Thread(target=run_old_worker)
+        old_thread.start()
+        assert started.wait(10)
+        with Session(engine) as session:
+            operation = session.get(OperationRunRecord, operation_id)
+            assert operation is not None
+            operation.lease_expires_at = datetime(2000, 1, 1, tzinfo=UTC)
+            session.commit()
+
+        async def unexpected_probe(source, method) -> ProbeResult:
+            nonlocal calls
+            calls += 1
+            return await _content_success(source, method)
+
+        new_handler = CatalogRefreshHandler(
+            [source], providers, lambda: Session(engine), unexpected_probe
+        )
+        with Session(engine) as session:
+            assert Worker(OperationRepository(session), "catalog-new-claim").run_once(new_handler)
+        assert calls == 1
+    finally:
+        release.set()
+        if old_thread is not None:
+            old_thread.join(10)
+        if operation_id is not None:
+            with Session(engine) as cleanup:
+                cleanup.execute(
+                    delete(SourceProbeRunRecord).where(
+                        SourceProbeRunRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationEventRecord).where(
+                        OperationEventRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationAttemptRecord).where(
+                        OperationAttemptRecord.operation_run_id == operation_id
+                    )
+                )
+                cleanup.execute(
+                    delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
+                )
+                cleanup.execute(
+                    delete(WorkerRecord).where(
+                        WorkerRecord.worker_id.in_(["catalog-old-claim", "catalog-new-claim"])
+                    )
+                )
                 cleanup.commit()
         engine.dispose()

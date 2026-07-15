@@ -488,6 +488,9 @@ class SourceCatalogRefreshMemberRecord(Base):
     provider_probe_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("source_provider_probe_runs.id", ondelete="SET NULL")
     )
+    claim_attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_attempts.id", ondelete="SET NULL")
+    )
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

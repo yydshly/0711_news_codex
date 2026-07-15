@@ -75,27 +75,16 @@ class CatalogRefreshRepository:
             )
         )
 
-    def resume_running_members(self, operation_run_id: int) -> int:
-        """Return abandoned member claims to pending after the Worker owns a recovered lease."""
-        result = self.session.execute(
-            update(SourceCatalogRefreshMemberRecord)
-            .where(
-                SourceCatalogRefreshMemberRecord.operation_run_id == operation_run_id,
-                SourceCatalogRefreshMemberRecord.state == CatalogMemberState.RUNNING.value,
-            )
-            .values(state=CatalogMemberState.PENDING.value)
-        )
-        self.session.flush()
-        return result.rowcount or 0
-
     def start_member(
-        self, operation_run_id: int, source_id: str
+        self, operation_run_id: int, source_id: str, *, claim_attempt_id: int | None = None
     ) -> SourceCatalogRefreshMemberRecord:
-        record, _ = self.claim_member(operation_run_id, source_id)
+        record, _ = self.claim_member(
+            operation_run_id, source_id, claim_attempt_id=claim_attempt_id
+        )
         return record
 
     def claim_member(
-        self, operation_run_id: int, source_id: str
+        self, operation_run_id: int, source_id: str, *, claim_attempt_id: int | None = None
     ) -> tuple[SourceCatalogRefreshMemberRecord, bool]:
         # A fresh Session is used for every member by the concurrent Worker.  Lock
         # this exact row so two workers/recovered leases cannot both observe an
@@ -115,6 +104,7 @@ class CatalogRefreshRepository:
         if record.state != CatalogMemberState.PENDING.value:
             return record, False
         record.state = CatalogMemberState.RUNNING.value
+        record.claim_attempt_id = claim_attempt_id
         record.attempt_count += 1
         record.started_at = record.started_at or utcnow()
         self.session.flush()
@@ -129,6 +119,7 @@ class CatalogRefreshRepository:
         conclusion: str | None,
         content_probe_run_ids: list[int] | None = None,
         provider_probe_run_id: int | None = None,
+        claim_attempt_id: int | None = None,
     ) -> SourceCatalogRefreshMemberRecord:
         record = self.session.scalar(
             select(SourceCatalogRefreshMemberRecord)
@@ -140,6 +131,10 @@ class CatalogRefreshRepository:
         )
         if record is None:
             raise LookupError(f"catalog refresh member not found: {operation_run_id}/{source_id}")
+        if claim_attempt_id is not None and record.claim_attempt_id != claim_attempt_id:
+            raise PermissionError(
+                f"catalog refresh member claim lost: {operation_run_id}/{source_id}"
+            )
         was_unfinished = record.state in _UNFINISHED_STATES
         record.state = state.value
         record.result_code = result_code.value if result_code else None

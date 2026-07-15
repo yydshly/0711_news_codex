@@ -594,6 +594,60 @@ def test_capability_source_drift_finishes_stale_without_provider_probe() -> None
         assert stored is not None and stored.result_code == CatalogResultCode.STALE_RESULT.value
 
 
+def test_capability_group_probes_current_members_when_sibling_is_stale() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        stale, current = source("a"), source("b")
+        provider = provider_for(stale)
+        CatalogRefreshRepository(db_session).create_members(
+            1,
+            CatalogRefreshPlan.from_members(
+                [
+                    frozen_member(
+                        stale,
+                        provider,
+                        CatalogRefreshLane.CAPABILITY,
+                        "requires_credentials",
+                        "public_api",
+                    ),
+                    frozen_member(
+                        current,
+                        provider,
+                        CatalogRefreshLane.CAPABILITY,
+                        "requires_credentials",
+                        "public_api",
+                    ),
+                ]
+            ),
+        )
+        db_session.commit()
+        changed_stale = stale.model_copy(update={"name": "stale after freeze"})
+        provider_probe = RecordingProviderProbe(outcome="success")
+        lease = OperationLease(
+            1,
+            1,
+            1,
+            "test",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        CatalogRefreshHandler(
+            [changed_stale, current], [provider], lambda: db_session,
+            provider_probe_factory=provider_probe,
+        )(lease, lambda _: None)
+
+        records = {
+            record.source_id: record
+            for record in db_session.scalars(select(SourceCatalogRefreshMemberRecord))
+        }
+        assert provider_probe.calls == 1
+        assert records["a"].result_code == CatalogResultCode.STALE_RESULT.value
+        assert records["b"].state == CatalogMemberState.BLOCKED.value
+        assert records["b"].provider_probe_run_id is not None
+
+
 def test_catalog_source_drift_finishes_stale_without_catalog_validation(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

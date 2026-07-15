@@ -206,18 +206,24 @@ def test_catalog_refresh_migration_adds_frozen_members_and_nullable_probe_proven
         for table_name in ("source_probe_runs", "source_provider_probe_runs"):
             probe_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
             assert probe_columns["operation_run_id"]["nullable"] is True
-        assert connection.execute(
-            text(
-                "SELECT operation_run_id FROM source_probe_runs "
-                "WHERE reason = 'legacy source probe'"
-            )
-        ).scalar_one() is None
-        assert connection.execute(
-            text(
-                "SELECT operation_run_id FROM source_provider_probe_runs "
-                "WHERE reason = 'legacy provider probe'"
-            )
-        ).scalar_one() is None
+        assert (
+            connection.execute(
+                text(
+                    "SELECT operation_run_id FROM source_probe_runs "
+                    "WHERE reason = 'legacy source probe'"
+                )
+            ).scalar_one()
+            is None
+        )
+        assert (
+            connection.execute(
+                text(
+                    "SELECT operation_run_id FROM source_provider_probe_runs "
+                    "WHERE reason = 'legacy provider probe'"
+                )
+            ).scalar_one()
+            is None
+        )
         assert {
             tuple(constraint["column_names"])
             for constraint in inspector.get_unique_constraints("source_catalog_refresh_members")
@@ -290,12 +296,22 @@ def test_0018_preserves_null_provider_hash_on_0017_members(tmp_path: Path) -> No
     _upgrade(db_url, "20260716_0018")
 
     with engine.connect() as connection:
-        assert connection.execute(
-            text(
-                "SELECT provider_definition_hash FROM source_catalog_refresh_members "
-                "WHERE operation_run_id = 17"
-            )
-        ).scalar_one() is None
+        assert (
+            connection.execute(
+                text(
+                    "SELECT provider_definition_hash FROM source_catalog_refresh_members "
+                    "WHERE operation_run_id = 17"
+                )
+            ).scalar_one()
+            is None
+        )
+    _upgrade(db_url, "head")
+    with engine.connect() as connection:
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("source_catalog_refresh_members")
+        }
+        assert "claim_attempt_id" in columns
 
 
 def test_raw_item_ingestion_upgrade_preserves_0002_history(tmp_path: Path) -> None:
@@ -634,17 +650,21 @@ def test_event_quality_v2_migration_preserves_history_and_marks_it_legacy(
 
     with create_engine(database_url).connect() as connection:
         inspector = inspect(connection)
-        assert connection.execute(text("SELECT count(*) FROM events")).scalar_one() == (
-            counts_before["events"]
+        assert (
+            connection.execute(text("SELECT count(*) FROM events")).scalar_one()
+            == (counts_before["events"])
         )
-        assert connection.execute(text("SELECT count(*) FROM event_versions")).scalar_one() == (
-            counts_before["event_versions"]
+        assert (
+            connection.execute(text("SELECT count(*) FROM event_versions")).scalar_one()
+            == (counts_before["event_versions"])
         )
-        assert connection.execute(text("SELECT count(*) FROM event_items")).scalar_one() == (
-            counts_before["event_items"]
+        assert (
+            connection.execute(text("SELECT count(*) FROM event_items")).scalar_one()
+            == (counts_before["event_items"])
         )
-        assert connection.execute(text("SELECT count(*) FROM event_scores")).scalar_one() == (
-            counts_before["event_scores"]
+        assert (
+            connection.execute(text("SELECT count(*) FROM event_scores")).scalar_one()
+            == (counts_before["event_scores"])
         )
         legacy_visibilities = connection.execute(
             text("SELECT DISTINCT visibility FROM events")
@@ -661,9 +681,7 @@ def test_event_quality_v2_migration_preserves_history_and_marks_it_legacy(
         assert {index["name"] for index in inspector.get_indexes("event_pair_decisions")} >= {
             "ix_event_pair_decisions_lookup"
         }
-        model_run_columns = {
-            column["name"] for column in inspector.get_columns("event_model_runs")
-        }
+        model_run_columns = {column["name"] for column in inspector.get_columns("event_model_runs")}
         assert "pair_decision_id" in model_run_columns
         processing_columns = {
             column["name"] for column in inspector.get_columns("raw_item_processing")

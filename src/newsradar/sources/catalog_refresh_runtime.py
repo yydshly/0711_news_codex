@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -34,6 +35,10 @@ from newsradar.sources.probes.base import ProbeOutcome, ProbeResult
 from newsradar.sources.probes.factory import ProbeFactory
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.schema import AccessMethod, SourceDefinition
+
+_active_claim_attempt_id: ContextVar[int | None] = ContextVar(
+    "catalog_refresh_claim_attempt_id", default=None
+)
 
 
 class ProbeCallable(Protocol):
@@ -108,9 +113,6 @@ class CatalogRefreshHandler:
     ) -> OperationResult:
         deadline = OperationDeadline.from_scope(lease.requested_scope)
         deadline.check("before_catalog_refresh")
-        with self._create_session() as session:
-            CatalogRefreshRepository(session).resume_running_members(lease.operation_id)
-            session.commit()
         members = self._unfinished_member_ids(lease.operation_id)
         global_limit = _bounded_scope_int(lease.requested_scope, "global_concurrency", 8)
         provider_limit = _bounded_scope_int(lease.requested_scope, "provider_concurrency", 2)
@@ -124,7 +126,7 @@ class CatalogRefreshHandler:
                 async with provider_semaphores[provider_id]:
                     deadline.check("before_content_member")
                     return await self._run_content_member(
-                        lease.operation_id, source_id, checkpoint, deadline
+                        lease.operation_id, source_id, checkpoint, deadline, lease.attempt_id
                     )
 
         content_outcomes = await asyncio.gather(
@@ -161,13 +163,19 @@ class CatalogRefreshHandler:
             if catalog_count == summary.get(CatalogMemberState.SUCCEEDED.value, 0)
             else OperationStatus.PARTIAL
         )
+        result_summary = {
+            "catalog_count": catalog_count,
+            "completed_count": completed_count,
+            **dict(sorted(summary.items())),
+        }
+        if summary.get(CatalogMemberState.RUNNING.value, 0):
+            result_summary["recovery_note"] = (
+                "存在尚未安全完成的成员认领，本次未重复探测；等待原认领完成，"
+                "或在确认其已停止后新建批次重试。"
+            )
         return OperationResult(
             status=terminal_status,
-            result_summary={
-                "catalog_count": catalog_count,
-                "completed_count": completed_count,
-                **dict(sorted(summary.items())),
-            },
+            result_summary=result_summary,
             retryable=False,
         )
 
@@ -218,8 +226,9 @@ class CatalogRefreshHandler:
             for source_id in source_ids
             if self._member_is_stale(operation_run_id, source_id)
         ]
+        outcomes: list[ContentMemberOutcome] = []
         if stale_ids:
-            return [
+            outcomes.extend(
                 self._finish(
                     operation_run_id,
                     source_id,
@@ -229,7 +238,11 @@ class CatalogRefreshHandler:
                     (),
                 )
                 for source_id in source_ids
-            ]
+                if source_id in stale_ids
+            )
+        current_ids = [source_id for source_id in source_ids if source_id not in stale_ids]
+        if not current_ids:
+            return outcomes
         try:
             result = await self._probe_provider(provider)
         except OperationTimedOut:
@@ -244,8 +257,7 @@ class CatalogRefreshHandler:
                 evidence_url=str(provider.docs_url),
             )
         provider_run_id = self._save_provider_probe(operation_run_id, result)
-        outcomes: list[ContentMemberOutcome] = []
-        for source_id in source_ids:
+        for source_id in current_ids:
             state, code, conclusion = self._capability_conclusion(
                 operation_run_id, source_id, result
             )
@@ -403,6 +415,7 @@ class CatalogRefreshHandler:
         source_id: str,
         checkpoint: Callable[[str], None],
         deadline: OperationDeadline | None = None,
+        claim_attempt_id: int | None = None,
     ) -> ContentMemberOutcome:
         source = self._sources.get(source_id)
         if source is None:
@@ -419,7 +432,9 @@ class CatalogRefreshHandler:
         expected_provider_hash = canonical_provider(provider)[1] if provider is not None else None
         with self._create_session() as session:
             repository = CatalogRefreshRepository(session)
-            member, claimed = repository.claim_member(operation_run_id, source_id)
+            member, claimed = repository.claim_member(
+                operation_run_id, source_id, claim_attempt_id=claim_attempt_id
+            )
             if not claimed:
                 return ContentMemberOutcome(
                     CatalogMemberState(member.state),
@@ -427,6 +442,7 @@ class CatalogRefreshHandler:
                     member.conclusion or "成员已由其他 Worker 处理",
                     tuple(member.content_probe_run_ids or ()),
                 )
+            _active_claim_attempt_id.set(claim_attempt_id)
             access_kind = member.access_kind_snapshot
             if (
                 _source_is_unavailable_or_archived(source)
@@ -528,6 +544,15 @@ class CatalogRefreshHandler:
 
     def _save_probe(self, operation_run_id: int, result: ProbeResult) -> int:
         with self._create_session() as session:
+            claim_attempt_id = _active_claim_attempt_id.get()
+            if claim_attempt_id is not None:
+                member = CatalogRefreshRepository(session)._get_member(
+                    operation_run_id, result.source_id
+                )
+                if member.claim_attempt_id != claim_attempt_id:
+                    raise PermissionError(
+                        f"catalog refresh member claim lost: {operation_run_id}/{result.source_id}"
+                    )
             record = SourceRepository(session).save_probe_result(
                 result, operation_run_id=operation_run_id
             )
@@ -544,6 +569,7 @@ class CatalogRefreshHandler:
         probe_run_ids: tuple[int, ...],
     ) -> ContentMemberOutcome:
         with self._create_session() as session:
+            claim_attempt_id = _active_claim_attempt_id.get()
             outcome = self._finish_in_session(
                 CatalogRefreshRepository(session),
                 operation_run_id,
@@ -552,6 +578,7 @@ class CatalogRefreshHandler:
                 result_code,
                 conclusion,
                 probe_run_ids,
+                claim_attempt_id=claim_attempt_id,
             )
             session.commit()
             return outcome
@@ -565,6 +592,7 @@ class CatalogRefreshHandler:
         result_code: CatalogResultCode | None,
         conclusion: str,
         probe_run_ids: tuple[int, ...],
+        claim_attempt_id: int | None = None,
     ) -> ContentMemberOutcome:
         repository.finish_member(
             operation_run_id,
@@ -573,6 +601,7 @@ class CatalogRefreshHandler:
             result_code,
             conclusion,
             content_probe_run_ids=list(probe_run_ids),
+            claim_attempt_id=claim_attempt_id,
         )
         return ContentMemberOutcome(state, result_code, conclusion, probe_run_ids)
 
