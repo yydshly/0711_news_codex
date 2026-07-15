@@ -3,6 +3,7 @@
 ## 范围与环境
 
 - 基线提交：`84bd433`；验收提交：`851b949`、`922abbd`、`2bced73`、`c0af90d`、`46bc727`。
+- 追加验收修复：`6c354e9`、`943df4d`、`6e413a3`。
 - 根目录 `.env` 仅加载到子进程环境，未输出、记录或提交任何值。
 - PostgreSQL 迁移已执行并确认：`20260715_0017 (head)`。
 - 临时 Web 服务只使用 `127.0.0.1:8767`；根工作树的 8766 服务未触碰。
@@ -27,4 +28,4 @@
 ## 门禁
 
 - 定向 PostgreSQL 验收：通过。
-- 其余完整 pytest、ruff、validate、敏感模式扫描与 `git diff --check` 见最终门禁记录。
+- 定向 PostgreSQL/repository：11 passed；完整 `pytest -q --maxfail=1` 通过；ruff、provider/source validate、`git diff --check` 通过。`main..HEAD` 敏感扫描仅命中一个既有测试形状，本任务新增提交无敏感值。
