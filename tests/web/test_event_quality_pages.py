@@ -11,6 +11,7 @@ from newsradar.db.models import (
     RawItemProcessingRecord,
     RawItemRecord,
 )
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.web.app import create_app
 from tests.web.test_event_routes import _add_event
 
@@ -57,16 +58,26 @@ def test_home_renders_current_quality_metrics_and_explanatory_event_cards(
             ),
         ]
     )
+    operation_now = datetime.now(UTC)
     db_session.add(
         OperationRunRecord(
             operation_type="event_pipeline",
             trigger="manual",
             status="succeeded",
-            requested_scope={"window_hours": 72},
-            result_summary={},
-            finished_at=NOW,
-            created_at=NOW,
-            updated_at=NOW,
+            requested_scope={
+                "window_hours": 72,
+                "window_end": operation_now.isoformat(),
+                "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+            },
+            result_summary={
+                "event_version_snapshots": [
+                    {"event_id": 101, "version_number": 1},
+                    {"event_id": 102, "version_number": 1},
+                ]
+            },
+            finished_at=operation_now,
+            created_at=operation_now,
+            updated_at=operation_now,
         )
     )
     db_session.commit()

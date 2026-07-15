@@ -2,8 +2,11 @@
 {% block title %}事件情报 · News Codex{% endblock %}
 {% block header %}<h1>事件情报</h1>{% endblock %}
 {% block content %}
+{% if snapshot_unavailable %}
+<section class="panel diagnostic-warning" role="status"><strong>尚无完整事件运行快照</strong><p>首页不会以全局 current 目录替代运行结果。请先完成一次事件构建，或前往 <a href="/events?scope=current_catalog">全局 current 目录</a> 排查记录。</p></section>
+{% else %}
 <section class="panel capability-hero" aria-labelledby="event-home-heading">
-  <p class="eyebrow">近 24 小时 · 当前事件</p>
+  <p class="eyebrow">最新完整运行 · Operation #{{ event_home.snapshot.operation_id }}</p>
   <h2 id="event-home-heading">中文事件指挥台</h2>
   <p>首页只展示证据和版本完整的热点；社交讨论、单一媒体和预印本进入“新兴信号”，不与已确认热点混排。</p>
   <dl class="capability-metrics">
@@ -15,7 +18,7 @@
     <div><dt>排除</dt><dd>排除 {{ event_home.coverage.excluded_count }}</dd></div>
     <div><dt>最后完成</dt><dd class="text-value">{% if event_home.coverage.last_completed_at %}{{ event_home.coverage.last_completed_at|format_datetime_zh }}{% else %}暂无成功运行{% endif %}</dd></div>
   </dl>
-  <p><a href="/events">全部当前事件</a> · <a href="/emerging">新兴线索</a> · <a href="/events?visibility=legacy">历史旧版事件</a> · <a href="/sources">来源与能力看板</a></p>
+  <p><a href="/events">全部运行事件</a> · <a href="/emerging">新兴线索</a> · <a href="/events?scope=current_catalog">全局 current 目录</a> · <a href="/events?scope=catalog&amp;visibility=legacy">历史旧版事件</a> · <a href="/sources">来源与能力看板</a></p>
 </section>
 
 <section class="event-list" aria-label="综合热点">
@@ -23,7 +26,7 @@
   {% for event in event_home.hotspots %}
   <article class="panel event-card">
     <p class="eyebrow">{{ event.display_tier|zh_label('event_tier') }} · {{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %} · 独立证据 {{ event.independent_root_count }}</p>
-    <h2><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h2>
+    <h2><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h2>
     <p>{{ event.zh_summary }}</p>
     <p><strong>为何值得关注：</strong>{{ event.why_it_matters }}</p>
     <dl class="capability-metrics">
@@ -45,10 +48,11 @@
   {% for event in section.events %}
   <article class="panel event-card">
     <p class="eyebrow">{{ event.display_tier|zh_label('event_tier') }} · 排名 {{ event.rank_score|round(1) }}</p>
-    <h3><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h3>
+    <h3><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h3>
     <p>{{ event.zh_summary }}</p>
   </article>
   {% endfor %}
 </section>
 {% endfor %}
+{% endif %}
 {% endblock %}

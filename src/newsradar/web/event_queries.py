@@ -90,6 +90,7 @@ class EventHomeView:
     current_confirmed_count: int
     current_emerging_count: int
     coverage: EventQualityCoverageView
+    snapshot: SnapshotBannerView | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +282,38 @@ class EventQueryService:
         active.setdefault("visibility", visibility)
         active.setdefault("limit", 100)
         return EventPage(events=self._list(active), filters=active)
+
+    def latest_operation_home(
+        self, *, now: datetime | None = None, limit: int = 20
+    ) -> EventHomeView | None:
+        page = self.latest_operation_page(now=now)
+        if page is None:
+            return None
+        hotspots = tuple(row for row in page.events if row.display_tier == "hotspot")[:limit]
+        sections = tuple(
+            EventSection(
+                title=zh_label("event_category", category),
+                category=category,
+                events=tuple(row for row in hotspots if row.category == category),
+            )
+            for category in ("product_model", "research", "developer_tool", "company")
+            if any(row.category == category for row in hotspots)
+        )
+        counts = Counter(row.status for row in page.events)
+        tiers = dict(page.tier_counts)
+        return EventHomeView(
+            events=hotspots,
+            hotspots=hotspots,
+            sections=sections,
+            signal_count=int(tiers.get("signal", 0)),
+            audit_count=int(tiers.get("audit_only", 0)),
+            current_confirmed_count=int(counts.get("confirmed", 0)),
+            current_emerging_count=int(counts.get("emerging", 0)),
+            coverage=EventQualityCoverageQueryService(self.session).build(
+                now=page.snapshot.window_end
+            ),
+            snapshot=page.snapshot,
+        )
 
     def list_emerging(self, limit: int = 50) -> EventPage:
         filters: dict[str, object] = {

@@ -312,7 +312,7 @@ def create_app(
     def events_home(request: Request) -> HTMLResponse:
         try:
             with create_session() as session:
-                event_home = EventQueryService(session).home()
+                event_home = EventQueryService(session).latest_operation_home()
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         return templates.TemplateResponse(
@@ -320,6 +320,7 @@ def create_app(
             name="events_home.html",
             context={
                 "event_home": event_home,
+                "snapshot_unavailable": event_home is None,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
@@ -408,7 +409,9 @@ def create_app(
     def emerging(request: Request) -> HTMLResponse:
         try:
             with create_session() as session:
-                event_page = EventQueryService(session).list_emerging()
+                event_page = EventQueryService(session).latest_operation_page(
+                    {"status": "emerging", "limit": 50}
+                )
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         return templates.TemplateResponse(
@@ -416,6 +419,7 @@ def create_app(
             name="emerging.html",
             context={
                 "event_page": event_page,
+                "snapshot_unavailable": event_page is None,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
