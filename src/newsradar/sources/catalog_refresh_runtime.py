@@ -21,6 +21,7 @@ from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.operations.worker import OperationResult
 from newsradar.providers.probes import ProviderProbe, ProviderProbeResult
 from newsradar.providers.repository import ProviderRepository
+from newsradar.providers.repository import canonical_provider
 from newsradar.providers.schema import ProviderDefinition
 from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
@@ -386,7 +387,13 @@ class CatalogRefreshHandler:
                 for item in CatalogRefreshRepository(session).unfinished_members(operation_run_id)
                 if item.source_id == source_id
             )
-        return member.definition_hash != self.definition_hash(source, self._providers)
+        provider = next((item for item in self._providers if item.id == source.provider_id), None)
+        if provider is None or member.provider_definition_hash is None:
+            return True
+        return (
+            member.definition_hash != self.definition_hash(source, self._providers)
+            or member.provider_definition_hash != canonical_provider(provider)[1]
+        )
 
     async def _run_content_member(
         self,

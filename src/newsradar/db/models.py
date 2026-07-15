@@ -476,6 +476,7 @@ class SourceCatalogRefreshMemberRecord(Base):
     )
     provider_id: Mapped[str] = mapped_column(String(120), nullable=False)
     definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_definition_hash: Mapped[str | None] = mapped_column(String(64))
     availability_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
     coverage_mode_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
     access_kind_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)

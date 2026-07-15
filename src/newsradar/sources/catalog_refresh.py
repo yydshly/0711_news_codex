@@ -60,6 +60,7 @@ class CatalogRefreshMemberSnapshot:
     access_kind: str
     lane: CatalogRefreshLane
     initial_result_code: CatalogResultCode | None = None
+    provider_definition_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +129,8 @@ def build_catalog_refresh_plan(
     configured_credentials: Iterable[str],
 ) -> CatalogRefreshPlan:
     """从传入的已审核定义创建可复现计划，不读取环境或外部状态。"""
-    provider_ids = {provider.id for provider in providers}
+    provider_map = {provider.id: provider for provider in providers}
+    provider_ids = set(provider_map)
     credentials = frozenset(configured_credentials)
     members: list[CatalogRefreshMemberSnapshot] = []
     for source in sources:
@@ -150,6 +152,18 @@ def build_catalog_refresh_plan(
                 access_kind=current_kind,
                 lane=lane,
                 initial_result_code=initial_code,
+                provider_definition_hash=(
+                    sha256(
+                        json.dumps(
+                            provider_map[source.provider_id].model_dump(mode="json"),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest()
+                    if source.provider_id in provider_map
+                    else None
+                ),
             )
         )
     return CatalogRefreshPlan.from_members(members)
