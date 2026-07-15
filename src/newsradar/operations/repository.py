@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -45,8 +46,11 @@ class OperationRepository:
         operation_type: OperationType,
         requested_scope: dict[str, Any],
         trigger: str = "manual",
+        *,
+        in_transaction: bool = False,
     ) -> OperationRunRecord:
-        with self._transaction():
+        context = nullcontext() if in_transaction else self._transaction()
+        with context:
             record = OperationRunRecord(
                 operation_type=operation_type.value,
                 trigger=trigger,

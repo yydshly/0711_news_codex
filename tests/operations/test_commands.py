@@ -8,15 +8,178 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import Base, OperationRunRecord
+from newsradar.db.models import Base, OperationRunRecord, SourceCatalogRefreshMemberRecord
 from newsradar.operations.commands import OperationCommandService
 from newsradar.settings import Settings
+from newsradar.sources.catalog_refresh import (
+    CatalogMemberState,
+    CatalogRefreshLane,
+    CatalogRefreshMemberSnapshot,
+    CatalogRefreshPlan,
+    CatalogResultCode,
+)
+from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
 
 
 def session() -> Session:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     return Session(engine)
+
+
+def catalog_plan(*members: CatalogRefreshMemberSnapshot) -> CatalogRefreshPlan:
+    return CatalogRefreshPlan.from_members(members)
+
+
+def catalog_member(
+    source_id: str,
+    *,
+    lane: CatalogRefreshLane = CatalogRefreshLane.CONTENT,
+) -> CatalogRefreshMemberSnapshot:
+    return CatalogRefreshMemberSnapshot(
+        source_id=source_id,
+        provider_id="provider",
+        definition_hash=f"hash-{source_id}",
+        availability="ready",
+        coverage_mode="direct",
+        access_kind="rss",
+        lane=lane,
+    )
+
+
+def test_enqueue_catalog_refresh_freezes_members_and_scope() -> None:
+    now = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
+    with session() as db:
+        service = OperationCommandService(
+            db,
+            utcnow=lambda: now,
+            settings=Settings(operation_timeout_seconds=30),
+        )
+        plan = catalog_plan(
+            catalog_member("b", lane=CatalogRefreshLane.CATALOG),
+            catalog_member("a"),
+        )
+
+        operation_id = service.enqueue_source_catalog_refresh(plan, trigger="cli")
+        assert not db.in_transaction()
+
+        record = db.get(OperationRunRecord, operation_id)
+        assert record is not None
+        assert record.operation_type == "source_catalog_refresh"
+        assert record.progress_total == 2
+        assert record.requested_scope == {
+            "schema_version": 1,
+            "catalog_digest": plan.catalog_digest,
+            "catalog_count": 2,
+            "requested_lanes": ["catalog", "content"],
+            "global_concurrency": 8,
+            "provider_concurrency": 2,
+            "deadline_at": "2026-07-15T12:00:30+00:00",
+        }
+        members = list(
+            db.query(SourceCatalogRefreshMemberRecord)
+            .filter_by(operation_run_id=operation_id)
+            .order_by(SourceCatalogRefreshMemberRecord.source_id)
+        )
+        assert [member.source_id for member in members] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    "global_concurrency,provider_concurrency", [(0, 2), (17, 2), (8, 0), (8, 17)]
+)
+def test_enqueue_catalog_refresh_rejects_invalid_concurrency(
+    global_concurrency: int, provider_concurrency: int
+) -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="invalid_catalog_refresh_concurrency"):
+            OperationCommandService(db).enqueue_source_catalog_refresh(
+                catalog_plan(catalog_member("a")),
+                trigger="cli",
+                global_concurrency=global_concurrency,
+                provider_concurrency=provider_concurrency,
+            )
+
+
+def test_enqueue_catalog_refresh_rejects_active_operation_without_members() -> None:
+    with session() as db:
+        service = OperationCommandService(db)
+        first_id = service.enqueue_source_catalog_refresh(
+            catalog_plan(catalog_member("a")), trigger="cli"
+        )
+
+        with pytest.raises(ValueError, match="active_catalog_refresh_exists"):
+            service.enqueue_source_catalog_refresh(catalog_plan(catalog_member("b")), trigger="cli")
+
+        assert (
+            db.query(SourceCatalogRefreshMemberRecord)
+            .filter_by(operation_run_id=first_id)
+            .count()
+            == 1
+        )
+        assert db.query(SourceCatalogRefreshMemberRecord).filter_by(source_id="b").count() == 0
+
+
+def test_enqueue_catalog_refresh_removes_operation_when_member_freeze_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_member_freeze(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("member freeze failed")
+
+    monkeypatch.setattr(CatalogRefreshRepository, "create_members", fail_member_freeze)
+    with session() as db:
+        with pytest.raises(RuntimeError, match="member freeze failed"):
+            OperationCommandService(db).enqueue_source_catalog_refresh(
+                catalog_plan(catalog_member("a")), trigger="cli"
+            )
+
+        assert db.query(OperationRunRecord).count() == 0
+        assert db.query(SourceCatalogRefreshMemberRecord).count() == 0
+
+
+def test_retry_catalog_refresh_only_copies_transient_failed_members() -> None:
+    with session() as db:
+        service = OperationCommandService(db)
+        original_id = service.enqueue_source_catalog_refresh(
+            catalog_plan(catalog_member("timeout"), catalog_member("payment")), trigger="cli"
+        )
+        members = {
+            member.source_id: member
+            for member in db.query(SourceCatalogRefreshMemberRecord)
+            .filter_by(operation_run_id=original_id)
+        }
+        members["timeout"].state = CatalogMemberState.FAILED.value
+        members["timeout"].result_code = CatalogResultCode.TIMEOUT.value
+        members["payment"].state = CatalogMemberState.BLOCKED.value
+        members["payment"].result_code = CatalogResultCode.REQUIRES_PAYMENT.value
+        operation = db.get(OperationRunRecord, original_id)
+        assert operation is not None
+        operation.status = "failed"
+        db.commit()
+
+        retry_id = service.retry_source_catalog_refresh(original_id, trigger="web")
+
+        retry = db.get(OperationRunRecord, retry_id)
+        assert retry is not None
+        assert retry.requested_scope["retry_of_operation_id"] == original_id
+        retry_members = (
+            db.query(SourceCatalogRefreshMemberRecord).filter_by(operation_run_id=retry_id).all()
+        )
+        assert [member.source_id for member in retry_members] == ["timeout"]
+
+
+def test_retry_catalog_refresh_rejects_an_empty_retry_plan() -> None:
+    with session() as db:
+        service = OperationCommandService(db)
+        original_id = service.enqueue_source_catalog_refresh(
+            catalog_plan(catalog_member("a")), trigger="cli"
+        )
+        operation = db.get(OperationRunRecord, original_id)
+        assert operation is not None
+        operation.status = "failed"
+        db.commit()
+
+        with pytest.raises(ValueError, match="catalog_refresh_retry_not_allowed"):
+            service.retry_source_catalog_refresh(original_id, trigger="web")
 
 
 def test_enqueue_fetch_records_complete_scope() -> None:
