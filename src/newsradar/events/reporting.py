@@ -204,12 +204,10 @@ def build_event_quality_report_view(
             select(EventScoreRecord)
             .where(
                 EventScoreRecord.event_id.in_(expected_versions),
-                EventScoreRecord.created_at <= snapshot_at,
             )
             .order_by(
                 EventScoreRecord.event_id,
-                EventScoreRecord.created_at.desc(),
-                EventScoreRecord.id.desc(),
+                EventScoreRecord.id,
             )
             .execution_options(yield_per=200)
         )

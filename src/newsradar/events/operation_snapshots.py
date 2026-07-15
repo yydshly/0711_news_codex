@@ -168,7 +168,6 @@ def _version_and_score_records_exist(
         for event_id, version_number in session.execute(
             select(EventScoreRecord.event_id, EventScoreRecord.version_number).where(
                 EventScoreRecord.event_id.in_(event_ids),
-                EventScoreRecord.created_at <= finished_at,
             )
         )
     }

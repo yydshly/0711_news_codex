@@ -291,6 +291,37 @@ def test_historical_report_uses_version_and_score_at_operation_completion() -> N
     assert view.score_averages.ai_relevance == 10
 
 
+def test_historical_report_uses_manifested_score_when_score_write_is_retried_later() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        event = _event(
+            session,
+            "late-score-write",
+            occurred_at=NOW - timedelta(hours=1),
+            breakdown=None,
+        )
+        operation = _operation(session, event_ids=[event.id])
+        session.add(
+            EventScoreRecord(
+                event_id=event.id,
+                version_number=1,
+                heat=50,
+                breakdown=_score(**{field: 10 for field in SCORE_FIELDS}),
+                created_at=NOW + timedelta(hours=24),
+            )
+        )
+        session.commit()
+
+        view = build_event_quality_report_view(
+            session, window_hours=72, now=NOW + timedelta(hours=48)
+        )
+
+    assert view.latest_operation_id == operation.id
+    assert view.snapshot_at == NOW + timedelta(minutes=1)
+    assert view.score_snapshot_count == 1
+    assert view.score_averages.ai_relevance == 10
+
+
 def test_report_accepts_zero_score_v2_but_rejects_v1_and_malformed_snapshots() -> None:
     engine = _engine()
     with Session(engine) as session:

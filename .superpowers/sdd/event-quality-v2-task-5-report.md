@@ -1,5 +1,12 @@
 # Event Intelligence v2 Task 5 中文事件网页与处理覆盖报告
 
+## P1 快照逻辑时间轴修复（2026-07-16）
+
+- 历史报告和快照验证不再将 `EventScoreRecord.created_at` 作为评分的快照时间。
+- 评分仅通过成功 Operation 的不可变 `(event_id, version_number)` 清单及对应的不可变 EventVersion 归属。因此，Operation 完成后重试写入的同版本评分仍属于该 Operation 快照。
+- 新增回归测试：评分在 Operation 后 24 小时写入、48 小时后生成报告时，历史评分仍会被纳入。
+- 验证：`uv run pytest tests/events/test_operation_snapshots.py tests/acceptance/test_event_quality_closure.py -q`（13 passed）。
+
 日期：2026-07-15
 
 ## 实施范围
