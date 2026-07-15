@@ -63,10 +63,18 @@ def _member(
     _, definition_hash = canonical_definition(source)
     method, reason = _pick_method(source, probe)
     if source.availability is not Availability.READY:
-        reason = reason or (
+        reason = (
             "missing_credentials"
             if source.availability is Availability.REQUIRES_CREDENTIALS
-            else f"availability_{source.availability.value}"
+            else (
+                "requires_approval"
+                if source.availability is Availability.REQUIRES_APPROVAL
+                else (
+                    "requires_payment"
+                    if source.availability is Availability.REQUIRES_PAYMENT
+                    else f"availability_{source.availability.value}"
+                )
+            )
         )
     elif source.coverage_mode is not CoverageMode.DIRECT:
         reason = reason or "indirect_access"

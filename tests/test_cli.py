@@ -38,7 +38,7 @@ def test_waves_commands_validate_and_plan_without_database_or_network(monkeypatc
     assert plan.exit_code == 0
     assert "total=" in plan.stdout
     assert "fetchable=" in plan.stdout
-    assert "blocked_credentials_approval_payment=" in plan.stdout
+    assert "blocked_credentials_approval_payment=8" in plan.stdout
     assert "role_coverage=" in plan.stdout
 
 
