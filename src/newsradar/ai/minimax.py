@@ -64,6 +64,9 @@ MAX_RECORDED_TOKENS = 2_147_483_647
 SAFE_MODEL_ERROR_CODES = frozenset(
     {
         "completion_truncated",
+        "http_400",
+        "http_401",
+        "http_403",
         "http_429",
         "http_4xx",
         "http_5xx",
@@ -335,6 +338,8 @@ class MiniMaxClient:
                 return "http_429"
             if 500 <= status <= 599:
                 return "http_5xx"
+            if status in (400, 401, 403):
+                return f"http_{status}"
             return "http_4xx"
         if isinstance(exc, json.JSONDecodeError):
             return "json_syntax_invalid"

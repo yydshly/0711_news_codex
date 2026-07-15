@@ -138,6 +138,29 @@ async def test_invalid_response_shape_falls_back_without_repair() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_error"),
+    [(400, "http_400"), (401, "http_401"), (403, "http_403")],
+)
+async def test_actionable_http_status_codes_are_preserved_safely(
+    status_code: int, expected_error: str
+) -> None:
+    captured: list[ModelUsage] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fallback = fallback_topics("agents")
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).structured("purpose", "model", "prompt", type(fallback), fallback)
+
+    assert result is fallback
+    assert usage_errors(captured) == [("fallback", expected_error)]
+
+
+@pytest.mark.asyncio
 async def test_json_syntax_error_is_classified_and_repaired_once() -> None:
     captured: list[ModelUsage] = []
     calls = 0
