@@ -106,6 +106,8 @@ class PipelineResult:
     model_success_count: int
     model_fallback_count: int
     model_error_counts: dict[str, int]
+    model_input_tokens: int = 0
+    model_output_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,7 @@ class EventPipeline:
         self._session_factory = session_factory
         self._pair_metrics: Counter[str] = Counter()
         self._pair_model_error_counts: Counter[str] = Counter()
+        self._model_tokens: Counter[str] = Counter()
 
     @classmethod
     def production(cls, session: Session) -> EventPipeline:
@@ -166,6 +169,7 @@ class EventPipeline:
             raise ValueError("window_hours must be positive")
         self._pair_metrics = Counter()
         self._pair_model_error_counts = Counter()
+        self._model_tokens = Counter()
         snapshot_now = self._operation_window_end(operation_id, checkpoint=checkpoint)
         checkpoint("before_event_selection")
         selection = self._select_and_classify_items(window_hours, now=snapshot_now)
@@ -226,6 +230,8 @@ class EventPipeline:
             model_success_count=model_success_count,
             model_fallback_count=model_fallback_count,
             model_error_counts=model_error_counts,
+            model_input_tokens=self._model_tokens["input"],
+            model_output_tokens=self._model_tokens["output"],
         )
 
     def _select_and_classify_items(
@@ -475,6 +481,7 @@ class EventPipeline:
             else:
                 self._pair_metrics["separate"] += 1
             for model_run in model_runs:
+                self._record_model_tokens(model_run.usage)
                 error = model_run.usage.error
                 if isinstance(error, str) and fullmatch(r"[a-z][a-z0-9_]{0,63}", error):
                     self._pair_model_error_counts[error] += 1
@@ -612,6 +619,7 @@ class EventPipeline:
         model_error_counts: Counter[str] = Counter()
         for result in enrichment_results.values():
             for model_run in result.model_runs:
+                self._record_model_tokens(model_run.usage)
                 error = model_run.usage.error
                 if isinstance(error, str) and fullmatch(r"[a-z][a-z0-9_]{0,63}", error):
                     model_error_counts[error] += 1
@@ -684,6 +692,10 @@ class EventPipeline:
             model_fallback_count,
             dict(sorted(model_error_counts.items())),
         )
+
+    def _record_model_tokens(self, usage: ModelUsage) -> None:
+        self._model_tokens["input"] += max(0, usage.input_tokens)
+        self._model_tokens["output"] += max(0, usage.output_tokens)
 
     @staticmethod
     def _record_model_runs(

@@ -44,7 +44,7 @@ def test_quality_report_is_chinese_auditable_and_secret_free() -> None:
     report = render_event_quality_report(sample_quality_view())
 
     for expected in (
-        "# Event Intelligence v2 事件质量验收报告",
+        "# Event Intelligence v2.1 事件质量验收报告",
         "72 小时 RawItem",
         "included",
         "excluded",
@@ -121,3 +121,41 @@ def test_report_always_displays_current_and_legacy_operation_counts() -> None:
 
     assert "current：2" in report
     assert "legacy：0" in report
+
+
+def test_v2_1_report_explains_tiers_membership_pairing_and_tokens() -> None:
+    view = replace(
+        sample_quality_view(),
+        newsworthy_count=5,
+        non_newsworthy_count=2,
+        newsworthiness_reasons=(("no_event_action", 2),),
+        tier_counts=(("audit_only", 1), ("hotspot", 1), ("signal", 1)),
+        member_distribution=(("multi_member", 1), ("single_member", 1)),
+        independent_root_distribution=(("one", 1), ("two_or_more", 1)),
+        pair_direct_merge_count=4,
+        pair_model_merge_count=1,
+        pair_separate_count=7,
+        pair_cache_hit_count=3,
+        pair_model_error_counts=(("model_timeout", 1),),
+        minimax_input_tokens=1200,
+        minimax_output_tokens=240,
+    )
+
+    report = render_event_quality_report(view)
+
+    for expected in (
+        "新闻价值覆盖",
+        "热点：1",
+        "新兴线索：1",
+        "仅审计：1",
+        "单成员事件：1",
+        "多成员事件：1",
+        "两个及以上独立证据根：1",
+        "规则直接合并：4",
+        "模型辅助合并：1",
+        "明确分开：7",
+        "候选对缓存命中：3",
+        "输入 token：1200",
+        "输出 token：240",
+    ):
+        assert expected in report

@@ -32,6 +32,7 @@ from newsradar.events.schema import (
     EventCategory,
     EventEnrichment,
     EventStatus,
+    EventTier,
     PublishedEvent,
     RawItemText,
     ScoreBreakdown,
@@ -131,6 +132,8 @@ class EventOperationHandler:
                     "model_success_count": result.model_success_count,
                     "model_fallback_count": result.model_fallback_count,
                     "model_error_counts": result.model_error_counts,
+                    "model_input_tokens": result.model_input_tokens,
+                    "model_output_tokens": result.model_output_tokens,
                     "duration_ms": round((monotonic() - started) * 1000, 3),
                     "retry_count": 1 if "retry_of_operation_id" in lease.requested_scope else 0,
                 }
@@ -675,4 +678,6 @@ def _snapshot(
         enrichment=enrichment or _enrichment(repository, event), score=_score(repository, event),
         evidence=evidence,
         source_item_ids=members,
+        display_tier=EventTier(event.display_tier),
+        rank_score=event.rank_score,
     )

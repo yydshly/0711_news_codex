@@ -275,24 +275,24 @@ JSON-LD、Open Graph 和语义标签。它不执行 JavaScript，不使用浏览
 平台审批或付费的 Provider，网页只显示环境变量名、解锁步骤和风险，不显示值。X、LinkedIn、
 TikTok 等受限平台仍登记在来源地图中，但在获得官方授权前不声称具有直接内容覆盖。
 
-## Event intelligence v1
+## 事件情报 v2.1
 
-Event builds are durable operations: the web route or CLI only queues work, and a Worker publishes
-completed immutable event versions. The homepage keeps its 24-hour confirmed-event window; use a
-wider build window only for a separately labelled operational coverage check.
+事件构建是持久化 Operation：网页或 CLI 只负责入队，Worker 执行规则、有限的 MiniMax
+辅助、重试与发布不可变事件版本。首页只展示 `hotspot`；证据尚不足、预印本或低置信度内容
+进入 `signal`，噪声和被拒绝事件保留在 `audit_only`，三者不会混排。
 
 ```powershell
 uv run newsradar serve
 uv run newsradar fetch --no-wait
 uv run newsradar events build --hours 24
+uv run newsradar events quality-report --window-hours 72 --output reports/event-quality-v2-1.md
 uv run newsradar operations list
 ```
 
-Open `/`, `/events`, `/emerging`, and `/events/<id>` on the local UI. Event details retain original
-evidence links, roles, and independent-root information. MiniMax is optional: when it is not
-configured, rule-based enrichment continues without a model request. Never put credentials, feed
-bodies, or unredacted upstream error URLs in acceptance notes; see
-`reports/event-intelligence-v1-acceptance.md` for scrubbed operational evidence.
+本地网页通过 `/`、`/events?tier=hotspot`、`/events?tier=signal` 和 `/events/<id>` 查看。
+详情页保留证据链接、角色、独立证据根、分层与排名依据。MiniMax 是可选辅助：未配置或不可用
+时规则管线仍会完成；低价值线索不会自动调用模型。质量报告只读数据库，不触发抓取、事件构建
+或模型调用，并汇总新闻价值覆盖、事件分层、成员/证据根、候选对、token 和剩余问题。
 
 `fetch --wait` and `events build --wait` retain terminal scalar state before their SQLAlchemy
 session closes, avoiding detached-instance failures while rendering terminal status.

@@ -180,6 +180,8 @@ def test_pipeline_worker_result_summary_contains_complete_quality_counts(monkeyp
                 model_success_count=1,
                 model_fallback_count=1,
                 model_error_counts={"invalid_response": 2},
+                model_input_tokens=123,
+                model_output_tokens=45,
             )
 
     monkeypatch.setattr(
@@ -227,6 +229,8 @@ def test_pipeline_worker_result_summary_contains_complete_quality_counts(monkeyp
         "model_success_count": 1,
         "model_fallback_count": 1,
         "model_error_counts": {"invalid_response": 2},
+        "model_input_tokens": 123,
+        "model_output_tokens": 45,
         "processed_item_count": 4,
         "duplicate_root_suppressed_count": 1,
         "duration_ms": result.result_summary["duration_ms"],
@@ -360,6 +364,12 @@ def test_enrich_calls_model_without_session_or_lease_and_persists_provenance(mon
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     event_id = _seed_published_event(engine, ("OpenAI launches Alpha model",))
+    with Session(engine) as db:
+        event = db.get(EventRecord, event_id)
+        assert event is not None
+        event.display_tier = "hotspot"
+        event.rank_score = 88.5
+        db.commit()
     open_sessions: set[Session] = set()
 
     class TrackingSession(Session):
@@ -428,6 +438,10 @@ def test_enrich_calls_model_without_session_or_lease_and_persists_provenance(mon
         assert usage is not None and usage.outcome == "success"
         assert run is not None and run.event_id == event_id
         assert event.lease_operation_id is None
+        assert event.display_tier == "hotspot"
+        assert event.rank_score == 88.5
+        assert version.payload["publication"]["tier"] == "hotspot"
+        assert version.payload["publication"]["rank_score"] == 88.5
 
 
 def test_enrich_publishes_deterministic_rule_fallback_after_model_degradation(monkeypatch) -> None:

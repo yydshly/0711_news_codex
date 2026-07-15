@@ -417,10 +417,10 @@ def event_quality_report(
         int, typer.Option("--window-hours", min=1, max=720)
     ] = 72,
     output: Annotated[Path, typer.Option("--output")] = Path(
-        "reports/event-quality-closure-v2.md"
+        "reports/event-quality-v2-1.md"
     ),
 ) -> None:
-    """Write a read-only, secret-free Event Intelligence v2 acceptance report."""
+    """Write a read-only, secret-free Event Intelligence v2.1 acceptance report."""
     try:
         with create_session() as session:
             view = build_event_quality_report_view(session, window_hours=window_hours)

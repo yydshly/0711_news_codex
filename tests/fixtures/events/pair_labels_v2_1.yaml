@@ -1,0 +1,102 @@
+version: pair-labels-v2.1
+labels:
+  - {id: p01, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p02, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p03, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p04, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p05, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p06, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p07, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p08, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p09, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p10, expected: merge, case: same_url, reason_zh: "同一规范 URL 的不同记录应合并"}
+  - {id: p11, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p12, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p13, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p14, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p15, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p16, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p17, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p18, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p19, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p20, expected: merge, case: same_repository, reason_zh: "同一代码仓库的发布记录应合并"}
+  - {id: p21, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p22, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p23, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p24, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p25, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p26, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p27, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p28, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p29, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p30, expected: merge, case: same_paper, reason_zh: "同一论文标识的报道应合并"}
+  - {id: p31, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p32, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p33, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p34, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p35, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p36, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p37, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p38, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p39, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p40, expected: merge, case: shared_object_action, reason_zh: "同一模型且动作一致的同期报道应合并"}
+  - {id: p41, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p42, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p43, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p44, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p45, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p46, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p47, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p48, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p49, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: p50, expected: merge, case: same_root, reason_zh: "同一原始证据根的转载应合并"}
+  - {id: n01, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n02, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n03, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n04, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n05, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n06, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n07, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n08, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n09, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n10, expected: separate, case: conflicting_actions, reason_zh: "对象和动作均不同，不应合并"}
+  - {id: n11, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n12, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n13, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n14, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n15, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n16, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n17, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n18, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n19, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n20, expected: separate, case: shared_organization_only, reason_zh: "仅共享公司名称不足以证明同一事件"}
+  - {id: n21, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n22, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n23, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n24, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n25, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n26, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n27, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n28, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n29, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n30, expected: separate, case: same_object_different_action, reason_zh: "同一对象但动作冲突，默认分开"}
+  - {id: n31, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n32, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n33, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n34, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n35, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n36, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n37, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n38, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n39, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n40, expected: separate, case: unrelated, reason_zh: "不同公司和产品的发布不应合并"}
+  - {id: n41, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n42, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n43, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n44, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n45, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n46, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n47, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n48, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n49, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}
+  - {id: n50, expected: separate, case: same_title_different_identity, reason_zh: "标题相同但身份根不同，不应直接合并"}

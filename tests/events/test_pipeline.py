@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     Base,
     EventCandidateRecord,
@@ -20,7 +21,7 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
-from newsradar.events.minimax import EventEnrichmentResult
+from newsradar.events.minimax import EventEnrichmentResult, EventModelRun
 from newsradar.events.pipeline import (
     ALGORITHM_VERSIONS,
     EventPipeline,
@@ -123,7 +124,20 @@ def test_pipeline_batch_enrichment_is_bounded_to_two_candidates(
         return EventEnrichmentResult(
             enrichment=rule_enrichment(candidate).model_copy(
                 update={"origin": "model"}
-            )
+            ),
+            model_runs=(
+                EventModelRun(
+                    stage="event_enrichment",
+                    usage=ModelUsage(
+                        purpose="event_enrichment",
+                        model="fixture",
+                        input_tokens=10,
+                        output_tokens=2,
+                        latency_ms=1,
+                        outcome="success",
+                    ),
+                ),
+            ),
         )
 
     monkeypatch.setattr(
@@ -144,6 +158,8 @@ def test_pipeline_batch_enrichment_is_bounded_to_two_candidates(
     assert maximum_active == 2
     assert result.model_success_count == 4
     assert result.model_fallback_count == 0
+    assert result.model_input_tokens == 40
+    assert result.model_output_tokens == 8
 
 
 def test_pipeline_skips_model_for_low_rank_signal(

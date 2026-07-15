@@ -623,6 +623,24 @@ def test_events_quality_report_rejects_window_above_safe_limit(monkeypatch) -> N
     assert called is False
 
 
+def test_events_quality_report_uses_v2_1_default_output(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(
+        "newsradar.cli.build_event_quality_report_view", lambda session, **kwargs: object()
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.render_event_quality_report", lambda view: "# v2.1\n"
+    )
+
+    result = runner.invoke(app, ["events", "quality-report"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / "reports" / "event-quality-v2-1.md").read_text(
+        encoding="utf-8"
+    ) == "# v2.1\n"
+
+
 @pytest.mark.parametrize(
     ("failure_at", "expected_code"),
     [
