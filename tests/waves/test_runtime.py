@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from threading import Event, Lock, Thread
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from newsradar.db.models import Base, HighValueWaveMemberRecord, OperationRunRecord
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.ingestion.service import SourceFetchSummary
 from newsradar.operations.repository import OperationLease, OperationRepository
@@ -20,7 +22,11 @@ from tests.operations.test_fetch_runtime import _source
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     return Session(engine)
 
@@ -34,7 +40,14 @@ def _lease(operation_id: int, attempt_id: int = 1) -> OperationLease:
 def _freeze(
     db: Session, *sources: SourceDefinition, fetchable: dict[str, bool] | None = None
 ) -> int:
-    operation = OperationRepository(db).enqueue(OperationType.HIGH_VALUE_NEWS_WAVE, {})
+    operation = OperationRepository(db).enqueue(
+        OperationType.HIGH_VALUE_NEWS_WAVE,
+        {
+            "window_hours": 24,
+            "window_end": datetime.now(UTC).isoformat(),
+            "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+        },
+    )
     for source in sources:
         _, definition_hash = canonical_definition(source)
         db.add(
@@ -80,6 +93,68 @@ def test_wave_fetches_only_claimed_fetchable_members_and_blocks_others() -> None
         assert members["blocked"].state == "blocked"
         assert members["blocked"].conclusion and "冻结" in members["blocked"].conclusion
         assert db.get(OperationRunRecord, operation_id).progress_current == 3
+
+
+def test_wave_runs_event_stage_after_all_members_reach_terminal_state(monkeypatch) -> None:
+    """The frozen wave owns one window and only publishes after its fetch manifest ends."""
+    from newsradar.events.pipeline import EventPipeline
+    from newsradar.waves.runtime import HighValueWaveHandler
+
+    source = _source("source")
+    calls: list[dict[str, object]] = []
+
+    class FakePipeline:
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                current_event_ids=(41,),
+                event_version_snapshots=((41, 2),),
+                model_fallback_count=1,
+            )
+
+    monkeypatch.setattr(
+        EventPipeline,
+        "production",
+        classmethod(lambda cls, session: FakePipeline()),
+    )
+    with _session() as db:
+        operation_id = _freeze(db, source)
+        operation = db.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        operation.requested_scope = {
+            "window_hours": 24,
+            "window_end": datetime.now(UTC).isoformat(),
+        }
+        db.commit()
+        lease = OperationLease(
+            operation_id,
+            1,
+            1,
+            "worker",
+            dict(operation.requested_scope),
+            OperationType.HIGH_VALUE_NEWS_WAVE,
+        )
+
+        result = HighValueWaveHandler(
+            [source],
+            lambda: db,
+            lambda source, *args: SourceFetchSummary(
+                source.id, FetchResult(outcome=FetchOutcome.SUCCEEDED)
+            ),
+        )(lease, lambda _: None)
+
+    assert len(calls) == 1
+    assert calls[0]["operation_id"] == operation_id
+    assert calls[0]["window_hours"] == 24
+    assert callable(calls[0]["checkpoint"])
+    assert result.status.value == "succeeded"
+    assert result.result_summary["member_total"] == 1
+    assert result.result_summary["completed_members"] == 1
+    assert result.result_summary["event_manifest_complete"] is True
+    assert result.result_summary["event_version_snapshots"] == [
+        {"event_id": 41, "version_number": 2}
+    ]
+    assert result.result_summary["model_degraded"] is True
 
 
 def test_stale_definition_finishes_without_network() -> None:
@@ -134,11 +209,18 @@ def test_wave_propagates_worker_cancellation_from_shared_fetch_callbacks(boundar
             )
 
 
-def test_deadline_finishes_all_members_without_starting_more_network() -> None:
+def test_deadline_finishes_members_without_entering_event_pipeline(monkeypatch) -> None:
+    from newsradar.events.pipeline import EventPipeline
     from newsradar.waves.runtime import HighValueWaveHandler
 
     first, second = _source("first"), _source("second")
     calls: list[str] = []
+
+    def unexpected_event_pipeline(cls, session):
+        del cls, session
+        raise AssertionError("expired wave must not build an event manifest")
+
+    monkeypatch.setattr(EventPipeline, "production", classmethod(unexpected_event_pipeline))
     with _session() as db:
         operation_id = _freeze(db, first, second)
         lease = OperationLease(
@@ -155,7 +237,9 @@ def test_deadline_finishes_all_members_without_starting_more_network() -> None:
             lambda source, *args: calls.append(source.id),
         )(lease, lambda _: None)
 
-        assert result.status.value == "partial"
+        assert result.status.value == "failed"
+        assert result.error_code == "operation_timeout"
+        assert result.result_summary["event_manifest_complete"] is False
         assert calls == []
         assert {member.state for member in db.query(HighValueWaveMemberRecord)} == {"timeout"}
         assert db.get(OperationRunRecord, operation_id).progress_current == 2

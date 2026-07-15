@@ -8,10 +8,12 @@ from newsradar.db.models import (
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
+    HighValueWaveMemberRecord,
     OperationRunRecord,
 )
 from newsradar.events.operation_snapshots import (
     EventVersionRef,
+    event_snapshot_by_id,
     latest_complete_event_snapshot,
 )
 from newsradar.events.reporting import build_event_quality_report_view
@@ -183,3 +185,68 @@ def test_quality_report_uses_same_complete_snapshot_as_selector() -> None:
         view = build_event_quality_report_view(session, window_hours=72, now=NOW)
 
     assert view.latest_operation_id == complete.id
+
+
+def test_complete_partial_wave_snapshot_requires_terminal_members_and_manifest() -> None:
+    """A partial wave is readable only after the event stage sealed its full manifest."""
+    with Session(_engine()) as session:
+        event = _event(session, "wave-event")
+        operation = OperationRunRecord(
+            operation_type="high_value_news_wave",
+            trigger="manual",
+            status="partial",
+            requested_scope={
+                "window_hours": 24,
+                "window_end": NOW.isoformat(),
+                "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+            },
+            result_summary={
+                "member_total": 2,
+                "completed_members": 2,
+                "event_manifest_complete": True,
+                "event_manifest_count": 1,
+                "event_version_snapshots": [
+                    {"event_id": event.id, "version_number": 1}
+                ],
+            },
+            created_at=NOW - timedelta(minutes=2),
+            finished_at=NOW,
+        )
+        session.add(operation)
+        session.flush()
+        session.add_all(
+            (
+                HighValueWaveMemberRecord(
+                    operation_run_id=operation.id,
+                    source_id="first",
+                    provider_id="provider",
+                    definition_hash="first",
+                    roles_snapshot=[],
+                    availability_snapshot="ready",
+                    access_kind_snapshot="rss",
+                    fetchable=True,
+                    state="succeeded",
+                ),
+                HighValueWaveMemberRecord(
+                    operation_run_id=operation.id,
+                    source_id="second",
+                    provider_id="provider",
+                    definition_hash="second",
+                    roles_snapshot=[],
+                    availability_snapshot="ready",
+                    access_kind_snapshot="rss",
+                    fetchable=True,
+                    state="failed",
+                ),
+            )
+        )
+        session.commit()
+
+        assert event_snapshot_by_id(session, operation.id, now=NOW) is not None
+
+        operation.result_summary = {
+            **operation.result_summary,
+            "completed_members": 1,
+        }
+        session.commit()
+        assert event_snapshot_by_id(session, operation.id, now=NOW) is None

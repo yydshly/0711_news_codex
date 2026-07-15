@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import HighValueWaveMemberRecord
+from newsradar.db.models import HighValueWaveMemberRecord, OperationRunRecord
+from newsradar.events.pipeline import EventPipeline
 from newsradar.ingestion.schema import FetchOutcome
 from newsradar.ingestion.service import SourceFetchSummary
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
@@ -92,7 +93,17 @@ class HighValueWaveHandler:
         await asyncio.gather(
             *(run_one(source_id, provider_id) for source_id, provider_id in members)
         )
-        return self._operation_result(lease.operation_id)
+        member_result = self._operation_result(lease.operation_id)
+        if (
+            member_result.result_summary["completed_members"]
+            != member_result.result_summary["member_total"]
+        ):
+            return _failed(
+                "incomplete_member_manifest",
+                "High-value wave members did not all reach a terminal state",
+                result_summary=member_result.result_summary,
+            )
+        return await self._run_event_stage(lease, checkpoint, deadline, member_result)
 
     def _unfinished_members(self, operation_id: int) -> list[tuple[str, str]]:
         with self._create_session() as session:
@@ -279,6 +290,8 @@ class HighValueWaveHandler:
         result_summary = {
             **dict(sorted(summary.items())),
             "fetch_succeeded": summary.get("succeeded", 0),
+            "member_total": len(rows),
+            "completed_members": len(rows) - summary.get("pending", 0) - summary.get("running", 0),
         }
         status = (
             OperationStatus.SUCCEEDED
@@ -287,8 +300,113 @@ class HighValueWaveHandler:
         )
         return OperationResult(status=status, result_summary=result_summary, retryable=False)
 
+    async def _run_event_stage(
+        self,
+        lease: OperationLease,
+        checkpoint: Callable[[str], None],
+        deadline: OperationDeadline | None,
+        member_result: OperationResult,
+    ) -> OperationResult:
+        """Build one immutable event manifest after the frozen fetch manifest is terminal."""
+        with self._create_session() as session:
+            operation = session.get(OperationRunRecord, lease.operation_id)
+            scope = operation.requested_scope if operation is not None else None
+            window_hours = scope.get("window_hours") if isinstance(scope, dict) else None
+        if isinstance(window_hours, bool) or not isinstance(window_hours, int) or window_hours <= 0:
+            return _failed(
+                "invalid_wave_scope",
+                "High-value wave operations require a positive persisted window_hours",
+                result_summary=member_result.result_summary,
+            )
+        try:
+            event_checkpoint = _deadline_checkpoint(checkpoint, deadline)
+            event_checkpoint("before_wave_event_pipeline")
+            event_result = await asyncio.to_thread(
+                self._run_event_pipeline,
+                lease.operation_id,
+                window_hours,
+                event_checkpoint,
+            )
+            event_checkpoint("after_wave_event_pipeline")
+        except OperationCancelled:
+            raise
+        except OperationTimedOut as error:
+            return _failed(
+                "operation_timeout",
+                str(error),
+                result_summary={
+                    **member_result.result_summary,
+                    "event_manifest_complete": False,
+                    "error_stage": "event_pipeline",
+                },
+            )
+        except Exception as error:
+            return _failed(
+                "event_pipeline_failed",
+                str(error),
+                result_summary={
+                    **member_result.result_summary,
+                    "event_manifest_complete": False,
+                    "error_stage": "event_pipeline",
+                },
+            )
+        event_refs = [
+            {"event_id": event_id, "version_number": version_number}
+            for event_id, version_number in event_result.event_version_snapshots
+        ]
+        result_summary = {
+            **member_result.result_summary,
+            "window_hours": window_hours,
+            "event_ids": list(event_result.current_event_ids),
+            "event_version_snapshots": event_refs,
+            "event_manifest_count": len(event_refs),
+            "event_manifest_complete": True,
+            "model_degraded": event_result.model_fallback_count > 0,
+        }
+        return OperationResult(
+            status=member_result.status,
+            result_summary=result_summary,
+            retryable=False,
+        )
 
-def _failed(error_code: str, message: str) -> OperationResult:
+    def _run_event_pipeline(
+        self,
+        operation_id: int,
+        window_hours: int,
+        checkpoint: Callable[[str], None],
+    ):
+        """Run synchronous event stages outside the wave event loop and I/O transactions."""
+        event_session = self._create_session()
+        try:
+            return EventPipeline.production(event_session).run(
+                operation_id=operation_id,
+                window_hours=window_hours,
+                checkpoint=checkpoint,
+            )
+        finally:
+            event_session.close()
+
+
+def _failed(
+    error_code: str, message: str, *, result_summary: dict[str, object] | None = None
+) -> OperationResult:
     return OperationResult(
-        status=OperationStatus.FAILED, error_code=error_code, error_message=message, retryable=False
+        status=OperationStatus.FAILED,
+        error_code=error_code,
+        error_message=message,
+        result_summary=result_summary or {},
+        retryable=False,
     )
+
+
+def _deadline_checkpoint(
+    checkpoint: Callable[[str], None], deadline: OperationDeadline | None
+) -> Callable[[str], None]:
+    if deadline is None:
+        return checkpoint
+
+    def check(boundary: str) -> None:
+        checkpoint(boundary)
+        deadline.check(boundary)
+
+    return check
