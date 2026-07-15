@@ -496,6 +496,39 @@ class SourceCatalogRefreshMemberRecord(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class HighValueWaveMemberRecord(Base):
+    __tablename__ = "high_value_wave_members"
+    __table_args__ = (
+        UniqueConstraint("operation_run_id", "source_id"),
+        Index("ix_high_value_wave_member_state", "operation_run_id", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_definitions.id", ondelete="RESTRICT"), nullable=False
+    )
+    provider_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    roles_snapshot: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    availability_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
+    access_kind_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetchable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    fetch_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fetch_runs.id", ondelete="SET NULL")
+    )
+    result_code: Mapped[str | None] = mapped_column(String(64))
+    conclusion: Mapped[str | None] = mapped_column(Text)
+    claim_attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_attempts.id", ondelete="SET NULL")
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class OperationAttemptRecord(Base):
     __tablename__ = "operation_attempts"
     __table_args__ = (UniqueConstraint("operation_run_id", "attempt_number"),)

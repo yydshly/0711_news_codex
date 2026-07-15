@@ -19,6 +19,7 @@ def test_operation_enums_match_the_runtime_contract() -> None:
         "source_probe",
         "source_remediation",
         "source_catalog_refresh",
+        "high_value_news_wave",
         "fetch",
         "event_pipeline",
         "event_recluster",
