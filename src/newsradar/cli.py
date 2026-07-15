@@ -140,6 +140,7 @@ def plan_wave(
     protected_reasons = {
         "missing_credentials",
         "requires_approval",
+        "requires_payment",
         "availability_requires_approval",
         "availability_requires_payment",
     }

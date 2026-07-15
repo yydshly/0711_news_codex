@@ -42,6 +42,37 @@ def test_waves_commands_validate_and_plan_without_database_or_network(monkeypatc
     assert "role_coverage=" in plan.stdout
 
 
+def test_waves_plan_counts_payment_blockers(monkeypatch) -> None:
+    from newsradar.waves.planning import WaveMemberSnapshot, WavePlan
+
+    plan = WavePlan(
+        profile_id="payment-test",
+        members=(
+            WaveMemberSnapshot(
+                source_id="payment-source",
+                provider_id="provider",
+                definition_hash="0" * 64,
+                roles=("context",),
+                availability="requires_payment",
+                access_kind="",
+                fetchable=False,
+                blocked_reason="requires_payment",
+            ),
+        ),
+        digest="1" * 64,
+        window_hours=24,
+        trend_days=7,
+    )
+    monkeypatch.setattr("newsradar.cli.load_wave_profile", lambda path: object())
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [])
+    monkeypatch.setattr("newsradar.cli.build_wave_plan", lambda *args: plan)
+
+    result = runner.invoke(app, ["waves", "plan", "--profile", "pyproject.toml"])
+
+    assert result.exit_code == 0
+    assert "blocked_credentials_approval_payment=1" in result.stdout
+
+
 def write_source(root: Path) -> None:
     root.mkdir()
     (root / "source.yaml").write_text(yaml.safe_dump(valid_source()), encoding="utf-8")
