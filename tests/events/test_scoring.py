@@ -85,6 +85,26 @@ def test_social_and_aggregator_only_remains_an_early_signal() -> None:
     assert decision.publish_to_top is False
 
 
+def test_no_evidence_fallback_cannot_promote_aggregator_claiming_official_role() -> None:
+    candidate = CandidateCluster(
+        candidate_key="aggregator-claim",
+        items=(
+            ClusterItem(
+                raw_item_id=1,
+                canonical_url="https://aggregator.test/claim",
+                source_nature="aggregator",
+                source_roles=("discovery",),
+                evidence_role=EvidenceRole.OFFICIAL,
+            ),
+        ),
+    )
+
+    decision = decide_publication(candidate)
+
+    assert decision.status is EventStatus.EMERGING
+    assert decision.publish_to_top is False
+
+
 def test_official_source_confirms_candidate() -> None:
     decision = decide_publication(
         candidate_with_roles(EvidenceRole.OFFICIAL),

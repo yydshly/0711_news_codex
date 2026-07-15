@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
+from newsradar.events.evidence import assess_evidence
 from newsradar.events.schema import (
     CandidateCluster,
     EventScoreInput,
@@ -72,7 +73,7 @@ def decide_publication(
             reasons=("conflicting_assertions",),
         )
 
-    assessments = evidence if evidence is not None else _candidate_assessments(candidate)
+    assessments = evidence if evidence is not None else assess_evidence(candidate.items)
     roots = _independent_roots(assessments)
     if any(role is EvidenceRole.OFFICIAL for role in roots.values()):
         return PublicationDecision(
@@ -160,25 +161,6 @@ def _role_priority(role: EvidenceRole) -> int:
         EvidenceRole.PROFESSIONAL_MEDIA: 2,
         EvidenceRole.RESEARCH: 1,
     }.get(role, 0)
-
-
-def _candidate_assessments(candidate: CandidateCluster) -> tuple[EvidenceAssessment, ...]:
-    return tuple(
-        EvidenceAssessment(
-            raw_item_id=item.raw_item_id,
-            role=item.evidence_role or EvidenceRole.COMMUNITY,
-            root_evidence_key=item.canonical_url or f"item:{item.raw_item_id}",
-            independent=(
-                item.evidence_role
-                in {
-                    EvidenceRole.OFFICIAL,
-                    EvidenceRole.PROFESSIONAL_MEDIA,
-                    EvidenceRole.RESEARCH,
-                }
-            ),
-        )
-        for item in candidate.items
-    )
 
 
 def _is_disputed(candidate: CandidateCluster) -> bool:
