@@ -7,12 +7,14 @@
 - 实际操作：`827`（网页入队；Worker 执行）
 - 验收提交：`851b949`（初始验收）、`922abbd`（原子进度）、`2bced73`（处理中取消）、`c0af90d`（过期租约恢复）、`46bc727`（最终证据归档）。
 - 追加修复：`6c354e9`（终态行锁与全批次汇总）、`943df4d`、`6e413a3`（并发断言修正）。
+- 恢复终态修复：`0742d6c`（以完整冻结成员汇总决定终态）。
 
 ## 最终门禁
 
 - PostgreSQL acceptance/repository：11 通过，未跳过；全量 `pytest -q --maxfail=1` 通过。
 - `ruff check .`、provider/source validate、`git diff --check` 通过。
 - `main..HEAD` 敏感字面量扫描命中 1 个既有测试形状；本任务新增提交未包含敏感值。
+- `0742d6c` 后复跑：PostgreSQL acceptance 4 passed（未跳过）、全量 pytest 通过；ruff、两项 validate、diff check 通过。
 - 目录摘要：`7a9f36afe08d14eeca65d96105daf061f78ad57e2332ba7a8e80dabb8b05d206`，187 个冻结成员。
 
 ## 真实运行证据
