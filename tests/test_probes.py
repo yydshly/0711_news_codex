@@ -252,3 +252,63 @@ async def test_unimplemented_reviewed_html_is_safely_blocked() -> None:
         result = await ProbeRunner(ProbeFactory(client)).probe_one(source)
     assert result.outcome == ProbeOutcome.BLOCKED
     assert result.error_code == "unsupported_access_kind"
+
+
+@pytest.mark.asyncio
+async def test_empty_json_response_is_reported_as_no_content() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[], request=request)
+
+    source = source_with(
+        {"kind": "public_api", "url": "https://api.example/items", "priority": 1},
+        ["title", "canonical_url"],
+    )
+    method = source.access_methods[0]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProbeFactory(client).create(method).probe(source, method)
+
+    assert result.outcome is ProbeOutcome.DEGRADED
+    assert result.sample_count == 0
+    assert result.error_code == "no_content"
+    assert result.suggested_status.value == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_empty_rss_feed_is_reported_as_no_content() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="<?xml version='1.0'?><rss version='2.0'><channel /></rss>",
+            request=request,
+        )
+
+    source = source_with(
+        {"kind": "rss", "url": "https://feeds.example/empty.xml", "priority": 1},
+        ["title", "canonical_url"],
+    )
+    method = source.access_methods[0]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProbeFactory(client).create(method).probe(source, method)
+
+    assert result.outcome is ProbeOutcome.DEGRADED
+    assert result.sample_count == 0
+    assert result.error_code == "no_content"
+    assert result.suggested_status.value == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_json_sample_with_missing_expected_field_is_incomplete_fields() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"title": "Only a title"}], request=request)
+
+    source = source_with(
+        {"kind": "public_api", "url": "https://api.example/items", "priority": 1},
+        ["title", "canonical_url"],
+    )
+    method = source.access_methods[0]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProbeFactory(client).create(method).probe(source, method)
+
+    assert result.outcome is ProbeOutcome.DEGRADED
+    assert result.sample_count == 1
+    assert result.error_code == "incomplete_fields"

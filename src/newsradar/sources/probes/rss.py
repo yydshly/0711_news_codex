@@ -5,9 +5,13 @@ from email.utils import parsedate_to_datetime
 
 import feedparser
 
-from newsradar.sources.schema import SourceStatus
-
-from .base import BaseProbe, ProbeOutcome, ProbeSample, schema_fingerprint, summarize_samples
+from .base import (
+    BaseProbe,
+    ProbeSample,
+    classify_sample_quality,
+    schema_fingerprint,
+    summarize_samples,
+)
 
 
 def feed_datetime(entry: dict) -> datetime | None:
@@ -45,17 +49,18 @@ class RssProbe(BaseProbe):
             for entry in parsed.entries[:5]
         ]
         completeness, duplicates, latest = summarize_samples(source, samples)
-        outcome = ProbeOutcome.SUCCESS if completeness >= 0.9 else ProbeOutcome.DEGRADED
-        status = (
-            SourceStatus.CANDIDATE if outcome == ProbeOutcome.SUCCESS else SourceStatus.DEGRADED
-        )
+        outcome, status, error_code = classify_sample_quality(len(samples), completeness)
         return self._result(
             source,
             method,
             started,
             outcome,
             status,
-            f"Parsed {len(samples)} feed samples; field completeness {completeness:.0%}",
+            (
+                "Parsed 0 feed samples; endpoint reachable but no content"
+                if not samples
+                else f"Parsed {len(samples)} feed samples; field completeness {completeness:.0%}"
+            ),
             latency_ms=latency_ms,
             sample_count=len(samples),
             samples=samples,
@@ -63,5 +68,6 @@ class RssProbe(BaseProbe):
             duplicate_ratio=duplicates,
             latest_published_at=latest,
             schema_fingerprint=schema_fingerprint([dict(entry) for entry in parsed.entries[:5]]),
+            error_code=error_code,
             **self.response_metadata(response),
         )

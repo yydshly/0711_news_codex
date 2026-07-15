@@ -21,6 +21,16 @@ class ProbeOutcome(StrEnum):
     FAILED = "failed"
 
 
+def classify_sample_quality(
+    sample_count: int, field_completeness: float
+) -> tuple[ProbeOutcome, SourceStatus, str | None]:
+    if sample_count == 0:
+        return ProbeOutcome.DEGRADED, SourceStatus.DEGRADED, "no_content"
+    if field_completeness < 0.9:
+        return ProbeOutcome.DEGRADED, SourceStatus.DEGRADED, "incomplete_fields"
+    return ProbeOutcome.SUCCESS, SourceStatus.CANDIDATE, None
+
+
 class ProbeSample(BaseModel):
     model_config = ConfigDict(extra="forbid")
     external_id: str | None = None

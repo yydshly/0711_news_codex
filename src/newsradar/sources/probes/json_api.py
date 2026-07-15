@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from newsradar.sources.schema import SourceStatus
-
 from .base import (
     BaseProbe,
-    ProbeOutcome,
     ProbeSample,
+    classify_sample_quality,
     parse_datetime,
     schema_fingerprint,
     summarize_samples,
@@ -72,17 +70,18 @@ class JsonApiProbe(BaseProbe):
         raw_items, pagination = extract_items(payload)
         samples = [normalize_item(item) for item in raw_items[:5]]
         completeness, duplicates, latest = summarize_samples(source, samples)
-        outcome = ProbeOutcome.SUCCESS if completeness >= 0.9 else ProbeOutcome.DEGRADED
-        status = (
-            SourceStatus.CANDIDATE if outcome == ProbeOutcome.SUCCESS else SourceStatus.DEGRADED
-        )
+        outcome, status, error_code = classify_sample_quality(len(samples), completeness)
         return self._result(
             source,
             method,
             started,
             outcome,
             status,
-            f"Parsed {len(samples)} JSON samples; field completeness {completeness:.0%}",
+            (
+                "Parsed 0 JSON samples; endpoint reachable but no content"
+                if not samples
+                else f"Parsed {len(samples)} JSON samples; field completeness {completeness:.0%}"
+            ),
             latency_ms=latency_ms,
             pagination_detected=pagination,
             sample_count=len(samples),
@@ -91,5 +90,6 @@ class JsonApiProbe(BaseProbe):
             duplicate_ratio=duplicates,
             latest_published_at=latest,
             schema_fingerprint=schema_fingerprint(raw_items[:5]),
+            error_code=error_code,
             **self.response_metadata(response),
         )
