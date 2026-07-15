@@ -73,6 +73,16 @@ def test_social_only_candidate_is_emerging_not_confirmed() -> None:
 
     assert decision.status is EventStatus.EMERGING
     assert decision.publish_to_top is False
+    assert decision.missing_confirmation == ("official_or_two_professional_roots",)
+
+
+def test_social_and_aggregator_only_remains_an_early_signal() -> None:
+    decision = decide_publication(
+        candidate_with_roles(EvidenceRole.SOCIAL, EvidenceRole.AGGREGATOR)
+    )
+
+    assert decision.status is EventStatus.EMERGING
+    assert decision.publish_to_top is False
 
 
 def test_official_source_confirms_candidate() -> None:

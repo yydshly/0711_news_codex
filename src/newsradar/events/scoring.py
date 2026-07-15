@@ -10,6 +10,7 @@ from newsradar.events.schema import (
     EventStatus,
     EvidenceAssessment,
     EvidenceRole,
+    EvidenceSummary,
     PublicationDecision,
     ScoreBreakdown,
 )
@@ -92,6 +93,29 @@ def decide_publication(
         status=EventStatus.EMERGING,
         publish_to_top=False,
         reasons=("insufficient_independent_evidence",),
+        missing_confirmation=("official_or_two_professional_roots",),
+    )
+
+
+def summarize_evidence(
+    evidence: Iterable[EvidenceAssessment], decision: PublicationDecision
+) -> EvidenceSummary:
+    """Return the reader-visible, immutable evidence summary for a version."""
+    assessments = tuple(evidence)
+    roots = _independent_roots(assessments)
+    return EvidenceSummary(
+        official_roots=sum(role is EvidenceRole.OFFICIAL for role in roots.values()),
+        professional_roots=sum(
+            role is EvidenceRole.PROFESSIONAL_MEDIA for role in roots.values()
+        ),
+        community_signals=sum(
+            assessment.role in {EvidenceRole.COMMUNITY, EvidenceRole.SOCIAL}
+            for assessment in assessments
+        ),
+        aggregator_pointers=sum(
+            assessment.role is EvidenceRole.AGGREGATOR for assessment in assessments
+        ),
+        missing_confirmation=decision.missing_confirmation,
     )
 
 

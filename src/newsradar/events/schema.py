@@ -213,11 +213,22 @@ class PublicationDecision(_Schema):
     status: EventStatus
     publish_to_top: bool
     reasons: tuple[str, ...] = ()
+    missing_confirmation: tuple[str, ...] = ()
 
     @property
     def should_publish(self) -> bool:
         """Compatibility alias for callers that only need a publish gate."""
         return self.publish_to_top
+
+
+class EvidenceSummary(_Schema):
+    """Frozen count of the evidence roles present in one event version."""
+
+    official_roots: int = Field(default=0, ge=0)
+    professional_roots: int = Field(default=0, ge=0)
+    community_signals: int = Field(default=0, ge=0)
+    aggregator_pointers: int = Field(default=0, ge=0)
+    missing_confirmation: tuple[str, ...] = ()
 
 
 class EventEnrichment(_Schema):
@@ -264,6 +275,7 @@ class PublishedEvent(_Schema):
     enrichment: EventEnrichment | None = None
     score: ScoreBreakdown | None = None
     evidence: tuple[EvidenceAssessment, ...] = ()
+    evidence_summary: EvidenceSummary = Field(default_factory=EvidenceSummary)
     source_item_ids: tuple[int, ...] = ()
     display_tier: EventTier = EventTier.SIGNAL
     rank_score: float = Field(default=0, ge=0, le=100)

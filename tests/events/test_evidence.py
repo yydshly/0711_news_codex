@@ -20,8 +20,8 @@ def test_aggregator_and_original_share_one_root_evidence() -> None:
     original = evidence_item(canonical_url="https://publisher.test/story", original_url=None)
     aggregate = evidence_item(
         raw_item_id=2,
-        canonical_url="https://publisher.test/story",
-        original_url="https://news.google.test/item",
+        canonical_url="https://news.google.test/item",
+        original_url="https://publisher.test/story",
         source_nature="aggregator",
         source_roles=("discovery",),
     )
@@ -29,6 +29,22 @@ def test_aggregator_and_original_share_one_root_evidence() -> None:
     assessments = assess_evidence((original, aggregate))
 
     assert len({row.root_evidence_key for row in assessments}) == 1
+
+
+def test_aggregator_redirect_uses_the_upstream_url_as_its_root() -> None:
+    assessment = assess_evidence(
+        (
+            evidence_item(
+                canonical_url="https://aggregator.test/redirect?id=123",
+                original_url="https://publisher.test/story",
+                source_nature="aggregator",
+                source_roles=("discovery",),
+            ),
+        )
+    )[0]
+
+    assert assessment.root_evidence_key == "https://publisher.test/story"
+    assert assessment.independent is False
 
 
 def test_professional_media_citations_of_one_upstream_report_are_not_independent() -> None:
@@ -57,6 +73,22 @@ def test_professional_media_citations_of_one_upstream_report_are_not_independent
 
     assert {row.root_evidence_key for row in assessments} == {"https://upstream.test/report"}
     assert not any(row.independent for row in assessments)
+
+
+def test_official_source_only_confirms_its_own_publication() -> None:
+    assessment = assess_evidence(
+        (
+            evidence_item(
+                source_nature="first_party",
+                canonical_url="https://official.test/news/roundup",
+                original_url="https://publisher.test/story",
+            ),
+        )
+    )[0]
+
+    assert assessment.role is EvidenceRole.OFFICIAL
+    assert assessment.independent is False
+    assert "upstream_attribution_not_independent" in assessment.limitations
 
 
 def test_source_claimed_official_role_cannot_override_aggregator_metadata() -> None:

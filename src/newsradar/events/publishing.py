@@ -12,7 +12,7 @@ from newsradar.events.schema import (
     EventScoreInput,
     PublishedEvent,
 )
-from newsradar.events.scoring import decide_publication, score_event
+from newsradar.events.scoring import decide_publication, score_event, summarize_evidence
 
 
 class EventPublisher:
@@ -93,6 +93,7 @@ class EventPublisher:
             enrichment=enrichment,
             score=score,
             evidence=evidence,
+            evidence_summary=summarize_evidence(evidence, decision),
             source_item_ids=candidate.raw_item_ids,
             display_tier=tier.tier,
             rank_score=tier.rank_score,

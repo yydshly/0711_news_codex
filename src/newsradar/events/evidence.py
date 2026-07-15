@@ -49,10 +49,11 @@ def _assess(item: ClusterItem) -> EvidenceAssessment:
         and source_allows_evidence
     )
     limitations: list[str] = []
-    # `original_url` is an audited upstream-attribution signal.  A distinct
-    # publisher URL that cites the same report is not an independent confirmation.
+    # `original_url` is an audited upstream-attribution signal.  A first-party
+    # source can confirm only its own publication, and a distinct publisher URL
+    # that cites the same report is not an independent confirmation.
     if (
-        role is EvidenceRole.PROFESSIONAL_MEDIA
+        role in {EvidenceRole.OFFICIAL, EvidenceRole.PROFESSIONAL_MEDIA}
         and item.original_url
         and item.canonical_url
         and item.original_url != item.canonical_url
@@ -78,12 +79,7 @@ def _assess(item: ClusterItem) -> EvidenceAssessment:
 
 
 def _root_evidence_key(item: ClusterItem) -> str:
-    if (
-        item.source_nature == "professional_media"
-        and item.original_url
-        and item.canonical_url
-        and item.original_url != item.canonical_url
-    ):
+    if item.original_url and item.original_url != item.canonical_url:
         return item.original_url
     if item.canonical_url:
         return item.canonical_url
