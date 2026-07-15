@@ -293,6 +293,7 @@ class SourceRepository:
         self,
         result: ProbeResult,
         *,
+        operation_run_id: int | None = None,
         remediation_acquisition_probe_id: int | None = None,
     ) -> SourceProbeRunRecord:
         sample_fields = {field for sample in result.samples for field in sample.fields_present()}
@@ -315,6 +316,7 @@ class SourceRepository:
             "missing_required_fields": sorted({"title", "canonical_url"} - sample_fields),
         }
         record = SourceProbeRunRecord(
+            operation_run_id=operation_run_id,
             remediation_acquisition_probe_id=remediation_acquisition_probe_id,
             source_id=result.source_id,
             access_kind=result.access_kind,

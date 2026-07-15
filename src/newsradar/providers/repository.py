@@ -69,6 +69,7 @@ class ProviderRepository:
     def save_probe(
         self,
         *,
+        operation_run_id: int | None = None,
         provider_id: str,
         outcome: str,
         availability: str,
@@ -80,6 +81,7 @@ class ProviderRepository:
         probe_type: str = "capability",
     ) -> ProviderProbeRunRecord:
         record = ProviderProbeRunRecord(
+            operation_run_id=operation_run_id,
             provider_id=provider_id,
             probe_type=probe_type,
             outcome=outcome,
