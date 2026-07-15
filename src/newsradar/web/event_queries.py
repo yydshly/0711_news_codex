@@ -713,7 +713,15 @@ def _version_display(version: EventVersionRecord) -> _VersionDisplay | None:
     category = payload.get("category")
     occurred_at = payload.get("occurred_at")
     publication = payload.get("publication")
-    display_tier = publication.get("tier") if isinstance(publication, dict) else None
+    if isinstance(publication, dict) and "tier" in publication:
+        display_tier = publication.get("tier")
+    elif "display_tier" in payload:
+        display_tier = payload.get("display_tier")
+    else:
+        # Event Intelligence v2.0 versions predate the publication block. The
+        # reporting contract has always projected those immutable versions as
+        # signals, so the web projection uses the same conservative default.
+        display_tier = "signal"
     if status not in {"confirmed", "emerging", "developing", "disputed", "stale", "rejected"}:
         return None
     if category not in {

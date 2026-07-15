@@ -81,22 +81,23 @@
 - 当前 86 个事件中没有两个及以上独立证据根，所以热点层仍为空。
 - MiniMax 不负责弥补证据缺失，也不参与来源合规或启用决策。
 
-### 网页与 Operation 快照口径差异
+### 网页 Operation 快照口径已收口
 
-- `/events?hours=72` 当前显示 100 个事件，其中热点 3、新兴信号 94、仅审计 3。
-- Operation 781 的不可变快照只有 86 个事件，其中热点 0、新兴信号 78、仅审计 8。
-- 相差的 14 个事件来自旧规则/旧 Operation，但事件发布代码只会设置 `current`，没有把本轮窗口内已被新规则淘汰的事件切换为 `legacy`。
-- 因此当前网页“全部事件/最近 72 小时”是数据库全局 current 投影，不能等同于最新 Operation 的验收快照；验收数字应以本报告和 `event-quality-v2-1.md` 为准。
-- 自动 legacy 切换涉及事件生命周期，需单独设计窗口边界、算法版本和并发发布规则，本轮不直接修改，避免误退役窗口外或仍有效事件。
+- 首页、`/events`、`/emerging` 和带 `operation/version` 参数的事件详情现在默认使用同一个最新完整 Operation 快照。
+- 真实数据库验收选中 Operation 781：不可变引用 86 个，网页投影 86 个，热点 0、新兴信号 78、仅审计 8，与质量报告完全一致。
+- 全局 current 目录共有 225 条记录，已作为 `/events?scope=current_catalog` 的独立排查入口，不再冒充最新运行结果。
+- 59 个早期不可变版本没有 `publication` 字段；网页沿用报告层的保守兼容规则，将其显示为“新兴信号”，不读取可变 `EventRecord` 补值。
+- 较新的损坏或不完整 Operation 会被跳过；无合法快照时网页显示中文阻塞说明，不静默回退。
+- 固定详情页已抽查 5 个事件，均显示 Operation 781 上下文、准确版本证据，并隐藏可能误操作当前事件的受控按钮。
+- 本轮没有修改、删除或自动退役任何历史事件，也没有触发抓取或 MiniMax 调用。
 
 ## 下一步
 
 下一阶段只做“证据覆盖波次”，不重新设计架构：
 
-1. 先设计并实现“本轮窗口内旧 current 事件转 legacy”的安全生命周期收尾，使网页与最新 Operation 快照口径一致；
-2. 刷新 Reuters、TechCrunch、The Verge、Wired、Ars Technica、Guardian、BBC、CNBC、VentureBeat、MIT Technology Review 等已审核直连媒体入口；
-3. 以 Techmeme/Google News 的媒体名称和原始 URL 为线索，检查直连媒体是否存在相同报道；
-4. 对同一事件形成至少两个独立事实根后，再验收热点分层和 Top 20 人工审阅；
-5. 仍未获得第二证据根的内容继续显示为“新兴线索”或“仅审计”，不提高事实确定性。
+1. 刷新 Reuters、TechCrunch、The Verge、Wired、Ars Technica、Guardian、BBC、CNBC、VentureBeat、MIT Technology Review 等已审核直连媒体入口；
+2. 以 Techmeme/Google News 的媒体名称和原始 URL 为线索，检查直连媒体是否存在相同报道；
+3. 对同一事件形成至少两个独立事实根后，再验收热点分层和 Top 20 人工审阅；
+4. 仍未获得第二证据根的内容继续显示为“新兴线索”或“仅审计”，不提高事实确定性。
 
 本报告不包含 API Key、数据库连接串、Cookie、登录态或带敏感查询参数的 URL。

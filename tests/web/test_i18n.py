@@ -11,6 +11,7 @@ def test_zh_label_covers_dashboard_enums():
     assert zh_label("outcome", "succeeded") == "成功"
     assert zh_label("outcome", "no_change") == "无变化"
     assert zh_label("outcome", "partial") == "部分成功"
+    assert zh_label("event_visibility", "snapshot") == "运行快照"
 
 
 def test_probe_outcome_options_match_domain_enum_and_all_have_chinese_labels():

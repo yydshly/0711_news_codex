@@ -206,6 +206,31 @@ def test_operation_detail_rejects_event_not_in_operation(db_session):
     )
 
 
+def test_operation_page_projects_legacy_version_without_publication_block(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    record = _event(
+        db_session,
+        event_id=43,
+        status="confirmed",
+        title="旧版不可变事件",
+        occurred_at=now - timedelta(hours=1),
+    )
+    version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
+    version.payload = {
+        key: value for key, value in version.payload.items() if key != "publication"
+    }
+    db_session.commit()
+    _pipeline_snapshot(db_session, refs=[(record.id, 1)], now=now)
+
+    page = EventQueryService(db_session).latest_operation_page(now=now)
+
+    assert page is not None
+    assert [row.event_id for row in page.events] == [record.id]
+    assert page.events[0].display_tier == "signal"
+
+
 def test_home_returns_ranked_hotspots_and_category_sections(db_session):
     from newsradar.web.event_queries import EventQueryService
 

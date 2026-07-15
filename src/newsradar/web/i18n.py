@@ -89,6 +89,7 @@ LABELS: dict[str, dict[str, str]] = {
     "event_visibility": {
         "current": "当前版本",
         "legacy": "旧版历史",
+        "snapshot": "运行快照",
     },
     "event_tier": {
         "hotspot": "热点",
