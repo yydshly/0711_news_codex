@@ -74,9 +74,7 @@ class CatalogRefreshPlan:
         return self.catalog_digest
 
     @classmethod
-    def from_members(
-        cls, members: Iterable[CatalogRefreshMemberSnapshot]
-    ) -> CatalogRefreshPlan:
+    def from_members(cls, members: Iterable[CatalogRefreshMemberSnapshot]) -> CatalogRefreshPlan:
         ordered = tuple(sorted(members, key=lambda member: member.source_id))
         payload = [
             {
@@ -146,7 +144,7 @@ def build_catalog_refresh_plan(
             CatalogRefreshMemberSnapshot(
                 source_id=source.id,
                 provider_id=source.provider_id,
-                definition_hash=_definition_hash(source, source.provider_id in provider_ids),
+                definition_hash=catalog_definition_hash(source, provider_ids),
                 availability=source.availability.value,
                 coverage_mode=source.coverage_mode.value,
                 access_kind=current_kind,
@@ -211,9 +209,10 @@ def _route(
 
 
 def _is_archived(source: SourceDefinition) -> bool:
-    return getattr(source, "catalog_state", None) == "archived" or getattr(
-        source.status, "value", source.status
-    ) == "archived"
+    return (
+        getattr(source, "catalog_state", None) == "archived"
+        or getattr(source.status, "value", source.status) == "archived"
+    )
 
 
 def _access_kind_of(value: object) -> str | None:
@@ -232,3 +231,13 @@ def _definition_hash(source: SourceDefinition, provider_is_known: bool) -> str:
     return sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def catalog_definition_hash(
+    source: SourceDefinition, providers: Iterable[ProviderDefinition] | set[str]
+) -> str:
+    """Fingerprint one definition without applying planner eligibility filters."""
+    provider_ids = (
+        providers if isinstance(providers, set) else {provider.id for provider in providers}
+    )
+    return _definition_hash(source, source.provider_id in provider_ids)

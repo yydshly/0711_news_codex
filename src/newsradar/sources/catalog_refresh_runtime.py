@@ -20,7 +20,7 @@ from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
     CatalogRefreshLane,
     CatalogResultCode,
-    build_catalog_refresh_plan,
+    catalog_definition_hash,
 )
 from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
 from newsradar.sources.probes.base import ProbeOutcome, ProbeResult
@@ -73,8 +73,8 @@ class CatalogRefreshHandler:
 
     @staticmethod
     def definition_hash(source: SourceDefinition, providers: Iterable[ProviderDefinition]) -> str:
-        """Use the same immutable snapshot fingerprint as the planner."""
-        return build_catalog_refresh_plan([source], providers, {}, set()).members[0].definition_hash
+        """Use the planner fingerprint without applying its archived-source filter."""
+        return catalog_definition_hash(source, providers)
 
     def __call__(self, lease: OperationLease, checkpoint: Callable[[str], None]) -> OperationResult:
         if lease.operation_type != OperationType.SOURCE_CATALOG_REFRESH.value:
@@ -152,7 +152,10 @@ class CatalogRefreshHandler:
             repository = CatalogRefreshRepository(session)
             member = repository.start_member(operation_run_id, source_id)
             access_kind = member.access_kind_snapshot
-            if member.definition_hash != expected_hash:
+            if (
+                _source_is_unavailable_or_archived(source)
+                or member.definition_hash != expected_hash
+            ):
                 outcome = self._finish_in_session(
                     repository,
                     operation_run_id,
@@ -338,6 +341,13 @@ def _conclusion_for_code(code: CatalogResultCode | None) -> str:
 def _bounded_scope_int(scope: dict[str, object], key: str, default: int) -> int:
     value = scope.get(key, default)
     return value if isinstance(value, int) and 1 <= value <= 16 else default
+
+
+def _source_is_unavailable_or_archived(source: SourceDefinition) -> bool:
+    return (
+        getattr(source, "catalog_state", None) == "archived"
+        or getattr(source.availability, "value", source.availability) != "ready"
+    )
 
 
 def _failed(error_code: str, message: str) -> OperationResult:

@@ -196,6 +196,28 @@ def test_removed_definition_finishes_stale_without_network_call() -> None:
         assert outcome.conclusion == "批次创建后来源定义已变化"
 
 
+def test_archived_definition_after_freeze_finishes_stale_without_network_call() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(
+            db_session,
+            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+        )
+        object.__setattr__(definition, "catalog_state", "archived")
+        probe = RecordingProbe([result()])
+
+        outcome = make_handler(db_session, definition, probe).run_content_member(
+            1, "feed", lambda _: None
+        )
+
+        assert probe.calls == 0
+        assert outcome.state is CatalogMemberState.DEGRADED
+        assert outcome.result_code is CatalogResultCode.STALE_RESULT
+        assert outcome.conclusion == "批次创建后来源定义已变化"
+
+
 def test_checkpoint_cancellation_propagates_without_becoming_internal_error() -> None:
     class CheckpointCancelled(Exception):
         pass
