@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -15,6 +16,12 @@ from newsradar.db.models import (
     EventScoreRecord,
     EventVersionRecord,
     RawItemRecord,
+)
+from newsradar.events.operation_snapshots import (
+    EventVersionRef,
+    OperationSnapshotRef,
+    event_snapshot_by_id,
+    latest_complete_event_snapshot,
 )
 from newsradar.web.capability_queries import (
     EventQualityCoverageQueryService,
@@ -63,6 +70,7 @@ class EventRow:
     enrichment_origin: str
     score_reasons: tuple[str, ...]
     tier_reasons: tuple[str, ...]
+    detail_href: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +96,24 @@ class EventHomeView:
 class EventPage:
     events: tuple[EventRow, ...]
     filters: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotBannerView:
+    operation_id: int
+    window_hours: int
+    window_end: datetime
+    finished_at: datetime
+    algorithm_versions: tuple[tuple[str, str], ...]
+    skipped_newer_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class OperationEventPage:
+    events: tuple[EventRow, ...]
+    filters: dict[str, object]
+    snapshot: SnapshotBannerView
+    tier_counts: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +153,7 @@ class EventDetailView:
     limitations: tuple[str, ...]
     model_runs: tuple[ModelRunSummary, ...]
     minimax_degraded: bool
+    snapshot: SnapshotBannerView | None = None
 
     @property
     def score_reasons(self) -> tuple[str, ...]:
@@ -162,6 +189,14 @@ class EventDetailView:
     @property
     def novelty(self) -> float:
         return self._score_value("novelty")
+
+
+@dataclass(frozen=True, slots=True)
+class _VersionDisplay:
+    status: str
+    category: str | None
+    display_tier: str
+    occurred_at: datetime | None
 
 
 class EventQueryService:
@@ -255,6 +290,63 @@ class EventQueryService:
         }
         return EventPage(events=self._list(filters), filters=filters)
 
+    def latest_operation_page(
+        self,
+        filters: dict[str, object] | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> OperationEventPage | None:
+        snapshot = latest_complete_event_snapshot(self.session, now=now)
+        if snapshot is None:
+            return None
+        active = dict(filters or {})
+        rows = self._operation_rows(snapshot)
+        filtered = self._filter_operation_rows(rows, active, snapshot.window_end)
+        limit = _positive_limit(active.get("limit", 100), default=100)
+        return OperationEventPage(
+            events=filtered[:limit],
+            filters=active,
+            snapshot=_banner(snapshot),
+            tier_counts=tuple(
+                sorted(Counter(row.display_tier for row in rows).items())
+            ),
+        )
+
+    def get_operation_event(
+        self,
+        event_id: int,
+        operation_id: int,
+        version_number: int,
+        *,
+        now: datetime | None = None,
+    ) -> EventDetailView | None:
+        snapshot = event_snapshot_by_id(self.session, operation_id, now=now)
+        expected = EventVersionRef(event_id, version_number)
+        if snapshot is None or expected not in snapshot.event_versions:
+            return None
+        record = self._version_snapshot(event_id, version_number)
+        if record is None:
+            return None
+        event, version, score = record
+        display = _version_display(version)
+        if display is None:
+            return None
+        row = self._event_row(
+            event,
+            version,
+            score,
+            display=display,
+            detail_href=_operation_detail_href(event_id, operation_id, version_number),
+        )
+        return self._detail_from_snapshot(
+            event,
+            version,
+            score,
+            version_number=version_number,
+            row=row,
+            snapshot=_banner(snapshot),
+        )
+
     def get_event(self, event_id: int) -> EventDetailView | None:
         snapshot = self._snapshot(event_id)
         if snapshot is None:
@@ -262,7 +354,24 @@ class EventQueryService:
         event, version, score = snapshot
         if event.visibility == "current" and not self._home_snapshot_is_complete(snapshot):
             return None
-        row = self._event_row(event, version, score)
+        return self._detail_from_snapshot(
+            event,
+            version,
+            score,
+            version_number=event.current_version_number,
+            row=self._event_row(event, version, score),
+        )
+
+    def _detail_from_snapshot(
+        self,
+        event: EventRecord,
+        version: EventVersionRecord,
+        score: EventScoreRecord,
+        *,
+        version_number: int,
+        row: EventRow,
+        snapshot: SnapshotBannerView | None = None,
+    ) -> EventDetailView:
         payload = version.payload if isinstance(version.payload, dict) else {}
         evidence_payload = _as_sequence(payload.get("evidence"))
         evidence_by_item = {
@@ -290,11 +399,11 @@ class EventQueryService:
                 select(RawItemRecord)
                 .join(EventItemRecord, EventItemRecord.raw_item_id == RawItemRecord.id)
                 .where(
-                    EventItemRecord.event_id == event_id,
-                    EventItemRecord.added_version_number <= event.current_version_number,
+                    EventItemRecord.event_id == event.id,
+                    EventItemRecord.added_version_number <= version_number,
                     or_(
                         EventItemRecord.removed_version_number.is_(None),
-                        EventItemRecord.removed_version_number > event.current_version_number,
+                        EventItemRecord.removed_version_number > version_number,
                     ),
                 )
                 .order_by(RawItemRecord.published_at.desc(), RawItemRecord.id.desc())
@@ -334,6 +443,7 @@ class EventQueryService:
             limitations=limitations,
             model_runs=model_runs,
             minimax_degraded=origin == "rule_fallback",
+            snapshot=snapshot,
         )
 
     def _list(self, filters: dict[str, object]) -> tuple[EventRow, ...]:
@@ -379,11 +489,100 @@ class EventQueryService:
             )
         ).one_or_none()
 
+    def _version_snapshot(
+        self, event_id: int, version_number: int
+    ) -> tuple[EventRecord, EventVersionRecord, EventScoreRecord] | None:
+        return self.session.execute(
+            select(EventRecord, EventVersionRecord, EventScoreRecord)
+            .join(EventVersionRecord, EventVersionRecord.event_id == EventRecord.id)
+            .join(
+                EventScoreRecord,
+                and_(
+                    EventScoreRecord.event_id == EventVersionRecord.event_id,
+                    EventScoreRecord.version_number == EventVersionRecord.version_number,
+                ),
+            )
+            .where(
+                EventRecord.id == event_id,
+                EventVersionRecord.version_number == version_number,
+            )
+        ).one_or_none()
+
+    def _operation_rows(self, snapshot: OperationSnapshotRef) -> tuple[EventRow, ...]:
+        refs = set(snapshot.event_versions)
+        if not refs:
+            return ()
+        event_ids = {ref.event_id for ref in refs}
+        statement = (
+            select(EventRecord, EventVersionRecord, EventScoreRecord)
+            .join(EventVersionRecord, EventVersionRecord.event_id == EventRecord.id)
+            .join(
+                EventScoreRecord,
+                and_(
+                    EventScoreRecord.event_id == EventVersionRecord.event_id,
+                    EventScoreRecord.version_number == EventVersionRecord.version_number,
+                ),
+            )
+            .where(EventVersionRecord.event_id.in_(event_ids))
+        )
+        rows: list[EventRow] = []
+        for event, version, score in self.session.execute(statement):
+            ref = EventVersionRef(event.id, version.version_number)
+            if ref not in refs:
+                continue
+            display = _version_display(version)
+            if display is None:
+                continue
+            rows.append(
+                self._event_row(
+                    event,
+                    version,
+                    score,
+                    display=display,
+                    detail_href=_operation_detail_href(
+                        event.id, snapshot.operation_id, version.version_number
+                    ),
+                )
+            )
+        return tuple(
+            sorted(
+                rows,
+                key=lambda row: (
+                    -row.rank_score,
+                    -((row.occurred_at or datetime(1970, 1, 1, tzinfo=UTC)).timestamp()),
+                    row.event_id,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _filter_operation_rows(
+        rows: tuple[EventRow, ...], filters: dict[str, object], window_end: datetime
+    ) -> tuple[EventRow, ...]:
+        status = filters.get("status")
+        category = filters.get("category")
+        display_tier = filters.get("display_tier")
+        hours = filters.get("hours")
+        since = None
+        if isinstance(hours, int) and not isinstance(hours, bool) and hours > 0:
+            since = window_end - timedelta(hours=hours)
+        return tuple(
+            row
+            for row in rows
+            if (not isinstance(status, str) or row.status == status)
+            and (not isinstance(category, str) or row.category == category)
+            and (not isinstance(display_tier, str) or row.display_tier == display_tier)
+            and (since is None or (row.occurred_at is not None and row.occurred_at >= since))
+        )
+
     def _event_row(
         self,
         event: EventRecord,
         version: EventVersionRecord,
         score: EventScoreRecord,
+        *,
+        display: _VersionDisplay | None = None,
+        detail_href: str | None = None,
     ) -> EventRow:
         payload = version.payload if isinstance(version.payload, dict) else {}
         enrichment = payload.get("enrichment")
@@ -391,17 +590,17 @@ class EventQueryService:
         breakdown = _score_breakdown(score)
         return EventRow(
             event_id=event.id,
-            visibility=event.visibility,
-            status=event.status,
-            display_tier=event.display_tier,
-            rank_score=float(event.rank_score),
-            category=event.category,
+            visibility="snapshot" if display is not None else event.visibility,
+            status=display.status if display is not None else event.status,
+            display_tier=display.display_tier if display is not None else event.display_tier,
+            rank_score=float(score.heat) if display is not None else float(event.rank_score),
+            category=display.category if display is not None else event.category,
             zh_title=_safe_display_text(version.zh_title, "未命名事件", max_length=500),
             zh_summary=_safe_display_text(version.zh_summary, "暂无摘要", max_length=2_000),
             why_it_matters=_safe_display_text(
                 enrichment.get("why_it_matters"), "暂无关注理由", max_length=2_000
             ),
-            occurred_at=event.occurred_at,
+            occurred_at=display.occurred_at if display is not None else event.occurred_at,
             heat=float(score.heat),
             importance=_numeric_score(breakdown.get("importance")),
             credibility=_numeric_score(breakdown.get("credibility")),
@@ -419,6 +618,7 @@ class EventQueryService:
                     else ()
                 )
             ),
+            detail_href=detail_href or f"/events/{event.id}",
         )
 
     @staticmethod
@@ -447,6 +647,68 @@ class EventQueryService:
 
 def _numeric_score(value: object) -> float:
     return float(value) if _is_finite_number(value) else 0.0
+
+
+def _banner(snapshot: OperationSnapshotRef) -> SnapshotBannerView:
+    return SnapshotBannerView(
+        operation_id=snapshot.operation_id,
+        window_hours=snapshot.window_hours,
+        window_end=snapshot.window_end,
+        finished_at=snapshot.finished_at,
+        algorithm_versions=tuple(sorted(snapshot.algorithm_versions.items())),
+        skipped_newer_count=snapshot.skipped_newer_count,
+    )
+
+
+def _operation_detail_href(event_id: int, operation_id: int, version_number: int) -> str:
+    return f"/events/{event_id}?operation={operation_id}&version={version_number}"
+
+
+def _positive_limit(value: object, *, default: int) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        else default
+    )
+
+
+def _version_display(version: EventVersionRecord) -> _VersionDisplay | None:
+    payload = version.payload if isinstance(version.payload, dict) else None
+    if payload is None:
+        return None
+    status = payload.get("status")
+    category = payload.get("category")
+    occurred_at = payload.get("occurred_at")
+    publication = payload.get("publication")
+    display_tier = publication.get("tier") if isinstance(publication, dict) else None
+    if status not in {"confirmed", "emerging", "developing", "disputed", "stale", "rejected"}:
+        return None
+    if category not in {
+        "product_model",
+        "research",
+        "developer_tool",
+        "company",
+        "uncategorized",
+    }:
+        return None
+    if display_tier not in {"hotspot", "signal", "audit_only"}:
+        return None
+    if not isinstance(occurred_at, str) or len(occurred_at) > 64:
+        return None
+    try:
+        parsed_occurred_at = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _VersionDisplay(
+        status=status,
+        category=None if category == "uncategorized" else category,
+        display_tier=display_tier,
+        occurred_at=(
+            parsed_occurred_at.replace(tzinfo=UTC)
+            if parsed_occurred_at.tzinfo is None
+            else parsed_occurred_at.astimezone(UTC)
+        ),
+    )
 
 
 def _is_finite_number(value: object) -> bool:

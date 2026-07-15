@@ -10,8 +10,10 @@ from newsradar.db.models import (
     EventScoreRecord,
     EventVersionRecord,
     ModelUsageRecord,
+    OperationRunRecord,
     RawItemRecord,
 )
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 
 COMPLETE_BREAKDOWN = {
     "ai_relevance": 80,
@@ -70,7 +72,12 @@ def _event(
             version_number=1,
             zh_title=title,
             zh_summary="摘要",
+            created_at=occurred_at,
             payload={
+                "status": status,
+                "category": category or "uncategorized",
+                "occurred_at": occurred_at.isoformat(),
+                "publication": {"tier": display_tier},
                 "enrichment": {
                     "why_it_matters": "影响开发者采用路径。",
                     "limitations": ["not_peer_reviewed"],
@@ -95,10 +102,108 @@ def _event(
             version_number=1,
             heat=83,
             breakdown=breakdown or COMPLETE_BREAKDOWN,
+            created_at=occurred_at,
         )
     )
     session.commit()
     return record
+
+
+def _pipeline_snapshot(session, *, refs: list[tuple[int, int]], now: datetime):
+    operation = OperationRunRecord(
+        operation_type="event_pipeline",
+        trigger="manual",
+        status="succeeded",
+        requested_scope={
+            "window_hours": 72,
+            "window_end": now.isoformat(),
+            "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+        },
+        result_summary={
+            "event_version_snapshots": [
+                {"event_id": event_id, "version_number": version_number}
+                for event_id, version_number in refs
+            ]
+        },
+        created_at=now,
+        finished_at=now,
+    )
+    session.add(operation)
+    session.commit()
+    return operation
+
+
+def test_latest_operation_page_uses_exact_version_not_current_pointer(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    record = _event(
+        db_session,
+        event_id=41,
+        status="confirmed",
+        title="Operation 标题",
+        occurred_at=now - timedelta(hours=1),
+        category="product_model",
+    )
+    first = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
+    db_session.add(
+        EventVersionRecord(
+            event_id=record.id,
+            version_number=2,
+            zh_title="后来更新的标题",
+            zh_summary="后来更新的摘要",
+            payload={
+                **first.payload,
+                "status": "emerging",
+                "category": "research",
+                "publication": {"tier": "audit_only"},
+            },
+            created_at=now,
+        )
+    )
+    db_session.add(
+        EventScoreRecord(
+            event_id=record.id,
+            version_number=2,
+            heat=10,
+            breakdown=COMPLETE_BREAKDOWN,
+            created_at=now,
+        )
+    )
+    record.current_version_number = 2
+    record.status = "emerging"
+    record.category = "research"
+    record.display_tier = "audit_only"
+    db_session.commit()
+    operation = _pipeline_snapshot(db_session, refs=[(record.id, 1)], now=now)
+
+    page = EventQueryService(db_session).latest_operation_page(now=now)
+
+    assert page is not None
+    assert page.snapshot.operation_id == operation.id
+    assert [row.zh_title for row in page.events] == ["Operation 标题"]
+    assert page.events[0].detail_href == f"/events/{record.id}?operation={operation.id}&version=1"
+
+
+def test_operation_detail_rejects_event_not_in_operation(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    record = _event(
+        db_session,
+        event_id=42,
+        status="confirmed",
+        title="不在快照内的事件",
+        occurred_at=now - timedelta(hours=1),
+    )
+    operation = _pipeline_snapshot(db_session, refs=[], now=now)
+
+    assert (
+        EventQueryService(db_session).get_operation_event(
+            record.id, operation.id, 1, now=now
+        )
+        is None
+    )
 
 
 def test_home_returns_ranked_hotspots_and_category_sections(db_session):
