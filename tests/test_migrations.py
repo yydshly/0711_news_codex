@@ -131,9 +131,69 @@ def test_catalog_refresh_migration_adds_frozen_members_and_nullable_probe_proven
 ) -> None:
     database_url = _sqlite_url(tmp_path / "catalog-refresh.db")
     _upgrade(database_url, "20260715_0016")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_providers (
+                    id, name, category, homepage, docs_url, terms_url, auth_mode, cost_tier,
+                    availability, capabilities, required_env, reviewed_at, evidence,
+                    unlock_requirements, definition_hash, created_at, updated_at
+                ) VALUES (
+                    'migration-provider', 'Migration Provider', 'publisher', 'https://example.com',
+                    'https://example.com/docs', 'https://example.com/terms', 'none', 'free',
+                    'ready', '[]', '[]', '2026-07-15', '[]', '[]', 'provider-hash',
+                    '2026-07-15T00:00:00+00:00', '2026-07-15T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_definitions (
+                    id, name, status, nature, language, roles, topics, authority_score,
+                    poll_interval_minutes, expected_fields, definition_hash, created_at, updated_at,
+                    provider_id, target_type, availability, coverage_mode, unlock_requirements
+                ) VALUES (
+                    'migration-source', 'Migration Source', 'candidate', 'publisher', 'en', '[]',
+                    '[]', 1, 60, '[]', 'source-hash', '2026-07-15T00:00:00+00:00',
+                    '2026-07-15T00:00:00+00:00', 'migration-provider', 'publisher_feed',
+                    'ready', 'direct', '[]'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_provider_probe_runs (
+                    provider_id, probe_type, outcome, availability, reason, checked_at, evidence_url
+                ) VALUES (
+                    'migration-provider', 'capability', 'success', 'ready', 'legacy provider probe',
+                    '2026-07-15T00:00:00+00:00', 'https://example.com/docs'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_probe_runs (
+                    source_id, access_kind, access_url, outcome, started_at, finished_at,
+                    response_headers, metrics, suggested_status, reason
+                ) VALUES (
+                    'migration-source', 'rss', 'https://example.com/feed', 'success',
+                    '2026-07-15T00:00:00+00:00', '2026-07-15T00:00:01+00:00',
+                    '{}', '{}', 'active', 'legacy source probe'
+                )
+                """
+            )
+        )
     _upgrade(database_url, "head")
 
-    with create_engine(database_url).connect() as connection:
+    with engine.connect() as connection:
         inspector = inspect(connection)
         assert "source_catalog_refresh_members" in inspector.get_table_names()
         columns = {
@@ -146,6 +206,18 @@ def test_catalog_refresh_migration_adds_frozen_members_and_nullable_probe_proven
         for table_name in ("source_probe_runs", "source_provider_probe_runs"):
             probe_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
             assert probe_columns["operation_run_id"]["nullable"] is True
+        assert connection.execute(
+            text(
+                "SELECT operation_run_id FROM source_probe_runs "
+                "WHERE reason = 'legacy source probe'"
+            )
+        ).scalar_one() is None
+        assert connection.execute(
+            text(
+                "SELECT operation_run_id FROM source_provider_probe_runs "
+                "WHERE reason = 'legacy provider probe'"
+            )
+        ).scalar_one() is None
         assert {
             tuple(constraint["column_names"])
             for constraint in inspector.get_unique_constraints("source_catalog_refresh_members")
