@@ -27,6 +27,7 @@ from newsradar.db.models import (
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.worker import Worker
 from newsradar.providers.probes import ProviderProbeResult
+from newsradar.providers.repository import canonical_provider
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.settings import Settings
 from newsradar.sources.catalog_refresh import (
@@ -57,6 +58,20 @@ def _postgres_engine_or_skip():
         engine.dispose()
         pytest.skip(f"project-local PostgreSQL is unavailable: {error.__class__.__name__}")
     return engine
+
+
+def _frozen_content_member(source, providers) -> CatalogRefreshMemberSnapshot:
+    provider = next(item for item in providers if item.id == source.provider_id)
+    return CatalogRefreshMemberSnapshot(
+        source_id=source.id,
+        provider_id=source.provider_id,
+        definition_hash=CatalogRefreshHandler.definition_hash(source, providers),
+        provider_definition_hash=canonical_provider(provider)[1],
+        availability=source.availability.value,
+        coverage_mode=source.coverage_mode.value,
+        access_kind=source.access_methods[0].kind.value,
+        lane=CatalogRefreshLane.CONTENT,
+    )
 
 
 async def _content_success(source, method) -> ProbeResult:
@@ -177,6 +192,7 @@ def test_postgres_concurrent_terminal_completion_counts_one_member_once() -> Non
     operation_id: int | None = None
     try:
         source, other_source = load_source_tree(Path("sources"))[:2]
+        providers = load_provider_tree(Path("providers"))
         with Session(engine) as setup:
             operation = OperationRunRecord(
                 operation_type="source_catalog_refresh",
@@ -198,25 +214,8 @@ def test_postgres_concurrent_terminal_completion_counts_one_member_once() -> Non
                 operation_id,
                 CatalogRefreshPlan.from_members(
                     [
-                        CatalogRefreshMemberSnapshot(
-                            source_id=source.id,
-                            provider_id=source.provider_id,
-                            definition_hash="acceptance",
-                            availability="ready",
-                            coverage_mode="direct",
-                            access_kind="rss",
-                            lane=CatalogRefreshLane.CONTENT,
-                        )
-                        ,
-                        CatalogRefreshMemberSnapshot(
-                            source_id=other_source.id,
-                            provider_id=other_source.provider_id,
-                            definition_hash="acceptance-other",
-                            availability="ready",
-                            coverage_mode="direct",
-                            access_kind="rss",
-                            lane=CatalogRefreshLane.CONTENT,
-                        )
+                        _frozen_content_member(source, providers),
+                        _frozen_content_member(other_source, providers),
                     ]
                 ),
             )
@@ -265,7 +264,8 @@ def test_postgres_catalog_handler_cancellation_stops_after_current_probe() -> No
     calls = 0
     try:
         source = load_source_tree(Path("sources"))[0]
-        handler = CatalogRefreshHandler([source], [], lambda: Session(engine))
+        providers = load_provider_tree(Path("providers"))
+        handler = CatalogRefreshHandler([source], providers, lambda: Session(engine))
         with Session(engine) as setup:
             operation = OperationRunRecord(
                 operation_type="source_catalog_refresh",
@@ -286,15 +286,7 @@ def test_postgres_catalog_handler_cancellation_stops_after_current_probe() -> No
                 operation_id,
                 CatalogRefreshPlan.from_members(
                     [
-                        CatalogRefreshMemberSnapshot(
-                            source_id=source.id,
-                            provider_id=source.provider_id,
-                            definition_hash=handler.definition_hash(source, []),
-                            availability="ready",
-                            coverage_mode="direct",
-                            access_kind=source.access_methods[0].kind.value,
-                            lane=CatalogRefreshLane.CONTENT,
-                        )
+                        _frozen_content_member(source, providers)
                     ]
                 ),
             )
@@ -308,7 +300,7 @@ def test_postgres_catalog_handler_cancellation_stops_after_current_probe() -> No
             return await _content_success(source, method)
 
         handler = CatalogRefreshHandler(
-            [source], [], lambda: Session(engine), cancel_after_first_probe
+            [source], providers, lambda: Session(engine), cancel_after_first_probe
         )
         with Session(engine) as worker_session:
             worker = Worker(OperationRepository(worker_session), "cancel-acceptance")
@@ -354,7 +346,8 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
     calls: list[str] = []
     try:
         sources = load_source_tree(Path("sources"))[:3]
-        handler = CatalogRefreshHandler(sources, [], lambda: Session(engine))
+        providers = load_provider_tree(Path("providers"))
+        handler = CatalogRefreshHandler(sources, providers, lambda: Session(engine))
         with Session(engine) as setup:
             operation = OperationRunRecord(
                 operation_type="source_catalog_refresh",
@@ -372,18 +365,7 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
             setup.add(operation)
             setup.flush()
             operation_id = operation.id
-            snapshots = [
-                CatalogRefreshMemberSnapshot(
-                    source_id=source.id,
-                    provider_id=source.provider_id,
-                    definition_hash=handler.definition_hash(source, []),
-                    availability="ready",
-                    coverage_mode="direct",
-                    access_kind=source.access_methods[0].kind.value,
-                    lane=CatalogRefreshLane.CONTENT,
-                )
-                for source in sources
-            ]
+            snapshots = [_frozen_content_member(source, providers) for source in sources]
             repository = CatalogRefreshRepository(setup)
             repository.create_members(operation_id, CatalogRefreshPlan.from_members(snapshots))
             prior = SourceProbeRunRecord(
@@ -423,7 +405,7 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
             calls.append(source.id)
             return await _content_success(source, method)
 
-        handler = CatalogRefreshHandler(sources, [], lambda: Session(engine), probe)
+        handler = CatalogRefreshHandler(sources, providers, lambda: Session(engine), probe)
         with Session(engine) as worker_session:
             assert Worker(OperationRepository(worker_session), worker_id).run_once(handler)
         with Session(engine) as verification:

@@ -82,6 +82,7 @@ class CatalogRefreshPlan:
                 "source_id": member.source_id,
                 "provider_id": member.provider_id,
                 "definition_hash": member.definition_hash,
+                "provider_definition_hash": member.provider_definition_hash,
                 "availability": member.availability,
                 "coverage_mode": member.coverage_mode,
                 "access_kind": member.access_kind,

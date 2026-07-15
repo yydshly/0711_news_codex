@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -90,6 +91,16 @@ def frozen_member(definition, provider, lane, availability="ready", access_kind=
     )
 
 
+def provider_for(definition: SourceDefinition) -> ProviderDefinition:
+    payload = valid_provider()
+    payload["id"] = definition.provider_id
+    return ProviderDefinition.model_validate(payload)
+
+
+def content_member(definition: SourceDefinition) -> CatalogRefreshMemberSnapshot:
+    return frozen_member(definition, provider_for(definition), CatalogRefreshLane.CONTENT)
+
+
 def catalog_member(source_id: str) -> CatalogRefreshMemberSnapshot:
     provider_hash = canonical_provider(ProviderDefinition.model_validate(valid_provider()))[1]
     return CatalogRefreshMemberSnapshot(
@@ -175,7 +186,9 @@ class RecordingProviderProbe:
 def make_handler(
     db_session: Session, definition: SourceDefinition, probe: RecordingProbe
 ) -> CatalogRefreshHandler:
-    return CatalogRefreshHandler([definition], [], lambda: db_session, probe_factory=probe)
+    return CatalogRefreshHandler(
+        [definition], [provider_for(definition)], lambda: db_session, probe_factory=probe
+    )
 
 
 def add_member(db_session: Session, snapshot: CatalogRefreshMemberSnapshot) -> None:
@@ -297,7 +310,7 @@ def test_transient_content_timeout_retries_once_then_completes_three_rounds() ->
         definition = source()
         add_member(
             db_session,
-            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+            content_member(definition),
         )
         probe = RecordingProbe([result(error_code="timeout"), result(), result(), result()])
 
@@ -316,7 +329,7 @@ def test_second_transient_content_failure_stops_after_one_retry() -> None:
         definition = source()
         add_member(
             db_session,
-            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+            content_member(definition),
         )
         probe = RecordingProbe(
             [result(error_code="connection_error"), result(error_code="timeout")]
@@ -338,7 +351,7 @@ def test_retry_after_beyond_deadline_records_rate_limit_without_retry() -> None:
         definition = source()
         add_member(
             db_session,
-            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+            content_member(definition),
         )
         limited = result(http_status=429)
         limited.response_headers = {"Retry-After": "120"}
@@ -442,7 +455,7 @@ def test_content_member_runs_three_serial_probes_after_first_success() -> None:
     Base.metadata.create_all(engine)
     with Session(engine) as db_session:
         definition = source()
-        snapshot = member(definition_hash=CatalogRefreshHandler.definition_hash(definition, []))
+        snapshot = content_member(definition)
         add_member(db_session, snapshot)
         probe = RecordingProbe([result(), result(), result()])
 
@@ -467,7 +480,7 @@ def test_first_failed_probe_finishes_member_without_more_network_calls() -> None
         definition = source()
         add_member(
             db_session,
-            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+            content_member(definition),
         )
         probe = RecordingProbe([result(error_code="no_content"), result(), result()])
 
@@ -486,7 +499,9 @@ def test_definition_drift_finishes_stale_without_network_call() -> None:
     Base.metadata.create_all(engine)
     with Session(engine) as db_session:
         definition = source()
-        add_member(db_session, member(definition_hash="old-definition"))
+        add_member(
+            db_session, replace(content_member(definition), definition_hash="old-definition")
+        )
         probe = RecordingProbe([result()])
 
         outcome = make_handler(db_session, definition, probe).run_content_member(
@@ -501,6 +516,190 @@ def test_definition_drift_finishes_stale_without_network_call() -> None:
         assert stored.conclusion == "批次创建后来源定义已变化"
 
 
+def test_provider_drift_in_content_lane_finishes_stale_without_network_call() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        provider_payload = valid_provider()
+        provider_payload["id"] = definition.provider_id
+        frozen_provider = ProviderDefinition.model_validate(provider_payload)
+        add_member(
+            db_session,
+            frozen_member(definition, frozen_provider, CatalogRefreshLane.CONTENT),
+        )
+        current_provider = frozen_provider.model_copy(
+            update={"name": "Provider definition changed after freeze"}
+        )
+        probe = RecordingProbe([result()])
+
+        outcome = CatalogRefreshHandler(
+            [definition], [current_provider], lambda: db_session, probe_factory=probe
+        ).run_content_member(1, "feed", lambda _: None)
+
+        assert probe.calls == 0
+        assert outcome.state is CatalogMemberState.DEGRADED
+        assert outcome.result_code is CatalogResultCode.STALE_RESULT
+
+
+def test_old_null_provider_hash_in_content_lane_finishes_stale_without_network_call() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(db_session, replace(content_member(definition), provider_definition_hash=None))
+        probe = RecordingProbe([result()])
+
+        outcome = make_handler(db_session, definition, probe).run_content_member(
+            1, "feed", lambda _: None
+        )
+
+        assert probe.calls == 0
+        assert outcome.result_code is CatalogResultCode.STALE_RESULT
+
+
+def test_capability_source_drift_finishes_stale_without_provider_probe() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        frozen = source()
+        provider = provider_for(frozen)
+        add_member(
+            db_session,
+            frozen_member(
+                frozen,
+                provider,
+                CatalogRefreshLane.CAPABILITY,
+                "requires_credentials",
+                "public_api",
+            ),
+        )
+        changed = frozen.model_copy(update={"name": "Source changed after freeze"})
+        provider_probe = RecordingProviderProbe()
+        lease = OperationLease(
+            1,
+            1,
+            1,
+            "test",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        CatalogRefreshHandler(
+            [changed], [provider], lambda: db_session, provider_probe_factory=provider_probe
+        )(lease, lambda _: None)
+
+        assert provider_probe.calls == 0
+        stored = db_session.scalar(select(SourceCatalogRefreshMemberRecord))
+        assert stored is not None and stored.result_code == CatalogResultCode.STALE_RESULT.value
+
+
+def test_catalog_source_drift_finishes_stale_without_catalog_validation(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        frozen = source("catalog")
+        provider = provider_for(frozen)
+        add_member(
+            db_session,
+            frozen_member(frozen, provider, CatalogRefreshLane.CATALOG, "manual_only", "html"),
+        )
+        changed = frozen.model_copy(update={"name": "Source changed after freeze"})
+        validation_calls: list[str] = []
+        monkeypatch.setattr(
+            "newsradar.sources.catalog_refresh_runtime.validate_catalog_entry",
+            lambda source, provider: validation_calls.append(source.id),
+        )
+        lease = OperationLease(
+            1,
+            1,
+            1,
+            "test",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        CatalogRefreshHandler([changed], [provider], lambda: db_session)(lease, lambda _: None)
+
+        assert validation_calls == []
+        stored = db_session.scalar(select(SourceCatalogRefreshMemberRecord))
+        assert stored is not None and stored.result_code == CatalogResultCode.STALE_RESULT.value
+
+
+def test_already_claimed_content_member_performs_no_network_io() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(db_session, content_member(definition))
+        CatalogRefreshRepository(db_session).start_member(1, definition.id)
+        db_session.commit()
+        probe = RecordingProbe([result()])
+
+        outcome = make_handler(db_session, definition, probe).run_content_member(
+            1, definition.id, lambda _: None
+        )
+
+        assert probe.calls == 0
+        assert outcome.state is CatalogMemberState.RUNNING
+
+
+def test_catalog_loop_cancellation_propagates_before_next_member_validation(monkeypatch) -> None:
+    class CheckpointCancelled(Exception):
+        pass
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        first, second = source("a"), source("b")
+        provider = provider_for(first)
+        CatalogRefreshRepository(db_session).create_members(
+            1,
+            CatalogRefreshPlan.from_members(
+                [
+                    frozen_member(
+                        first, provider, CatalogRefreshLane.CATALOG, "manual_only", "html"
+                    ),
+                    frozen_member(
+                        second, provider, CatalogRefreshLane.CATALOG, "manual_only", "html"
+                    ),
+                ]
+            ),
+        )
+        db_session.commit()
+        validations: list[str] = []
+        monkeypatch.setattr(
+            "newsradar.sources.catalog_refresh_runtime.validate_catalog_entry",
+            lambda source, provider: validations.append(source.id) or type(
+                "Validation", (), {"code": CatalogResultCode.CATALOG_VERIFIED, "conclusion": "ok"}
+            )(),
+        )
+        lease = OperationLease(
+            1,
+            1,
+            1,
+            "test",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        with pytest.raises(CheckpointCancelled):
+            CatalogRefreshHandler([first, second], [provider], lambda: db_session)(
+                lease,
+                lambda point: (
+                    (_ for _ in ()).throw(CheckpointCancelled())
+                    if point == "after_catalog_member:a"
+                    else None
+                ),
+            )
+
+        assert validations == ["a"]
+        records = db_session.scalars(
+            select(SourceCatalogRefreshMemberRecord).order_by(SourceCatalogRefreshMemberRecord.source_id)
+        ).all()
+        assert [record.state for record in records] == ["succeeded", "pending"]
+
+
 def test_removed_definition_finishes_stale_without_network_call() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -508,7 +707,7 @@ def test_removed_definition_finishes_stale_without_network_call() -> None:
         definition = source()
         add_member(
             db_session,
-            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+            content_member(definition),
         )
         probe = RecordingProbe([result()])
 
@@ -529,7 +728,7 @@ def test_archived_definition_after_freeze_finishes_stale_without_network_call() 
         definition = source()
         add_member(
             db_session,
-            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+            content_member(definition),
         )
         object.__setattr__(definition, "catalog_state", "archived")
         probe = RecordingProbe([result()])
@@ -554,7 +753,7 @@ def test_checkpoint_cancellation_propagates_without_becoming_internal_error() ->
         definition = source()
         add_member(
             db_session,
-            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+            content_member(definition),
         )
         probe = RecordingProbe([result()])
 
@@ -600,12 +799,9 @@ def test_batch_keeps_global_and_provider_content_concurrency_bounded() -> None:
             source(f"source-{index}", "provider-a" if index < 3 else "provider-b")
             for index in range(6)
         ]
+        providers = {item.provider_id: provider_for(item) for item in definitions}
         snapshots = [
-            member(
-                item.id,
-                provider_id=item.provider_id,
-                definition_hash=CatalogRefreshHandler.definition_hash(item, []),
-            )
+            frozen_member(item, providers[item.provider_id], CatalogRefreshLane.CONTENT)
             for item in definitions
         ]
         CatalogRefreshRepository(db_session).create_members(
@@ -613,7 +809,9 @@ def test_batch_keeps_global_and_provider_content_concurrency_bounded() -> None:
         )
         db_session.commit()
         probe = ConcurrentProbe()
-        handler = CatalogRefreshHandler(definitions, [], lambda: db_session, probe_factory=probe)
+        handler = CatalogRefreshHandler(
+            definitions, providers.values(), lambda: db_session, probe_factory=probe
+        )
         lease = OperationLease(
             operation_id=1,
             attempt_id=1,

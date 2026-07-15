@@ -75,9 +75,28 @@ class CatalogRefreshRepository:
             )
         )
 
+    def resume_running_members(self, operation_run_id: int) -> int:
+        """Return abandoned member claims to pending after the Worker owns a recovered lease."""
+        result = self.session.execute(
+            update(SourceCatalogRefreshMemberRecord)
+            .where(
+                SourceCatalogRefreshMemberRecord.operation_run_id == operation_run_id,
+                SourceCatalogRefreshMemberRecord.state == CatalogMemberState.RUNNING.value,
+            )
+            .values(state=CatalogMemberState.PENDING.value)
+        )
+        self.session.flush()
+        return result.rowcount or 0
+
     def start_member(
         self, operation_run_id: int, source_id: str
     ) -> SourceCatalogRefreshMemberRecord:
+        record, _ = self.claim_member(operation_run_id, source_id)
+        return record
+
+    def claim_member(
+        self, operation_run_id: int, source_id: str
+    ) -> tuple[SourceCatalogRefreshMemberRecord, bool]:
         # A fresh Session is used for every member by the concurrent Worker.  Lock
         # this exact row so two workers/recovered leases cannot both observe an
         # unfinished state and advance operation progress twice.
@@ -94,12 +113,12 @@ class CatalogRefreshRepository:
         # Only a pending member can be claimed.  A concurrent/stale worker that
         # sees running or terminal state must not reset it and repeat network I/O.
         if record.state != CatalogMemberState.PENDING.value:
-            return record
+            return record, False
         record.state = CatalogMemberState.RUNNING.value
         record.attempt_count += 1
         record.started_at = record.started_at or utcnow()
         self.session.flush()
-        return record
+        return record, True
 
     def finish_member(
         self,

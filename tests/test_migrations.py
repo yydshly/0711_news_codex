@@ -224,6 +224,80 @@ def test_catalog_refresh_migration_adds_frozen_members_and_nullable_probe_proven
         } >= {("operation_run_id", "source_id")}
 
 
+def test_0018_preserves_null_provider_hash_on_0017_members(tmp_path: Path) -> None:
+    db_url = _sqlite_url(tmp_path / "catalog-provider-hash.db")
+    _upgrade(db_url, "20260715_0017")
+    engine = create_engine(db_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO operation_runs (
+                    id, operation_type, trigger, status, requested_scope, result_summary,
+                    progress_current, progress_total, attempt_count, created_at, updated_at
+                ) VALUES (
+                    17, 'source_catalog_refresh', 'test', 'queued', '{}', '{}', 0, 1, 0,
+                    '2026-07-15T00:00:00+00:00', '2026-07-15T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_providers (
+                    id, name, category, homepage, docs_url, terms_url, auth_mode, cost_tier,
+                    availability, capabilities, required_env, reviewed_at, evidence,
+                    unlock_requirements, definition_hash, created_at, updated_at
+                ) VALUES (
+                    'migration-provider', 'Migration Provider', 'publisher', 'https://example.com',
+                    'https://example.com/docs', 'https://example.com/terms', 'none', 'free',
+                    'ready', '[]', '[]', '2026-07-15', '[]', '[]', 'provider-hash',
+                    '2026-07-15T00:00:00+00:00', '2026-07-15T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_definitions (
+                    id, name, status, nature, language, roles, topics, authority_score,
+                    poll_interval_minutes, expected_fields, definition_hash, created_at, updated_at,
+                    provider_id, target_type, availability, coverage_mode, unlock_requirements
+                ) VALUES (
+                    'migration-source', 'Migration Source', 'candidate', 'publisher', 'en', '[]',
+                    '[]', 1, 60, '[]', 'source-hash', '2026-07-15T00:00:00+00:00',
+                    '2026-07-15T00:00:00+00:00', 'migration-provider', 'publisher_feed',
+                    'ready', 'direct', '[]'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_catalog_refresh_members (
+                    operation_run_id, source_id, provider_id, definition_hash,
+                    availability_snapshot, coverage_mode_snapshot, access_kind_snapshot, lane,
+                    state, content_probe_run_ids, attempt_count
+                ) VALUES (17, 'migration-source', 'migration-provider', 'source-hash',
+                    'ready', 'direct', 'rss', 'content', 'pending', '[]', 0)
+                """
+            )
+        )
+
+    _upgrade(db_url, "20260716_0018")
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT provider_definition_hash FROM source_catalog_refresh_members "
+                "WHERE operation_run_id = 17"
+            )
+        ).scalar_one() is None
+
+
 def test_raw_item_ingestion_upgrade_preserves_0002_history(tmp_path: Path) -> None:
     database_path = tmp_path / "legacy.db"
     config = Config("alembic.ini")

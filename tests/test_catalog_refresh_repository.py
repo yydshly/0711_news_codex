@@ -52,6 +52,25 @@ def test_create_members_freezes_plan_without_reading_live_source_definitions(
     assert records[0].attempt_count == 0
 
 
+def test_create_members_persists_new_provider_definition_hash(session: Session) -> None:
+    snapshot = CatalogRefreshMemberSnapshot(
+        source_id="provider-hash",
+        provider_id="provider",
+        definition_hash="source-definition-hash",
+        provider_definition_hash="provider-definition-hash",
+        availability="ready",
+        coverage_mode="direct",
+        access_kind="rss",
+        lane=CatalogRefreshLane.CONTENT,
+    )
+
+    CatalogRefreshRepository(session).create_members(11, plan(snapshot))
+
+    stored = session.scalar(select(SourceCatalogRefreshMemberRecord))
+    assert stored is not None
+    assert stored.provider_definition_hash == "provider-definition-hash"
+
+
 def test_unique_operation_source_constraint_rejects_duplicate_member(session: Session) -> None:
     repository = CatalogRefreshRepository(session)
     repository.create_members(11, plan(member("a")))

@@ -108,6 +108,9 @@ class CatalogRefreshHandler:
     ) -> OperationResult:
         deadline = OperationDeadline.from_scope(lease.requested_scope)
         deadline.check("before_catalog_refresh")
+        with self._create_session() as session:
+            CatalogRefreshRepository(session).resume_running_members(lease.operation_id)
+            session.commit()
         members = self._unfinished_member_ids(lease.operation_id)
         global_limit = _bounded_scope_int(lease.requested_scope, "global_concurrency", 8)
         provider_limit = _bounded_scope_int(lease.requested_scope, "provider_concurrency", 2)
@@ -412,10 +415,12 @@ class CatalogRefreshHandler:
                 (),
             )
         expected_hash = self.definition_hash(source, self._providers)
+        provider = next((item for item in self._providers if item.id == source.provider_id), None)
+        expected_provider_hash = canonical_provider(provider)[1] if provider is not None else None
         with self._create_session() as session:
             repository = CatalogRefreshRepository(session)
-            member = repository.start_member(operation_run_id, source_id)
-            if member.state != CatalogMemberState.RUNNING.value:
+            member, claimed = repository.claim_member(operation_run_id, source_id)
+            if not claimed:
                 return ContentMemberOutcome(
                     CatalogMemberState(member.state),
                     CatalogResultCode(member.result_code) if member.result_code else None,
@@ -426,6 +431,8 @@ class CatalogRefreshHandler:
             if (
                 _source_is_unavailable_or_archived(source)
                 or member.definition_hash != expected_hash
+                or member.provider_definition_hash is None
+                or member.provider_definition_hash != expected_provider_hash
             ):
                 outcome = self._finish_in_session(
                     repository,
