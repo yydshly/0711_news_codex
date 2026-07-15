@@ -212,14 +212,19 @@ Never copy keys into YAML, reports, diagnostics, logs, screenshots, commits, or 
 
 ## MiniMax
 
-The constrained adapter supports:
+The constrained adapter uses MiniMax's current OpenAI-compatible `/v1/chat/completions` API and
+supports:
 
-- `MiniMax-M2.7-highspeed` for source classification and topic inference
-- `MiniMax-M3` for explaining probe failures and future event-level synthesis
+- `MiniMax-M2.7-highspeed` for source classification, topic inference, and bounded event enrichment
+- `MiniMax-M3` for probe-failure and disputed-event explanations
+
+Set `MINIMAX_BASE_URL=https://api.minimax.io` for international keys. China-region Token Plan keys
+must use `MINIMAX_BASE_URL=https://api.minimaxi.com`; using the wrong region returns HTTP 401 even
+when the key and subscription are valid.
 
 MiniMax is optional in phase one. Without `MINIMAX_API_KEY`, deterministic rules remain usable.
-All source content is marked as untrusted, tool use is disabled, responses are validated with
-Pydantic, and invalid JSON gets at most one repair attempt.
+All source content is marked as untrusted, reasoning is separated from final content, responses are
+validated with Pydantic, and JSON or schema errors get at most one repair attempt.
 
 MiniMax 适配器尚未接入 RawItem v1.1。当前抓取、来源健康、资格判断、任务控制和重复候选裁决
 不依赖模型，也不会自动生成新闻摘要或推荐。

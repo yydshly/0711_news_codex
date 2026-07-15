@@ -19,12 +19,21 @@ def response_payload(content: str) -> dict:
     }
 
 
+def usage_errors(captured: list[ModelUsage]) -> list[tuple[str, str | None]]:
+    return [(usage.outcome, usage.error) for usage in captured]
+
+
 @pytest.mark.asyncio
-async def test_classification_uses_fast_model_and_validates_json() -> None:
+async def test_classification_uses_current_chat_api_and_validates_json() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        assert request.url.path == "/v1/chat/completions"
         assert body["model"] == "MiniMax-M2.7-highspeed"
-        assert body["tools"] == []
+        assert body["reasoning_split"] is True
+        assert body["max_completion_tokens"] == 4096
+        assert body["temperature"] == 1.0
+        assert "response_format" not in body
+        assert "tools" not in body
         assert request.headers["authorization"] == "Bearer secret"
         return httpx.Response(
             200,
@@ -59,6 +68,164 @@ async def test_invalid_json_gets_one_repair_attempt() -> None:
         result = await MiniMaxClient(settings, http).infer_source_topics("Agent research")
     assert calls == 2
     assert result.topics == ["agents"]
+
+
+@pytest.mark.asyncio
+async def test_provider_business_error_falls_back_without_repair() -> None:
+    captured: list[ModelUsage] = []
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = response_payload('{"topics":["agents"],"confidence":0.8}')
+        payload["base_resp"] = {"status_code": 1004, "status_msg": "do not persist"}
+        return httpx.Response(200, json=payload, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fallback = fallback_topics("agents")
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).structured("purpose", "model", "prompt", type(fallback), fallback)
+
+    assert result is fallback
+    assert calls == 1
+    assert usage_errors(captured) == [("fallback", "provider_business_error")]
+
+
+@pytest.mark.asyncio
+async def test_truncated_completion_falls_back_without_repair() -> None:
+    captured: list[ModelUsage] = []
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = response_payload('{"topics":["agents"],"confidence":0.8}')
+        payload["choices"][0]["finish_reason"] = "length"
+        return httpx.Response(200, json=payload, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fallback = fallback_topics("agents")
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).structured("purpose", "model", "prompt", type(fallback), fallback)
+
+    assert result is fallback
+    assert calls == 1
+    assert usage_errors(captured) == [("fallback", "completion_truncated")]
+
+
+@pytest.mark.asyncio
+async def test_invalid_response_shape_falls_back_without_repair() -> None:
+    captured: list[ModelUsage] = []
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": []}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fallback = fallback_topics("agents")
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).structured("purpose", "model", "prompt", type(fallback), fallback)
+
+    assert result is fallback
+    assert calls == 1
+    assert usage_errors(captured) == [("fallback", "response_shape_invalid")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_error"),
+    [(400, "http_400"), (401, "http_401"), (403, "http_403")],
+)
+async def test_actionable_http_status_codes_are_preserved_safely(
+    status_code: int, expected_error: str
+) -> None:
+    captured: list[ModelUsage] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        fallback = fallback_topics("agents")
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).structured("purpose", "model", "prompt", type(fallback), fallback)
+
+    assert result is fallback
+    assert usage_errors(captured) == [("fallback", expected_error)]
+
+
+@pytest.mark.asyncio
+async def test_json_syntax_error_is_classified_and_repaired_once() -> None:
+    captured: list[ModelUsage] = []
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        content = "not json" if calls == 1 else '{"topics":["agents"],"confidence":0.8}'
+        return httpx.Response(200, json=response_payload(content), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).infer_source_topics("Agent research")
+
+    assert result.confidence == 0.8
+    assert calls == 2
+    assert usage_errors(captured) == [("retry", "json_syntax_invalid"), ("success", None)]
+
+
+@pytest.mark.asyncio
+async def test_schema_validation_error_is_classified_and_repaired_once() -> None:
+    captured: list[ModelUsage] = []
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        content = (
+            '{"topics":["agents"],"confidence":2}'
+            if calls == 1
+            else '{"topics":["agents"],"confidence":0.8}'
+        )
+        return httpx.Response(200, json=response_payload(content), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http, captured.append
+        ).infer_source_topics("Agent research")
+
+    assert result.confidence == 0.8
+    assert calls == 2
+    assert usage_errors(captured) == [
+        ("retry", "schema_validation_failed"),
+        ("success", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_legacy_think_block_is_removed_before_json_validation() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=response_payload(
+                '<think>private reasoning</think>\n{"topics":["agents"],"confidence":0.8}'
+            ),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await MiniMaxClient(
+            Settings(minimax_api_key="secret"), http
+        ).infer_source_topics("Agent research")
+
+    assert result.confidence == 0.8
 
 
 @pytest.mark.asyncio
@@ -134,7 +301,7 @@ async def test_expired_total_timeout_skips_repair_and_records_timeout_fallback(
     assert result is fallback
     assert calls == 1
     assert [(usage.outcome, usage.error) for usage in captured] == [
-        ("retry", "invalid_response"),
+        ("retry", "json_syntax_invalid"),
         ("fallback", "timeout"),
     ]
 
