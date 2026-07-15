@@ -48,6 +48,15 @@ from newsradar.settings import Settings
 from newsradar.web.event_queries import EventQueryService
 
 
+@pytest.fixture(autouse=True)
+def _disable_live_minimax_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep pipeline unit tests isolated from a developer's real local API key."""
+    monkeypatch.setattr(
+        "newsradar.events.pipeline.get_settings",
+        lambda: Settings(minimax_api_key=None),
+    )
+
+
 def _seed_operation(
     session: Session,
     operation_id: int,
