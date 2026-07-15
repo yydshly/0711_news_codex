@@ -125,6 +125,7 @@ class CapabilityOverviewView:
     provider_count: int
     target_count: int
     db_target_count: int
+    archived_target_count: int
     direct_target_count: int
     ready_direct_target_count: int
     indirect_target_count: int
@@ -336,7 +337,21 @@ class CapabilityQueryService:
         now: datetime | None = None,
     ) -> CapabilityOverviewView:
         now = now or datetime.now(UTC)
-        db_sources = list(self._session.scalars(select(SourceDefinitionRecord)))
+        db_sources = list(
+            self._session.scalars(
+                select(SourceDefinitionRecord).where(
+                    SourceDefinitionRecord.catalog_state == "current"
+                )
+            )
+        )
+        archived_target_count = int(
+            self._session.scalar(
+                select(func.count())
+                .select_from(SourceDefinitionRecord)
+                .where(SourceDefinitionRecord.catalog_state == "archived")
+            )
+            or 0
+        )
         db_ids = {source.id for source in db_sources}
         current_ids = set(catalog.target_ids) if catalog.readable else db_ids
         current_sources = [source for source in db_sources if source.id in current_ids]
@@ -562,6 +577,7 @@ class CapabilityQueryService:
             provider_count=provider_count,
             target_count=target_count,
             db_target_count=len(db_ids),
+            archived_target_count=archived_target_count,
             direct_target_count=direct_count,
             ready_direct_target_count=ready_direct_count,
             indirect_target_count=indirect_count,

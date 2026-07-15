@@ -64,6 +64,7 @@
       <dl class="capability-metrics">
         <div><dt>有效 Provider</dt><dd>{{ capability.provider_count }}</dd></div>
         <div><dt>YAML Target</dt><dd>{{ capability.target_count }}</dd></div>
+        <div><dt>已归档 Target</dt><dd><a href="/targets?catalog_state=archived">{{ capability.archived_target_count }}</a></dd></div>
         <div><dt>直接覆盖</dt><dd>{{ capability.direct_target_count }}</dd></div>
         <div><dt>就绪直连</dt><dd>{{ capability.ready_direct_target_count }}</dd></div>
         <div><dt>仅发现</dt><dd>{{ capability.indirect_target_count }}</dd></div>

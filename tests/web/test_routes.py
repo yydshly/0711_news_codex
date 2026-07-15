@@ -49,6 +49,7 @@ class FakeDashboardService:
             provider_count=3,
             target_count=3,
             db_target_count=4,
+            archived_target_count=0,
             direct_target_count=2,
             ready_direct_target_count=1,
             indirect_target_count=1,

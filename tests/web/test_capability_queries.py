@@ -274,6 +274,22 @@ def test_capability_overview_uses_catalog_truth_and_runtime_facts(db_session):
     assert any(gap.key == "catalog_drift" for gap in view.gaps)
 
 
+def test_archived_database_target_is_counted_without_catalog_drift(db_session):
+    _seed_outputs(db_session)
+    legacy = db_session.get(SourceDefinitionRecord, "legacy-source")
+    legacy.catalog_state = "archived"
+    db_session.commit()
+
+    view = CapabilityQueryService(db_session).build(
+        _catalog(), minimax_configured=False, now=NOW
+    )
+
+    assert view.archived_target_count == 1
+    assert view.db_target_count == 3
+    assert view.db_only_target_ids == ()
+    assert not any(gap.key == "catalog_drift" for gap in view.gaps)
+
+
 def test_event_quality_coverage_counts_recent_v2_processing_in_collection_queries(db_session):
     recent_items = []
     for index in range(3):
