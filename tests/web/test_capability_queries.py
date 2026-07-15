@@ -39,8 +39,8 @@ def test_current_yaml_catalog_is_loaded_as_the_capability_truth():
     assert catalog.provider_file_count == 67
     assert len(catalog.provider_ids) == 68
     assert len(catalog.target_ids) == 187
-    assert len(catalog.direct_target_ids) == 69
-    assert len(catalog.indirect_target_ids) == 58
+    assert len(catalog.direct_target_ids) == 70
+    assert len(catalog.indirect_target_ids) == 57
     assert len(catalog.catalog_only_target_ids) == 60
 
 
