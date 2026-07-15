@@ -66,6 +66,7 @@ from newsradar.sources.catalog_reconcile import (
     apply_reconcile_plan,
     build_reconcile_plan,
 )
+from newsradar.sources.catalog_refresh_runtime import CatalogRefreshHandler
 from newsradar.sources.health_wave import (
     HealthProbeState,
     render_health_wave_report,
@@ -103,6 +104,9 @@ RootOption = Annotated[
 ]
 ProviderRootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
+]
+WorkerProviderRootOption = Annotated[
+    Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
 ]
 
 
@@ -376,16 +380,21 @@ def retry_operation(operation_id: int) -> None:
 @app.command("worker")
 def run_worker(
     root: RootOption = Path("sources"),
+    provider_root: WorkerProviderRootOption = Path("providers"),
     worker_id: Annotated[str | None, typer.Option()] = None,
     once: Annotated[bool, typer.Option("--once/--forever")] = False,
     poll_seconds: Annotated[float, typer.Option(min=0.1, max=60.0)] = 1.0,
 ) -> None:
     """Consume durable operations; network work only occurs in this process."""
     sources = load_source_tree(root)
+    providers = load_provider_tree(provider_root)
     handler = OperationRouter(
         {
             "fetch": FetchOperationHandler.production(sources),
             "source_remediation": SourceRemediationHandler.production(sources, create_session),
+            "source_catalog_refresh": CatalogRefreshHandler.production(
+                sources, providers, create_session
+            ),
             "event_pipeline": EventOperationHandler.production(create_session),
             "event_recluster": EventOperationHandler.production(create_session),
             "event_enrich": EventOperationHandler.production(create_session),

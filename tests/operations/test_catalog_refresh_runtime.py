@@ -7,8 +7,15 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import Base, SourceCatalogRefreshMemberRecord, SourceProbeRunRecord
+from newsradar.db.models import (
+    Base,
+    ProviderProbeRunRecord,
+    SourceCatalogRefreshMemberRecord,
+    SourceProbeRunRecord,
+)
 from newsradar.operations.repository import OperationLease
+from newsradar.providers.probes import ProviderProbeResult
+from newsradar.providers.schema import Availability, ProviderDefinition
 from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
     CatalogRefreshLane,
@@ -23,6 +30,7 @@ from newsradar.sources.catalog_refresh_runtime import (
 )
 from newsradar.sources.probes.base import ProbeOutcome, ProbeResult
 from newsradar.sources.schema import SourceDefinition, SourceStatus
+from tests.test_provider_schema import valid_provider
 from tests.test_source_schema import valid_source
 
 
@@ -44,6 +52,32 @@ def member(
         coverage_mode="direct",
         access_kind="rss",
         lane=CatalogRefreshLane.CONTENT,
+    )
+
+
+def capability_member(
+    source_id: str, provider_id: str = "provider-a"
+) -> CatalogRefreshMemberSnapshot:
+    return CatalogRefreshMemberSnapshot(
+        source_id=source_id,
+        provider_id=provider_id,
+        definition_hash="hash",
+        availability="requires_credentials",
+        coverage_mode="direct",
+        access_kind="public_api",
+        lane=CatalogRefreshLane.CAPABILITY,
+    )
+
+
+def catalog_member(source_id: str) -> CatalogRefreshMemberSnapshot:
+    return CatalogRefreshMemberSnapshot(
+        source_id=source_id,
+        provider_id="provider-a",
+        definition_hash="hash",
+        availability="manual_only",
+        coverage_mode="catalog_only",
+        access_kind="html",
+        lane=CatalogRefreshLane.CATALOG,
     )
 
 
@@ -98,6 +132,23 @@ class ConcurrentProbe:
         return result(definition.id)
 
 
+class RecordingProviderProbe:
+    def __init__(self, outcome: str = "blocked") -> None:
+        self.calls = 0
+        self.outcome = outcome
+
+    async def __call__(self, provider) -> ProviderProbeResult:
+        self.calls += 1
+        return ProviderProbeResult(
+            provider_id=provider.id,
+            outcome=self.outcome,
+            availability=provider.availability.value,
+            reason="capability checked",
+            checked_at=datetime.now(UTC),
+            evidence_url=str(provider.docs_url),
+        )
+
+
 def make_handler(
     db_session: Session, definition: SourceDefinition, probe: RecordingProbe
 ) -> CatalogRefreshHandler:
@@ -109,6 +160,83 @@ def add_member(db_session: Session, snapshot: CatalogRefreshMemberSnapshot) -> N
         1, CatalogRefreshPlan.from_members([snapshot])
     )
     db_session.commit()
+
+
+def test_capability_lane_probes_each_provider_once_and_shares_record_id() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        first, second = source("a"), source("b")
+        provider_payload = valid_provider()
+        provider_payload["id"] = "provider-a"
+        provider_payload["availability"] = Availability.REQUIRES_CREDENTIALS.value
+        provider = ProviderDefinition.model_validate(provider_payload)
+        CatalogRefreshRepository(db_session).create_members(
+            1, CatalogRefreshPlan.from_members([capability_member("a"), capability_member("b")])
+        )
+        db_session.commit()
+        content_probe = RecordingProbe([result()])
+        capability_probe = RecordingProviderProbe()
+        handler = CatalogRefreshHandler(
+            [first, second],
+            [provider],
+            lambda: db_session,
+            probe_factory=content_probe,
+            provider_probe_factory=capability_probe,
+        )
+        lease = OperationLease(
+            1,
+            1,
+            1,
+            "worker",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        operation = handler(lease, lambda _: None)
+
+        assert operation.status.value == "partial"
+        assert capability_probe.calls == 1
+        assert content_probe.calls == 0
+        stored = db_session.scalars(
+            select(SourceCatalogRefreshMemberRecord).order_by(
+                SourceCatalogRefreshMemberRecord.source_id
+            )
+        ).all()
+        assert {record.state for record in stored} == {CatalogMemberState.BLOCKED.value}
+        assert stored[0].provider_probe_run_id == stored[1].provider_probe_run_id
+        assert len(db_session.scalars(select(ProviderProbeRunRecord)).all()) == 1
+
+
+def test_catalog_lane_validates_without_any_http() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source("catalog")
+        CatalogRefreshRepository(db_session).create_members(
+            1, CatalogRefreshPlan.from_members([catalog_member("catalog")])
+        )
+        db_session.commit()
+        content_probe = RecordingProbe([result()])
+        handler = CatalogRefreshHandler(
+            [definition], [], lambda: db_session, probe_factory=content_probe
+        )
+        lease = OperationLease(
+            1,
+            1,
+            1,
+            "worker",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        operation = handler(lease, lambda _: None)
+
+        assert operation.status.value == "partial"
+        assert content_probe.calls == 0
+        stored = db_session.scalar(select(SourceCatalogRefreshMemberRecord))
+        assert stored is not None
+        assert stored.result_code == CatalogResultCode.CATALOG_INCOMPLETE.value
 
 
 def test_content_member_runs_three_serial_probes_after_first_success() -> None:
