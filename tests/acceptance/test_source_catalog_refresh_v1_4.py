@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,13 @@ from newsradar.operations.worker import Worker
 from newsradar.providers.probes import ProviderProbeResult
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.settings import Settings
+from newsradar.sources.catalog_refresh import (
+    CatalogMemberState,
+    CatalogRefreshLane,
+    CatalogRefreshMemberSnapshot,
+    CatalogRefreshPlan,
+)
+from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
 from newsradar.sources.catalog_refresh_runtime import CatalogRefreshHandler
 from newsradar.sources.probes.base import ProbeOutcome, ProbeResult
 from newsradar.sources.schema import SourceStatus
@@ -118,6 +126,7 @@ def test_postgres_web_wave_worker_reaches_frozen_terminal_detail(monkeypatch) ->
             assert operation is not None
             assert operation.requested_scope["catalog_count"] == 187
             assert operation.progress_current == 187
+            assert operation.result_summary["catalog_count"] == 187
             assert operation.result_summary["completed_count"] == 187
             members = verification.scalars(
                 select(SourceCatalogRefreshMemberRecord).where(
@@ -159,3 +168,80 @@ def test_postgres_web_wave_worker_reaches_frozen_terminal_detail(monkeypatch) ->
                 cleanup.execute(delete(WorkerRecord).where(WorkerRecord.worker_id == worker_id))
                 cleanup.commit()
         engine.dispose()
+
+
+def test_postgres_concurrent_terminal_completion_counts_one_member_once() -> None:
+    """Separate PostgreSQL sessions contend for one terminal transition safely."""
+    engine = _postgres_engine_or_skip()
+    operation_id: int | None = None
+    try:
+        source = load_source_tree(Path("sources"))[0]
+        with Session(engine) as setup:
+            operation = OperationRunRecord(
+                operation_type="source_catalog_refresh",
+                trigger="acceptance",
+                status="running",
+                requested_scope={
+                    "catalog_count": 1,
+                    "deadline_at": datetime(2100, 1, 1, tzinfo=UTC).isoformat(),
+                },
+                result_summary={},
+                progress_current=0,
+                progress_total=1,
+                attempt_count=1,
+            )
+            setup.add(operation)
+            setup.flush()
+            operation_id = operation.id
+            CatalogRefreshRepository(setup).create_members(
+                operation_id,
+                CatalogRefreshPlan.from_members(
+                    [
+                        CatalogRefreshMemberSnapshot(
+                            source_id=source.id,
+                            provider_id=source.provider_id,
+                            definition_hash="acceptance",
+                            availability="ready",
+                            coverage_mode="direct",
+                            access_kind="rss",
+                            lane=CatalogRefreshLane.CONTENT,
+                        )
+                    ]
+                ),
+            )
+            setup.commit()
+
+        def finish() -> None:
+            with Session(engine) as session:
+                CatalogRefreshRepository(session).finish_member(
+                    operation_id,
+                    source.id,
+                    CatalogMemberState.SUCCEEDED,
+                    None,
+                    "并发验收终态",
+                )
+                session.commit()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda _: finish(), range(2)))
+
+        with Session(engine) as verification:
+            operation = verification.get(OperationRunRecord, operation_id)
+            assert operation is not None
+            assert operation.progress_current == 1
+            member = verification.scalar(
+                select(SourceCatalogRefreshMemberRecord).where(
+                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id
+                )
+            )
+            assert member is not None
+            assert member.state == "succeeded"
+    finally:
+        if operation_id is not None:
+            with Session(engine) as cleanup:
+                cleanup.execute(
+                    delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
+                )
+                cleanup.commit()
+        engine.dispose()
+

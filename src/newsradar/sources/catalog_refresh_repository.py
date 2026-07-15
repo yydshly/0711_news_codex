@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from sqlalchemy import select
+from sqlalchemy import case, select, update
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -77,7 +77,19 @@ class CatalogRefreshRepository:
     def start_member(
         self, operation_run_id: int, source_id: str
     ) -> SourceCatalogRefreshMemberRecord:
-        record = self._get_member(operation_run_id, source_id)
+        # A fresh Session is used for every member by the concurrent Worker.  Lock
+        # this exact row so two workers/recovered leases cannot both observe an
+        # unfinished state and advance operation progress twice.
+        record = self.session.scalar(
+            select(SourceCatalogRefreshMemberRecord)
+            .where(
+                SourceCatalogRefreshMemberRecord.operation_run_id == operation_run_id,
+                SourceCatalogRefreshMemberRecord.source_id == source_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError(f"catalog refresh member not found: {operation_run_id}/{source_id}")
         record.state = CatalogMemberState.RUNNING.value
         record.attempt_count += 1
         record.started_at = record.started_at or utcnow()
@@ -108,12 +120,23 @@ class CatalogRefreshRepository:
         # exactly once when it first leaves a resumable state; recovery must never
         # inflate the total by revisiting an already terminal member.
         if was_unfinished:
-            operation = self.session.get(OperationRunRecord, operation_run_id)
-            if operation is not None:
-                operation.progress_current = min(
-                    (operation.progress_current or 0) + 1,
-                    operation.progress_total or (operation.progress_current or 0) + 1,
+            self.session.execute(
+                update(OperationRunRecord)
+                .where(OperationRunRecord.id == operation_run_id)
+                .values(
+                    progress_current=case(
+                        (
+                            (OperationRunRecord.progress_total.is_not(None))
+                            & (
+                                OperationRunRecord.progress_current
+                                >= OperationRunRecord.progress_total
+                            ),
+                            OperationRunRecord.progress_current,
+                        ),
+                        else_=OperationRunRecord.progress_current + 1,
+                    )
                 )
+            )
         self.session.flush()
         return record
 

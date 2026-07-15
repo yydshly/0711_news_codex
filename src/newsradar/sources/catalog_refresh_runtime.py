@@ -144,6 +144,7 @@ class CatalogRefreshHandler:
         with self._create_session() as session:
             operation = session.get(OperationRunRecord, lease.operation_id)
             completed_count = operation.progress_current if operation is not None else 0
+            catalog_count = operation.progress_total if operation is not None else len(outcomes)
         return OperationResult(
             status=(
                 OperationStatus.SUCCEEDED
@@ -152,7 +153,7 @@ class CatalogRefreshHandler:
                 else OperationStatus.PARTIAL
             ),
             result_summary={
-                "catalog_count": len(outcomes),
+                "catalog_count": catalog_count,
                 "completed_count": completed_count,
                 **dict(sorted(summary.items())),
             },
