@@ -37,7 +37,7 @@ class FetchOperationHandler:
 
     @classmethod
     def production(cls, sources: Iterable[SourceDefinition]) -> FetchOperationHandler:
-        return cls(sources, _execute_production_fetch)
+        return cls(sources, execute_production_fetch)
 
     def __call__(self, lease: OperationLease, checkpoint: Callable[[str], None]) -> OperationResult:
         if lease.operation_type != OperationType.FETCH.value:
@@ -159,7 +159,7 @@ def _is_retryable_fetch_failure(result) -> bool:
     return not any(marker in code for marker in nonretryable_markers)
 
 
-def _execute_production_fetch(
+def execute_production_fetch(
     source: SourceDefinition,
     operation_id: int,
     checkpoint: Callable[[str], None],

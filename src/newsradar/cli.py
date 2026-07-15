@@ -86,6 +86,7 @@ from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
 from newsradar.waves.planning import build_wave_plan
+from newsradar.waves.runtime import HighValueWaveHandler
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
@@ -438,6 +439,7 @@ def run_worker(
             "source_catalog_refresh": CatalogRefreshHandler.production(
                 sources, providers, create_session
             ),
+            "high_value_news_wave": HighValueWaveHandler.production(sources),
             "event_pipeline": EventOperationHandler.production(create_session),
             "event_recluster": EventOperationHandler.production(create_session),
             "event_enrich": EventOperationHandler.production(create_session),
