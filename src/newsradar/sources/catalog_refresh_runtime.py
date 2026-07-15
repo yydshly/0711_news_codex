@@ -153,13 +153,13 @@ class CatalogRefreshHandler:
                     )
                 )
             )
+        terminal_status = (
+            OperationStatus.SUCCEEDED
+            if catalog_count == summary.get(CatalogMemberState.SUCCEEDED.value, 0)
+            else OperationStatus.PARTIAL
+        )
         return OperationResult(
-            status=(
-                OperationStatus.SUCCEEDED
-                if not outcomes
-                or all(outcome.state is CatalogMemberState.SUCCEEDED for outcome in outcomes)
-                else OperationStatus.PARTIAL
-            ),
+            status=terminal_status,
             result_summary={
                 "catalog_count": catalog_count,
                 "completed_count": completed_count,

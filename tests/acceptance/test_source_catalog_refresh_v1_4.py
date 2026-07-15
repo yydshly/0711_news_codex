@@ -34,6 +34,7 @@ from newsradar.sources.catalog_refresh import (
     CatalogRefreshLane,
     CatalogRefreshMemberSnapshot,
     CatalogRefreshPlan,
+    CatalogResultCode,
 )
 from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
 from newsradar.sources.catalog_refresh_runtime import CatalogRefreshHandler
@@ -352,7 +353,7 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
     worker_id = "catalog-recovery-acceptance"
     calls: list[str] = []
     try:
-        sources = load_source_tree(Path("sources"))[:2]
+        sources = load_source_tree(Path("sources"))[:3]
         handler = CatalogRefreshHandler(sources, [], lambda: Session(engine))
         with Session(engine) as setup:
             operation = OperationRunRecord(
@@ -360,11 +361,11 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
                 trigger="acceptance",
                 status="running",
                 requested_scope={
-                    "catalog_count": 2,
+                    "catalog_count": 3,
                     "deadline_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
                 },
                 result_summary={},
-                progress_total=2,
+                progress_total=3,
                 attempt_count=1,
                 lease_expires_at=datetime(2000, 1, 1, tzinfo=UTC),
             )
@@ -409,6 +410,13 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
                 content_probe_run_ids=[prior.id],
             )
             repository.start_member(operation_id, sources[1].id)
+            repository.finish_member(
+                operation_id,
+                sources[2].id,
+                CatalogMemberState.DEGRADED,
+                CatalogResultCode.NO_CONTENT,
+                "prior degraded",
+            )
             setup.commit()
 
         async def probe(source, method) -> ProbeResult:
@@ -421,9 +429,10 @@ def test_postgres_expired_lease_recovers_only_unfinished_catalog_members() -> No
         with Session(engine) as verification:
             operation = verification.get(OperationRunRecord, operation_id)
             assert operation is not None
-            assert operation.status == "succeeded"
-            assert operation.result_summary["catalog_count"] == 2
-            assert operation.result_summary["completed_count"] == 2
+            assert operation.status == "partial"
+            assert operation.result_summary["catalog_count"] == 3
+            assert operation.result_summary["completed_count"] == 3
+            assert operation.result_summary["degraded"] == 1
             successful_probes = verification.scalars(
                 select(SourceProbeRunRecord).where(
                     SourceProbeRunRecord.operation_run_id == operation_id,
