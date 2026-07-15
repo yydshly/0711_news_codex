@@ -23,8 +23,11 @@ from newsradar.db.models import SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
+from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.settings import get_settings
+from newsradar.sources.catalog_refresh import build_catalog_refresh_plan
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
+from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.event_queries import EventQueryService
 from newsradar.web.i18n import format_datetime_zh, format_duration_ms, zh_label
@@ -39,6 +42,7 @@ from newsradar.web.security import (
     require_loopback_host,
     require_same_origin,
 )
+from newsradar.web.source_wave_queries import SourceWaveQueryService
 
 ServiceFactory = Callable[[], AbstractContextManager[DashboardQueryService]]
 CatalogFactory = Callable[[], CatalogSnapshot]
@@ -136,6 +140,18 @@ def _normalized_query(value: str | None) -> str | None:
     if value is None:
         return None
     return value.strip()[:100]
+
+
+def _source_wave_plan():
+    """Load reviewed local definitions only; never probe or open an HTTP client."""
+    sources = load_source_tree(Path("sources"))
+    providers = load_provider_tree(Path("providers"))
+    return build_catalog_refresh_plan(
+        sources,
+        providers,
+        latest={},
+        configured_credentials=SettingsCredentials().configured_names(),
+    )
 
 
 @contextmanager
@@ -823,6 +839,118 @@ def create_app(
                 "action_token": issue_action_token(request),
             },
         )
+
+    @app.get("/source-waves", response_class=HTMLResponse)
+    def source_waves(request: Request) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                waves = SourceWaveQueryService(session).list_waves()
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        active_wave = next((wave for wave in waves if wave.status in {"queued", "running"}), None)
+        return templates.TemplateResponse(
+            request=request,
+            name="source_waves.html",
+            context={
+                "waves": waves,
+                "active_wave": active_wave,
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+                "action_token": issue_action_token(request),
+            },
+        )
+
+    @app.post("/source-waves")
+    async def enqueue_source_wave(request: Request) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            plan = _source_wave_plan()
+            with create_session() as session:
+                operation_id = OperationCommandService(session).enqueue_source_catalog_refresh(
+                    plan, trigger="web"
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/source-waves/{operation_id}", status_code=303)
+
+    @app.get("/source-waves/{operation_id}", response_class=HTMLResponse)
+    def source_wave_detail(
+        request: Request,
+        operation_id: int,
+        lane: str | None = None,
+        provider_id: str | None = None,
+        availability: str | None = None,
+        coverage_mode: str | None = None,
+        state: str | None = None,
+        result_code: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                detail = SourceWaveQueryService(session).detail(
+                    operation_id,
+                    lane=lane,
+                    provider_id=provider_id,
+                    availability=availability,
+                    coverage_mode=coverage_mode,
+                    state=state,
+                    result_code=result_code,
+                    page=page,
+                    page_size=page_size,
+                )
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        if detail is None:
+            raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="source_wave_detail.html",
+            context={
+                "wave": detail,
+                "filters": _active_filters(
+                    lane=lane,
+                    provider_id=provider_id,
+                    availability=availability,
+                    coverage_mode=coverage_mode,
+                    state=state,
+                    result_code=result_code,
+                ),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+                "action_token": issue_action_token(request),
+            },
+        )
+
+    @app.post("/source-waves/{operation_id}/cancel")
+    async def cancel_source_wave(request: Request, operation_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                if not OperationCommandService(session).cancel(operation_id):
+                    raise HTTPException(status_code=409, detail="operation cannot be cancelled")
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/source-waves/{operation_id}", status_code=303)
+
+    @app.post("/source-waves/{operation_id}/retry")
+    async def retry_source_wave(request: Request, operation_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                try:
+                    retry_id = OperationCommandService(session).retry_source_catalog_refresh(
+                        operation_id, trigger="web"
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from error
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
+        return RedirectResponse(url=f"/source-waves/{retry_id}", status_code=303)
 
     @app.post("/operations/fetch")
     async def enqueue_fetch(request: Request) -> RedirectResponse:

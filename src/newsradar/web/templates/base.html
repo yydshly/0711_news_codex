@@ -28,6 +28,7 @@
           <a href="/targets"{% if request.url.path.startswith('/targets') %} aria-current="page"{% endif %}>目标目录</a>
           <a href="/gaps"{% if request.url.path.startswith('/gaps') %} aria-current="page"{% endif %}>阻塞与解锁</a>
           <a href="/operations"{% if request.url.path.startswith('/operations') %} aria-current="page"{% endif %}>运行任务</a>
+          <a href="/source-waves"{% if request.url.path.startswith('/source-waves') %} aria-current="page"{% endif %}>全量盘点</a>
           <a href="/fetch-runs"{% if request.url.path.startswith('/fetch-runs') %} aria-current="page"{% endif %}>抓取批次</a>
           <a href="/items"{% if request.url.path.startswith('/items') %} aria-current="page"{% endif %}>原始条目</a>
           <a href="/duplicates"{% if request.url.path.startswith('/duplicates') %} aria-current="page"{% endif %}>重复候选</a>

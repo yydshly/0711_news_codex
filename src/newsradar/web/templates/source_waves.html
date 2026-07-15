@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}全量盘点 · News Codex{% endblock %}
+{% block header %}<h1>来源全量盘点</h1>{% endblock %}
+{% block content %}
+<section class="catalog-page">
+  <section class="panel capability-hero"><p class="eyebrow">冻结批次</p><h2>为已登记来源创建可审计的三通道盘点</h2><p>网页只创建队列任务；Worker 才会执行后续探测。此页面不会直接访问外部网络。</p>
+  {% if active_wave %}<p class="status status-blocked">已有活动批次 #{{ active_wave.operation_id }}（{{ active_wave.status }}），请等待完成或取消后再创建。</p><button disabled>创建全量盘点</button>
+  {% else %}<form method="post" action="/source-waves"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">创建全量盘点</button></form>{% endif %}</section>
+  <section class="panel"><h2>最近批次</h2>{% if waves %}<div class="table-scroll"><table><thead><tr><th>批次</th><th>状态</th><th>创建时间</th><th>进度</th><th>冻结摘要</th></tr></thead><tbody>{% for wave in waves %}<tr><td><a href="/source-waves/{{ wave.operation_id }}">#{{ wave.operation_id }}</a></td><td>{{ wave.status }}</td><td>{{ wave.created_at|format_datetime_zh }}</td><td>{{ wave.progress_current }}{% if wave.progress_total is not none %}/{{ wave.progress_total }}{% endif %}</td><td>{{ wave.catalog_digest or '未记录' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty-state">暂无盘点批次。</p>{% endif %}</section>
+</section>
+{% endblock %}

@@ -349,6 +349,9 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 .mixed-source-group { overflow: hidden; }
 .mixed-source-table { min-width: 1120px; }
 .mixed-source-table small, .muted { color: var(--muted); }
+.summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.75rem; margin: 1rem 0; }
+.summary-grid span { display: grid; gap: 0.25rem; padding: 0.75rem; border: 1px solid var(--line); border-radius: 0.5rem; color: var(--muted); background: var(--panel-2); }
+.summary-grid strong { color: var(--healthy); font-size: 1.5rem; }
 .mixed-source-table .wrap-cell { min-width: 25rem; white-space: normal; }
 .run-chip {
   display: inline-block;
@@ -400,4 +403,5 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   .capability-card-grid,
   .capability-preview-grid,
   .glossary-grid { grid-template-columns: minmax(0, 1fr); }
+  .summary-grid { grid-template-columns: minmax(0, 1fr); }
 }
