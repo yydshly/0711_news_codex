@@ -28,6 +28,20 @@ def feed_datetime(entry: dict) -> datetime | None:
     return None
 
 
+def feed_summary(entry: dict) -> str | None:
+    content = entry.get("content") or []
+    return entry.get("summary") or entry.get("description") or (
+        content[0].get("value") if content else None
+    )
+
+
+def feed_content(entry: dict) -> str | None:
+    content = entry.get("content") or []
+    return (
+        content[0].get("value") if content else None
+    ) or entry.get("summary") or entry.get("description")
+
+
 class RssProbe(BaseProbe):
     async def parse(self, source, method, response, started, latency_ms):
         parsed = feedparser.parse(response.content)
@@ -40,10 +54,8 @@ class RssProbe(BaseProbe):
                 canonical_url=entry.get("link"),
                 published_at=feed_datetime(entry),
                 author=entry.get("author"),
-                summary=entry.get("summary") or entry.get("description"),
-                content=(entry.get("content") or [{}])[0].get("value")
-                if entry.get("content")
-                else None,
+                summary=feed_summary(entry),
+                content=feed_content(entry),
                 raw_keys=sorted(entry.keys()),
             )
             for entry in parsed.entries[:5]

@@ -312,3 +312,62 @@ async def test_json_sample_with_missing_expected_field_is_incomplete_fields() ->
     assert result.outcome is ProbeOutcome.DEGRADED
     assert result.sample_count == 1
     assert result.error_code == "incomplete_fields"
+
+
+@pytest.mark.asyncio
+async def test_rss_content_fallback_populates_summary_from_atom_content() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                "<?xml version='1.0'?><feed xmlns='http://www.w3.org/2005/Atom'>"
+                "<entry><id>post-1</id><title>Model update</title>"
+                "<link href='https://vendor.example/post-1'/>"
+                "<published>2026-07-10T12:00:00Z</published>"
+                "<content>Full article body</content></entry></feed>"
+            ),
+            request=request,
+        )
+
+    source = source_with(
+        {"kind": "atom", "url": "https://vendor.example/feed", "priority": 1},
+        ["title", "canonical_url", "published_at", "summary", "content"],
+    )
+    method = source.access_methods[0]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProbeFactory(client).create(method).probe(source, method)
+
+    assert result.outcome is ProbeOutcome.SUCCESS
+    assert result.field_completeness == 1.0
+    assert result.samples[0].summary == "Full article body"
+    assert result.samples[0].content == "Full article body"
+
+
+@pytest.mark.asyncio
+async def test_rss_content_fallback_populates_content_from_description() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                "<?xml version='1.0'?><rss version='2.0'><channel>"
+                "<item><guid>post-2</guid><title>Research update</title>"
+                "<link>https://vendor.example/post-2</link>"
+                "<pubDate>Fri, 10 Jul 2026 12:00:00 GMT</pubDate>"
+                "<description>Feed description</description></item>"
+                "</channel></rss>"
+            ),
+            request=request,
+        )
+
+    source = source_with(
+        {"kind": "rss", "url": "https://vendor.example/feed.xml", "priority": 1},
+        ["title", "canonical_url", "published_at", "summary", "content"],
+    )
+    method = source.access_methods[0]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ProbeFactory(client).create(method).probe(source, method)
+
+    assert result.outcome is ProbeOutcome.SUCCESS
+    assert result.field_completeness == 1.0
+    assert result.samples[0].summary == "Feed description"
+    assert result.samples[0].content == "Feed description"
