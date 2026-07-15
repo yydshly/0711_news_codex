@@ -15,6 +15,7 @@ from newsradar.db.models import (
 )
 from newsradar.operations.repository import OperationLease
 from newsradar.providers.probes import ProviderProbeResult
+from newsradar.providers.repository import canonical_provider
 from newsradar.providers.schema import Availability, ProviderDefinition
 from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
@@ -22,6 +23,7 @@ from newsradar.sources.catalog_refresh import (
     CatalogRefreshMemberSnapshot,
     CatalogRefreshPlan,
     CatalogResultCode,
+    catalog_definition_hash,
 )
 from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
 from newsradar.sources.catalog_refresh_runtime import (
@@ -60,6 +62,9 @@ def capability_member(
     provider_id: str = "provider-a",
     availability: str = "requires_credentials",
 ) -> CatalogRefreshMemberSnapshot:
+    payload = valid_provider()
+    payload["id"] = provider_id
+    provider_hash = canonical_provider(ProviderDefinition.model_validate(payload))[1]
     return CatalogRefreshMemberSnapshot(
         source_id=source_id,
         provider_id=provider_id,
@@ -68,10 +73,25 @@ def capability_member(
         coverage_mode="direct",
         access_kind="public_api",
         lane=CatalogRefreshLane.CAPABILITY,
+        provider_definition_hash=provider_hash,
+    )
+
+
+def frozen_member(definition, provider, lane, availability="ready", access_kind="rss"):
+    return CatalogRefreshMemberSnapshot(
+        source_id=definition.id,
+        provider_id=definition.provider_id,
+        definition_hash=catalog_definition_hash(definition, {provider.id} if provider else set()),
+        availability=availability,
+        coverage_mode="direct",
+        access_kind=access_kind,
+        lane=lane,
+        provider_definition_hash=canonical_provider(provider)[1] if provider else None,
     )
 
 
 def catalog_member(source_id: str) -> CatalogRefreshMemberSnapshot:
+    provider_hash = canonical_provider(ProviderDefinition.model_validate(valid_provider()))[1]
     return CatalogRefreshMemberSnapshot(
         source_id=source_id,
         provider_id="provider-a",
@@ -80,6 +100,7 @@ def catalog_member(source_id: str) -> CatalogRefreshMemberSnapshot:
         coverage_mode="catalog_only",
         access_kind="html",
         lane=CatalogRefreshLane.CATALOG,
+        provider_definition_hash=provider_hash,
     )
 
 
@@ -174,7 +195,25 @@ def test_capability_lane_probes_each_provider_once_and_shares_record_id() -> Non
         provider_payload["availability"] = Availability.REQUIRES_CREDENTIALS.value
         provider = ProviderDefinition.model_validate(provider_payload)
         CatalogRefreshRepository(db_session).create_members(
-            1, CatalogRefreshPlan.from_members([capability_member("a"), capability_member("b")])
+            1,
+            CatalogRefreshPlan.from_members(
+                [
+                    frozen_member(
+                        first,
+                        provider,
+                        CatalogRefreshLane.CAPABILITY,
+                        "requires_credentials",
+                        "public_api",
+                    ),
+                    frozen_member(
+                        second,
+                        provider,
+                        CatalogRefreshLane.CAPABILITY,
+                        "requires_credentials",
+                        "public_api",
+                    ),
+                ]
+            ),
         )
         db_session.commit()
         content_probe = RecordingProbe([result()])
@@ -215,13 +254,23 @@ def test_catalog_lane_validates_without_any_http() -> None:
     Base.metadata.create_all(engine)
     with Session(engine) as db_session:
         definition = source("catalog")
+        provider_payload = valid_provider()
+        provider_payload["id"] = definition.provider_id
+        provider = ProviderDefinition.model_validate(provider_payload)
         CatalogRefreshRepository(db_session).create_members(
-            1, CatalogRefreshPlan.from_members([catalog_member("catalog")])
+            1,
+            CatalogRefreshPlan.from_members(
+                [
+                    frozen_member(
+                        definition, provider, CatalogRefreshLane.CATALOG, "manual_only", "html"
+                    )
+                ]
+            ),
         )
         db_session.commit()
         content_probe = RecordingProbe([result()])
         handler = CatalogRefreshHandler(
-            [definition], [], lambda: db_session, probe_factory=content_probe
+            [definition], [provider], lambda: db_session, probe_factory=content_probe
         )
         lease = OperationLease(
             1,
@@ -340,19 +389,28 @@ def test_capability_exception_is_persisted_and_other_provider_continues() -> Non
         first = ProviderDefinition.model_validate(provider_payload)
         provider_payload["id"] = "provider-b"
         second = ProviderDefinition.model_validate(provider_payload)
+        definitions = [source("a", "provider-a"), source("b", "provider-b")]
         CatalogRefreshRepository(db_session).create_members(
             1,
             CatalogRefreshPlan.from_members(
                 [
-                    capability_member("a", "provider-a", "ready"),
-                    capability_member("b", "provider-b"),
+                    frozen_member(
+                        definitions[0], first, CatalogRefreshLane.CAPABILITY, "ready", "public_api"
+                    ),
+                    frozen_member(
+                        definitions[1],
+                        second,
+                        CatalogRefreshLane.CAPABILITY,
+                        "requires_credentials",
+                        "public_api",
+                    ),
                 ]
             ),
         )
         db_session.commit()
         provider_probe = FlakyProviderProbe()
         handler = CatalogRefreshHandler(
-            [source("a", "provider-a"), source("b", "provider-b")],
+            definitions,
             [first, second],
             lambda: db_session,
             provider_probe_factory=provider_probe,
