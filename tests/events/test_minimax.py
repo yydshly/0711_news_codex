@@ -407,7 +407,7 @@ async def test_compare_and_entity_suggestion_are_advisory_and_use_fast_model() -
 async def test_only_conflict_explanations_use_deep_model() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["model"] == "MiniMax-M3"
+        assert body["model"] == "MiniMax-M2.7"
         return httpx.Response(
             200,
             json=response_payload(

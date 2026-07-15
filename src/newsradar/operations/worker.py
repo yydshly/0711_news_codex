@@ -58,9 +58,9 @@ class Worker:
         self._logger = logger or logging.getLogger("newsradar")
 
     def run_once(self, handler: Handler) -> bool:
-        self.repository.heartbeat_worker(self.worker_id, status="idle")
         lease = self.repository.lease_next(self.worker_id, lease_seconds=self._lease_seconds)
         if lease is None:
+            self.repository.heartbeat_worker(self.worker_id, status="idle")
             return False
         last_heartbeat = self._clock()
         cancellation_seen = Event()
