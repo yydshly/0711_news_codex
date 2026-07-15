@@ -130,8 +130,7 @@ def test_postgres_web_wave_worker_reaches_frozen_terminal_detail(monkeypatch) ->
             assert operation.result_summary["completed_count"] == 187
             members = verification.scalars(
                 select(SourceCatalogRefreshMemberRecord).where(
-                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id,
-                    SourceCatalogRefreshMemberRecord.source_id == source.id,
+                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id
                 )
             ).all()
             assert len(members) == 187
@@ -242,7 +241,8 @@ def test_postgres_concurrent_terminal_completion_counts_one_member_once() -> Non
             assert operation.progress_current == 1
             member = verification.scalar(
                 select(SourceCatalogRefreshMemberRecord).where(
-                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id
+                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id,
+                    SourceCatalogRefreshMemberRecord.source_id == source.id,
                 )
             )
             assert member is not None
