@@ -32,7 +32,7 @@ from newsradar.web.item_queries import ItemQueryService
 from newsradar.web.mixed_source_queries import MixedSourceQueryService
 from newsradar.web.operation_queries import OperationQueryService
 from newsradar.web.queries import DashboardQueryService
-from newsradar.web.routes.system import build_system_health
+from newsradar.web.routes.system import build_minimax_runtime_view, build_system_health
 from newsradar.web.security import (
     UnsafeWrite,
     consume_one_time_token,
@@ -990,6 +990,7 @@ def create_app(
         try:
             with create_session() as session:
                 health = build_system_health(session)
+                minimax_runtime = build_minimax_runtime_view(session, get_settings())
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         configured_credentials = SettingsCredentials().configured_names()
@@ -1012,6 +1013,7 @@ def create_app(
                 "latest_probe_at": None,
                 "action_token": issue_action_token(request),
                 "credential_statuses": credential_statuses,
+                "minimax_runtime": minimax_runtime,
             },
         )
 
