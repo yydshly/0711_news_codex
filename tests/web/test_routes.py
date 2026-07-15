@@ -619,6 +619,7 @@ def test_target_filter_is_forwarded_and_catalog_columns_render(client, fake_serv
         "coverage_mode": "direct",
         "availability": "ready",
         "q": "Python",
+        "catalog_state": "current",
     }
     for text in (
         "OpenAI Python",
@@ -636,7 +637,7 @@ def test_target_filter_is_forwarded_and_catalog_columns_render(client, fake_serv
 def test_target_metric_filters_are_forwarded(client, fake_service):
     response = client.get("/targets?free_direct=true")
     assert response.status_code == 200
-    assert fake_service.target_filters == {"free_direct": True}
+    assert fake_service.target_filters == {"free_direct": True, "catalog_state": "current"}
 
     response = client.get("/targets?three_success=true")
     assert response.status_code == 200

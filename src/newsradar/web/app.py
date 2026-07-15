@@ -685,6 +685,7 @@ def create_app(
         free_direct: bool = False,
         three_success: bool = False,
         q: str | None = None,
+        catalog_state: str = "current",
     ) -> HTMLResponse:
         filters = _active_filters(
             provider_id=provider_id,
@@ -694,6 +695,7 @@ def create_app(
             free_direct=True if free_direct else None,
             three_success=True if three_success else None,
             q=_normalized_query(q),
+            catalog_state=catalog_state if catalog_state in {"current", "archived"} else "current",
         )
         result, error_response = query_with_timestamp_safely(
             request, lambda service: service.targets(filters)

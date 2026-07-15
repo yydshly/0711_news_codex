@@ -663,6 +663,9 @@ class DashboardQueryService:
     def targets(self, filters: Mapping[str, Any] | None = None) -> list[TargetRow]:
         filters = filters or {}
         statement: Select[tuple[SourceDefinitionRecord]] = select(SourceDefinitionRecord)
+        statement = statement.where(
+            SourceDefinitionRecord.catalog_state == filters.get("catalog_state", "current")
+        )
         for key, column in (
             ("provider_id", SourceDefinitionRecord.provider_id),
             ("target_type", SourceDefinitionRecord.target_type),
