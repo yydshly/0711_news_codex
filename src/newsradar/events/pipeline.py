@@ -48,6 +48,7 @@ from newsradar.events.pairing import (
 )
 from newsradar.events.publishing import EventPublisher, rule_enrichment
 from newsradar.events.quality import build_score_input, filter_engagement_fields
+from newsradar.events.ranking import decide_event_tier
 from newsradar.events.relevance import (
     CONTENT_MAX_CHARS,
     ITEM_KIND_MAX_CHARS,
@@ -75,6 +76,7 @@ from newsradar.events.schema import (
     RawItemText,
     RelevanceDecision,
 )
+from newsradar.events.scoring import score_event
 from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.settings import get_settings
 
@@ -532,7 +534,7 @@ class EventPipeline:
         event_ids: list[int] = []
         event_version_snapshots: dict[int, int] = {}
         created = 0
-        publish_plans: list[tuple[CandidateCluster, EventScoreInput]] = []
+        publish_plans: list[tuple[CandidateCluster, EventScoreInput, bool]] = []
         for candidate in candidates:
             # Persist/read the bounded candidate context first, then close the DB
             # transaction before optional HTTP work.  No event lease exists here.
@@ -569,22 +571,44 @@ class EventPipeline:
                 prior_event_exists=prior_event_exists,
                 prior_evidence_roots=prior_evidence_roots,
             )
-            publish_plans.append((candidate, score_input))
+            evidence = assess_evidence(candidate.items)
+            score = score_event(score_input.model_copy(update={"evidence": evidence}))
+            tier = decide_event_tier(candidate, score, evidence)
+            publish_plans.append(
+                (
+                    candidate,
+                    score_input,
+                    tier.tier.value == "hotspot"
+                    or (tier.tier.value == "signal" and tier.rank_score >= 60),
+                )
+            )
 
         # Optional network work is complete before any publication transaction.
         checkpoint("before_event_enrichment")
+        auto_enrichment_candidates = tuple(
+            candidate for candidate, _, should_enrich in publish_plans if should_enrich
+        )
         enrichment_results = self._enrich_candidates(
-            tuple(candidate for candidate, _ in publish_plans),
+            auto_enrichment_candidates,
             candidate_checkpoint=lambda _: checkpoint(
                 "before_event_enrichment_candidate"
             ),
+        )
+        enrichment_results.update(
+            {
+                candidate.candidate_key: EventEnrichmentResult(
+                    enrichment=rule_enrichment(candidate)
+                )
+                for candidate, _, should_enrich in publish_plans
+                if not should_enrich
+            }
         )
         checkpoint("after_event_enrichment")
         model_success_count = sum(
             result.enrichment.origin == "model"
             for result in enrichment_results.values()
         )
-        model_fallback_count = len(enrichment_results) - model_success_count
+        model_fallback_count = len(auto_enrichment_candidates) - model_success_count
         model_error_counts: Counter[str] = Counter()
         for result in enrichment_results.values():
             for model_run in result.model_runs:
@@ -592,7 +616,7 @@ class EventPipeline:
                 if isinstance(error, str) and fullmatch(r"[a-z][a-z0-9_]{0,63}", error):
                     model_error_counts[error] += 1
 
-        for candidate, score_input in publish_plans:
+        for candidate, score_input, _ in publish_plans:
             checkpoint("before_event_publish_candidate")
             enrichment_result = enrichment_results[candidate.candidate_key]
             with self._session_factory() as session:

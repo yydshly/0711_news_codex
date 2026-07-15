@@ -142,7 +142,60 @@ def test_pipeline_batch_enrichment_is_bounded_to_two_candidates(
 
     assert result.candidate_count == 5
     assert maximum_active == 2
-    assert result.model_success_count == 5
+    assert result.model_success_count == 4
+    assert result.model_fallback_count == 0
+
+
+def test_pipeline_skips_model_for_low_rank_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        db.add(
+            SourceDefinitionRecord(
+                id="community",
+                name="Community",
+                status="active",
+                nature="community",
+                language="en",
+                roles=["discovery"],
+                topics=["ai"],
+                authority_score=10,
+                poll_interval_minutes=60,
+                expected_fields=[],
+                definition_hash="community",
+            )
+        )
+        db.add(
+            RawItemRecord(
+                source_id="community",
+                external_id="low-rank",
+                canonical_url="https://example.test/low-rank",
+                payload={},
+                title="OpenAI launches a community model",
+                published_at=now,
+            )
+        )
+        _seed_operation(db, 104, window_end=now)
+        db.commit()
+
+    async def unexpected_model_call(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("low-rank signal must not call MiniMax")
+
+    monkeypatch.setattr(
+        EventPipeline, "_enrich_candidate_async", staticmethod(unexpected_model_call)
+    )
+    with Session(engine) as db:
+        result = EventPipeline.production(db).run(
+            window_hours=24,
+            operation_id=104,
+            checkpoint=lambda _: None,
+        )
+
+    assert result.model_success_count == 0
     assert result.model_fallback_count == 0
 
 
