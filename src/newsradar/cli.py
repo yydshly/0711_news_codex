@@ -18,6 +18,7 @@ from newsradar.ai.health import check_minimax_config, check_minimax_live
 from newsradar.ai.minimax import ModelUsage
 from newsradar.credentials import SettingsCredentials
 from newsradar.db.models import (
+    HighValueWaveMemberRecord,
     OperationRunRecord,
     SourceAcquisitionCandidateRecord,
     SourceAcquisitionProbeRunRecord,
@@ -47,6 +48,7 @@ from newsradar.local_postgres import (
 )
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.fetch_runtime import FetchOperationHandler
+from newsradar.operations.logging import redact
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.router import OperationRouter
 from newsradar.operations.worker import Worker
@@ -152,6 +154,128 @@ def plan_wave(
         f"blocked_credentials_approval_payment={protected} "
         f"role_coverage={','.join(covered_roles)} digest={plan.digest}"
     )
+
+
+def _wave_plan_from_local_catalog(profile: Path, session):
+    """Build a frozen wave plan from reviewed local files and persisted probe state only."""
+    loaded = load_wave_profile(profile)
+    sources = load_source_tree(Path("sources"))
+    providers = load_provider_tree(Path("providers"))
+    ProviderRepository(session).sync(providers)
+    SourceRepository(session).sync(sources)
+    session.commit()
+    probes = SourceRepository(session).latest_probe_snapshots(list(loaded.source_ids))
+    return build_wave_plan(
+        loaded,
+        sources,
+        probes,
+        SettingsCredentials().configured_names(),
+    )
+
+
+@waves_app.command("enqueue")
+def enqueue_wave(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    """Synchronize reviewed YAML and queue one frozen wave; this command never probes."""
+    try:
+        with create_session() as session:
+            plan = _wave_plan_from_local_catalog(profile, session)
+            operation_id = OperationCommandService(session).enqueue_high_value_wave(
+                plan=plan, trigger="cli"
+            )
+    except ValueError as exc:
+        typer.echo(f"无法创建高价值新闻波次：{exc}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"已创建高价值新闻波次任务：{operation_id}")
+
+
+def _load_high_value_wave_operation(operation_id: int):
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is None or operation.operation_type != "high_value_news_wave":
+            raise LookupError("high_value_news_wave_not_found")
+        members = list(
+            session.scalars(
+                select(HighValueWaveMemberRecord)
+                .where(HighValueWaveMemberRecord.operation_run_id == operation_id)
+                .order_by(HighValueWaveMemberRecord.source_id)
+            )
+        )
+    return operation, members
+
+
+def _wave_member_counts(members) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for member in members:
+        counts[member.state] = counts.get(member.state, 0) + 1
+    return counts
+
+
+@waves_app.command("status")
+def show_wave_status(operation_id: Annotated[int, typer.Argument(min=1)]) -> None:
+    """Show frozen wave state only; no fetch, model call, or retry is performed."""
+    try:
+        operation, members = _load_high_value_wave_operation(operation_id)
+    except LookupError:
+        typer.echo("未找到高价值新闻波次任务", err=True)
+        raise typer.Exit(2) from None
+    total = operation.progress_total if operation.progress_total is not None else len(members)
+    typer.echo(f"高价值新闻波次 {operation.id}：{operation.status}")
+    typer.echo(f"完成度：{operation.progress_current}/{total}")
+    counts = _wave_member_counts(members)
+    if counts:
+        typer.echo(
+            "成员状态：" + "，".join(f"{key}={value}" for key, value in sorted(counts.items()))
+        )
+
+
+@waves_app.command("report")
+def write_wave_report(
+    operation_id: Annotated[int, typer.Argument(min=1)],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Render a scrubbed Chinese report for one frozen wave without touching the network."""
+    try:
+        operation, members = _load_high_value_wave_operation(operation_id)
+    except LookupError:
+        typer.echo("未找到高价值新闻波次任务", err=True)
+        raise typer.Exit(2) from None
+    total = operation.progress_total if operation.progress_total is not None else len(members)
+    scope = operation.requested_scope if isinstance(operation.requested_scope, dict) else {}
+    summary = operation.result_summary if isinstance(operation.result_summary, dict) else {}
+    lines = [
+        "# 高价值 AI/技术新闻波次报告",
+        "",
+        f"- 任务：{operation.id}",
+        f"- 状态：{operation.status}",
+        f"- 完成度：{operation.progress_current}/{total}",
+        f"- Profile：{redact(scope.get('profile_id', 'unknown'))}",
+        f"- 已完成成员：{redact(summary.get('completed_members', 0))}",
+        "",
+        "## 成员结果",
+        "",
+        "| 来源 | 平台 | 可抓取 | 状态 | 结果码 | 结论 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for member in members:
+        lines.append(
+            "| {source} | {provider} | {fetchable} | {state} | {code} | {conclusion} |".format(
+                source=redact(member.source_id),
+                provider=redact(member.provider_id),
+                fetchable="是" if member.fetchable else "否",
+                state=redact(member.state),
+                code=redact(member.result_code or "-"),
+                conclusion=redact(member.conclusion or "-").replace("|", "\\|"),
+            )
+        )
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        typer.echo("high_value_wave_report_write_failed", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"已生成高价值新闻波次报告：{output}")
 
 
 def _parse_utc_baseline(value: str) -> datetime:

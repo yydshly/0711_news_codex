@@ -23,11 +23,15 @@ from newsradar.db.models import OperationRunRecord, SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
+from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.settings import get_settings
 from newsradar.sources.catalog_refresh import build_catalog_refresh_plan
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
+from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
+from newsradar.waves.loader import load_wave_profile
+from newsradar.waves.planning import build_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.event_queries import EventQueryService
 from newsradar.web.i18n import format_datetime_zh, format_duration_ms, zh_label
@@ -151,6 +155,27 @@ def _source_wave_plan():
         providers,
         latest={},
         configured_credentials=SettingsCredentials().configured_names(),
+    )
+
+
+def _high_value_wave_plan(session):
+    """Synchronize reviewed local definitions then freeze one local-only WavePlan.
+
+    This boundary deliberately uses persisted probe history only.  It never creates an
+    HTTP client, reads a browser session, or invokes MiniMax.
+    """
+    profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
+    sources = load_source_tree(Path("sources"))
+    providers = load_provider_tree(Path("providers"))
+    ProviderRepository(session).sync(providers)
+    SourceRepository(session).sync(sources)
+    session.commit()
+    probes = SourceRepository(session).latest_probe_snapshots(list(profile.source_ids))
+    return build_wave_plan(
+        profile,
+        sources,
+        probes,
+        SettingsCredentials().configured_names(),
     )
 
 
@@ -336,6 +361,7 @@ def create_app(
             name="events_home.html",
             context={
                 "event_home": event_home,
+                "action_token": issue_action_token(request),
                 "snapshot_unavailable": event_home is None,
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
@@ -415,6 +441,7 @@ def create_app(
                 "event_page": event_page,
                 "event_scope": scope,
                 "snapshot_unavailable": snapshot_unavailable,
+                "action_token": issue_action_token(request),
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
@@ -503,6 +530,22 @@ def create_app(
                 )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+
+    @app.post("/events/update")
+    async def update_high_value_events(request: Request) -> RedirectResponse:
+        """Queue exactly one frozen high-value wave; Worker owns all I/O and models."""
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                plan = _high_value_wave_plan(session)
+                operation_id = OperationCommandService(session).enqueue_high_value_wave(
+                    plan=plan, trigger="web"
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (OperationalError, ProgrammingError) as error:
+            return database_error_response(request, error)
         return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
 
     @app.post("/events/{event_id}/recluster")

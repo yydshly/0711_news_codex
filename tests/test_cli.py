@@ -73,6 +73,106 @@ def test_waves_plan_counts_payment_blockers(monkeypatch) -> None:
     assert "blocked_credentials_approval_payment=1" in result.stdout
 
 
+def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    provider = type("Provider", (), {"id": source.provider_id})()
+    syncs: list[str] = []
+
+    class SourceRepo:
+        def __init__(self, session):
+            pass
+
+        def sync(self, values):
+            syncs.append("sources")
+
+        def latest_probe_snapshots(self, source_ids):
+            return {}
+
+    class ProviderRepo:
+        def __init__(self, session):
+            pass
+
+        def sync(self, values):
+            syncs.append("providers")
+
+    class Commands:
+        def __init__(self, session):
+            pass
+
+        def enqueue_high_value_wave(self, *, plan, trigger):
+            assert trigger == "cli"
+            return 88
+
+    class Session:
+        def commit(self):
+            return None
+
+    operation = type(
+        "Operation",
+        (),
+        {
+            "id": 88,
+            "operation_type": "high_value_news_wave",
+            "status": "partial",
+            "progress_current": 2,
+            "progress_total": 3,
+            "requested_scope": {"profile_id": "safe-profile", "profile_digest": "safe"},
+            "result_summary": {"member_total": 3, "completed_members": 2},
+        },
+    )()
+    members = [
+        type(
+            "Member",
+            (),
+            {
+                "source_id": "safe-source",
+                "provider_id": "safe-provider",
+                "fetchable": True,
+                "state": "succeeded",
+                "result_code": "success",
+                "conclusion": "Authorization: must-not-leak",
+            },
+        )()
+    ]
+
+    monkeypatch.setattr(
+        "newsradar.cli.load_wave_profile",
+        lambda path: type("Profile", (), {"source_ids": (source.id,)})(),
+    )
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [source])
+    monkeypatch.setattr("newsradar.cli.load_provider_tree", lambda root: [provider])
+    monkeypatch.setattr(
+        "newsradar.cli.build_wave_plan",
+        lambda *args, **kwargs: type("Plan", (), {"profile_id": "safe-profile"})(),
+    )
+    monkeypatch.setattr("newsradar.cli.SourceRepository", SourceRepo)
+    monkeypatch.setattr("newsradar.cli.ProviderRepository", ProviderRepo)
+    monkeypatch.setattr("newsradar.cli.OperationCommandService", Commands)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(Session()))
+    monkeypatch.setattr(
+        "newsradar.cli._load_high_value_wave_operation", lambda op: (operation, members)
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.httpx.AsyncClient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network must not run")),
+    )
+
+    enqueue = runner.invoke(app, ["waves", "enqueue", "--profile", "pyproject.toml"])
+    status = runner.invoke(app, ["waves", "status", "88"])
+    output = tmp_path / "wave.md"
+    report = runner.invoke(app, ["waves", "report", "88", "--output", str(output)])
+
+    assert enqueue.exit_code == 0
+    assert "88" in enqueue.stdout
+    assert syncs == ["providers", "sources"]
+    assert status.exit_code == 0
+    assert "2/3" in status.stdout
+    assert report.exit_code == 0
+    assert "must-not-leak" not in output.read_text(encoding="utf-8")
+
+
 def write_source(root: Path) -> None:
     root.mkdir()
     (root / "source.yaml").write_text(yaml.safe_dump(valid_source()), encoding="utf-8")
