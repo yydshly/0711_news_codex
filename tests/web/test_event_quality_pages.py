@@ -170,7 +170,7 @@ def test_event_detail_explains_six_scores_and_redacts_untrusted_sensitive_text(
         "MiniMax-M2.7-highspeed",
         "事件中文增强",
         "规则回退",
-        "245.0 毫秒",
+        "245 毫秒",
         "未经同行评审",
         "北京时间",
     ):

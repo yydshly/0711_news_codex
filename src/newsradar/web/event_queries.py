@@ -49,6 +49,8 @@ class EventRow:
     event_id: int
     visibility: str
     status: str
+    display_tier: str
+    rank_score: float
     category: str | None
     zh_title: str
     zh_summary: str
@@ -60,11 +62,23 @@ class EventRow:
     independent_root_count: int
     enrichment_origin: str
     score_reasons: tuple[str, ...]
+    tier_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EventSection:
+    title: str
+    category: str
+    events: tuple[EventRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class EventHomeView:
     events: tuple[EventRow, ...]
+    hotspots: tuple[EventRow, ...]
+    sections: tuple[EventSection, ...]
+    signal_count: int
+    audit_count: int
     current_confirmed_count: int
     current_emerging_count: int
     coverage: EventQualityCoverageView
@@ -168,10 +182,9 @@ class EventQueryService:
         snapshots = self._projections(
             {
                 "visibility": "current",
-                "status": "confirmed",
+                "display_tier": "hotspot",
                 "since": since,
                 "until": now,
-                "min_ai_relevance": HOME_MIN_AI_RELEVANCE,
             }
         )
         complete_snapshots = tuple(
@@ -180,6 +193,15 @@ class EventQueryService:
         home_events = tuple(
             self._event_row(*snapshot) for snapshot in complete_snapshots
         )[:limit]
+        sections = tuple(
+            EventSection(
+                title=zh_label("event_category", category),
+                category=category,
+                events=tuple(row for row in home_events if row.category == category),
+            )
+            for category in ("product_model", "research", "developer_tool", "company")
+            if any(row.category == category for row in home_events)
+        )
         status_counts = dict(
             self.session.execute(
                 select(EventRecord.status, func.count(EventRecord.id))
@@ -192,8 +214,23 @@ class EventQueryService:
                 .group_by(EventRecord.status)
             ).all()
         )
+        tier_counts = dict(
+            self.session.execute(
+                select(EventRecord.display_tier, func.count(EventRecord.id))
+                .where(
+                    EventRecord.visibility == "current",
+                    EventRecord.occurred_at >= since,
+                    EventRecord.occurred_at <= now,
+                )
+                .group_by(EventRecord.display_tier)
+            ).all()
+        )
         return EventHomeView(
             events=home_events,
+            hotspots=home_events,
+            sections=sections,
+            signal_count=int(tier_counts.get("signal", 0)),
+            audit_count=int(tier_counts.get("audit_only", 0)),
             current_confirmed_count=int(status_counts.get("confirmed", 0)),
             current_emerging_count=int(status_counts.get("emerging", 0)),
             coverage=EventQualityCoverageQueryService(self.session).build(now=now),
@@ -313,6 +350,8 @@ class EventQueryService:
             statement = statement.where(EventRecord.status == status)
         if category := filters.get("category"):
             statement = statement.where(EventRecord.category == category)
+        if display_tier := filters.get("display_tier"):
+            statement = statement.where(EventRecord.display_tier == display_tier)
         if since := filters.get("since"):
             statement = statement.where(EventRecord.occurred_at >= since)
         if until := filters.get("until"):
@@ -323,7 +362,7 @@ class EventQueryService:
                 >= float(min_ai_relevance)
             )
         statement = statement.order_by(
-            EventScoreRecord.heat.desc().nullslast(),
+            EventRecord.rank_score.desc(),
             EventRecord.occurred_at.desc(),
             EventRecord.id.desc(),
         )
@@ -354,6 +393,8 @@ class EventQueryService:
             event_id=event.id,
             visibility=event.visibility,
             status=event.status,
+            display_tier=event.display_tier,
+            rank_score=float(event.rank_score),
             category=event.category,
             zh_title=_safe_display_text(version.zh_title, "未命名事件", max_length=500),
             zh_summary=_safe_display_text(version.zh_summary, "暂无摘要", max_length=2_000),
@@ -369,6 +410,14 @@ class EventQueryService:
             score_reasons=tuple(
                 _safe_display_text(zh_label("event_reason", str(reason)), "未记录")
                 for reason in _as_sequence(breakdown.get("reasons"))
+            ),
+            tier_reasons=tuple(
+                _safe_display_text(zh_label("event_reason", str(reason)), "未记录")
+                for reason in _as_sequence(
+                    (payload.get("publication") or {}).get("reasons")
+                    if isinstance(payload.get("publication"), dict)
+                    else ()
+                )
             ),
         )
 

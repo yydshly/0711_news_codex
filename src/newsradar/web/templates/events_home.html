@@ -5,10 +5,12 @@
 <section class="panel capability-hero" aria-labelledby="event-home-heading">
   <p class="eyebrow">近 24 小时 · 当前事件</p>
   <h2 id="event-home-heading">中文事件指挥台</h2>
-  <p>首页只展示当前、已确认、AI 相关性不低于 60 且版本、评分和证据快照完整的真实事件；数量不足时不补低质量内容。</p>
+  <p>首页只展示证据和版本完整的热点；社交讨论、单一媒体和预印本进入“新兴信号”，不与已确认热点混排。</p>
   <dl class="capability-metrics">
     <div><dt>当前确认事件</dt><dd>{{ event_home.current_confirmed_count }}</dd></div>
     <div><dt>当前新兴线索</dt><dd>{{ event_home.current_emerging_count }}</dd></div>
+    <div><dt>热点</dt><dd>{{ event_home.hotspots|length }}</dd></div>
+    <div><dt>信号</dt><dd>{{ event_home.signal_count }}</dd></div>
     <div><dt>72 小时已处理</dt><dd>{{ event_home.coverage.processed_count }} / {{ event_home.coverage.selected_count }}</dd></div>
     <div><dt>排除</dt><dd>排除 {{ event_home.coverage.excluded_count }}</dd></div>
     <div><dt>最后完成</dt><dd class="text-value">{% if event_home.coverage.last_completed_at %}{{ event_home.coverage.last_completed_at|format_datetime_zh }}{% else %}暂无成功运行{% endif %}</dd></div>
@@ -16,10 +18,11 @@
   <p><a href="/events">全部当前事件</a> · <a href="/emerging">新兴线索</a> · <a href="/events?visibility=legacy">历史旧版事件</a> · <a href="/sources">来源与能力看板</a></p>
 </section>
 
-<section class="event-list" aria-label="当前已确认事件">
-  {% for event in event_home.events %}
+<section class="event-list" aria-label="综合热点">
+  <h2>综合热点</h2>
+  {% for event in event_home.hotspots %}
   <article class="panel event-card">
-    <p class="eyebrow">{{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %} · 独立证据 {{ event.independent_root_count }}</p>
+    <p class="eyebrow">{{ event.display_tier|zh_label('event_tier') }} · {{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %} · 独立证据 {{ event.independent_root_count }}</p>
     <h2><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h2>
     <p>{{ event.zh_summary }}</p>
     <p><strong>为何值得关注：</strong>{{ event.why_it_matters }}</p>
@@ -27,6 +30,7 @@
       <div><dt>重要度</dt><dd>{{ event.importance|round(1) }}</dd></div>
       <div><dt>可信度</dt><dd>{{ event.credibility|round(1) }}</dd></div>
       <div><dt>热度</dt><dd>{{ event.heat|round(1) }}</dd></div>
+      <div><dt>综合排名</dt><dd>{{ event.rank_score|round(1) }}</dd></div>
     </dl>
     <p class="metric-note">{{ event.enrichment_origin|zh_label('enrichment_origin') }}</p>
   </article>
@@ -34,4 +38,17 @@
   <section class="panel"><p>暂无达到首页门槛的当前确认事件。</p></section>
   {% endfor %}
 </section>
+
+{% for section in event_home.sections %}
+<section class="event-list" aria-label="{{ section.title }}">
+  <h2>{{ section.title }}</h2>
+  {% for event in section.events %}
+  <article class="panel event-card">
+    <p class="eyebrow">{{ event.display_tier|zh_label('event_tier') }} · 排名 {{ event.rank_score|round(1) }}</p>
+    <h3><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h3>
+    <p>{{ event.zh_summary }}</p>
+  </article>
+  {% endfor %}
+</section>
+{% endfor %}
 {% endblock %}

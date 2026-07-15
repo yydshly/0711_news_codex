@@ -17,12 +17,16 @@ def _add_event(
     status="confirmed",
     title="确认事件",
     visibility="current",
+    display_tier=None,
+    rank_score=80,
 ):
     session.add(
         EventRecord(
             id=event_id,
             canonical_key=f"e-{event_id}",
             visibility=visibility,
+            display_tier=display_tier or ("hotspot" if status == "confirmed" else "signal"),
+            rank_score=rank_score,
             status=status,
             occurred_at=datetime.now(UTC),
             current_version_number=1,
@@ -93,6 +97,19 @@ def test_emerging_page_labels_unconfirmed_social_signal(db_session, monkeypatch)
     assert response.status_code == 200
     assert "仅线索" in response.text
     assert "社交线索" in response.text
+
+
+def test_events_can_filter_hotspots_and_signals(db_session, monkeypatch):
+    _add_event(db_session, 45, "confirmed", "热点事件", display_tier="hotspot")
+    _add_event(db_session, 46, "emerging", "信号事件", display_tier="signal")
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/events?tier=signal")
+
+    assert response.status_code == 200
+    assert "信号事件" in response.text
+    assert "热点事件" not in response.text
 
 
 def test_events_defaults_to_current_and_legacy_entry_warns(db_session, monkeypatch):

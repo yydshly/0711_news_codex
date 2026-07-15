@@ -25,6 +25,12 @@
         {% for value in ('product_model', 'research', 'developer_tool', 'company') %}<option value="{{ value }}"{% if event_page.filters.get('category') == value %} selected{% endif %}>{{ value|zh_label('event_category') }}</option>{% endfor %}
       </select>
     </label>
+    <label>展示层级
+      <select name="tier">
+        <option value="">全部层级</option>
+        {% for value in ('hotspot', 'signal', 'audit_only') %}<option value="{{ value }}"{% if event_page.filters.get('display_tier') == value %} selected{% endif %}>{{ value|zh_label('event_tier') }}</option>{% endfor %}
+      </select>
+    </label>
     <label>时间范围
       <select name="hours">
         <option value="">全部时间</option>
@@ -35,11 +41,11 @@
   </form>
   {% for event in event_page.events %}
   <article class="event-card">
-    <p class="eyebrow">{{ event.visibility|zh_label('event_visibility') }} · {{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %}</p>
+    <p class="eyebrow">{{ event.display_tier|zh_label('event_tier') }} · {{ event.visibility|zh_label('event_visibility') }} · {{ event.status|zh_label('event_status') }}{% if event.category %} · {{ event.category|zh_label('event_category') }}{% endif %}</p>
     <h2><a href="/events/{{ event.event_id }}">{{ event.zh_title }}</a></h2>
     <p>{{ event.zh_summary }}</p>
     <p><strong>为何值得关注：</strong>{{ event.why_it_matters }}</p>
-    <small>独立证据 {{ event.independent_root_count }} · 重要度 {{ event.importance|round(1) }} · 可信度 {{ event.credibility|round(1) }} · 热度 {{ event.heat|round(1) }}</small>
+    <small>排名 {{ event.rank_score|round(1) }} · 独立证据 {{ event.independent_root_count }} · 重要度 {{ event.importance|round(1) }} · 可信度 {{ event.credibility|round(1) }} · 热度 {{ event.heat|round(1) }}</small>
   </article>
   {% else %}<p>此视图暂无事件。</p>{% endfor %}
 </section>

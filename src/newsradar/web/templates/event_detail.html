@@ -9,11 +9,12 @@
 {% endif %}
 
 <section class="panel" aria-labelledby="event-detail-heading">
-  <p class="eyebrow">{{ event_detail.event.visibility|zh_label('event_visibility') }} · {{ event_detail.event.status|zh_label('event_status') }} · 算法 {{ event_detail.algorithm_version }}</p>
+  <p class="eyebrow">{{ event_detail.event.display_tier|zh_label('event_tier') }} · {{ event_detail.event.visibility|zh_label('event_visibility') }} · {{ event_detail.event.status|zh_label('event_status') }} · 算法 {{ event_detail.algorithm_version }}</p>
   <h2 id="event-detail-heading">{{ event_detail.event.zh_title }}</h2>
   <p>{{ event_detail.event.zh_summary }}</p>
   <h3>为何值得关注</h3><p>{{ event_detail.why_it_matters }}</p>
-  <p><strong>独立证据根 {{ event_detail.event.independent_root_count }}</strong> · 重要度 {{ event_detail.event.importance|round(1) }} · 可信度 {{ event_detail.event.credibility|round(1) }} · 热度 {{ event_detail.event.heat|round(1) }}</p>
+  <p><strong>独立证据根 {{ event_detail.event.independent_root_count }}</strong> · 排名 {{ event_detail.event.rank_score|round(1) }} · 重要度 {{ event_detail.event.importance|round(1) }} · 可信度 {{ event_detail.event.credibility|round(1) }} · 热度 {{ event_detail.event.heat|round(1) }}</p>
+  <h3>展示与确认依据</h3><ul>{% for reason in event_detail.event.tier_reasons %}<li>{{ reason }}</li>{% else %}<li>当前版本未记录额外分层原因。</li>{% endfor %}</ul>
 </section>
 
 <section class="panel" aria-labelledby="score-heading">
@@ -41,7 +42,7 @@
   <p class="metric-note">仅展示模型、用途、结果和延迟；不展示 token、提示词或 API 错误原文。</p>
   <ul>
     {% for run in event_detail.model_runs %}
-    <li><strong>{{ run.model }}</strong> · {{ run.purpose|zh_label('model_purpose') }} · {{ run.outcome|zh_label('outcome') }} · {% if run.latency_ms is not none %}{{ run.latency_ms }} 毫秒{% else %}未记录延迟{% endif %}</li>
+    <li><strong>{{ run.model }}</strong> · {{ run.purpose|zh_label('model_purpose') }} · {{ run.outcome|zh_label('outcome') }} · {{ run.latency_ms|format_duration_ms }}</li>
     {% else %}<li>未记录模型调用；当前中文内容来自规则或既有版本。</li>{% endfor %}
   </ul>
 </section>

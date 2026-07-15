@@ -37,12 +37,18 @@ def _event(
     occurred_at: datetime,
     visibility: str = "current",
     breakdown: dict | None = None,
+    display_tier: str = "hotspot",
+    rank_score: float = 80,
+    category: str | None = None,
 ):
     record = EventRecord(
         id=event_id,
         canonical_key=f"event-{event_id}",
         visibility=visibility,
+        display_tier=display_tier,
+        rank_score=rank_score,
         status=status,
+        category=category,
         occurred_at=occurred_at,
         current_version_number=1,
     )
@@ -95,6 +101,50 @@ def _event(
     return record
 
 
+def test_home_returns_ranked_hotspots_and_category_sections(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    product = _event(
+        db_session,
+        event_id=101,
+        status="confirmed",
+        title="产品热点",
+        occurred_at=now,
+        category="product_model",
+        rank_score=90,
+    )
+    research = _event(
+        db_session,
+        event_id=102,
+        status="emerging",
+        title="研究热点",
+        occurred_at=now,
+        category="research",
+        rank_score=75,
+    )
+    _event(
+        db_session,
+        event_id=103,
+        status="emerging",
+        title="高分信号",
+        occurred_at=now,
+        category="product_model",
+        display_tier="signal",
+        rank_score=99,
+    )
+
+    view = EventQueryService(db_session).home(now=now)
+
+    assert [row.event_id for row in view.hotspots] == [product.id, research.id]
+    assert [row.event_id for row in view.events] == [product.id, research.id]
+    assert {section.category for section in view.sections} == {
+        "product_model",
+        "research",
+    }
+    assert view.signal_count == 1
+
+
 def test_event_query_defaults_to_current_and_can_show_legacy(db_session):
     from newsradar.web.event_queries import EventQueryService
 
@@ -129,7 +179,14 @@ def test_home_only_returns_current_recent_confirmed_complete_relevant_events(db_
     confirmed = _event(
         db_session, event_id=1, status="confirmed", title="已确认事件", occurred_at=now
     )
-    _event(db_session, event_id=2, status="emerging", title="社交线索", occurred_at=now)
+    _event(
+        db_session,
+        event_id=2,
+        status="emerging",
+        title="社交线索",
+        occurred_at=now,
+        display_tier="signal",
+    )
     _event(
         db_session,
         event_id=8,
@@ -146,6 +203,7 @@ def test_home_only_returns_current_recent_confirmed_complete_relevant_events(db_
         title="弱相关事件",
         occurred_at=now,
         breakdown=low_relevance,
+        display_tier="audit_only",
     )
     incomplete = _event(
         db_session,

@@ -1,6 +1,6 @@
 from newsradar.sources.probes.base import ProbeOutcome
 from newsradar.web import app as web_app
-from newsradar.web.i18n import explain_failure, zh_label
+from newsradar.web.i18n import explain_failure, format_duration_ms, zh_label
 
 
 def test_zh_label_covers_dashboard_enums():
@@ -27,3 +27,9 @@ def test_zh_label_preserves_unknown_value():
 def test_failure_explanation_is_deterministic():
     assert explain_failure("rate limit", 429, "rate_limited") == "触发远端限流，请等待后重试"
     assert explain_failure("missing token", 401, None) == "需要有效凭据才能访问"
+
+
+def test_format_duration_ms_uses_readable_units():
+    assert format_duration_ms(245.0) == "245 毫秒"
+    assert format_duration_ms(22_538.2334) == "22.5 秒"
+    assert format_duration_ms(None) == "未知"

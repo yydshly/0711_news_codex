@@ -90,6 +90,11 @@ LABELS: dict[str, dict[str, str]] = {
         "current": "当前版本",
         "legacy": "旧版历史",
     },
+    "event_tier": {
+        "hotspot": "热点",
+        "signal": "新兴信号",
+        "audit_only": "仅审计",
+    },
     "event_category": {
         "product_model": "产品与模型",
         "developer_tool": "开发者工具",
@@ -128,6 +133,10 @@ LABELS: dict[str, dict[str, str]] = {
         "credibility:independent_research": "存在独立研究证据",
         "credibility:social_or_community_only_cap": "仅社交或社区证据，可信度受限",
         "heat:60_importance_40_credibility": "热度由重要度与可信度共同计算",
+        "official_independent_root": "独立官方一手来源确认",
+        "preprint_not_peer_reviewed": "预印本尚未经同行评审",
+        "evidence_not_yet_sufficient_for_hotspot": "证据尚不足以进入热点",
+        "insufficient_event_quality": "事件质量未达到展示门槛",
     },
     "event_limitation": {
         "not_peer_reviewed": "未经同行评审",
@@ -193,6 +202,7 @@ LABELS: dict[str, dict[str, str]] = {
 _SAFE_EVENT_FALLBACKS = {
     "event_status": "其他状态",
     "event_visibility": "未知版本",
+    "event_tier": "未知层级",
     "event_category": "其他",
     "enrichment_origin": "中文来源未标注",
     "score_dimension": "其他评分",
@@ -212,6 +222,14 @@ def zh_label(group: str, value: str) -> str:
 def format_datetime_zh(value: datetime) -> str:
     aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value
     return aware.astimezone(_BEIJING).strftime("%Y-%m-%d %H:%M（北京时间）")
+
+
+def format_duration_ms(value: float | None) -> str:
+    if value is None or value < 0:
+        return "未知"
+    if value < 1_000:
+        return f"{round(value)} 毫秒"
+    return f"{value / 1_000:.1f} 秒"
 
 
 def explain_failure(reason: str, http_status: int | None, error_code: str | None) -> str:

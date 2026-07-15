@@ -27,7 +27,7 @@ from newsradar.settings import get_settings
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.event_queries import EventQueryService
-from newsradar.web.i18n import format_datetime_zh, zh_label
+from newsradar.web.i18n import format_datetime_zh, format_duration_ms, zh_label
 from newsradar.web.item_queries import ItemQueryService
 from newsradar.web.mixed_source_queries import MixedSourceQueryService
 from newsradar.web.operation_queries import OperationQueryService
@@ -77,6 +77,7 @@ TargetType = Literal[
 ]
 CoverageMode = Literal["direct", "indirect", "catalog_only"]
 EventVisibilityMode = Literal["current", "legacy"]
+EventTierMode = Literal["hotspot", "signal", "audit_only"]
 ProbeType = Literal["capability", "content"]
 QueryResult = TypeVar("QueryResult")
 PROBE_OUTCOME_VALUES = tuple(outcome.value for outcome in DomainProbeOutcome)
@@ -167,6 +168,7 @@ def create_app(
     templates.env.autoescape = select_autoescape(("html", "xml"), default_for_string=True)
     templates.env.filters["zh_label"] = lambda value, dimension: zh_label(dimension, value)
     templates.env.filters["format_datetime_zh"] = format_datetime_zh
+    templates.env.filters["format_duration_ms"] = format_duration_ms
     templates.env.globals["http_trust_env"] = get_settings().http_trust_env
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
@@ -360,11 +362,17 @@ def create_app(
         request: Request,
         status: str | None = None,
         category: str | None = None,
+        tier: EventTierMode | None = None,
         visibility: EventVisibilityMode = "current",
         hours: Annotated[int | None, Query(ge=1, le=8760)] = None,
     ) -> HTMLResponse:
         query_now = datetime.now(UTC)
-        filters = _active_filters(status=status, category=category, visibility=visibility)
+        filters = _active_filters(
+            status=status,
+            category=category,
+            display_tier=tier,
+            visibility=visibility,
+        )
         filters["until"] = query_now
         if hours is not None:
             filters["since"] = query_now - timedelta(hours=hours)
