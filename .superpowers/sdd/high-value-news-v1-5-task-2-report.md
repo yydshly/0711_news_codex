@@ -21,7 +21,7 @@
 ## Scope and risks
 
 - No network calls, credential reads, RawItem changes, EventPipeline changes, or Task 3+ changes were made.
-- `blocked` members are persisted as terminal snapshots with their planner reason; Task 3 is responsible for zero-network terminal handling in the worker.
+- Correction: the prior description of `blocked` members as terminal snapshots is obsolete. Non-fetchable members are persisted as `pending` snapshots with `fetchable=false` and the frozen planner reason; Task 3 claims them, performs no network I/O, and finishes them as `blocked` exactly once.
 
 ## Commit
 
@@ -33,3 +33,4 @@
 - Member creation now persists every snapshot as `pending`; non-fetchable members retain `fetchable=false` and the frozen blocked reason in `conclusion`. Task 3 can claim them and finish them as `blocked` without network I/O, advancing progress exactly once.
 - Claims and finishes now require a positive `claim_attempt_id`; finish also requires that the persisted claimant matches, so a caller cannot bypass the operation-attempt fence.
 - TDD RED: the new blocked-member tests failed because records started as `blocked` and invalid/missing attempt ids were accepted. GREEN: `tests/waves/test_repository.py tests/operations/test_commands.py` passed after the minimal repository change.
+- Recheck: `uv run pytest tests/waves/test_repository.py tests/operations/test_commands.py -q` passed: `28 passed`.
