@@ -84,6 +84,8 @@ from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.reporting import render_source_report
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
+from newsradar.waves.loader import load_wave_profile
+from newsradar.waves.planning import build_wave_plan
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
@@ -104,6 +106,8 @@ diagnostics_app = typer.Typer(help="Create scrubbed local runtime diagnostics")
 app.add_typer(diagnostics_app, name="diagnostics")
 minimax_app = typer.Typer(help="Inspect the local MiniMax runtime without exposing secrets")
 app.add_typer(minimax_app, name="minimax")
+waves_app = typer.Typer(help="Validate and plan frozen high-value source waves")
+app.add_typer(waves_app, name="waves")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
@@ -117,6 +121,35 @@ CatalogProviderRootOption = Annotated[
 WorkerProviderRootOption = Annotated[
     Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
 ]
+
+
+@waves_app.command("validate")
+def validate_wave_profile(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    loaded = load_wave_profile(profile)
+    typer.echo(f"Validated wave profile {loaded.id}: {len(loaded.source_ids)} sources")
+
+
+@waves_app.command("plan")
+def plan_wave(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    loaded = load_wave_profile(profile)
+    plan = build_wave_plan(loaded, load_source_tree(Path("sources")), {}, set())
+    protected_reasons = {
+        "missing_credentials",
+        "requires_approval",
+        "availability_requires_approval",
+        "availability_requires_payment",
+    }
+    protected = sum(member.blocked_reason in protected_reasons for member in plan.blocked)
+    covered_roles = sorted({role for member in plan.members for role in member.roles})
+    typer.echo(
+        f"total={len(plan.members)} fetchable={len(plan.fetchable)} "
+        f"blocked_credentials_approval_payment={protected} "
+        f"role_coverage={','.join(covered_roles)} digest={plan.digest}"
+    )
 
 
 def _parse_utc_baseline(value: str) -> datetime:

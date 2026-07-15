@@ -16,6 +16,32 @@ from .test_source_schema import valid_source
 runner = CliRunner()
 
 
+def test_waves_commands_validate_and_plan_without_database_or_network(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "newsradar.cli.create_session",
+        lambda: (_ for _ in ()).throw(AssertionError("database must not be opened")),
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.httpx.AsyncClient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network must not run")),
+    )
+
+    validate = runner.invoke(
+        app, ["waves", "validate", "--profile", "wave_profiles/high-value-ai-tech.yaml"]
+    )
+    plan = runner.invoke(
+        app, ["waves", "plan", "--profile", "wave_profiles/high-value-ai-tech.yaml"]
+    )
+
+    assert validate.exit_code == 0
+    assert "Validated wave profile high-value-ai-tech" in validate.stdout
+    assert plan.exit_code == 0
+    assert "total=" in plan.stdout
+    assert "fetchable=" in plan.stdout
+    assert "blocked_credentials_approval_payment=" in plan.stdout
+    assert "role_coverage=" in plan.stdout
+
+
 def write_source(root: Path) -> None:
     root.mkdir()
     (root / "source.yaml").write_text(yaml.safe_dump(valid_source()), encoding="utf-8")
