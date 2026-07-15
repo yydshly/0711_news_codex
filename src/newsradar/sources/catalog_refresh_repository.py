@@ -90,6 +90,10 @@ class CatalogRefreshRepository:
         )
         if record is None:
             raise LookupError(f"catalog refresh member not found: {operation_run_id}/{source_id}")
+        # Only a pending member can be claimed.  A concurrent/stale worker that
+        # sees running or terminal state must not reset it and repeat network I/O.
+        if record.state != CatalogMemberState.PENDING.value:
+            return record
         record.state = CatalogMemberState.RUNNING.value
         record.attempt_count += 1
         record.started_at = record.started_at or utcnow()

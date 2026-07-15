@@ -136,7 +136,7 @@ class CatalogRefreshHandler:
             )
             checkpoint(f"after_catalog_capability_probe:{provider_id}")
         catalog_outcomes = [
-            self._run_catalog_member(lease.operation_id, source_id)
+            self._run_catalog_member_with_checkpoint(lease.operation_id, source_id, checkpoint)
             for source_id in self._catalog_member_ids(lease.operation_id)
         ]
         outcomes = [*content_outcomes, *capability_outcomes, *catalog_outcomes]
@@ -342,6 +342,14 @@ class CatalogRefreshHandler:
             operation_run_id, source_id, state, validation.code, validation.conclusion, ()
         )
 
+    def _run_catalog_member_with_checkpoint(
+        self, operation_run_id: int, source_id: str, checkpoint: Callable[[str], None]
+    ) -> ContentMemberOutcome:
+        checkpoint(f"before_catalog_member:{source_id}")
+        outcome = self._run_catalog_member(operation_run_id, source_id)
+        checkpoint(f"after_catalog_member:{source_id}")
+        return outcome
+
     async def _run_content_member(
         self,
         operation_run_id: int,
@@ -363,6 +371,13 @@ class CatalogRefreshHandler:
         with self._create_session() as session:
             repository = CatalogRefreshRepository(session)
             member = repository.start_member(operation_run_id, source_id)
+            if member.state != CatalogMemberState.RUNNING.value:
+                return ContentMemberOutcome(
+                    CatalogMemberState(member.state),
+                    CatalogResultCode(member.result_code) if member.result_code else None,
+                    member.conclusion or "成员已由其他 Worker 处理",
+                    tuple(member.content_probe_run_ids or ()),
+                )
             access_kind = member.access_kind_snapshot
             if (
                 _source_is_unavailable_or_archived(source)
@@ -613,7 +628,8 @@ def _conclusion_for_code(code: CatalogResultCode | None) -> str:
 
 def _bounded_scope_int(scope: dict[str, object], key: str, default: int) -> int:
     value = scope.get(key, default)
-    return value if isinstance(value, int) and 1 <= value <= 16 else default
+    maximum = 8 if key == "provider_concurrency" else 16
+    return value if isinstance(value, int) and 1 <= value <= maximum else default
 
 
 def _source_is_unavailable_or_archived(source: SourceDefinition) -> bool:

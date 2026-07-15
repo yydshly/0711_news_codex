@@ -158,7 +158,7 @@ class OperationCommandService:
         provider_concurrency: int = 2,
         retry_of_operation_id: int | None = None,
     ) -> int:
-        if not 1 <= global_concurrency <= 16 or not 1 <= provider_concurrency <= 16:
+        if not 1 <= global_concurrency <= 16 or not 1 <= provider_concurrency <= 8:
             raise ValueError("invalid_catalog_refresh_concurrency")
         if self.session.in_transaction():
             self.session.commit()
