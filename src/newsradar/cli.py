@@ -21,6 +21,7 @@ from newsradar.db.models import (
     OperationRunRecord,
     SourceAcquisitionCandidateRecord,
     SourceAcquisitionProbeRunRecord,
+    SourceCatalogRefreshMemberRecord,
     SourceProbeRunRecord,
 )
 from newsradar.db.session import create_session
@@ -66,6 +67,11 @@ from newsradar.sources.catalog_reconcile import (
     apply_reconcile_plan,
     build_reconcile_plan,
 )
+from newsradar.sources.catalog_refresh import build_catalog_refresh_plan
+from newsradar.sources.catalog_refresh_reporting import (
+    render_catalog_refresh_report,
+    summarize_catalog_members,
+)
 from newsradar.sources.catalog_refresh_runtime import CatalogRefreshHandler
 from newsradar.sources.health_wave import (
     HealthProbeState,
@@ -104,6 +110,9 @@ RootOption = Annotated[
 ]
 ProviderRootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
+]
+CatalogProviderRootOption = Annotated[
+    Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
 ]
 WorkerProviderRootOption = Annotated[
     Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
@@ -478,12 +487,8 @@ def show_event(event_id: int) -> None:
 
 @events_app.command("quality-report")
 def event_quality_report(
-    window_hours: Annotated[
-        int, typer.Option("--window-hours", min=1, max=720)
-    ] = 72,
-    output: Annotated[Path, typer.Option("--output")] = Path(
-        "reports/event-quality-v2-1.md"
-    ),
+    window_hours: Annotated[int, typer.Option("--window-hours", min=1, max=720)] = 72,
+    output: Annotated[Path, typer.Option("--output")] = Path("reports/event-quality-v2-1.md"),
 ) -> None:
     """Write a read-only, secret-free Event Intelligence v2.1 acceptance report."""
     try:
@@ -615,6 +620,119 @@ def sync_sources(root: RootOption = Path("sources")) -> None:
     )
 
 
+def _catalog_refresh_plan(root: Path, provider_root: Path):
+    """Load only reviewed YAML and create a pure, deterministic lane plan."""
+    sources = load_source_tree(root)
+    providers = load_provider_tree(provider_root)
+    return (
+        sources,
+        providers,
+        build_catalog_refresh_plan(
+            sources,
+            providers,
+            latest={},
+            configured_credentials=SettingsCredentials().configured_names(),
+        ),
+    )
+
+
+@sources_app.command("refresh-plan")
+def show_catalog_refresh_plan(
+    root: RootOption = Path("sources"),
+    provider_root: CatalogProviderRootOption = Path("providers"),
+) -> None:
+    """Show the three catalog lanes; this command never opens the database or network."""
+    _, _, plan = _catalog_refresh_plan(root, provider_root)
+    lane_labels = {
+        "content": "内容通道",
+        "capability": "能力通道",
+        "catalog": "目录通道",
+    }
+    typer.echo("来源目录刷新计划（仅计划，不创建任务）")
+    for lane in ("content", "capability", "catalog"):
+        count = sum(member.lane.value == lane for member in plan.members)
+        typer.echo(f"{lane_labels[lane]}：{count}")
+    typer.echo(f"目录摘要：{plan.catalog_digest}")
+
+
+@sources_app.command("refresh-enqueue")
+def enqueue_catalog_refresh(
+    root: RootOption = Path("sources"),
+    provider_root: CatalogProviderRootOption = Path("providers"),
+) -> None:
+    """Synchronize reviewed YAML and enqueue one frozen batch; Worker does all probing."""
+    sources, providers, plan = _catalog_refresh_plan(root, provider_root)
+    try:
+        with create_session() as session:
+            ProviderRepository(session).sync(providers)
+            SourceRepository(session).sync(sources)
+            session.commit()
+            operation_id = OperationCommandService(session).enqueue_source_catalog_refresh(
+                plan, trigger="cli"
+            )
+    except ValueError as exc:
+        typer.echo(f"无法创建目录刷新任务：{exc}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"已创建来源目录刷新任务：{operation_id}")
+
+
+def _load_catalog_refresh_operation(operation_id: int):
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is None or operation.operation_type != "source_catalog_refresh":
+            raise LookupError("catalog_refresh_operation_not_found")
+        members = list(
+            session.scalars(
+                select(SourceCatalogRefreshMemberRecord)
+                .where(SourceCatalogRefreshMemberRecord.operation_run_id == operation_id)
+                .order_by(SourceCatalogRefreshMemberRecord.source_id)
+            )
+        )
+    return operation, members
+
+
+@sources_app.command("refresh-status")
+def show_catalog_refresh_status(operation_id: int) -> None:
+    """Read status only; it neither queues work nor performs network I/O."""
+    try:
+        operation, members = _load_catalog_refresh_operation(operation_id)
+    except LookupError:
+        typer.echo("未找到来源目录刷新任务", err=True)
+        raise typer.Exit(2) from None
+    summary = summarize_catalog_members(members)
+    total = operation.progress_total if operation.progress_total is not None else len(members)
+    typer.echo(f"来源目录刷新任务 {operation.id}：{operation.status}")
+    typer.echo(f"完成度：{operation.progress_current}/{total}")
+    lanes = (("content", "内容通道"), ("capability", "能力通道"), ("catalog", "目录通道"))
+    for lane, label in lanes:
+        typer.echo(f"{label}：{summary['lanes'].get(lane, 0)}")
+    if summary["result_codes"]:
+        typer.echo(
+            "结果码："
+            + "，".join(f"{code}={count}" for code, count in summary["result_codes"].items())
+        )
+
+
+@sources_app.command("refresh-report")
+def write_catalog_refresh_report(
+    operation_id: int,
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write a scrubbed Chinese Markdown report for one frozen batch only."""
+    try:
+        operation, members = _load_catalog_refresh_operation(operation_id)
+    except LookupError:
+        typer.echo("未找到来源目录刷新任务", err=True)
+        raise typer.Exit(2) from None
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(render_catalog_refresh_report(operation, members), encoding="utf-8")
+    except OSError:
+        typer.echo("catalog_refresh_report_write_failed", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"已生成来源目录刷新报告：{output}")
+
+
 @sources_app.command("reconcile")
 def reconcile_source_catalog(
     root: RootOption = Path("sources"),
@@ -681,9 +799,7 @@ def _build_health_wave_plan(sources):
         )
         for row in rows:
             latest.setdefault(row.source_id, HealthProbeState(row.outcome, row.access_kind))
-    return select_health_wave(
-        sources, latest, SettingsCredentials().configured_names()
-    )
+    return select_health_wave(sources, latest, SettingsCredentials().configured_names())
 
 
 @sources_app.command("health-wave")
@@ -691,9 +807,7 @@ def source_health_wave(
     root: RootOption = Path("sources"),
     execute: Annotated[bool, typer.Option("--execute")] = False,
     concurrency: Annotated[int, typer.Option(min=1, max=16)] = 8,
-    output: Annotated[Path, typer.Option("--output")] = Path(
-        "reports/source-health-v1-2.md"
-    ),
+    output: Annotated[Path, typer.Option("--output")] = Path("reports/source-health-v1-2.md"),
 ) -> None:
     """Plan or execute a bounded recovery probe wave for safe current sources."""
     plan = _build_health_wave_plan(load_source_tree(root))
@@ -782,9 +896,7 @@ def report_sources(
 
 @sources_app.command("mixed-report")
 def report_mixed_sources(
-    output: Annotated[Path, typer.Option("--output")] = Path(
-        "reports/high-value-mixed-sources.md"
-    ),
+    output: Annotated[Path, typer.Option("--output")] = Path("reports/high-value-mixed-sources.md"),
 ) -> None:
     """输出高价值混合来源的目录、运行证据和下一步中文报告。"""
     with create_session() as session:

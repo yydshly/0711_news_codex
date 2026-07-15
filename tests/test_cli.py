@@ -29,6 +29,183 @@ def test_validate_command_reports_source_count(tmp_path: Path) -> None:
     assert "Validated 1 source" in result.stdout
 
 
+def test_catalog_refresh_plan_only_prints_lanes_without_database_or_network(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from newsradar.sources.catalog_refresh import CatalogRefreshPlan
+
+    source_root = tmp_path / "sources"
+    provider_root = tmp_path / "providers"
+    source_root.mkdir()
+    provider_root.mkdir()
+    source = SourceDefinition.model_validate(valid_source())
+    provider = type("Provider", (), {"id": source.provider_id})()
+    plan = CatalogRefreshPlan.from_members(())
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [source])
+    monkeypatch.setattr("newsradar.cli.load_provider_tree", lambda root: [provider])
+    monkeypatch.setattr(
+        "newsradar.cli.build_catalog_refresh_plan",
+        lambda *args, **kwargs: plan,
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.create_session",
+        lambda: (_ for _ in ()).throw(AssertionError("database must not be opened")),
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.httpx.AsyncClient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network must not run")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sources",
+            "refresh-plan",
+            "--root",
+            str(source_root),
+            "--provider-root",
+            str(provider_root),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "内容通道" in result.stdout
+    assert "能力通道" in result.stdout
+    assert "目录通道" in result.stdout
+
+
+def test_catalog_refresh_enqueue_prints_operation_id_without_direct_probe(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from newsradar.sources.catalog_refresh import CatalogRefreshPlan
+
+    source_root = tmp_path / "sources"
+    provider_root = tmp_path / "providers"
+    source_root.mkdir()
+    provider_root.mkdir()
+    source = SourceDefinition.model_validate(valid_source())
+    provider = type("Provider", (), {"id": source.provider_id})()
+    plan = CatalogRefreshPlan.from_members(())
+    synced: list[str] = []
+
+    class SourceRepo:
+        def __init__(self, session):
+            pass
+
+        def sync(self, values):
+            synced.append("sources")
+
+    class ProviderRepo:
+        def __init__(self, session):
+            pass
+
+        def sync(self, values):
+            synced.append("providers")
+
+    class Commands:
+        def __init__(self, session):
+            pass
+
+        def enqueue_source_catalog_refresh(self, received_plan, *, trigger):
+            assert received_plan is plan
+            assert trigger == "cli"
+            return 77
+
+    class Session:
+        def commit(self):
+            return None
+
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [source])
+    monkeypatch.setattr("newsradar.cli.load_provider_tree", lambda root: [provider])
+    monkeypatch.setattr("newsradar.cli.build_catalog_refresh_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr("newsradar.cli.SourceRepository", SourceRepo)
+    monkeypatch.setattr("newsradar.cli.ProviderRepository", ProviderRepo)
+    monkeypatch.setattr("newsradar.cli.OperationCommandService", Commands)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(Session()))
+    monkeypatch.setattr(
+        "newsradar.cli._probe_sources",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("probe must not run")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sources",
+            "refresh-enqueue",
+            "--root",
+            str(source_root),
+            "--provider-root",
+            str(provider_root),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "77" in result.stdout
+    assert synced == ["providers", "sources"]
+
+
+def test_catalog_refresh_status_and_report_are_read_only_and_scrub_secrets(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from newsradar.sources.catalog_refresh import CatalogRefreshLane
+
+    operation = type(
+        "Operation",
+        (),
+        {
+            "id": 23,
+            "operation_type": "source_catalog_refresh",
+            "status": "partial",
+            "progress_current": 2,
+            "progress_total": 3,
+            "requested_scope": {"catalog_digest": "safe-digest"},
+        },
+    )()
+    members = [
+        type(
+            "Member",
+            (),
+            {
+                "source_id": "safe-source",
+                "lane": CatalogRefreshLane.CONTENT.value,
+                "state": "failed",
+                "result_code": "timeout",
+                "content_probe_run_ids": [1, 2, 3],
+                "conclusion": "Authorization: definitely-not-for-output",
+            },
+        )()
+    ]
+
+    monkeypatch.setattr(
+        "newsradar.cli._load_catalog_refresh_operation", lambda operation_id: (operation, members)
+    )
+    output = tmp_path / "catalog-refresh.md"
+
+    status = runner.invoke(app, ["sources", "refresh-status", "23"])
+    report = runner.invoke(app, ["sources", "refresh-report", "23", "--output", str(output)])
+
+    assert status.exit_code == 0
+    assert "2/3" in status.stdout
+    assert "内容通道" in status.stdout
+    assert report.exit_code == 0
+    rendered = output.read_text(encoding="utf-8")
+    for heading in (
+        "批次 ID",
+        "目录摘要",
+        "完成度",
+        "三条通道",
+        "结果码",
+        "内容三轮证据",
+        "能力解锁条件",
+        "目录缺口",
+        "失败成员",
+        "安全边界声明",
+    ):
+        assert heading in rendered
+    assert "definitely-not-for-output" not in rendered
+    assert "Authorization" not in rendered
+
+
 def test_report_command_writes_markdown(tmp_path: Path) -> None:
     root = tmp_path / "sources"
     output = tmp_path / "report.md"
@@ -39,9 +216,7 @@ def test_report_command_writes_markdown(tmp_path: Path) -> None:
     assert "Anthropic News" in output.read_text(encoding="utf-8")
 
 
-def test_mixed_report_command_writes_runtime_health_report(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_mixed_report_command_writes_runtime_health_report(monkeypatch, tmp_path: Path) -> None:
     output = tmp_path / "mixed-sources.md"
     dashboard = object()
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
@@ -581,9 +756,9 @@ def test_events_quality_report_is_read_only_and_writes_only_requested_output(
     )
     monkeypatch.setattr(
         "newsradar.cli.render_event_quality_report",
-        lambda value: "# Event Intelligence v2 事件质量验收报告\n"
-        if value is view
-        else "unexpected",
+        lambda value: (
+            "# Event Intelligence v2 事件质量验收报告\n" if value is view else "unexpected"
+        ),
     )
 
     result = runner.invoke(
@@ -629,9 +804,7 @@ def test_events_quality_report_uses_v2_1_default_output(monkeypatch, tmp_path: P
     monkeypatch.setattr(
         "newsradar.cli.build_event_quality_report_view", lambda session, **kwargs: object()
     )
-    monkeypatch.setattr(
-        "newsradar.cli.render_event_quality_report", lambda view: "# v2.1\n"
-    )
+    monkeypatch.setattr("newsradar.cli.render_event_quality_report", lambda view: "# v2.1\n")
 
     result = runner.invoke(app, ["events", "quality-report"])
 
