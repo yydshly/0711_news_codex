@@ -56,13 +56,15 @@ def member(
 
 
 def capability_member(
-    source_id: str, provider_id: str = "provider-a"
+    source_id: str,
+    provider_id: str = "provider-a",
+    availability: str = "requires_credentials",
 ) -> CatalogRefreshMemberSnapshot:
     return CatalogRefreshMemberSnapshot(
         source_id=source_id,
         provider_id=provider_id,
         definition_hash="hash",
-        availability="requires_credentials",
+        availability=availability,
         coverage_mode="direct",
         access_kind="public_api",
         lane=CatalogRefreshLane.CAPABILITY,
@@ -237,6 +239,144 @@ def test_catalog_lane_validates_without_any_http() -> None:
         stored = db_session.scalar(select(SourceCatalogRefreshMemberRecord))
         assert stored is not None
         assert stored.result_code == CatalogResultCode.CATALOG_INCOMPLETE.value
+
+
+def test_transient_content_timeout_retries_once_then_completes_three_rounds() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(
+            db_session,
+            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+        )
+        probe = RecordingProbe([result(error_code="timeout"), result(), result(), result()])
+
+        outcome = make_handler(db_session, definition, probe).run_content_member(
+            1, "feed", lambda _: None
+        )
+
+        assert probe.calls == 4
+        assert outcome.state is CatalogMemberState.SUCCEEDED
+
+
+def test_second_transient_content_failure_stops_after_one_retry() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(
+            db_session,
+            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+        )
+        probe = RecordingProbe(
+            [result(error_code="connection_error"), result(error_code="timeout")]
+        )
+
+        outcome = make_handler(db_session, definition, probe).run_content_member(
+            1, "feed", lambda _: None
+        )
+
+        assert probe.calls == 2
+        assert outcome.state is CatalogMemberState.FAILED
+        assert outcome.result_code is CatalogResultCode.TIMEOUT
+
+
+def test_retry_after_beyond_deadline_records_rate_limit_without_retry() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(
+            db_session,
+            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+        )
+        limited = result(http_status=429)
+        limited.response_headers = {"Retry-After": "120"}
+        probe = RecordingProbe([limited, result()])
+
+        operation = make_handler(db_session, definition, probe)(
+            OperationLease(
+                1,
+                1,
+                1,
+                "worker",
+                {"deadline_at": (datetime.now(UTC) + timedelta(seconds=1)).isoformat()},
+                "source_catalog_refresh",
+            ),
+            lambda _: None,
+        )
+
+        assert probe.calls == 1
+        assert operation.status.value == "partial"
+        stored = db_session.scalar(select(SourceCatalogRefreshMemberRecord))
+        assert stored is not None
+        assert stored.result_code == CatalogResultCode.RATE_LIMITED.value
+
+
+def test_capability_exception_is_persisted_and_other_provider_continues() -> None:
+    class FlakyProviderProbe:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def __call__(self, provider: ProviderDefinition) -> ProviderProbeResult:
+            self.calls.append(provider.id)
+            if provider.id == "provider-a":
+                raise RuntimeError("transport broke")
+            return ProviderProbeResult(
+                provider_id=provider.id,
+                outcome="blocked",
+                availability=provider.availability.value,
+                reason="approval required",
+                checked_at=datetime.now(UTC),
+                evidence_url=str(provider.docs_url),
+            )
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        provider_payload = valid_provider()
+        provider_payload["id"] = "provider-a"
+        first = ProviderDefinition.model_validate(provider_payload)
+        provider_payload["id"] = "provider-b"
+        second = ProviderDefinition.model_validate(provider_payload)
+        CatalogRefreshRepository(db_session).create_members(
+            1,
+            CatalogRefreshPlan.from_members(
+                [
+                    capability_member("a", "provider-a", "ready"),
+                    capability_member("b", "provider-b"),
+                ]
+            ),
+        )
+        db_session.commit()
+        provider_probe = FlakyProviderProbe()
+        handler = CatalogRefreshHandler(
+            [source("a", "provider-a"), source("b", "provider-b")],
+            [first, second],
+            lambda: db_session,
+            provider_probe_factory=provider_probe,
+        )
+        lease = OperationLease(
+            1,
+            1,
+            1,
+            "worker",
+            {"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+            "source_catalog_refresh",
+        )
+
+        operation = handler(lease, lambda _: None)
+
+        assert operation.status.value == "partial"
+        assert provider_probe.calls == ["provider-a", "provider-b"]
+        records = db_session.scalars(
+            select(SourceCatalogRefreshMemberRecord).order_by(
+                SourceCatalogRefreshMemberRecord.source_id
+            )
+        ).all()
+        assert records[0].state == CatalogMemberState.FAILED.value
+        assert records[1].state == CatalogMemberState.BLOCKED.value
 
 
 def test_content_member_runs_three_serial_probes_after_first_success() -> None:

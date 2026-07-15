@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Protocol
 
 import httpx
@@ -117,7 +118,9 @@ class CatalogRefreshHandler:
             async with global_semaphore:
                 async with provider_semaphores[provider_id]:
                     deadline.check("before_content_member")
-                    return await self._run_content_member(lease.operation_id, source_id, checkpoint)
+                    return await self._run_content_member(
+                        lease.operation_id, source_id, checkpoint, deadline
+                    )
 
         content_outcomes = await asyncio.gather(
             *(run_one(source_id, provider_id) for source_id, provider_id in members)
@@ -192,7 +195,9 @@ class CatalogRefreshHandler:
             ]
         try:
             result = await self._probe_provider(provider)
-        except (httpx.TimeoutException, httpx.ConnectError):
+        except OperationTimedOut:
+            raise
+        except Exception:
             result = ProviderProbeResult(
                 provider_id=provider.id,
                 outcome="failed",
@@ -321,7 +326,11 @@ class CatalogRefreshHandler:
         )
 
     async def _run_content_member(
-        self, operation_run_id: int, source_id: str, checkpoint: Callable[[str], None]
+        self,
+        operation_run_id: int,
+        source_id: str,
+        checkpoint: Callable[[str], None],
+        deadline: OperationDeadline | None = None,
     ) -> ContentMemberOutcome:
         source = self._sources.get(source_id)
         if source is None:
@@ -370,15 +379,44 @@ class CatalogRefreshHandler:
             )
 
         probe_run_ids: list[int] = []
-        for round_number in range(3):
-            checkpoint(f"before_catalog_content_probe:{source_id}:{round_number + 1}")
+        successful_rounds = 0
+        transient_retry_used = False
+        while successful_rounds < 3:
+            round_number = successful_rounds + 1
+            checkpoint(f"before_catalog_content_probe:{source_id}:{round_number}")
+            if deadline is not None:
+                deadline.check("before_content_probe")
             try:
                 result = await self._probe(source, method)
             except Exception:
                 return self._finish_internal_error(operation_run_id, source_id)
-            checkpoint(f"after_catalog_content_probe:{source_id}:{round_number + 1}")
+            checkpoint(f"after_catalog_content_probe:{source_id}:{round_number}")
             code = result_code_for_probe(result)
             probe_run_ids.append(self._save_probe(operation_run_id, result))
+            if code in _TRANSIENT_CODES and not transient_retry_used:
+                retry_after = _retry_after_seconds(result)
+                if deadline is None and retry_after > 0:
+                    return self._finish(
+                        operation_run_id,
+                        source_id,
+                        CatalogMemberState.FAILED,
+                        code,
+                        _conclusion_for_code(code),
+                        tuple(probe_run_ids),
+                    )
+                if deadline is not None and retry_after > deadline.remaining_seconds():
+                    return self._finish(
+                        operation_run_id,
+                        source_id,
+                        CatalogMemberState.FAILED,
+                        code,
+                        _conclusion_for_code(code),
+                        tuple(probe_run_ids),
+                    )
+                transient_retry_used = True
+                if retry_after > 0:
+                    await asyncio.sleep(retry_after)
+                continue
             if code is not None or result.outcome is not ProbeOutcome.SUCCESS:
                 state = _state_for_code(code)
                 return self._finish(
@@ -389,6 +427,7 @@ class CatalogRefreshHandler:
                     _conclusion_for_code(code),
                     tuple(probe_run_ids),
                 )
+            successful_rounds += 1
         return self._finish(
             operation_run_id,
             source_id,
@@ -509,6 +548,37 @@ def _state_for_code(code: CatalogResultCode | None) -> CatalogMemberState:
     }:
         return CatalogMemberState.BLOCKED
     return CatalogMemberState.FAILED
+
+
+_TRANSIENT_CODES = {
+    CatalogResultCode.TIMEOUT,
+    CatalogResultCode.CONNECTION_ERROR,
+    CatalogResultCode.RATE_LIMITED,
+}
+
+
+def _retry_after_seconds(result: ProbeResult) -> float:
+    """Return the server-requested delay; invalid values are deliberately non-blocking."""
+    raw = next(
+        (
+            value
+            for key, value in result.response_headers.items()
+            if key.lower() == "retry-after"
+        ),
+        None,
+    )
+    if raw is None:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, IndexError):
+            return 0.0
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
 
 
 def _conclusion_for_code(code: CatalogResultCode | None) -> str:
