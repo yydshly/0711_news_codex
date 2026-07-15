@@ -130,7 +130,8 @@ def test_postgres_web_wave_worker_reaches_frozen_terminal_detail(monkeypatch) ->
             assert operation.result_summary["completed_count"] == 187
             members = verification.scalars(
                 select(SourceCatalogRefreshMemberRecord).where(
-                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id
+                    SourceCatalogRefreshMemberRecord.operation_run_id == operation_id,
+                    SourceCatalogRefreshMemberRecord.source_id == source.id,
                 )
             ).all()
             assert len(members) == 187
