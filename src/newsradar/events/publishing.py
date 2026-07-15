@@ -111,6 +111,7 @@ class EventPublisher:
             status=decision.status,
             category=candidate.category,
             occurred_at=candidate.occurred_at,
+            snapshot_at=snapshot_at,
             enrichment=enrichment,
             score=score,
             evidence=evidence,

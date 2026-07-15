@@ -276,6 +276,7 @@ class PublishedEvent(_Schema):
     status: EventStatus
     category: EventCategory | None = None
     occurred_at: datetime | None = None
+    snapshot_at: datetime | None = None
     enrichment: EventEnrichment | None = None
     score: ScoreBreakdown | None = None
     evidence: tuple[EvidenceAssessment, ...] = ()

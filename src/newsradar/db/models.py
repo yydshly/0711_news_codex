@@ -780,6 +780,9 @@ class EventScoreRecord(Base):
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     heat: Mapped[float] = mapped_column(Float, nullable=False)
     breakdown: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # This is the immutable logical event snapshot clock.  It deliberately differs
+    # from created_at, which only records when a retry reached the database.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

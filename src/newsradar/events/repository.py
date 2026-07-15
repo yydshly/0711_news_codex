@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from math import isfinite
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -276,22 +276,32 @@ class EventRepository:
     def heat_history(
         self, canonical_key: str, *, before: datetime
     ) -> tuple[HeatSnapshot, ...]:
-        """Read only previously persisted score snapshots for one canonical event."""
+        """Read one event's immutable logical score snapshots before a window end.
+
+        ``created_at`` is a database-write audit timestamp and can lag a retried
+        operation.  Legacy scores have no logical observation time, so only those
+        records fall back to ``created_at``.
+        """
         event = self.session.scalar(
             select(EventRecord).where(EventRecord.canonical_key == canonical_key)
         )
         if event is None:
             return ()
+        observed_at = func.coalesce(EventScoreRecord.observed_at, EventScoreRecord.created_at)
         rows = self.session.scalars(
             select(EventScoreRecord)
             .where(
                 EventScoreRecord.event_id == event.id,
-                EventScoreRecord.created_at <= before,
+                observed_at <= before,
             )
-            .order_by(EventScoreRecord.created_at, EventScoreRecord.id)
+            .order_by(observed_at, EventScoreRecord.id)
         )
         return tuple(
-            HeatSnapshot(observed_at=row.created_at, heat=round(row.heat)) for row in rows
+            HeatSnapshot(
+                observed_at=row.observed_at or row.created_at,
+                heat=round(row.heat),
+            )
+            for row in rows
         )
 
     def publish_complete_event(
@@ -384,6 +394,7 @@ class EventRepository:
                     version_number=next_version,
                     heat=event.score.heat,
                     breakdown=event.score.model_dump(mode="json"),
+                    observed_at=event.snapshot_at or now,
                 )
             )
             try:
