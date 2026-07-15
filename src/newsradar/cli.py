@@ -706,6 +706,22 @@ def show_catalog_refresh_status(operation_id: int) -> None:
     lanes = (("content", "内容通道"), ("capability", "能力通道"), ("catalog", "目录通道"))
     for lane, label in lanes:
         typer.echo(f"{label}：{summary['lanes'].get(lane, 0)}")
+    state_order = (
+        "pending",
+        "running",
+        "succeeded",
+        "blocked",
+        "degraded",
+        "failed",
+        "cancelled",
+    )
+    state_counts = [
+        f"{state}：{summary['states'][state]}"
+        for state in state_order
+        if state in summary["states"]
+    ]
+    if state_counts:
+        typer.echo("成员状态：" + "，".join(state_counts))
     if summary["result_codes"]:
         typer.echo(
             "结果码："

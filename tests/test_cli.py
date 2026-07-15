@@ -187,6 +187,8 @@ def test_catalog_refresh_status_and_report_are_read_only_and_scrub_secrets(
     assert status.exit_code == 0
     assert "2/3" in status.stdout
     assert "内容通道" in status.stdout
+    assert "成员状态" in status.stdout
+    assert "failed：1" in status.stdout
     assert report.exit_code == 0
     rendered = output.read_text(encoding="utf-8")
     for heading in (
@@ -204,6 +206,39 @@ def test_catalog_refresh_status_and_report_are_read_only_and_scrub_secrets(
         assert heading in rendered
     assert "definitely-not-for-output" not in rendered
     assert "Authorization" not in rendered
+
+
+def test_catalog_refresh_summary_contains_only_lane_state_and_result_code_aggregates() -> None:
+    from newsradar.sources.catalog_refresh_reporting import summarize_catalog_members
+
+    members = [
+        type(
+            "Member",
+            (),
+            {
+                "lane": "content",
+                "state": "succeeded",
+                "result_code": None,
+                "content_probe_run_ids": [1, 2, 3],
+            },
+        )(),
+        type(
+            "Member",
+            (),
+            {
+                "lane": "capability",
+                "state": "blocked",
+                "result_code": "requires_approval",
+                "content_probe_run_ids": [],
+            },
+        )(),
+    ]
+
+    assert summarize_catalog_members(members) == {
+        "lanes": {"capability": 1, "content": 1},
+        "states": {"blocked": 1, "succeeded": 1},
+        "result_codes": {"requires_approval": 1},
+    }
 
 
 def test_report_command_writes_markdown(tmp_path: Path) -> None:

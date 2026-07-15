@@ -17,3 +17,11 @@
 ## 说明
 
 既有 `task-6-report.md` 是早期 Event pipeline 的历史报告，故未覆盖它。
+
+## 复审修复
+
+- `refresh-status` 现在额外输出实际出现的成员状态分布，固定状态顺序为
+  pending、running、succeeded、blocked、degraded、failed、cancelled。
+- `summarize_catalog_members` 的返回契约收紧为仅包含 `lanes`、`states` 与
+  `result_codes` 三类聚合；内容三轮证据仍由报告渲染时直接从冻结成员计算。
+- 已新增 CLI 回归断言并重新通过完整测试与 Ruff 检查。

@@ -18,7 +18,6 @@ def summarize_catalog_members(members: Iterable[Any]) -> dict[str, dict[str, int
     lane_counts: Counter[str] = Counter()
     state_counts: Counter[str] = Counter()
     result_counts: Counter[str] = Counter()
-    content_round_counts: Counter[str] = Counter()
     for member in members:
         lane = str(getattr(member, "lane", "unknown"))
         state = str(getattr(member, "state", "unknown"))
@@ -27,14 +26,10 @@ def summarize_catalog_members(members: Iterable[Any]) -> dict[str, dict[str, int
         result_code = getattr(member, "result_code", None)
         if result_code:
             result_counts[str(result_code)] += 1
-        if lane == "content":
-            rounds = len(getattr(member, "content_probe_run_ids", ()) or ())
-            content_round_counts[str(rounds)] += 1
     return {
         "lanes": dict(sorted(lane_counts.items())),
         "states": dict(sorted(state_counts.items())),
         "result_codes": dict(sorted(result_counts.items())),
-        "content_rounds": dict(sorted(content_round_counts.items())),
     }
 
 
