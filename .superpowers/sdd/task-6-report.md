@@ -1,19 +1,92 @@
-# Task 6：CLI 计划、入队、状态与中文报告
+# Task 6 — Event pipeline on the durable Worker
 
-## 实现
+## Outcome
 
-- 新增 `sources refresh-plan`：只加载严格校验后的 YAML，输出内容、能力、目录三通道及目录摘要；不打开数据库、不创建任务、不进行网络访问。
-- 新增 `sources refresh-enqueue`：同步 Provider/Source YAML 后创建冻结的 `source_catalog_refresh` 操作；CLI 本身不运行探测。
-- 新增 `sources refresh-status` 与 `sources refresh-report`：仅读取指定冻结批次；未知或非目录刷新操作以明确的中文错误退出。
-- 新增 `catalog_refresh_reporting.py`：固定顺序中文 Markdown 报告，仅汇总通道、状态、结果码及轮次数量；不渲染自由文本结论、密钥、鉴权头、会话信息、环境变量配置或响应头。
+The durable `Worker` now consumes a single `OperationRouter`. Existing fetch work is
+registered under `fetch` without modifying `FetchOperationHandler`; event operation
+types are registered with `EventOperationHandler`. Web/CLI command boundaries enqueue
+event operations only, so event processing and any future model/network work remain in
+the worker process.
 
-## 验证
+`EventPipeline` processes deterministic relevance/entity/cluster/publish stages using
+fresh sessions for each bounded database stage. It calls the worker checkpoint before
+and after stages and before each publish, preserving cancellation and the worker's
+existing heartbeat/lease monitor semantics. Replays compare active event membership and
+do not create an additional version when nothing changed.
 
-- `uv run pytest tests/test_cli.py -q`：通过。
-- `uv run pytest -q --maxfail=1`：通过（既有 Starlette/Alembic 弃用警告）。
-- `uv run ruff check src/newsradar/sources/catalog_refresh_reporting.py src/newsradar/cli.py tests/test_cli.py`：通过。
-- `uv run newsradar sources refresh-plan --root sources --provider-root providers`：纯计划成功，内容 106、能力 20、目录 61。
+## RED evidence
 
-## 范围确认
+Before implementation, ran:
 
-未修改网页、Worker、来源 YAML 或真实网络探测逻辑。
+```powershell
+uv run pytest tests/events/test_pipeline.py tests/events/test_runtime.py tests/operations/test_router.py tests/operations/test_commands.py tests/test_cli.py -q
+```
+
+Result: collection failed as expected with `ModuleNotFoundError` for
+`newsradar.events.pipeline`, `newsradar.events.runtime`, and
+`newsradar.operations.router`.
+
+## GREEN evidence
+
+After implementation:
+
+```powershell
+uv run pytest tests/events/test_pipeline.py tests/events/test_runtime.py tests/operations/test_router.py tests/operations/test_commands.py tests/test_cli.py -q
+# 30 passed
+
+uv run pytest tests/events/test_pipeline.py tests/events/test_runtime.py tests/operations tests/acceptance/test_nonblocking_web.py tests/acceptance/test_worker_recovery.py tests/ingestion/test_service.py -q
+# 52 passed
+
+uv run pytest -q
+# 440 passed, 2 skipped
+
+uv run ruff check src/newsradar tests -q
+# passed
+```
+
+The full suite ran with `.env` renamed for the duration and restored in a `finally`
+block. The only emitted warnings are pre-existing third-party deprecation warnings.
+
+## Delivered interfaces
+
+- `OperationRouter.register()` and callable router dispatch.
+- Event operation types: pipeline, recluster, enrich, merge, split, and exclude.
+- Event enqueue commands include deadlines, algorithm versions, and deterministic
+  idempotency keys.
+- `newsradar events build --hours`, `events list`, and `events show`.
+- Pipeline replay/idempotency, router dispatch, invalid runtime scope, command scope,
+  and Worker CLI compatibility tests.
+
+## Scope note
+
+Event action operation types currently validate their target and return an auditable
+worker result. Their editorial mutation semantics are intentionally deferred to the
+subsequent event-management task; this task establishes their durable worker route.
+
+## Review follow-up: target validation and deadlines
+
+The review identified two P1 gaps in the initial runtime adapter. The action branch
+validated only that `event_id` was positive, and the pipeline branch persisted a
+deadline without enforcing it.
+
+### RED evidence
+
+```powershell
+uv run pytest tests/events/test_runtime.py -q
+# 1 passed, 2 failed
+```
+
+The unknown-event action incorrectly returned `succeeded`; the expired pipeline
+created one event before returning.
+
+### GREEN evidence
+
+`EventOperationHandler` now opens a short session to verify action targets before
+accepting an action. Pipeline operations create `OperationDeadline` from their scope,
+check it before opening the pipeline session, and wrap every pipeline checkpoint so
+deadlines are checked at bounded stage/candidate boundaries.
+
+```powershell
+uv run pytest tests/events/test_runtime.py -q
+# 3 passed
+```
