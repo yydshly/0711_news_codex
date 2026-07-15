@@ -59,6 +59,11 @@ from newsradar.research.probes.factory import research_probe_for
 from newsradar.research.reporting import render_research_report
 from newsradar.runtime import RuntimeSupervisor
 from newsradar.settings import get_settings
+from newsradar.sources.catalog_reconcile import (
+    CatalogReconcileBlocked,
+    apply_reconcile_plan,
+    build_reconcile_plan,
+)
 from newsradar.sources.mixed_wave_reporting import render_mixed_wave_report
 from newsradar.sources.probes.factory import ProbeFactory
 from newsradar.sources.probes.runner import ProbeRunner
@@ -592,6 +597,37 @@ def sync_sources(root: RootOption = Path("sources")) -> None:
         f"Synced {len(sources)} sources: {result.created} created, "
         f"{result.updated} updated, {result.unchanged} unchanged"
     )
+
+
+@sources_app.command("reconcile")
+def reconcile_source_catalog(
+    root: RootOption = Path("sources"),
+    apply: Annotated[bool, typer.Option("--apply")] = False,
+) -> None:
+    """Plan, then optionally archive database targets absent from the reviewed YAML catalog."""
+    sources = load_source_tree(root)
+    with create_session() as session:
+        plan = build_reconcile_plan(session, {source.id for source in sources})
+        typer.echo(
+            f"Catalog reconcile: yaml={plan.yaml_count} current_db={plan.current_db_count} "
+            f"archive={len(plan.archive_ids)} restore={len(plan.restore_ids)} "
+            f"blocked={len(plan.blocked_ids)}"
+        )
+        if plan.archive_ids:
+            typer.echo("Archive candidates: " + ", ".join(plan.archive_ids))
+        if plan.restore_ids:
+            typer.echo("Restore candidates: " + ", ".join(plan.restore_ids))
+        if plan.blocked_ids:
+            typer.echo("Blocked by active operation: " + ", ".join(plan.blocked_ids))
+        if not apply:
+            return
+        try:
+            apply_reconcile_plan(session, plan)
+        except CatalogReconcileBlocked as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from None
+        session.commit()
+    typer.echo("Catalog reconciliation applied without deleting history")
 
 
 async def _probe_sources(

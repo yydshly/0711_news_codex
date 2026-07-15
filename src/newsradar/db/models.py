@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -28,6 +29,12 @@ class Base(DeclarativeBase):
 
 class SourceDefinitionRecord(Base):
     __tablename__ = "source_definitions"
+    __table_args__ = (
+        CheckConstraint(
+            "catalog_state IN ('current', 'archived')",
+            name="ck_source_definitions_catalog_state",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -47,6 +54,9 @@ class SourceDefinitionRecord(Base):
     poll_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     expected_fields: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    catalog_state: Mapped[str] = mapped_column(String(16), nullable=False, default="current")
+    catalog_archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    catalog_archive_reason: Mapped[str | None] = mapped_column(String(120))
     definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

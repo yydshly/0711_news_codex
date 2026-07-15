@@ -86,6 +86,7 @@ class SourceRepository:
             payload, definition_hash = canonical_definition(source)
             current = self.session.get(SourceDefinitionRecord, source.id)
             if current is not None and current.definition_hash == definition_hash:
+                self._restore_current(current)
                 self._sync_research_projection(current, source)
                 unchanged += 1
                 continue
@@ -123,6 +124,7 @@ class SourceRepository:
             current.poll_interval_minutes = source.poll_interval_minutes
             current.expected_fields = [field.value for field in source.expected_fields]
             current.notes = source.notes
+            self._restore_current(current)
             current.definition_hash = definition_hash
 
             self._sync_research_projection(current, source)
@@ -182,6 +184,12 @@ class SourceRepository:
     def sync_source(self, source: SourceDefinition) -> SyncResult:
         """Synchronize one YAML source without committing the caller's transaction."""
         return self.sync([source])
+
+    @staticmethod
+    def _restore_current(current: SourceDefinitionRecord) -> None:
+        current.catalog_state = "current"
+        current.catalog_archived_at = None
+        current.catalog_archive_reason = None
 
     def _sync_research_projection(
         self, current: SourceDefinitionRecord, source: SourceDefinition
