@@ -204,10 +204,17 @@ class CatalogRefreshHandler:
                     operation_run_id,
                     source_id,
                     CatalogMemberState.DEGRADED,
-                    CatalogResultCode.CATALOG_INCOMPLETE,
-                    "来源所属平台未登记，无法完成能力核验",
+                    CatalogResultCode.STALE_RESULT,
+                    "批次冻结后来源或平台定义已变化，未执行能力探测",
                     (),
                 )
+                for source_id in source_ids
+            ]
+        stale_ids = [source_id for source_id in source_ids if self._member_is_stale(operation_run_id, source_id)]
+        if stale_ids:
+            return [
+                self._finish(operation_run_id, source_id, CatalogMemberState.DEGRADED,
+                             CatalogResultCode.STALE_RESULT, "批次冻结后来源或平台定义已变化，未执行能力探测", ())
                 for source_id in source_ids
             ]
         try:
@@ -328,10 +335,13 @@ class CatalogRefreshHandler:
                 operation_run_id,
                 source_id,
                 CatalogMemberState.DEGRADED,
-                CatalogResultCode.CATALOG_INCOMPLETE,
-                "来源定义不存在，无法完成目录核验",
+                CatalogResultCode.STALE_RESULT,
+                "批次冻结后来源定义已变化，未执行目录核验",
                 (),
             )
+        if self._member_is_stale(operation_run_id, source_id):
+            return self._finish(operation_run_id, source_id, CatalogMemberState.DEGRADED,
+                                CatalogResultCode.STALE_RESULT, "批次冻结后来源或平台定义已变化，未执行目录核验", ())
         validation = validate_catalog_entry(source, provider)
         state = (
             CatalogMemberState.SUCCEEDED
@@ -349,6 +359,17 @@ class CatalogRefreshHandler:
         outcome = self._run_catalog_member(operation_run_id, source_id)
         checkpoint(f"after_catalog_member:{source_id}")
         return outcome
+
+    def _member_is_stale(self, operation_run_id: int, source_id: str) -> bool:
+        source = self._sources.get(source_id)
+        if source is None or _source_is_unavailable_or_archived(source):
+            return True
+        with self._create_session() as session:
+            member = next(
+                item for item in CatalogRefreshRepository(session).unfinished_members(operation_run_id)
+                if item.source_id == source_id
+            )
+        return member.definition_hash != self.definition_hash(source, self._providers)
 
     async def _run_content_member(
         self,
