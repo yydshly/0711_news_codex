@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import ModelUsage
+from newsradar.db import models as db_models
 from newsradar.db.models import (
     Base,
     EventCandidateItemRecord,
@@ -32,6 +33,65 @@ from newsradar.events.schema import (
     PublishedEvent,
     ScoreBreakdown,
 )
+
+
+def test_pair_decision_is_idempotent_and_keeps_model_runs_auditable() -> None:
+    with session() as db:
+        left = raw_item(db)
+        right = RawItemRecord(
+            source_id="source",
+            external_id="item-2",
+            canonical_url="https://example.test/item-2",
+            payload={},
+        )
+        db.add(right)
+        db.commit()
+        repository = EventRepository(db)
+        decision_type = db_models.EventPairDecisionRecord
+        first = repository.record_pair_decision(
+            left.id,
+            right.id,
+            "cluster-v2.1",
+            "b" * 64,
+            rule_score=0.68,
+            rule_reasons=("shared_object_entity",),
+            model_same_event=True,
+            model_confidence=0.91,
+            final_decision="merge",
+        )
+        second = repository.record_pair_decision(
+            right.id,
+            left.id,
+            "cluster-v2.1",
+            "b" * 64,
+            rule_score=0.68,
+            rule_reasons=("shared_object_entity",),
+            model_same_event=True,
+            model_confidence=0.91,
+            final_decision="merge",
+        )
+        repository.record_pair_model_run(
+            first.id,
+            ModelUsage(
+                purpose="event_pair_comparison",
+                model="MiniMax-M2.7-highspeed",
+                input_tokens=1,
+                output_tokens=1,
+                latency_ms=1,
+                outcome="success",
+            ),
+        )
+        db.commit()
+
+        assert first.id == second.id
+        assert db.scalar(select(__import__("sqlalchemy").func.count(decision_type.id))) == 1
+        model_run = db.scalar(
+            select(db_models.EventModelRunRecord).where(
+                db_models.EventModelRunRecord.pair_decision_id == first.id
+            )
+        )
+        assert model_run is not None
+        assert model_run.event_id is None
 
 
 def session() -> Session:

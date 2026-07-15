@@ -480,9 +480,19 @@ def test_event_quality_v2_migration_preserves_history_and_marks_it_legacy(
         assert legacy_visibilities.all() == ["legacy"]
         event_columns = {column["name"]: column for column in inspector.get_columns("events")}
         assert event_columns["visibility"]["nullable"] is False
+        assert {"display_tier", "rank_score"} <= set(event_columns)
         assert {index["name"] for index in inspector.get_indexes("events")} >= {
-            "ix_events_visibility_status_occurred_at"
+            "ix_events_visibility_status_occurred_at",
+            "ix_events_tier_rank_occurred_at",
         }
+        assert "event_pair_decisions" in inspector.get_table_names()
+        assert {index["name"] for index in inspector.get_indexes("event_pair_decisions")} >= {
+            "ix_event_pair_decisions_lookup"
+        }
+        model_run_columns = {
+            column["name"] for column in inspector.get_columns("event_model_runs")
+        }
+        assert "pair_decision_id" in model_run_columns
         processing_columns = {
             column["name"] for column in inspector.get_columns("raw_item_processing")
         }

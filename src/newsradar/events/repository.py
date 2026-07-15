@@ -15,6 +15,7 @@ from newsradar.db.models import (
     EventCandidateRecord,
     EventItemRecord,
     EventModelRunRecord,
+    EventPairDecisionRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
@@ -391,17 +392,7 @@ class EventRepository:
 
     def record_model_run(self, event_id: int, usage: ModelUsage) -> None:
         """Best-effort caller boundary: this short write never affects publication."""
-        model_usage = ModelUsageRecord(
-            purpose=usage.purpose,
-            model=usage.model,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            latency_ms=usage.latency_ms,
-            outcome=usage.outcome,
-            error=usage.error[:1000] if usage.error else None,
-        )
-        self.session.add(model_usage)
-        self.session.flush()
+        model_usage = self._add_model_usage(usage)
         self.session.add(
             EventModelRunRecord(
                 event_id=event_id,
@@ -410,6 +401,92 @@ class EventRepository:
                 algorithm_version=usage.model,
             )
         )
+
+    def get_pair_decision(
+        self,
+        left_raw_item_id: int,
+        right_raw_item_id: int,
+        algorithm_version: str,
+        input_fingerprint: str,
+    ) -> EventPairDecisionRecord | None:
+        left, right = sorted((left_raw_item_id, right_raw_item_id))
+        return self.session.scalar(
+            select(EventPairDecisionRecord).where(
+                EventPairDecisionRecord.left_raw_item_id == left,
+                EventPairDecisionRecord.right_raw_item_id == right,
+                EventPairDecisionRecord.algorithm_version == algorithm_version,
+                EventPairDecisionRecord.input_fingerprint == input_fingerprint,
+            )
+        )
+
+    def record_pair_decision(
+        self,
+        left_raw_item_id: int,
+        right_raw_item_id: int,
+        algorithm_version: str,
+        input_fingerprint: str,
+        *,
+        rule_score: float,
+        rule_reasons: tuple[str, ...],
+        model_same_event: bool | None,
+        model_confidence: float | None,
+        final_decision: str,
+    ) -> EventPairDecisionRecord:
+        left, right = sorted((left_raw_item_id, right_raw_item_id))
+        if left == right:
+            raise ValueError("pair decisions require two distinct RawItems")
+        values = {
+            "left_raw_item_id": left,
+            "right_raw_item_id": right,
+            "algorithm_version": algorithm_version,
+            "input_fingerprint": input_fingerprint,
+            "rule_score": rule_score,
+            "rule_reasons": list(rule_reasons),
+            "model_same_event": model_same_event,
+            "model_confidence": model_confidence,
+            "final_decision": final_decision,
+            "created_at": datetime.now(UTC),
+        }
+        self.session.execute(
+            self._insert(EventPairDecisionRecord)
+            .values(values)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "left_raw_item_id",
+                    "right_raw_item_id",
+                    "algorithm_version",
+                    "input_fingerprint",
+                ]
+            )
+        )
+        record = self.get_pair_decision(left, right, algorithm_version, input_fingerprint)
+        assert record is not None
+        return record
+
+    def record_pair_model_run(self, pair_decision_id: int, usage: ModelUsage) -> None:
+        model_usage = self._add_model_usage(usage)
+        self.session.add(
+            EventModelRunRecord(
+                pair_decision_id=pair_decision_id,
+                model_usage_id=model_usage.id,
+                stage=usage.purpose,
+                algorithm_version=usage.model,
+            )
+        )
+
+    def _add_model_usage(self, usage: ModelUsage) -> ModelUsageRecord:
+        model_usage = ModelUsageRecord(
+            purpose=usage.purpose,
+            model=usage.model,
+            input_tokens=max(0, usage.input_tokens),
+            output_tokens=max(0, usage.output_tokens),
+            latency_ms=usage.latency_ms,
+            outcome=usage.outcome,
+            error=usage.error[:1000] if usage.error else None,
+        )
+        self.session.add(model_usage)
+        self.session.flush()
+        return model_usage
 
     def before_current_version_switch(
         self, event: EventRecord, version: EventVersionRecord

@@ -615,6 +615,12 @@ class EventRecord(Base):
     visibility: Mapped[str] = mapped_column(
         String(16), nullable=False, default="current", server_default="current"
     )
+    display_tier: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="signal", server_default="signal"
+    )
+    rank_score: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0, server_default="0"
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     category: Mapped[str | None] = mapped_column(String(32))
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -699,6 +705,40 @@ class EventModelRunRecord(Base):
     event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id"))
     raw_item_id: Mapped[int | None] = mapped_column(ForeignKey("raw_items.id"))
     model_usage_id: Mapped[int | None] = mapped_column(ForeignKey("model_usage.id"))
+    pair_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("event_pair_decisions.id")
+    )
     stage: Mapped[str] = mapped_column(String(32), nullable=False)
     algorithm_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventPairDecisionRecord(Base):
+    __tablename__ = "event_pair_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "left_raw_item_id",
+            "right_raw_item_id",
+            "algorithm_version",
+            "input_fingerprint",
+            name="uq_event_pair_decision_input",
+        ),
+        Index(
+            "ix_event_pair_decisions_lookup",
+            "left_raw_item_id",
+            "right_raw_item_id",
+            "algorithm_version",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    left_raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"), nullable=False)
+    right_raw_item_id: Mapped[int] = mapped_column(ForeignKey("raw_items.id"), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_score: Mapped[float] = mapped_column(Float, nullable=False)
+    rule_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    model_same_event: Mapped[bool | None] = mapped_column(Boolean)
+    model_confidence: Mapped[float | None] = mapped_column(Float)
+    final_decision: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -16,6 +16,12 @@ class EventVisibility(StrEnum):
     LEGACY = "legacy"
 
 
+class EventTier(StrEnum):
+    HOTSPOT = "hotspot"
+    SIGNAL = "signal"
+    AUDIT_ONLY = "audit_only"
+
+
 class EventStatus(StrEnum):
     EMERGING = "emerging"
     CONFIRMED = "confirmed"
@@ -41,6 +47,12 @@ class ProcessingStage(StrEnum):
     ENRICH = "enrich"
     SCORE = "score"
     PUBLISH = "publish"
+
+
+class PairDecisionKind(StrEnum):
+    DIRECT_MERGE = "direct_merge"
+    DIRECT_SEPARATE = "direct_separate"
+    MODEL_BOUNDARY = "model_boundary"
 
 
 class EventCategory(StrEnum):
@@ -114,6 +126,26 @@ class ClusterDecision(_Schema):
     reasons: tuple[str, ...] = ()
 
 
+class PairRuleDecision(_Schema):
+    left_raw_item_id: int
+    right_raw_item_id: int
+    score: float = Field(ge=0, le=1)
+    reasons: tuple[str, ...]
+    structural_anchor: bool
+    kind: PairDecisionKind
+
+
+class PairFinalDecision(_Schema):
+    left_raw_item_id: int
+    right_raw_item_id: int
+    input_fingerprint: str = Field(min_length=64, max_length=64)
+    rule_score: float = Field(ge=0, le=1)
+    rule_reasons: tuple[str, ...]
+    decision: Literal["merge", "separate", "undetermined"]
+    model_same_event: bool | None = None
+    model_confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class CandidateCluster(_Schema):
     candidate_key: str
     title: str = ""
@@ -160,6 +192,12 @@ class ScoreBreakdown(_Schema):
     credibility: float = Field(ge=0, le=100)
     heat: float = Field(ge=0, le=100)
     rule_version: str
+    reasons: tuple[str, ...]
+
+
+class TierDecision(_Schema):
+    tier: EventTier
+    rank_score: float = Field(ge=0, le=100)
     reasons: tuple[str, ...]
 
 
