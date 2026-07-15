@@ -90,6 +90,28 @@ def test_reader_sees_only_complete_version(db_session: Session, candidate) -> No
     assert db_session.get(EventRecord, published.event_id).visibility == "current"
 
 
+def test_publish_snapshot_materializes_tier_and_rank_in_version_and_event(
+    db_session: Session,
+) -> None:
+    publisher = EventPublisher(EventRepository(db_session))
+
+    published = publisher.publish_snapshot(
+        CandidateCluster(candidate_key="ranked-release", title="OpenAI launches Orion"),
+        operation_id=1,
+        score_input=real_score_input(),
+    )
+
+    event = db_session.get(EventRecord, published.event_id)
+    version = db_session.scalar(
+        select(EventVersionRecord).where(EventVersionRecord.event_id == published.event_id)
+    )
+    assert event is not None
+    assert version is not None
+    assert published.display_tier.value == event.display_tier == "signal"
+    assert published.rank_score == event.rank_score
+    assert version.payload["publication"]["tier"] == "signal"
+
+
 def test_publish_snapshot_passes_safe_model_summary_into_same_version(db_session: Session) -> None:
     publisher = EventPublisher(EventRepository(db_session))
     usage = ModelUsage(

@@ -338,6 +338,11 @@ class EventRepository:
 
             next_version = record.current_version_number + 1
             version_payload = event.model_dump(mode="json")
+            version_payload["publication"] = {
+                "tier": event.display_tier.value,
+                "rank_score": event.rank_score,
+                "reasons": list(event.score.reasons) if event.score else [],
+            }
             version_payload["model_runs"] = [
                 _safe_model_run_summary(usage) for usage in model_usages
             ]
@@ -372,6 +377,8 @@ class EventRepository:
             record.visibility = EventVisibility.CURRENT.value
             record.category = event.category.value if event.category else None
             record.occurred_at = event.occurred_at
+            record.display_tier = event.display_tier.value
+            record.rank_score = event.rank_score
             record.current_version_number = next_version
             record.updated_at = now
             self.session.flush()

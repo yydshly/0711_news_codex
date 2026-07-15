@@ -265,3 +265,5 @@ class PublishedEvent(_Schema):
     score: ScoreBreakdown | None = None
     evidence: tuple[EvidenceAssessment, ...] = ()
     source_item_ids: tuple[int, ...] = ()
+    display_tier: EventTier = EventTier.SIGNAL
+    rank_score: float = Field(default=0, ge=0, le=100)

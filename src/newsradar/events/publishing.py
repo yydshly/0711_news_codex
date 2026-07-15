@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from newsradar.ai.minimax import ModelUsage
 from newsradar.events.evidence import assess_evidence
+from newsradar.events.ranking import decide_event_tier
 from newsradar.events.repository import EventRepository
 from newsradar.events.schema import (
     CandidateCluster,
@@ -79,6 +80,7 @@ class EventPublisher:
         evidence = assess_evidence(candidate.items)
         decision = decide_publication(candidate, evidence)
         score = score_event(score_input.model_copy(update={"evidence": evidence}))
+        tier = decide_event_tier(candidate, score, evidence)
         # A model is editorial assistance only.  This deterministic original-title
         # fallback is always complete, so an absent key or a model outage cannot
         # block a confirmed event or leave NULL reader-facing fields.
@@ -92,6 +94,8 @@ class EventPublisher:
             score=score,
             evidence=evidence,
             source_item_ids=candidate.raw_item_ids,
+            display_tier=tier.tier,
+            rank_score=tier.rank_score,
         )
 def rule_enrichment(candidate) -> EventEnrichment:
     title = candidate.title.strip() or "未命名 AI 事件"
