@@ -13,6 +13,8 @@ import httpx
 import typer
 from sqlalchemy.exc import SQLAlchemyError
 
+from newsradar.ai.health import check_minimax_config, check_minimax_live
+from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
     OperationRunRecord,
     SourceAcquisitionCandidateRecord,
@@ -81,6 +83,8 @@ events_app = typer.Typer(help="Build and inspect durable event intelligence")
 app.add_typer(events_app, name="events")
 diagnostics_app = typer.Typer(help="Create scrubbed local runtime diagnostics")
 app.add_typer(diagnostics_app, name="diagnostics")
+minimax_app = typer.Typer(help="Inspect the local MiniMax runtime without exposing secrets")
+app.add_typer(minimax_app, name="minimax")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
@@ -154,6 +158,46 @@ def run_web(
     from newsradar.web import create_app
 
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
+
+
+@minimax_app.command("check")
+def check_minimax(
+    live: Annotated[bool, typer.Option("--live", help="Run one bounded provider check")] = False,
+) -> None:
+    """Show safe MiniMax configuration, optionally verifying one structured call."""
+    settings = get_settings()
+    if not live:
+        result = check_minimax_config(settings)
+        typer.echo(
+            "MiniMax configuration: "
+            f"configured={result.configured} region={result.region} "
+            f"fast_model={result.fast_model} deep_model={result.deep_model}"
+        )
+        return
+
+    usages: list[ModelUsage] = []
+
+    async def run_check():
+        async with httpx.AsyncClient(trust_env=settings.http_trust_env) as http:
+            return await check_minimax_live(settings, http, usages.append)
+
+    result = asyncio.run(run_check())
+    if usages:
+        with create_session() as session:
+            repository = SourceRepository(session)
+            for usage in usages:
+                repository.save_model_usage(usage)
+            session.commit()
+    typer.echo(
+        "MiniMax live check: "
+        f"configured={result.config.configured} region={result.config.region} "
+        f"model_visible={result.model_visible} model_http={result.model_http_status} "
+        f"structured_outcome={result.structured_outcome} "
+        f"input_tokens={result.input_tokens} output_tokens={result.output_tokens} "
+        f"latency_ms={result.latency_ms:.0f} error={result.error_code or 'none'}"
+    )
+    if not result.model_visible or result.structured_outcome != "success":
+        raise typer.Exit(1)
 
 
 @app.command("fetch")

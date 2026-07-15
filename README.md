@@ -216,7 +216,7 @@ The constrained adapter uses MiniMax's current OpenAI-compatible `/v1/chat/compl
 supports:
 
 - `MiniMax-M2.7-highspeed` for source classification, topic inference, and bounded event enrichment
-- `MiniMax-M3` for probe-failure and disputed-event explanations
+- `MiniMax-M2.7` for probe-failure and disputed-event explanations
 
 Set `MINIMAX_BASE_URL=https://api.minimax.io` for international keys. China-region Token Plan keys
 must use `MINIMAX_BASE_URL=https://api.minimaxi.com`; using the wrong region returns HTTP 401 even
@@ -225,6 +225,11 @@ when the key and subscription are valid.
 MiniMax is optional in phase one. Without `MINIMAX_API_KEY`, deterministic rules remain usable.
 All source content is marked as untrusted, reasoning is separated from final content, responses are
 validated with Pydantic, and JSON or schema errors get at most one repair attempt.
+
+Use `uv run newsradar minimax check` to inspect the local configuration without a network request;
+`uv run newsradar minimax check --live` makes one bounded model-visibility and structured-response
+check. Both commands only print configuration state, region, models, outcome, token counts, and
+latency—never the key, endpoint, prompt, or provider response body.
 
 MiniMax 适配器尚未接入 RawItem v1.1。当前抓取、来源健康、资格判断、任务控制和重复候选裁决
 不依赖模型，也不会自动生成新闻摘要或推荐。
