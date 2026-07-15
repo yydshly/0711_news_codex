@@ -190,6 +190,7 @@ class FetcherFactory:
         from .mastodon import MastodonFetcher
         from .reddit import RedditFetcher
         from .rss import RssFetcher
+        from .techmeme import TechmemeFetcher
         from .youtube import YouTubeFetcher
 
         if host == "hacker-news.firebaseio.com":
@@ -208,6 +209,8 @@ class FetcherFactory:
             return YouTubeFetcher(self.policy, self.credentials or EnvironmentCredentials())
         if host == "news.google.com" and method.kind is AccessKind.RSS:
             return GoogleNewsFetcher(self.policy)
+        if host in {"techmeme.com", "www.techmeme.com"} and method.kind is AccessKind.RSS:
+            return TechmemeFetcher(self.policy)
         if method.kind is AccessKind.PUBLIC_API and (
             path.startswith("/api/v1/accounts/")
             or path == "/api/v1/timelines/public"

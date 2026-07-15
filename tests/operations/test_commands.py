@@ -113,7 +113,7 @@ def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> No
         assert record.requested_scope["window_end"] == now.isoformat()
         versions = {
             "relevance": "relevance-v2",
-            "newsworthiness": "newsworthiness-v1",
+            "newsworthiness": "newsworthiness-v2",
             "entities": "entities-v2",
             "cluster": "cluster-v2",
             "score": "score-v2",
@@ -174,7 +174,7 @@ def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
         assert new.id != old.id
         assert new.requested_scope["algorithm_versions"] == {
             "relevance": "relevance-v2",
-            "newsworthiness": "newsworthiness-v1",
+            "newsworthiness": "newsworthiness-v2",
             "entities": "entities-v2",
             "cluster": "cluster-v2",
             "score": "score-v2",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from urllib.parse import urlsplit
 
 import feedparser
 import httpx
@@ -48,6 +49,7 @@ class GoogleNewsFetcher:
                     raise ValueError("missing_title_or_link")
                 attribution = await self.resolver.resolve(discovery_url)
                 canonical_url = attribution.publisher_url or discovery_url
+                feed_publisher_name, feed_publisher_url = _feed_publisher(entry)
                 items.append(
                     NormalizedRawItem(
                         external_id=str(
@@ -62,8 +64,8 @@ class GoogleNewsFetcher:
                         summary=entry.get("summary") or entry.get("description"),
                         published_at=feed_datetime(entry),
                         source_updated_at=feed_datetime(entry),
-                        publisher_name=attribution.publisher_name,
-                        publisher_url=attribution.publisher_url,
+                        publisher_name=attribution.publisher_name or feed_publisher_name,
+                        publisher_url=attribution.publisher_url or feed_publisher_url,
                         discovery_url=discovery_url,
                         origin_resolution_status=attribution.resolution_status,
                         raw_payload=dict(entry),
@@ -74,3 +76,19 @@ class GoogleNewsFetcher:
         return response_result(
             response, items=tuple(items), items_received=len(items), warnings=tuple(warnings)
         )
+
+
+def _feed_publisher(entry: dict[str, object]) -> tuple[str | None, str | None]:
+    """Keep publisher metadata from Google News without claiming article resolution."""
+    source = entry.get("source")
+    if not isinstance(source, dict):
+        return None, None
+    title = source.get("title")
+    href = source.get("href")
+    name = title.strip()[:255] if isinstance(title, str) and title.strip() else None
+    if not isinstance(href, str):
+        return name, None
+    parts = urlsplit(href.strip())
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        return name, None
+    return name, href.strip()

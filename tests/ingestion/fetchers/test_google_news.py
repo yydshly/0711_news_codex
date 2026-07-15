@@ -94,6 +94,32 @@ async def test_google_news_query_feed_keeps_unresolved_discovery_fallback() -> N
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_google_news_keeps_feed_publisher_when_article_url_is_unresolved() -> None:
+    rss = (
+        b"<rss><channel><item><guid>two</guid><title>AI Story - STAT</title>"
+        b"<link>https://news.google.com/read/two</link>"
+        b'<source url="https://www.statnews.com">STAT</source>'
+        b"<pubDate>Sat, 11 Jul 2026 12:00:00 GMT</pubDate></item></channel></rss>"
+    )
+    respx.get("https://news.google.com/rss/search?q=ai").mock(
+        return_value=httpx.Response(200, content=rss)
+    )
+    respx.get("https://news.google.com/read/two").mock(return_value=httpx.Response(200))
+    item_source = source()
+    async with httpx.AsyncClient() as client:
+        result = await GoogleNewsFetcher(HttpPolicy(client), client).fetch(
+            item_source, item_source.access_methods[0], FetchState(), 5
+        )
+
+    item = result.items[0]
+    assert item.publisher_name == "STAT"
+    assert str(item.publisher_url) == "https://www.statnews.com/"
+    assert str(item.canonical_url) == "https://news.google.com/read/two"
+    assert item.origin_resolution_status.value == "unresolved"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_google_news_strips_sensitive_configured_headers() -> None:
     route = respx.get("https://news.google.com/rss/search?q=ai").mock(
         return_value=httpx.Response(200, content=b"<rss><channel /></rss>")

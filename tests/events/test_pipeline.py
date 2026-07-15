@@ -70,7 +70,7 @@ def _seed_operation(
 def test_pipeline_exposes_all_v2_rule_versions() -> None:
     assert ALGORITHM_VERSIONS == {
         "relevance": "relevance-v2",
-        "newsworthiness": "newsworthiness-v1",
+        "newsworthiness": "newsworthiness-v2",
         "entities": "entities-v2",
         "cluster": "cluster-v2",
         "score": "score-v2",

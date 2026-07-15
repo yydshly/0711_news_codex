@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import re
 
-from newsradar.events.relevance import normalize_text
+from newsradar.events.relevance import (
+    AI_NATIVE_ENTITY_TERMS,
+    evaluate_relevance,
+    normalize_text,
+)
 from newsradar.events.schema import NewsworthinessDecision, RawItemText
 
-NEWSWORTHINESS_RULE_VERSION = "newsworthiness-v1"
+NEWSWORTHINESS_RULE_VERSION = "newsworthiness-v2"
 
 ACTION_GROUPS = {
     "release": frozenset(
@@ -39,12 +43,13 @@ ACTION_GROUPS = {
     ),
     "security": frozenset({"breach", "vulnerability", "exploit", "incident"}),
     "policy": frozenset({"regulation", "policy", "ban", "law", "executive order"}),
-    "pricing": frozenset({"price", "pricing", "cost", "subscription"}),
+    "pricing": frozenset({"price", "prices", "pricing", "cost", "subscription"}),
     "outage": frozenset({"outage", "downtime", "disruption"}),
     "partnership": frozenset({"partner", "partnership", "collaboration"}),
 }
 
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_EXPLICIT_AI_TITLE_TERMS = frozenset({"language model", "language models"})
 
 
 def evaluate_newsworthiness(item: RawItemText) -> NewsworthinessDecision:
@@ -65,6 +70,30 @@ def evaluate_newsworthiness(item: RawItemText) -> NewsworthinessDecision:
     if action is None:
         return NewsworthinessDecision(
             outcome="excluded", score=35, reason_codes=("no_event_action",)
+        )
+    title_text = normalize_text(item.title)
+    title_relevance = evaluate_relevance(
+        RawItemText(title=item.title, source_topics=item.source_topics)
+    )
+    explicit_ai_title = any(
+        _contains_term(title_text, term) for term in _EXPLICIT_AI_TITLE_TERMS
+    )
+    ai_native_event_title = _event_action(title_text) is not None and any(
+        _contains_term(title_text, term) for term in AI_NATIVE_ENTITY_TERMS
+    )
+    research_context = "research" in {
+        normalize_text(topic) for topic in item.source_topics
+    } and evaluate_relevance(item).is_relevant
+    if (
+        not title_relevance.is_relevant
+        and not explicit_ai_title
+        and not ai_native_event_title
+        and not research_context
+    ):
+        return NewsworthinessDecision(
+            outcome="excluded",
+            score=30,
+            reason_codes=("event_action_not_ai_focused",),
         )
     return NewsworthinessDecision(
         outcome="included",
