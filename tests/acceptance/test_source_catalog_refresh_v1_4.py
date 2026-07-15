@@ -175,19 +175,19 @@ def test_postgres_concurrent_terminal_completion_counts_one_member_once() -> Non
     engine = _postgres_engine_or_skip()
     operation_id: int | None = None
     try:
-        source = load_source_tree(Path("sources"))[0]
+        source, other_source = load_source_tree(Path("sources"))[:2]
         with Session(engine) as setup:
             operation = OperationRunRecord(
                 operation_type="source_catalog_refresh",
                 trigger="acceptance",
                 status="running",
                 requested_scope={
-                    "catalog_count": 1,
+                    "catalog_count": 2,
                     "deadline_at": datetime(2100, 1, 1, tzinfo=UTC).isoformat(),
                 },
                 result_summary={},
                 progress_current=0,
-                progress_total=1,
+                progress_total=2,
                 attempt_count=1,
             )
             setup.add(operation)
@@ -201,6 +201,16 @@ def test_postgres_concurrent_terminal_completion_counts_one_member_once() -> Non
                             source_id=source.id,
                             provider_id=source.provider_id,
                             definition_hash="acceptance",
+                            availability="ready",
+                            coverage_mode="direct",
+                            access_kind="rss",
+                            lane=CatalogRefreshLane.CONTENT,
+                        )
+                        ,
+                        CatalogRefreshMemberSnapshot(
+                            source_id=other_source.id,
+                            provider_id=other_source.provider_id,
+                            definition_hash="acceptance-other",
                             availability="ready",
                             coverage_mode="direct",
                             access_kind="rss",

@@ -11,9 +11,10 @@ from email.utils import parsedate_to_datetime
 from typing import Protocol
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import OperationRunRecord
+from newsradar.db.models import OperationRunRecord, SourceCatalogRefreshMemberRecord
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
@@ -140,11 +141,18 @@ class CatalogRefreshHandler:
         ]
         outcomes = [*content_outcomes, *capability_outcomes, *catalog_outcomes]
         deadline.check("after_catalog_refresh")
-        summary = Counter(outcome.state.value for outcome in outcomes)
         with self._create_session() as session:
             operation = session.get(OperationRunRecord, lease.operation_id)
             completed_count = operation.progress_current if operation is not None else 0
             catalog_count = operation.progress_total if operation is not None else len(outcomes)
+            summary = Counter(
+                record.state
+                for record in session.scalars(
+                    select(SourceCatalogRefreshMemberRecord).where(
+                        SourceCatalogRefreshMemberRecord.operation_run_id == lease.operation_id
+                    )
+                )
+            )
         return OperationResult(
             status=(
                 OperationStatus.SUCCEEDED

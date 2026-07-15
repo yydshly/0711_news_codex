@@ -106,7 +106,16 @@ class CatalogRefreshRepository:
         content_probe_run_ids: list[int] | None = None,
         provider_probe_run_id: int | None = None,
     ) -> SourceCatalogRefreshMemberRecord:
-        record = self._get_member(operation_run_id, source_id)
+        record = self.session.scalar(
+            select(SourceCatalogRefreshMemberRecord)
+            .where(
+                SourceCatalogRefreshMemberRecord.operation_run_id == operation_run_id,
+                SourceCatalogRefreshMemberRecord.source_id == source_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError(f"catalog refresh member not found: {operation_run_id}/{source_id}")
         was_unfinished = record.state in _UNFINISHED_STATES
         record.state = state.value
         record.result_code = result_code.value if result_code else None
