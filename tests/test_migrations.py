@@ -126,6 +126,32 @@ def test_full_offline_migration_creates_provider_tables_once() -> None:
     assert result.stdout.count("ADD COLUMN provider_id") == 1
 
 
+def test_catalog_refresh_migration_adds_frozen_members_and_nullable_probe_provenance(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "catalog-refresh.db")
+    _upgrade(database_url, "20260715_0016")
+    _upgrade(database_url, "head")
+
+    with create_engine(database_url).connect() as connection:
+        inspector = inspect(connection)
+        assert "source_catalog_refresh_members" in inspector.get_table_names()
+        columns = {
+            column["name"]: column
+            for column in inspector.get_columns("source_catalog_refresh_members")
+        }
+        assert {"operation_run_id", "source_id", "definition_hash", "content_probe_run_ids"} <= set(
+            columns
+        )
+        for table_name in ("source_probe_runs", "source_provider_probe_runs"):
+            probe_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
+            assert probe_columns["operation_run_id"]["nullable"] is True
+        assert {
+            tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("source_catalog_refresh_members")
+        } >= {("operation_run_id", "source_id")}
+
+
 def test_raw_item_ingestion_upgrade_preserves_0002_history(tmp_path: Path) -> None:
     database_path = tmp_path / "legacy.db"
     config = Config("alembic.ini")

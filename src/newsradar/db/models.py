@@ -116,6 +116,9 @@ class ProviderProbeRunRecord(Base):
     __tablename__ = "source_provider_probe_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="SET NULL"), index=True
+    )
     provider_id: Mapped[str] = mapped_column(ForeignKey("source_providers.id"), nullable=False)
     probe_type: Mapped[str] = mapped_column(String(32), nullable=False, default="capability")
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -261,6 +264,9 @@ class SourceProbeRunRecord(Base):
     __tablename__ = "source_probe_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="SET NULL"), index=True
+    )
     remediation_acquisition_probe_id: Mapped[int | None] = mapped_column(
         ForeignKey("source_acquisition_probe_runs.id", ondelete="SET NULL"), index=True
     )
@@ -452,6 +458,38 @@ class OperationRunRecord(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SourceCatalogRefreshMemberRecord(Base):
+    __tablename__ = "source_catalog_refresh_members"
+    __table_args__ = (
+        UniqueConstraint("operation_run_id", "source_id"),
+        Index("ix_source_catalog_refresh_members_operation_state", "operation_run_id", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_definitions.id", ondelete="RESTRICT"), nullable=False
+    )
+    provider_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    availability_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
+    coverage_mode_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
+    access_kind_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
+    lane: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    result_code: Mapped[str | None] = mapped_column(String(64))
+    conclusion: Mapped[str | None] = mapped_column(Text)
+    content_probe_run_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
+    provider_probe_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_provider_probe_runs.id", ondelete="SET NULL")
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OperationAttemptRecord(Base):
