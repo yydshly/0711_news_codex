@@ -11,10 +11,12 @@ from typing import Annotated
 
 import httpx
 import typer
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from newsradar.ai.health import check_minimax_config, check_minimax_live
 from newsradar.ai.minimax import ModelUsage
+from newsradar.credentials import SettingsCredentials
 from newsradar.db.models import (
     OperationRunRecord,
     SourceAcquisitionCandidateRecord,
@@ -63,6 +65,11 @@ from newsradar.sources.catalog_reconcile import (
     CatalogReconcileBlocked,
     apply_reconcile_plan,
     build_reconcile_plan,
+)
+from newsradar.sources.health_wave import (
+    HealthProbeState,
+    render_health_wave_report,
+    select_health_wave,
 )
 from newsradar.sources.mixed_wave_reporting import render_mixed_wave_report
 from newsradar.sources.probes.factory import ProbeFactory
@@ -631,11 +638,16 @@ def reconcile_source_catalog(
 
 
 async def _probe_sources(
-    selected, persist: bool, remediation_acquisition_probe_id: int | None = None
+    selected,
+    persist: bool,
+    remediation_acquisition_probe_id: int | None = None,
+    max_concurrency: int = 8,
 ):
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        results = await ProbeRunner(ProbeFactory(client)).probe_all(selected)
+        results = await ProbeRunner(
+            ProbeFactory(client), max_concurrency=max_concurrency
+        ).probe_all(selected)
     if persist:
         with create_session() as session:
             repository = SourceRepository(session)
@@ -647,6 +659,50 @@ async def _probe_sources(
                 )
             session.commit()
     return results
+
+
+def _build_health_wave_plan(sources):
+    source_ids = {source.id for source in sources}
+    latest: dict[str, HealthProbeState] = {}
+    with create_session() as session:
+        rows = session.scalars(
+            select(SourceProbeRunRecord)
+            .where(SourceProbeRunRecord.source_id.in_(source_ids))
+            .order_by(SourceProbeRunRecord.finished_at.desc(), SourceProbeRunRecord.id.desc())
+        )
+        for row in rows:
+            latest.setdefault(row.source_id, HealthProbeState(row.outcome, row.access_kind))
+    return select_health_wave(
+        sources, latest, SettingsCredentials().configured_names()
+    )
+
+
+@sources_app.command("health-wave")
+def source_health_wave(
+    root: RootOption = Path("sources"),
+    execute: Annotated[bool, typer.Option("--execute")] = False,
+    concurrency: Annotated[int, typer.Option(min=1, max=16)] = 8,
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        "reports/source-health-v1-2.md"
+    ),
+) -> None:
+    """Plan or execute a bounded recovery probe wave for safe current sources."""
+    plan = _build_health_wave_plan(load_source_tree(root))
+    results = None
+    if execute and plan.candidates:
+        results = asyncio.run(
+            _probe_sources(
+                [candidate.source for candidate in plan.candidates],
+                True,
+                max_concurrency=concurrency,
+            )
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_health_wave_report(plan, results), encoding="utf-8")
+    typer.echo(
+        f"Health wave: candidates={len(plan.candidates)} "
+        f"mode={'executed' if execute else 'plan'} report={output}"
+    )
 
 
 @sources_app.command("probe")
