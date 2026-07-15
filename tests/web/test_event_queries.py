@@ -231,6 +231,30 @@ def test_operation_page_projects_legacy_version_without_publication_block(db_ses
     assert page.events[0].display_tier == "signal"
 
 
+def test_operation_page_excludes_event_after_operation_window_end(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    record = _event(
+        db_session,
+        event_id=44,
+        status="confirmed",
+        title="未来异常事件",
+        occurred_at=now + timedelta(minutes=1),
+    )
+    version = db_session.query(EventVersionRecord).filter_by(event_id=record.id).one()
+    score = db_session.query(EventScoreRecord).filter_by(event_id=record.id).one()
+    version.created_at = now - timedelta(minutes=1)
+    score.created_at = now - timedelta(minutes=1)
+    db_session.commit()
+    _pipeline_snapshot(db_session, refs=[(record.id, 1)], now=now)
+
+    page = EventQueryService(db_session).latest_operation_page(now=now)
+
+    assert page is not None
+    assert page.events == ()
+
+
 def test_home_returns_ranked_hotspots_and_category_sections(db_session):
     from newsradar.web.event_queries import EventQueryService
 

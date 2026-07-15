@@ -605,7 +605,9 @@ class EventQueryService:
             if (not isinstance(status, str) or row.status == status)
             and (not isinstance(category, str) or row.category == category)
             and (not isinstance(display_tier, str) or row.display_tier == display_tier)
-            and (since is None or (row.occurred_at is not None and row.occurred_at >= since))
+            and row.occurred_at is not None
+            and row.occurred_at <= window_end
+            and (since is None or row.occurred_at >= since)
         )
 
     def _event_row(
