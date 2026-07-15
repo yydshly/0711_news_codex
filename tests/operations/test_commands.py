@@ -85,7 +85,7 @@ def test_enqueue_catalog_refresh_freezes_members_and_scope() -> None:
 
 
 @pytest.mark.parametrize(
-    "global_concurrency,provider_concurrency", [(0, 2), (17, 2), (8, 0), (8, 17)]
+    "global_concurrency,provider_concurrency", [(0, 2), (17, 2), (8, 0), (8, 9)]
 )
 def test_enqueue_catalog_refresh_rejects_invalid_concurrency(
     global_concurrency: int, provider_concurrency: int
