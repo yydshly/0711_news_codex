@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -174,12 +175,68 @@ def test_definition_drift_finishes_stale_without_network_call() -> None:
         assert stored.conclusion == "批次创建后来源定义已变化"
 
 
+def test_removed_definition_finishes_stale_without_network_call() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(
+            db_session,
+            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+        )
+        probe = RecordingProbe([result()])
+
+        outcome = CatalogRefreshHandler(
+            [], [], lambda: db_session, probe_factory=probe
+        ).run_content_member(1, "feed", lambda _: None)
+
+        assert probe.calls == 0
+        assert outcome.state is CatalogMemberState.DEGRADED
+        assert outcome.result_code is CatalogResultCode.STALE_RESULT
+        assert outcome.conclusion == "批次创建后来源定义已变化"
+
+
+def test_checkpoint_cancellation_propagates_without_becoming_internal_error() -> None:
+    class CheckpointCancelled(Exception):
+        pass
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db_session:
+        definition = source()
+        add_member(
+            db_session,
+            member(definition_hash=CatalogRefreshHandler.definition_hash(definition, [])),
+        )
+        probe = RecordingProbe([result()])
+
+        lease = OperationLease(
+            operation_id=1,
+            attempt_id=1,
+            attempt_number=1,
+            worker_id="test",
+            operation_type="source_catalog_refresh",
+            requested_scope={"deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()},
+        )
+        with pytest.raises(CheckpointCancelled):
+            make_handler(db_session, definition, probe)(
+                lease,
+                lambda _: (_ for _ in ()).throw(CheckpointCancelled()),
+            )
+
+        assert probe.calls == 0
+
+
 def test_probe_error_codes_have_stable_catalog_mapping() -> None:
     assert (
         result_code_for_probe(result(error_code="incomplete_fields"))
         is CatalogResultCode.INCOMPLETE_FIELDS
     )
     assert result_code_for_probe(result(error_code="timeout")) is CatalogResultCode.TIMEOUT
+    assert (
+        result_code_for_probe(result(error_code="missing_credential"))
+        is CatalogResultCode.MISSING_CREDENTIALS
+    )
     assert result_code_for_probe(result(http_status=429)) is CatalogResultCode.RATE_LIMITED
     assert (
         result_code_for_probe(result(error_code="unsupported_access_kind"))

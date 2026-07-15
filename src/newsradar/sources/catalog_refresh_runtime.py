@@ -104,17 +104,10 @@ class CatalogRefreshHandler:
         )
 
         async def run_one(source_id: str, provider_id: str) -> ContentMemberOutcome:
-            try:
-                async with global_semaphore:
-                    async with provider_semaphores[provider_id]:
-                        deadline.check("before_content_member")
-                        return await self._run_content_member(
-                            lease.operation_id, source_id, checkpoint
-                        )
-            except OperationTimedOut:
-                raise
-            except Exception:
-                return self._finish_internal_error(lease.operation_id, source_id)
+            async with global_semaphore:
+                async with provider_semaphores[provider_id]:
+                    deadline.check("before_content_member")
+                    return await self._run_content_member(lease.operation_id, source_id, checkpoint)
 
         outcomes = await asyncio.gather(
             *(run_one(source_id, provider_id) for source_id, provider_id in members)
@@ -149,9 +142,9 @@ class CatalogRefreshHandler:
             return self._finish(
                 operation_run_id,
                 source_id,
-                CatalogMemberState.FAILED,
-                CatalogResultCode.INTERNAL_ERROR,
-                "当前审核目录中不存在该来源定义",
+                CatalogMemberState.DEGRADED,
+                CatalogResultCode.STALE_RESULT,
+                "批次创建后来源定义已变化",
                 (),
             )
         expected_hash = self.definition_hash(source, self._providers)
@@ -190,7 +183,10 @@ class CatalogRefreshHandler:
         probe_run_ids: list[int] = []
         for round_number in range(3):
             checkpoint(f"before_catalog_content_probe:{source_id}:{round_number + 1}")
-            result = await self._probe(source, method)
+            try:
+                result = await self._probe(source, method)
+            except Exception:
+                return self._finish_internal_error(operation_run_id, source_id)
             checkpoint(f"after_catalog_content_probe:{source_id}:{round_number + 1}")
             code = result_code_for_probe(result)
             probe_run_ids.append(self._save_probe(operation_run_id, result))
@@ -293,6 +289,8 @@ def result_code_for_probe(result: ProbeResult) -> CatalogResultCode | None:
         return CatalogResultCode.TIMEOUT
     if error in {"connection_error", "connect_error", "dns_error"}:
         return CatalogResultCode.CONNECTION_ERROR
+    if error == "missing_credential":
+        return CatalogResultCode.MISSING_CREDENTIALS
     if error == "unsupported_access_kind":
         return CatalogResultCode.UNSUPPORTED_ACCESS_KIND
     if result.http_status == 401 or error == "http_401":
