@@ -20,8 +20,7 @@ from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.operations.worker import OperationResult
 from newsradar.providers.probes import ProviderProbe, ProviderProbeResult
-from newsradar.providers.repository import ProviderRepository
-from newsradar.providers.repository import canonical_provider
+from newsradar.providers.repository import ProviderRepository, canonical_provider
 from newsradar.providers.schema import ProviderDefinition
 from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
