@@ -50,3 +50,28 @@ def test_successful_fetch_does_not_override_external_prohibition() -> None:
 
     assert conclusion.code == "payment_required"
     assert conclusion.bucket == "deferred"
+
+
+def test_indirect_conclusion_distinguishes_no_sample_and_unresolved_origin() -> None:
+    from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
+
+    empty = conclude_source(
+        SourceConclusionInput("indirect", "ready", False, None, indirect_item_count=0)
+    )
+    unresolved = conclude_source(
+        SourceConclusionInput(
+            "indirect",
+            "ready",
+            False,
+            "success",
+            indirect_item_count=5,
+            indirect_published_count=5,
+            indirect_origin_resolved_count=0,
+            indirect_duplicate_count=1,
+        )
+    )
+
+    assert empty.reason == "尚无间接发现样本，不能验收原媒体和发布时间字段。"
+    assert "5 条样本" in unresolved.reason
+    assert "0 条解析出原媒体文章 URL" in unresolved.reason
+    assert "1 条重复候选" in unresolved.next_action

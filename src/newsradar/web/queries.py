@@ -7,12 +7,14 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import Select, case, func, literal, or_, select, union_all
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from newsradar.db.models import (
+    DuplicateCandidateRecord,
     FetchRunRecord,
     ProviderDefinitionRecord,
     ProviderProbeRunRecord,
+    RawItemRecord,
     SourceAccessMethodRecord,
     SourceAcquisitionCandidateRecord,
     SourceAcquisitionProbeRunRecord,
@@ -953,6 +955,34 @@ class DashboardQueryService:
         }
         risks = self._latest_risks(source_ids)
         latest_runs = self._latest_content_runs(source_ids)
+        indirect_metrics = {
+            source_id: (int(item_count), int(published_count), int(resolved_count))
+            for source_id, item_count, published_count, resolved_count in self._session.execute(
+                select(
+                    RawItemRecord.source_id,
+                    func.count(RawItemRecord.id),
+                    func.count(RawItemRecord.id).filter(RawItemRecord.published_at.is_not(None)),
+                    func.count(RawItemRecord.id).filter(
+                        RawItemRecord.origin_resolution_status == "resolved"
+                    ),
+                )
+                .where(RawItemRecord.source_id.in_(source_ids))
+                .group_by(RawItemRecord.source_id)
+            )
+        }
+        left_item = aliased(RawItemRecord)
+        right_item = aliased(RawItemRecord)
+        duplicate_counts = defaultdict(int)
+        for left_source_id, right_source_id in self._session.execute(
+            select(left_item.source_id, right_item.source_id)
+            .select_from(DuplicateCandidateRecord)
+            .join(left_item, left_item.id == DuplicateCandidateRecord.raw_item_id)
+            .join(right_item, right_item.id == DuplicateCandidateRecord.candidate_raw_item_id)
+            .where(or_(left_item.source_id.in_(source_ids), right_item.source_id.in_(source_ids)))
+        ):
+            duplicate_counts[left_source_id] += 1
+            if right_source_id != left_source_id:
+                duplicate_counts[right_source_id] += 1
         successful_fetch_ids = set(
             self._session.scalars(
                 select(FetchRunRecord.source_id).where(
@@ -968,12 +998,20 @@ class DashboardQueryService:
             risk = risks.get(source.id)
             latest = latest_runs.get(source.id)
             trial = trial_decisions[source.id]
+            item_count, published_count, resolved_count = indirect_metrics.get(
+                source.id, (0, 0, 0)
+            )
+            duplicate_count = duplicate_counts[source.id]
             conclusion = conclude_source(
                 SourceConclusionInput(
                     coverage_mode=source.coverage_mode,
                     availability=source.availability,
                     successful_fetch=source.id in successful_fetch_ids,
                     latest_probe_outcome=latest.outcome if latest else None,
+                    indirect_item_count=item_count,
+                    indirect_published_count=published_count,
+                    indirect_origin_resolved_count=resolved_count,
+                    indirect_duplicate_count=duplicate_count,
                 )
             )
             rows.append(
@@ -1005,6 +1043,10 @@ class DashboardQueryService:
                     conclusion_label=conclusion.label,
                     conclusion_reason=conclusion.reason,
                     next_action=conclusion.next_action,
+                    indirect_item_count=item_count,
+                    indirect_published_count=published_count,
+                    indirect_origin_resolved_count=resolved_count,
+                    indirect_duplicate_count=duplicate_count,
                 )
             )
         return rows

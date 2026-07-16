@@ -9,6 +9,10 @@ class SourceConclusionInput:
     availability: str
     successful_fetch: bool
     latest_probe_outcome: str | None
+    indirect_item_count: int = 0
+    indirect_published_count: int = 0
+    indirect_origin_resolved_count: int = 0
+    indirect_duplicate_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +66,22 @@ def conclude_source(value: SourceConclusionInput) -> SourceConclusion:
             "配置所需环境变量后通过 Worker 重新验收。",
         )
     if value.coverage_mode == "indirect":
+        if value.indirect_item_count == 0:
+            return _result(
+                "indirect_discovery",
+                "fixable",
+                "只能间接发现",
+                "尚无间接发现样本，不能验收原媒体和发布时间字段。",
+                "先通过已审核的发现平台获取样本，再检查归因和重复关系。",
+            )
         return _result(
             "indirect_discovery",
             "fixable",
             "只能间接发现",
-            "该目标只用于发现线索，不能替代原始媒体证据。",
-            "验证原始媒体、原始 URL、发布时间和重复关系。",
+            f"已有 {value.indirect_item_count} 条样本，"
+            f"{value.indirect_published_count} 条含发布时间，"
+            f"{value.indirect_origin_resolved_count} 条解析出原媒体文章 URL。",
+            f"复核归因结果并检查 {value.indirect_duplicate_count} 条重复候选。",
         )
     if value.successful_fetch:
         return _result(

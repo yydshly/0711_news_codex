@@ -68,6 +68,10 @@ class TargetRow:
     conclusion_label: str = "需要技术验证"
     conclusion_reason: str = "当前没有足够证据。"
     next_action: str = "检查最近运行记录。"
+    indirect_item_count: int = 0
+    indirect_published_count: int = 0
+    indirect_origin_resolved_count: int = 0
+    indirect_duplicate_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

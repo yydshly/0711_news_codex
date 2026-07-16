@@ -394,3 +394,13 @@ def test_target_rows_have_one_conclusion_and_complete_operational_summary(
         + summary.deferred
         == summary.total
     )
+
+
+def test_indirect_target_conclusion_reports_observed_field_coverage(query_service) -> None:
+    row = next(item for item in query_service.targets() if item.source_id == "search-ai")
+
+    assert row.indirect_item_count == 0
+    assert row.indirect_published_count == 0
+    assert row.indirect_origin_resolved_count == 0
+    assert row.indirect_duplicate_count == 0
+    assert "尚无间接发现样本" in row.conclusion_reason
