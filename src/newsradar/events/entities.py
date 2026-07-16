@@ -8,7 +8,7 @@ from collections.abc import Iterator
 
 from newsradar.events.schema import EntityType, ExtractedEntity, RawItemText
 
-ENTITY_RULE_VERSION = "entities-v2"
+ENTITY_RULE_VERSION = "entities-v3"
 
 _ORGANIZATION_ALIASES = {
     "anthropic": "Anthropic",
@@ -186,16 +186,4 @@ def _normalized_name(value: str) -> str:
 
 
 def _item_text_parts(item: RawItemText) -> tuple[str, ...]:
-    return tuple(
-        filter(
-            None,
-            (
-                item.title,
-                item.summary,
-                item.content,
-                item.item_kind,
-                item.publisher_name,
-                *item.source_topics,
-            ),
-        )
-    )
+    return tuple(filter(None, (item.title, item.summary, item.content)))

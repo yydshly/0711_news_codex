@@ -80,7 +80,7 @@ def test_pipeline_exposes_current_rule_versions() -> None:
     assert ALGORITHM_VERSIONS == {
         "relevance": "relevance-v2",
         "newsworthiness": "newsworthiness-v2",
-        "entities": "entities-v2",
+        "entities": "entities-v3",
         "cluster": "cluster-v3",
         "score": "score-v2",
     }

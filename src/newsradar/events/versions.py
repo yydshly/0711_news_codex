@@ -6,7 +6,7 @@ EVENT_ALGORITHM_VERSIONS = MappingProxyType(
     {
         "relevance": "relevance-v2",
         "newsworthiness": "newsworthiness-v2",
-        "entities": "entities-v2",
+        "entities": "entities-v3",
         "cluster": "cluster-v3",
         "score": "score-v2",
     }

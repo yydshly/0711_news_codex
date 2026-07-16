@@ -23,7 +23,7 @@ def test_extract_entities_preserves_original_mention_and_normalizes_alias() -> N
     assert entities[0].entity_type is EntityType.ORGANIZATION
     assert entities[0].canonical_key == "organization:huggingface"
     assert entities[0].aliases == ("Hugging Face",)
-    assert ENTITY_RULE_VERSION == "entities-v2"
+    assert ENTITY_RULE_VERSION == "entities-v3"
 
 
 def test_extract_entities_identifies_named_core_object_for_cluster_v2() -> None:
@@ -122,15 +122,38 @@ def test_extract_entities_returns_stable_order_and_deduplicates_aliases() -> Non
 @pytest.mark.parametrize(
     "item",
     [
-        RawItemText(summary="OpenAI"),
-        RawItemText(content="OpenAI"),
         RawItemText(item_kind="OpenAI"),
         RawItemText(publisher_name="OpenAI"),
         RawItemText(source_topics=("OpenAI",)),
     ],
 )
-def test_entities_use_each_entity_bearing_pure_input_field(item: RawItemText) -> None:
-    assert extract_entities(item)[0].canonical_key == "organization:openai"
+def test_event_entities_ignore_channel_and_source_metadata(item: RawItemText) -> None:
+    assert extract_entities(item) == ()
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        RawItemText(title="Google launches Gemini 3"),
+        RawItemText(summary="Google launched Gemini 3"),
+        RawItemText(content="Google launched Gemini 3"),
+    ],
+)
+def test_event_entities_still_read_news_claim_text(item: RawItemText) -> None:
+    assert "organization:google" in {
+        entity.canonical_key for entity in extract_entities(item)
+    }
+
+
+def test_google_news_metadata_does_not_make_google_the_event_subject() -> None:
+    item = RawItemText(
+        title="Thinking Machines releases first model",
+        publisher_name="Reuters",
+        source_topics=("google", "artificial_intelligence"),
+    )
+    assert "organization:google" not in {
+        entity.canonical_key for entity in extract_entities(item)
+    }
 
 
 def test_entity_extraction_is_byte_equivalent_on_replay() -> None:
