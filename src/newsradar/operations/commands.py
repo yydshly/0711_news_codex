@@ -14,6 +14,7 @@ from newsradar.db.models import (
     SourceRemediationBatchRecord,
     SourceRemediationMemberRecord,
 )
+from newsradar.event_merges.facts import EVENT_MERGE_RULE_VERSION
 from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.retry_policy import is_retryable_error
@@ -388,6 +389,33 @@ class OperationCommandService:
         }
         record = OperationRepository(self.session).enqueue(
             OperationType.EVENT_PIPELINE, scope, trigger=trigger
+        )
+        self.session.commit()
+        return record.id
+
+    def enqueue_event_merge_scan(self, trigger: str) -> int:
+        if not trigger:
+            raise ValueError("event_merge_scan_trigger_required")
+        window_end = self._utcnow()
+        versions = dict(EVENT_ALGORITHM_VERSIONS)
+        key_parts = {
+            "algorithm_version": EVENT_MERGE_RULE_VERSION,
+            "algorithm_versions": versions,
+            "window_end": window_end.isoformat(),
+        }
+        scope = {
+            "actor": trigger,
+            "algorithm_version": EVENT_MERGE_RULE_VERSION,
+            "algorithm_versions": versions,
+            "window_end": window_end.isoformat(),
+            "idempotency_key": "event-merge-scan:"
+            + sha256(dumps(key_parts, sort_keys=True).encode()).hexdigest(),
+            "deadline_at": (
+                window_end + timedelta(seconds=self._settings.operation_timeout_seconds)
+            ).isoformat(),
+        }
+        record = OperationRepository(self.session).enqueue(
+            OperationType.EVENT_MERGE_SCAN, scope, trigger=trigger
         )
         self.session.commit()
         return record.id

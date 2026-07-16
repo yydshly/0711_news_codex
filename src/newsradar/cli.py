@@ -29,6 +29,7 @@ from newsradar.db.models import (
 )
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
+from newsradar.event_merges.runtime import EventMergeOperationHandler
 from newsradar.events.reporting import (
     build_event_quality_report_view,
     render_event_quality_report,
@@ -642,6 +643,7 @@ def run_worker(
             ),
             "high_value_news_wave": HighValueWaveHandler.production(sources),
             "event_pipeline": EventOperationHandler.production(create_session),
+            "event_merge_scan": EventMergeOperationHandler.production(create_session),
             "event_recluster": EventOperationHandler.production(create_session),
             "event_enrich": EventOperationHandler.production(create_session),
             "event_merge": EventOperationHandler.production(create_session),

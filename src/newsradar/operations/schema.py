@@ -11,6 +11,7 @@ class OperationType(StrEnum):
     HIGH_VALUE_NEWS_WAVE = "high_value_news_wave"
     FETCH = "fetch"
     EVENT_PIPELINE = "event_pipeline"
+    EVENT_MERGE_SCAN = "event_merge_scan"
     EVENT_RECLUSTER = "event_recluster"
     EVENT_ENRICH = "event_enrich"
     EVENT_MERGE = "event_merge"

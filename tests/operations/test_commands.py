@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from json import dumps
 
@@ -80,7 +80,7 @@ def test_enqueue_wave_freezes_plan_atomically() -> None:
             "algorithm_versions": {
                 "relevance": "relevance-v2",
                 "newsworthiness": "newsworthiness-v2",
-                "entities": "entities-v2",
+            "entities": "entities-v3",
                 "cluster": "cluster-v3",
                 "score": "score-v2",
             },
@@ -410,7 +410,7 @@ def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> No
         versions = {
             "relevance": "relevance-v2",
             "newsworthiness": "newsworthiness-v2",
-            "entities": "entities-v2",
+            "entities": "entities-v3",
             "cluster": "cluster-v3",
             "score": "score-v2",
         }
@@ -429,6 +429,26 @@ def test_enqueue_event_pipeline_uses_window_versions_and_idempotency_key() -> No
             ).hexdigest()
         )
         assert record.requested_scope["idempotency_key"] == expected_key
+
+
+def test_enqueue_event_merge_scan_freezes_versions_window_and_identity() -> None:
+    now = datetime(2026, 7, 16, 4, 0, tzinfo=UTC)
+    with session() as db:
+        operation_id = OperationCommandService(
+            db,
+            utcnow=lambda: now,
+            settings=Settings(operation_timeout_seconds=30),
+        ).enqueue_event_merge_scan(trigger="cli")
+        record = db.get(OperationRunRecord, operation_id)
+
+        assert record is not None
+        assert record.operation_type == "event_merge_scan"
+        assert record.requested_scope["actor"] == "cli"
+        assert record.requested_scope["algorithm_version"] == "event-merge-v1"
+        assert record.requested_scope["algorithm_versions"]["entities"] == "entities-v3"
+        assert record.requested_scope["window_end"] == now.isoformat()
+        assert record.requested_scope["deadline_at"] == (now + timedelta(seconds=30)).isoformat()
+        assert record.requested_scope["idempotency_key"].startswith("event-merge-scan:")
 
 
 def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
@@ -477,7 +497,7 @@ def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
         assert new.requested_scope["algorithm_versions"] == {
             "relevance": "relevance-v2",
             "newsworthiness": "newsworthiness-v2",
-            "entities": "entities-v2",
+                "entities": "entities-v3",
             "cluster": "cluster-v3",
             "score": "score-v2",
         }

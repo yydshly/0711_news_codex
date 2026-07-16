@@ -22,6 +22,7 @@ def test_operation_enums_match_the_runtime_contract() -> None:
         "high_value_news_wave",
         "fetch",
         "event_pipeline",
+        "event_merge_scan",
         "event_recluster",
         "event_enrich",
         "event_merge",
