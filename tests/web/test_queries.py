@@ -468,3 +468,190 @@ def test_catalog_placeholder_inherits_success_from_same_official_identity(
     assert row.conclusion_code == "covered_by_successful_target"
     assert row.conclusion_bucket == "deferred"
     assert source.id in row.conclusion_reason
+
+
+def test_duplicate_manual_identity_has_one_actionable_manager(db_session, query_service) -> None:
+    from newsradar.db.models import SourceAccessMethodRecord, SourceDefinitionRecord
+
+    common = dict(
+        provider_id="github",
+        availability="manual_only",
+        coverage_mode="catalog_only",
+        official_identity_url="https://manual.example/technology/",
+        reviewed_at=date(2026, 7, 16),
+        unlock_requirements=[],
+        status="candidate",
+        nature="professional_media",
+        language="en",
+        roles=["discovery"],
+        topics=["ai"],
+        authority_score=4,
+        poll_interval_minutes=60,
+        expected_fields=["title", "canonical_url"],
+        notes="manual pair",
+    )
+    primary = SourceDefinitionRecord(
+        id="universe-manual-1",
+        name="Manual primary",
+        target_type="publisher_feed",
+        definition_hash="manual-1-hash",
+        **common,
+    )
+    discovery = SourceDefinitionRecord(
+        id="universe-manual-2",
+        name="Manual discovery",
+        target_type="search_query",
+        definition_hash="manual-2-hash",
+        **common,
+    )
+    db_session.add_all((primary, discovery))
+    db_session.flush()
+    for target in (primary, discovery):
+        db_session.add(
+            SourceAccessMethodRecord(
+                source_id=target.id,
+                kind="html",
+                url="https://manual.example/technology",
+                priority=1,
+                requires_manual_approval=True,
+                headers={},
+                params={},
+            )
+        )
+    db_session.commit()
+
+    rows = {row.source_id: row for row in query_service.targets()}
+
+    assert rows[primary.id].conclusion_code == "manual_only"
+    assert rows[primary.id].conclusion_bucket == "user_action"
+    assert rows[discovery.id].conclusion_code == "duplicate_catalog_target"
+    assert rows[discovery.id].conclusion_bucket == "deferred"
+    assert primary.id in rows[discovery.id].conclusion_reason
+
+
+def test_public_candidate_is_selected_as_duplicate_group_manager(db_session, query_service) -> None:
+    from newsradar.db.models import SourceAccessMethodRecord, SourceDefinitionRecord
+
+    common = dict(
+        provider_id="github",
+        availability="manual_only",
+        coverage_mode="catalog_only",
+        official_identity_url="https://publisher.example/technology",
+        reviewed_at=date(2026, 7, 16),
+        unlock_requirements=[],
+        status="candidate",
+        nature="professional_media",
+        language="en",
+        roles=["discovery"],
+        topics=["ai"],
+        authority_score=4,
+        poll_interval_minutes=60,
+        expected_fields=["title", "canonical_url"],
+        notes="candidate pair",
+    )
+    html = SourceDefinitionRecord(
+        id="publisher-html-1",
+        name="HTML placeholder",
+        target_type="publisher_feed",
+        definition_hash="publisher-html-hash",
+        **common,
+    )
+    rss = SourceDefinitionRecord(
+        id="publisher-rss-2",
+        name="RSS candidate",
+        target_type="search_query",
+        definition_hash="publisher-rss-hash",
+        **common,
+    )
+    db_session.add_all((html, rss))
+    db_session.flush()
+    db_session.add_all(
+        (
+            SourceAccessMethodRecord(
+                source_id=html.id,
+                kind="html",
+                url="https://publisher.example/technology",
+                priority=1,
+                requires_manual_approval=True,
+                headers={},
+                params={},
+            ),
+            SourceAccessMethodRecord(
+                source_id=rss.id,
+                kind="rss",
+                url="https://publisher.example/feed.xml",
+                priority=1,
+                requires_manual_approval=False,
+                headers={},
+                params={},
+            ),
+        )
+    )
+    db_session.commit()
+
+    rows = {row.source_id: row for row in query_service.targets()}
+
+    assert rows[rss.id].conclusion_code == "public_candidate_pending_acceptance"
+    assert rows[html.id].conclusion_code == "duplicate_catalog_target"
+    assert rss.id in rows[html.id].conclusion_reason
+
+
+def test_duplicate_manager_rule_does_not_reclassify_ready_targets(
+    db_session, query_service
+) -> None:
+    from newsradar.db.models import SourceAccessMethodRecord, SourceDefinitionRecord
+
+    common = dict(
+        provider_id="github",
+        availability="ready",
+        official_identity_url="https://ready.example/feed",
+        reviewed_at=date(2026, 7, 16),
+        unlock_requirements=[],
+        status="candidate",
+        nature="professional_media",
+        language="en",
+        roles=["discovery"],
+        topics=["ai"],
+        authority_score=4,
+        poll_interval_minutes=60,
+        expected_fields=["title", "canonical_url"],
+        notes="ready pair",
+    )
+    targets = (
+        SourceDefinitionRecord(
+            id="ready-direct-1",
+            name="Ready direct",
+            target_type="publisher_feed",
+            coverage_mode="direct",
+            definition_hash="ready-direct-hash",
+            **common,
+        ),
+        SourceDefinitionRecord(
+            id="ready-indirect-2",
+            name="Ready indirect",
+            target_type="search_query",
+            coverage_mode="indirect",
+            definition_hash="ready-indirect-hash",
+            **common,
+        ),
+    )
+    db_session.add_all(targets)
+    db_session.flush()
+    for target in targets:
+        db_session.add(
+            SourceAccessMethodRecord(
+                source_id=target.id,
+                kind="rss",
+                url="https://ready.example/feed",
+                priority=1,
+                requires_manual_approval=False,
+                headers={},
+                params={},
+            )
+        )
+    db_session.commit()
+
+    rows = {row.source_id: row for row in query_service.targets()}
+
+    assert rows["ready-direct-1"].conclusion_code != "duplicate_catalog_target"
+    assert rows["ready-indirect-2"].conclusion_code != "duplicate_catalog_target"

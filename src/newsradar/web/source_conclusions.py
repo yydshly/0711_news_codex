@@ -15,6 +15,7 @@ class SourceConclusionInput:
     indirect_duplicate_count: int = 0
     has_public_candidate: bool = False
     covered_by_successful_target_id: str | None = None
+    managed_by_target_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,15 @@ def conclude_source(value: SourceConclusionInput) -> SourceConclusion:
             "已由同一官方目标覆盖",
             f"同一官方身份的目标 {value.covered_by_successful_target_id} 已有真实成功抓取证据。",
             "保留此目录记录用于追溯；继续由已验证目标抓取，不重复开发或重复入库。",
+        )
+    if value.managed_by_target_id:
+        return _result(
+            "duplicate_catalog_target",
+            "deferred",
+            "重复目录项",
+            f"与目标 {value.managed_by_target_id} 使用同一官方身份，"
+            "当前问题和验收由主目标统一承载。",
+            "保留历史目录记录；不要重复申请权限、开发抓取器或重复入库。",
         )
     if value.availability == "manual_only" and value.has_public_candidate:
         return _result(

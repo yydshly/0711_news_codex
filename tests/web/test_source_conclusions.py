@@ -108,3 +108,50 @@ def test_placeholder_covered_by_successful_target_does_not_inflate_actual_succes
     assert conclusion.bucket == "deferred"
     assert conclusion.label == "已由同一官方目标覆盖"
     assert "no-priors-youtube" in conclusion.reason
+
+
+def test_duplicate_catalog_target_is_deferred_not_success() -> None:
+    from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
+
+    conclusion = conclude_source(
+        SourceConclusionInput(
+            "catalog_only",
+            "manual_only",
+            False,
+            None,
+            managed_by_target_id="universe-axios-1",
+        )
+    )
+
+    assert conclusion.code == "duplicate_catalog_target"
+    assert conclusion.bucket == "deferred"
+    assert conclusion.label == "重复目录项"
+    assert "universe-axios-1" in conclusion.reason
+
+
+@pytest.mark.parametrize(
+    ("availability", "covered_by", "expected"),
+    [
+        ("requires_payment", None, "payment_required"),
+        ("unavailable", None, "unavailable"),
+        ("requires_approval", None, "needs_approval"),
+        ("manual_only", "verified-target", "covered_by_successful_target"),
+    ],
+)
+def test_duplicate_manager_does_not_hide_stronger_conclusion(
+    availability: str, covered_by: str | None, expected: str
+) -> None:
+    from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
+
+    conclusion = conclude_source(
+        SourceConclusionInput(
+            "catalog_only",
+            availability,
+            False,
+            None,
+            covered_by_successful_target_id=covered_by,
+            managed_by_target_id="manager",
+        )
+    )
+
+    assert conclusion.code == expected

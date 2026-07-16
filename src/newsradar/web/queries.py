@@ -1019,6 +1019,37 @@ class DashboardQueryService:
             identity = _normalized_official_identity(official_identity_url)
             if identity:
                 successful_identity_targets.setdefault(identity, successful_source_id)
+        identity_groups: dict[str, list[SourceDefinitionRecord]] = defaultdict(list)
+        for source in records:
+            if source.availability != "manual_only" or source.coverage_mode != "catalog_only":
+                continue
+            identity = _normalized_official_identity(source.official_identity_url)
+            if identity:
+                identity_groups[identity].append(source)
+        managed_by_target: dict[str, str] = {}
+        for identity, group in identity_groups.items():
+            if len(group) < 2 or identity in successful_identity_targets:
+                continue
+
+            def manager_rank(source: SourceDefinitionRecord) -> tuple[bool, bool, bool, str]:
+                method = methods.get(source.id)
+                has_public_candidate = bool(
+                    method
+                    and method.kind != "html"
+                    and not method.requires_manual_approval
+                    and not (method.auth_envs or method.auth_env)
+                )
+                return (
+                    not has_public_candidate,
+                    source.target_type != "publisher_feed",
+                    not source.id.endswith("-1"),
+                    source.id,
+                )
+
+            manager = min(group, key=manager_rank)
+            managed_by_target.update(
+                (source.id, manager.id) for source in group if source.id != manager.id
+            )
         trial_decisions, _ = self._trial_decisions(records)
         rows = []
         for source in records:
@@ -1053,6 +1084,7 @@ class DashboardQueryService:
                     indirect_duplicate_count=duplicate_count,
                     has_public_candidate=public_candidate,
                     covered_by_successful_target_id=covered_by,
+                    managed_by_target_id=managed_by_target.get(source.id),
                 )
             )
             rows.append(
