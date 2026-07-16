@@ -414,13 +414,13 @@ def test_event_quality_coverage_counts_recent_v2_processing_in_collection_querie
         [
             EventCandidateRecord(
                 candidate_key="coverage-current",
-                algorithm_version="cluster-v2",
+                algorithm_version=EVENT_ALGORITHM_VERSIONS["cluster"],
                 title="当前候选",
                 updated_at=NOW,
             ),
             EventCandidateRecord(
                 candidate_key="coverage-future",
-                algorithm_version="cluster-v2",
+                algorithm_version=EVENT_ALGORITHM_VERSIONS["cluster"],
                 title="未来候选",
                 updated_at=NOW + timedelta(seconds=1),
             ),

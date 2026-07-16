@@ -76,12 +76,12 @@ def _seed_operation(
     )
 
 
-def test_pipeline_exposes_all_v2_rule_versions() -> None:
+def test_pipeline_exposes_current_rule_versions() -> None:
     assert ALGORITHM_VERSIONS == {
         "relevance": "relevance-v2",
         "newsworthiness": "newsworthiness-v2",
         "entities": "entities-v2",
-        "cluster": "cluster-v2",
+        "cluster": "cluster-v3",
         "score": "score-v2",
     }
 
@@ -386,13 +386,13 @@ def test_pipeline_uses_model_only_for_anchored_boundary_pair(
     items = (
         ClusterItem(
             raw_item_id=1,
-            title="OpenAI launches Orion model",
+            title="OpenAI launches Orion reasoning model",
             entities=("model:orion",),
             published_at=now,
         ),
         ClusterItem(
             raw_item_id=2,
-            title="OpenAI Orion model overview",
+            title="Orion reasoning model released by OpenAI",
             entities=("model:orion",),
             published_at=now,
         ),

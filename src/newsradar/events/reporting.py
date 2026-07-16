@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import EventScoreRecord, EventVersionRecord, OperationRunRecord
 from newsradar.events.operation_snapshots import latest_complete_event_snapshot
+from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 
 _MAX_WINDOW_HOURS = 720
 _MAX_EVENT_IDS = 10_000
@@ -355,7 +356,7 @@ def render_event_quality_report(view: EventQualityReportView) -> str:
             "",
             "## 本次 Operation 候选与事件",
             "",
-            f"- 候选簇（cluster-v2）：{view.candidate_count}",
+            f"- 候选簇（{EVENT_ALGORITHM_VERSIONS['cluster']}）：{view.candidate_count}",
             f"- current：{visibility.get('current', 0)}",
             f"- legacy：{visibility.get('legacy', 0)}",
             f"- 热点：{tier_counts.get('hotspot', 0)}",

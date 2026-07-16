@@ -6,9 +6,15 @@ from hashlib import sha256
 import pytest
 
 from newsradar.events import clustering
-from newsradar.events.clustering import CLUSTER_RULE_VERSION, cluster_candidates, compare_items
+from newsradar.events.clustering import (
+    CLUSTER_RULE_VERSION,
+    candidate_pairs,
+    cluster_candidates,
+    compare_items,
+    evaluate_pair_rules,
+)
 from newsradar.events.entities import extract_entities
-from newsradar.events.schema import ClusterItem, RawItemText
+from newsradar.events.schema import ClusterItem, PairDecisionKind, RawItemText
 
 NOW = datetime(2026, 7, 12, 12, tzinfo=UTC)
 
@@ -34,6 +40,55 @@ def test_same_canonical_url_is_a_strong_match() -> None:
     assert decision.matched
     assert decision.score == 1.0
     assert "same_canonical_url" in decision.reasons
+
+
+def test_cross_publisher_semantic_merge_requires_entity_action_time_and_title() -> None:
+    left = item(
+        title="OpenAI launches Orion reasoning model",
+        publisher_name="Official",
+        entities=("organization:openai", "model:orion"),
+        published_at=NOW,
+    )
+    right = item(
+        raw_item_id=2,
+        title="OpenAI releases new Orion model for developers",
+        publisher_name="Media A",
+        entities=("organization:openai", "model:orion"),
+        published_at=NOW + timedelta(hours=3),
+    )
+
+    decision = compare_items(left, right)
+
+    assert decision.matched is True
+    assert {
+        "shared_non_generic_entity",
+        "same_action",
+        "within_48_hours",
+        "safe_title_similarity",
+    } <= set(decision.reasons)
+
+
+def test_same_entity_and_window_with_different_action_stays_separate() -> None:
+    left = item(title="Regulator investigates Orion", entities=("model:orion",))
+    right = item(
+        raw_item_id=2,
+        title="OpenAI launches Orion",
+        entities=("model:orion",),
+        published_at=NOW + timedelta(hours=1),
+    )
+
+    assert compare_items(left, right).matched is False
+
+
+def test_generic_ai_words_never_create_candidate_pair() -> None:
+    left = item(raw_item_id=1, title="AI model market grows", entities=("model:ai",))
+    right = item(
+        raw_item_id=2,
+        title="AI model safety debate",
+        entities=("model:model",),
+    )
+
+    assert candidate_pairs((left, right)) == ()
 
 
 def test_same_company_different_actions_do_not_merge() -> None:
@@ -66,8 +121,8 @@ def test_same_company_action_and_day_do_not_merge_different_object_entities() ->
     decision = compare_items(left, right)
 
     assert decision.matched is False
-    assert "shared_organization" in decision.reasons
-    assert "shared_object_entity" not in decision.reasons
+    assert "disjoint_object_entities" in decision.reasons
+    assert evaluate_pair_rules(left, right).kind is PairDecisionKind.DIRECT_SEPARATE
 
 
 def test_same_company_action_and_shared_object_entity_is_a_compatible_weak_match() -> None:
@@ -87,7 +142,7 @@ def test_same_company_action_and_shared_object_entity_is_a_compatible_weak_match
     assert "shared_object_entity" in decision.reasons
 
 
-def test_cluster_v2_does_not_merge_shared_company_without_same_object_and_action() -> None:
+def test_cluster_v3_does_not_merge_shared_company_without_same_object_and_action() -> None:
     left = item(
         entities=("organization:openai", "model:orion"),
         title="OpenAI launches Orion model",
@@ -105,17 +160,17 @@ def test_cluster_v2_does_not_merge_shared_company_without_same_object_and_action
     ("offset", "expected"),
     [(timedelta(hours=48), True), (timedelta(hours=48, seconds=1), False)],
 )
-def test_cluster_v2_requires_same_object_action_within_48_hours(
+def test_cluster_v3_requires_same_object_action_within_48_hours(
     offset: timedelta, expected: bool
 ) -> None:
     left = item(
         entities=("model:orion",),
-        title="OpenAI launches Orion model",
+        title="OpenAI releases Orion model",
     )
     right = item(
         raw_item_id=2,
         entities=("model:orion",),
-        title="Orion model released: by OpenAI",
+        title="OpenAI released Orion model",
         published_at=NOW + offset,
     )
 
@@ -129,6 +184,26 @@ def test_title_fingerprint_needs_same_publisher_or_evidence_root() -> None:
 
     assert compare_items(left, unrelated).matched is False
     assert compare_items(left, same_publisher).matched is True
+
+
+def test_publisher_suffix_is_removed_before_safe_title_comparison() -> None:
+    left = item(
+        title="OpenAI launches Orion model",
+        publisher_name="Official",
+        entities=("model:orion",),
+    )
+    right = item(
+        raw_item_id=2,
+        title="OpenAI launches Orion model - Media A",
+        publisher_name="Media A",
+        entities=("model:orion",),
+        published_at=NOW + timedelta(hours=2),
+    )
+
+    decision = compare_items(left, right)
+
+    assert decision.matched is True
+    assert "safe_title_similarity" in decision.reasons
 
 
 def test_same_upstream_root_is_a_strong_match_without_explicit_object_entity() -> None:
@@ -198,6 +273,27 @@ def test_same_canonical_url_overrides_conflicting_title_actions() -> None:
     assert "conflicting_action" not in decision.reasons
 
 
+def test_canonical_and_original_url_identity_bypass_semantic_time_window() -> None:
+    shared_url = "https://publisher.test/releases/orion"
+    left = item(
+        raw_item_id=1,
+        canonical_url=shared_url,
+        title="OpenAI launches Orion",
+        published_at=NOW,
+    )
+    right = item(
+        raw_item_id=2,
+        original_url=shared_url,
+        title="A later mirror with a conflicting headline",
+        published_at=NOW + timedelta(days=10),
+    )
+
+    clusters = cluster_candidates((left, right))
+
+    assert [cluster.raw_item_ids for cluster in clusters] == [(1, 2)]
+    assert "same_evidence_root" in clusters[0].reasons
+
+
 @pytest.mark.parametrize("identity", ["repository_id", "paper_id"])
 def test_repository_and_paper_identity_override_conflicting_title_actions(identity: str) -> None:
     decision = compare_items(
@@ -227,12 +323,12 @@ def test_candidate_generation_only_merges_blocked_items_within_48_hours() -> Non
 
     clusters = cluster_candidates((old, unblocked, nearby, first))
 
-    assert CLUSTER_RULE_VERSION == "cluster-v2"
+    assert CLUSTER_RULE_VERSION == "cluster-v3"
     assert [cluster.raw_item_ids for cluster in clusters] == [(1, 2), (3,), (4,)]
     assert "same_title_fingerprint" in clusters[0].reasons
 
 
-def test_cluster_v2_candidate_identity_does_not_reuse_legacy_identity() -> None:
+def test_cluster_v3_candidate_identity_does_not_reuse_legacy_identity() -> None:
     candidate_key = cluster_candidates((item(),))[0].candidate_key
     legacy_value = "title:acme launches model x|launch|2026-07-12"
     legacy_key = f"event-v2:{sha256(legacy_value.encode()).hexdigest()[:16]}"
@@ -290,7 +386,7 @@ def test_immutable_identity_candidate_key_does_not_depend_on_date_or_anchor(
     assert first.candidate_key == later.candidate_key
 
 
-def test_real_gpt5_titles_with_different_urls_cluster_by_model_and_action() -> None:
+def test_real_gpt5_titles_with_low_similarity_remain_separate() -> None:
     left_title = "OpenAI releases GPT-5 for developers"
     right_title = "GPT-5 model released with new coding capabilities"
     left_entities = tuple(
@@ -302,25 +398,26 @@ def test_real_gpt5_titles_with_different_urls_cluster_by_model_and_action() -> N
         for entity in extract_entities(RawItemText(title=right_title))
     )
 
-    clusters = cluster_candidates(
-        (
-            item(
-                raw_item_id=1,
-                title=left_title,
-                canonical_url="https://official.test/gpt5",
-                entities=left_entities,
-            ),
-            item(
-                raw_item_id=2,
-                title=right_title,
-                canonical_url="https://media.test/gpt5",
-                entities=right_entities,
-                published_at=NOW + timedelta(hours=3),
-            ),
-        )
+    left = item(
+        raw_item_id=1,
+        title=left_title,
+        canonical_url="https://official.test/gpt5",
+        entities=left_entities,
+    )
+    right = item(
+        raw_item_id=2,
+        title=right_title,
+        canonical_url="https://media.test/gpt5",
+        entities=right_entities,
+        published_at=NOW + timedelta(hours=3),
     )
 
-    assert [cluster.raw_item_ids for cluster in clusters] == [(1, 2)]
+    decision = compare_items(left, right)
+    clusters = cluster_candidates((left, right))
+
+    assert decision.matched is False
+    assert "low_title_similarity" in decision.reasons
+    assert [cluster.raw_item_ids for cluster in clusters] == [(1,), (2,)]
     assert "model:gpt-5" in left_entities
     assert "model:gpt-5" in right_entities
 

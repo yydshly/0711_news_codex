@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from hashlib import sha256
 
 from newsradar.events.schema import (
@@ -16,10 +17,24 @@ from newsradar.events.schema import (
     PairRuleDecision,
 )
 
-CLUSTER_RULE_VERSION = "cluster-v2"
+CLUSTER_RULE_VERSION = "cluster-v3"
+TITLE_SIMILARITY_THRESHOLD = 0.58
+MODEL_BOUNDARY_TITLE_THRESHOLD = 0.42
 _CANDIDATE_WINDOW_SECONDS = 48 * 60 * 60
 _GENERIC_ENTITIES = frozenset({"ai", "agent", "api", "benchmark", "llm", "model"})
 _OBJECT_ENTITY_TYPES = frozenset({"product", "model", "paper", "dataset", "project"})
+_ORGANIZATION_ENTITY_ACTIONS = frozenset({"acquire", "partner", "fund", "regulate"})
+_STRONG_IDENTITY_REASONS = frozenset(
+    {"same_evidence_root", "same_canonical_url", "same_repository_id", "same_paper_id"}
+)
+_STRONG_BLOCKING_KEY_PREFIXES = (
+    "canonical_hash:",
+    "canonical_url:",
+    "discovery:",
+    "url_identity:",
+    "repository:",
+    "paper:",
+)
 _ACTION_GROUPS = {
     "launch": frozenset(
         {
@@ -42,26 +57,81 @@ _ACTION_GROUPS = {
     "acquire": frozenset({"acquire", "acquires", "acquired", "acquisition"}),
     "partner": frozenset({"partner", "partners", "partnership"}),
     "fund": frozenset({"funding", "raises", "raised", "investment"}),
+    "regulate": frozenset(
+        {
+            "regulate",
+            "regulates",
+            "regulated",
+            "regulation",
+            "investigate",
+            "investigates",
+            "investigation",
+            "ban",
+            "bans",
+            "banned",
+        }
+    ),
 }
 
 
 def compare_items(left: ClusterItem, right: ClusterItem) -> ClusterDecision:
     """Compare a pre-blocked pair using local, explainable evidence only."""
     reasons: list[str] = []
-    score = _immutable_identity_score(left, right, reasons)
+    if _immutable_identity_score(left, right, reasons):
+        return _decision(True, 1.0, tuple(reasons))
+
     left_action, right_action = _action(left.title), _action(right.title)
-    if score == 0 and left_action and right_action and left_action != right_action:
+    if left_action and right_action and left_action != right_action:
         return _decision(False, 0.0, ("conflicting_action",))
+
     if (
         left.title_fingerprint
         and left.title_fingerprint == right.title_fingerprint
         and _same_publisher_or_root(left, right)
+        and _within_candidate_window(left, right)
     ):
-        reasons.append("same_title_fingerprint")
-        score += 0.8
-    score += _entity_action_similarity(left, right, left_action, right_action, reasons)
-    score += _time_similarity(left.published_at, right.published_at, reasons)
-    return _decision(score >= 1.0, score, tuple(reasons))
+        return _decision(
+            True,
+            1.0,
+            ("same_title_fingerprint", "within_48_hours"),
+        )
+
+    left_objects = _object_entities(left.entities)
+    right_objects = _object_entities(right.entities)
+    if left_objects and right_objects and left_objects.isdisjoint(right_objects):
+        return _decision(False, 0.0, ("disjoint_object_entities",))
+
+    shared_entities = _non_generic_entities(left.entities) & _non_generic_entities(
+        right.entities
+    )
+    if not shared_entities:
+        return _decision(False, 0.0, ())
+    reasons.append("shared_non_generic_entity")
+    if any(_entity_type(entity) in _OBJECT_ENTITY_TYPES for entity in shared_entities):
+        reasons.append("shared_object_entity")
+    else:
+        reasons.append("shared_organization")
+
+    if not left_action or left_action != right_action:
+        return _decision(False, 0.0, tuple(reasons))
+    reasons.append("same_action")
+    if "shared_organization" in reasons and left_action not in _ORGANIZATION_ENTITY_ACTIONS:
+        reasons.append("organization_only_not_sufficient")
+        return _decision(False, 0.0, tuple(reasons))
+
+    if not _within_candidate_window(left, right):
+        return _decision(False, 0.0, tuple(reasons))
+    reasons.append("within_48_hours")
+
+    title_similarity = _title_similarity(left, right)
+    if title_similarity >= TITLE_SIMILARITY_THRESHOLD:
+        reasons.append("safe_title_similarity")
+        return _decision(True, title_similarity, tuple(reasons))
+    if title_similarity >= MODEL_BOUNDARY_TITLE_THRESHOLD:
+        reasons.append("model_boundary_title_similarity")
+    else:
+        reasons.append("low_title_similarity")
+    return _decision(False, title_similarity, tuple(reasons))
 
 
 def candidate_pairs(
@@ -78,23 +148,23 @@ def candidate_pairs(
 def evaluate_pair_rules(left: ClusterItem, right: ClusterItem) -> PairRuleDecision:
     """Classify a bounded pair into direct or model-boundary treatment."""
     compared = compare_items(left, right)
-    structural_anchor = bool(
-        {
-            "same_evidence_root",
-            "same_canonical_url",
-            "same_repository_id",
-            "same_paper_id",
-            "shared_object_entity",
-            "same_action",
-        }
-        & set(compared.reasons)
-    )
-    if compared.score >= 0.80 and structural_anchor:
+    reason_set = set(compared.reasons)
+    strong_identity = bool(_STRONG_IDENTITY_REASONS & reason_set)
+    semantic_anchor = {
+        "shared_non_generic_entity",
+        "same_action",
+    } <= reason_set and "organization_only_not_sufficient" not in reason_set
+    structural_anchor = strong_identity or semantic_anchor
+    if compared.matched and (
+        strong_identity
+        or "same_title_fingerprint" in reason_set
+        or (semantic_anchor and "safe_title_similarity" in reason_set)
+    ):
         kind = PairDecisionKind.DIRECT_MERGE
-    elif compared.score <= 0.45 or not structural_anchor:
-        kind = PairDecisionKind.DIRECT_SEPARATE
-    else:
+    elif semantic_anchor and "model_boundary_title_similarity" in reason_set:
         kind = PairDecisionKind.MODEL_BOUNDARY
+    else:
+        kind = PairDecisionKind.DIRECT_SEPARATE
     return PairRuleDecision(
         left_raw_item_id=min(left.raw_item_id, right.raw_item_id),
         right_raw_item_id=max(left.raw_item_id, right.raw_item_id),
@@ -127,13 +197,11 @@ def cluster_candidates(
             )
             should_merge = pair is not None and pair.decision == "merge"
             reasons = pair.rule_reasons if pair is not None else ()
-        if should_merge and _can_union_within_window(
-            parents,
-            component_min,
-            component_max,
-            left_index,
-            right_index,
-        ):
+        within_window = _can_union_within_window(
+            parents, component_min, component_max, left_index, right_index
+        )
+        strong_identity = bool(_STRONG_IDENTITY_REASONS & set(reasons))
+        if should_merge and (within_window or strong_identity):
             _union(
                 parents,
                 component_min,
@@ -182,40 +250,6 @@ def _decision(matched: bool, score: float, reasons: tuple[str, ...]) -> ClusterD
     )
 
 
-def _entity_action_similarity(
-    left: ClusterItem,
-    right: ClusterItem,
-    left_action: str | None,
-    right_action: str | None,
-    reasons: list[str],
-) -> float:
-    shared_entities = _non_generic_entities(left.entities) & _non_generic_entities(right.entities)
-    if not shared_entities:
-        return 0.0
-    shared_objects = {
-        entity
-        for entity in shared_entities
-        if _entity_type(entity) in _OBJECT_ENTITY_TYPES
-    }
-    if shared_objects:
-        reasons.append("shared_object_entity")
-    else:
-        reasons.append("shared_organization")
-    if shared_objects and left_action and left_action == right_action:
-        reasons.append("same_action")
-        return 0.8
-    return 0.4
-
-
-def _time_similarity(left: datetime | None, right: datetime | None, reasons: list[str]) -> float:
-    if left is None or right is None:
-        return 0.0
-    if abs((left - right).total_seconds()) <= _CANDIDATE_WINDOW_SECONDS:
-        reasons.append("within_48_hours")
-        return 0.2
-    return 0.0
-
-
 def _immutable_identity_score(left: ClusterItem, right: ClusterItem, reasons: list[str]) -> float:
     score = 0.0
     same_canonical_url = bool(
@@ -240,12 +274,19 @@ def _immutable_identity_score(left: ClusterItem, right: ClusterItem, reasons: li
 def _candidate_pairs(items: tuple[ClusterItem, ...]) -> tuple[tuple[int, int], ...]:
     buckets: dict[str, list[int]] = {}
     for index, item in enumerate(items):
-        if item.published_at is None:
-            continue
         for key in _blocking_keys(item):
+            if item.published_at is None and not _strong_blocking_key(key):
+                continue
             buckets.setdefault(key, []).append(index)
     pairs: set[tuple[int, int]] = set()
-    for indexes in buckets.values():
+    for key, indexes in buckets.items():
+        if _strong_blocking_key(key):
+            pairs.update(
+                (min(left, right), max(left, right))
+                for offset, left in enumerate(indexes)
+                for right in indexes[offset + 1 :]
+            )
+            continue
         time_ordered = sorted(indexes, key=lambda index: (items[index].published_at, index))
         for offset, left_index in enumerate(time_ordered):
             for right_index in time_ordered[offset + 1 :]:
@@ -261,6 +302,7 @@ def _blocking_keys(item: ClusterItem) -> tuple[str, ...]:
         keys.add(f"canonical_hash:{item.canonical_url_hash}")
     if item.canonical_url:
         keys.add(f"canonical_url:{item.canonical_url}")
+        keys.add(f"url_identity:{item.canonical_url}")
     if item.title_fingerprint:
         keys.add(f"title:{item.title_fingerprint}")
     keys.update(f"entity:{entity}" for entity in _non_generic_entities(item.entities))
@@ -270,7 +312,12 @@ def _blocking_keys(item: ClusterItem) -> tuple[str, ...]:
         keys.add(f"paper:{item.paper_id}")
     if item.original_url:
         keys.add(f"discovery:{item.original_url}")
+        keys.add(f"url_identity:{item.original_url}")
     return tuple(sorted(keys))
+
+
+def _strong_blocking_key(key: str) -> bool:
+    return key.startswith(_STRONG_BLOCKING_KEY_PREFIXES)
 
 
 def _within_candidate_window(left: ClusterItem, right: ClusterItem) -> bool:
@@ -290,6 +337,14 @@ def _non_generic_entities(entities: tuple[str, ...]) -> set[str]:
     }
 
 
+def _object_entities(entities: tuple[str, ...]) -> set[str]:
+    return {
+        entity
+        for entity in _non_generic_entities(entities)
+        if _entity_type(entity) in _OBJECT_ENTITY_TYPES
+    }
+
+
 def _entity_type(entity: str) -> str:
     return entity.split(":", 1)[0].casefold() if ":" in entity else ""
 
@@ -305,6 +360,22 @@ def _same_publisher_or_root(left: ClusterItem, right: ClusterItem) -> bool:
         and left.publisher_name.casefold().strip() == right.publisher_name.casefold().strip()
     )
     return same_publisher or bool(_url_identities(left) & _url_identities(right))
+
+
+def _normalized_title(item: ClusterItem) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", item.title.casefold()).strip()
+    publisher = re.sub(
+        r"[^a-z0-9]+", " ", (item.publisher_name or "").casefold()
+    ).strip()
+    if publisher and text.endswith(f" {publisher}"):
+        text = text[: -(len(publisher) + 1)].strip()
+    return " ".join(
+        token for token in text.split() if token not in {"the", "a", "an", "new", "report"}
+    )
+
+
+def _title_similarity(left: ClusterItem, right: ClusterItem) -> float:
+    return SequenceMatcher(None, _normalized_title(left), _normalized_title(right)).ratio()
 
 
 def _action(title: str) -> str | None:
@@ -393,12 +464,10 @@ def _union(
         parents[right_root] = left_root
         left_min, right_min = component_min[left_root], component_min[right_root]
         left_max, right_max = component_max[left_root], component_max[right_root]
-        component_min[left_root] = min(
-            value for value in (left_min, right_min) if value is not None
-        )
-        component_max[left_root] = max(
-            value for value in (left_max, right_max) if value is not None
-        )
+        minimums = [value for value in (left_min, right_min) if value is not None]
+        maximums = [value for value in (left_max, right_max) if value is not None]
+        component_min[left_root] = min(minimums) if minimums else None
+        component_max[left_root] = max(maximums) if maximums else None
 
 
 def _can_union_within_window(

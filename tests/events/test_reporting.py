@@ -50,6 +50,7 @@ def test_quality_report_is_chinese_auditable_and_secret_free() -> None:
         "excluded",
         "排除原因",
         "候选簇",
+        "cluster-v3",
         "current",
         "legacy",
         "AI 相关性",

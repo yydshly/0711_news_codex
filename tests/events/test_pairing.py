@@ -96,6 +96,65 @@ def test_rule_pairs_merge_identical_canonical_evidence_directly() -> None:
     assert rule.left_raw_item_id == 1
 
 
+def test_shared_entity_without_same_action_is_not_a_structural_anchor() -> None:
+    now = datetime(2026, 7, 15, 9, tzinfo=UTC)
+    left = ClusterItem(
+        raw_item_id=1,
+        title="Orion model availability",
+        entities=("model:orion",),
+        published_at=now,
+    )
+    right = ClusterItem(
+        raw_item_id=2,
+        title="A technical review of Orion",
+        entities=("model:orion",),
+        published_at=now,
+    )
+
+    rule = evaluate_pair_rules(left, right)
+
+    assert rule.structural_anchor is False
+    assert rule.kind is PairDecisionKind.DIRECT_SEPARATE
+
+
+def test_launch_with_only_shared_organization_is_not_a_structural_anchor() -> None:
+    now = datetime(2026, 7, 15, 9, tzinfo=UTC)
+    left = ClusterItem(
+        raw_item_id=1,
+        title="OpenAI releases Atlas model",
+        entities=("organization:openai",),
+        published_at=now,
+    )
+    right = left.model_copy(update={"raw_item_id": 2})
+
+    rule = evaluate_pair_rules(left, right)
+
+    assert rule.structural_anchor is False
+    assert rule.kind is PairDecisionKind.DIRECT_SEPARATE
+
+
+def test_anchored_borderline_title_similarity_uses_model_boundary() -> None:
+    now = datetime(2026, 7, 15, 9, tzinfo=UTC)
+    left = ClusterItem(
+        raw_item_id=1,
+        title="OpenAI launches Orion reasoning model",
+        entities=("model:orion",),
+        published_at=now,
+    )
+    right = ClusterItem(
+        raw_item_id=2,
+        title="Orion reasoning model released by OpenAI",
+        entities=("model:orion",),
+        published_at=now,
+    )
+
+    rule = evaluate_pair_rules(left, right)
+
+    assert rule.structural_anchor is True
+    assert rule.kind is PairDecisionKind.MODEL_BOUNDARY
+    assert "model_boundary_title_similarity" in rule.reasons
+
+
 def test_candidate_pairs_are_blocked_and_not_global_cross_product() -> None:
     now = datetime(2026, 7, 15, 9, tzinfo=UTC)
     items = (

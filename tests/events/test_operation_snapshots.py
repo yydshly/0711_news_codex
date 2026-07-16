@@ -114,6 +114,7 @@ def test_latest_complete_snapshot_skips_newer_incomplete_operation() -> None:
 def test_snapshot_rejects_duplicate_boolean_and_old_algorithm_refs() -> None:
     with Session(_engine()) as session:
         event = _event(session, "event")
+        old_versions = {**dict(EVENT_ALGORITHM_VERSIONS), "cluster": "cluster-v2"}
         _operation(
             session,
             created_at=NOW - timedelta(minutes=3),
@@ -131,13 +132,17 @@ def test_snapshot_rejects_duplicate_boolean_and_old_algorithm_refs() -> None:
             session,
             created_at=NOW - timedelta(minutes=1),
             refs=[{"event_id": event.id, "version_number": 1}],
-            algorithm_versions={"cluster": "cluster-v1"},
+            algorithm_versions=old_versions,
         )
         session.commit()
 
         snapshot = latest_complete_event_snapshot(session, now=NOW)
 
     assert snapshot is None
+
+
+def test_current_event_algorithm_snapshot_uses_cluster_v3() -> None:
+    assert EVENT_ALGORITHM_VERSIONS["cluster"] == "cluster-v3"
 
 
 def test_snapshot_rejects_future_or_unfinished_operation_and_accepts_empty_manifest() -> None:
