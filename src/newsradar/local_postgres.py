@@ -12,7 +12,7 @@ from typing import ClassVar
 from urllib.parse import quote
 
 POSTGRES_HOST = "127.0.0.1"
-POSTGRES_PORT = 55432
+POSTGRES_DEFAULT_PORT = 55432
 POSTGRES_USER = "newsradar"
 POSTGRES_DATABASE = "newsradar"
 
@@ -100,15 +100,36 @@ def _read_env_value(env_file: Path, key: str) -> str | None:
     return None
 
 
+def resolve_postgres_port(project_root: Path) -> int:
+    raw = os.getenv("NEWSRADAR_POSTGRES_PORT") or _read_env_value(
+        project_root / ".env", "NEWSRADAR_POSTGRES_PORT"
+    )
+    if raw is None:
+        return POSTGRES_DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError as error:
+        raise LocalPostgresError(
+            "NEWSRADAR_POSTGRES_PORT must be an integer from 1024 to 65535"
+        ) from error
+    if not 1024 <= port <= 65535:
+        raise LocalPostgresError(
+            "NEWSRADAR_POSTGRES_PORT must be an integer from 1024 to 65535"
+        )
+    return port
+
+
 class LocalPostgresManager:
     def __init__(
         self,
         paths: LocalPostgresPaths,
         *,
+        port: int = POSTGRES_DEFAULT_PORT,
         runner: Runner = subprocess.run,
         port_in_use: Callable[[], bool] | None = None,
     ) -> None:
         self.paths = paths
+        self.port = port
         self._runner = runner
         self._port_in_use = port_in_use or self._default_port_in_use
 
@@ -123,7 +144,7 @@ class LocalPostgresManager:
                 "exist or both be absent"
             )
         if self._port_in_use():
-            raise LocalPostgresError(f"Port {POSTGRES_PORT} is already in use")
+            raise LocalPostgresError(f"Port {self.port} is already in use")
 
         generated_password = password or secrets.token_urlsafe(32)
         runtime_dir = self.paths.data_dir.parent
@@ -163,7 +184,7 @@ class LocalPostgresManager:
                     "--host",
                     POSTGRES_HOST,
                     "--port",
-                    str(POSTGRES_PORT),
+                    str(self.port),
                     "--username",
                     POSTGRES_USER,
                     POSTGRES_DATABASE,
@@ -178,7 +199,7 @@ class LocalPostgresManager:
         finally:
             if password_path is not None:
                 password_path.unlink(missing_ok=True)
-        return f"Project-local PostgreSQL initialized at {POSTGRES_HOST}:{POSTGRES_PORT}."
+        return f"Project-local PostgreSQL initialized at {POSTGRES_HOST}:{self.port}."
 
     def repair(self, *, password: str | None = None) -> str:
         has_cluster = self._is_initialized()
@@ -199,7 +220,7 @@ class LocalPostgresManager:
         try:
             if not self._cluster_running():
                 if self._port_in_use():
-                    raise LocalPostgresError(f"Port {POSTGRES_PORT} is already in use")
+                    raise LocalPostgresError(f"Port {self.port} is already in use")
                 self._start_process()
                 started = True
             if not self._database_exists(password):
@@ -211,7 +232,7 @@ class LocalPostgresManager:
                         "--host",
                         POSTGRES_HOST,
                         "--port",
-                        str(POSTGRES_PORT),
+                        str(self.port),
                         "--username",
                         POSTGRES_USER,
                         POSTGRES_DATABASE,
@@ -229,21 +250,26 @@ class LocalPostgresManager:
         encoded_password = quote(password, safe="")
         database_url = (
             f"postgresql+psycopg://{POSTGRES_USER}:{encoded_password}"
-            f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DATABASE}"
+            f"@{POSTGRES_HOST}:{self.port}/{POSTGRES_DATABASE}"
         )
         lines = self._initial_env_lines()
-        replacement = f"DATABASE_URL={database_url}"
+        replacements = {
+            "DATABASE_URL": f"DATABASE_URL={database_url}",
+            "NEWSRADAR_POSTGRES_PORT": f"NEWSRADAR_POSTGRES_PORT={self.port}",
+        }
         updated: list[str] = []
-        replaced = False
+        replaced: set[str] = set()
         for line in lines:
-            if line.startswith("DATABASE_URL="):
-                if not replaced:
-                    updated.append(replacement)
-                    replaced = True
-            else:
-                updated.append(line)
-        if not replaced:
-            updated.insert(0, replacement)
+            key = line.partition("=")[0]
+            if key in replacements:
+                if key not in replaced:
+                    updated.append(replacements[key])
+                    replaced.add(key)
+                continue
+            updated.append(line)
+        for key in ("NEWSRADAR_POSTGRES_PORT", "DATABASE_URL"):
+            if key not in replaced:
+                updated.insert(0, replacements[key])
         self.paths.env_file.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
         return "Updated the local DATABASE_URL without exposing credentials."
 
@@ -252,9 +278,9 @@ class LocalPostgresManager:
         if self._cluster_running():
             return "Project-local PostgreSQL is already running."
         if self._port_in_use():
-            raise LocalPostgresError(f"Port {POSTGRES_PORT} is already in use")
+            raise LocalPostgresError(f"Port {self.port} is already in use")
         self._start_process()
-        return f"Project-local PostgreSQL started at {POSTGRES_HOST}:{POSTGRES_PORT}."
+        return f"Project-local PostgreSQL started at {POSTGRES_HOST}:{self.port}."
 
     def status(self) -> str:
         self._require_initialized()
@@ -264,7 +290,7 @@ class LocalPostgresManager:
                 "--host",
                 POSTGRES_HOST,
                 "--port",
-                str(POSTGRES_PORT),
+                str(self.port),
                 "--dbname",
                 POSTGRES_DATABASE,
             ],
@@ -274,7 +300,7 @@ class LocalPostgresManager:
             state = "is accepting connections"
         else:
             state = "is not accepting connections"
-        return f"Project-local PostgreSQL {state} at {POSTGRES_HOST}:{POSTGRES_PORT}."
+        return f"Project-local PostgreSQL {state} at {POSTGRES_HOST}:{self.port}."
 
     def stop(self) -> str:
         self._require_initialized()
@@ -304,7 +330,7 @@ class LocalPostgresManager:
         with config_path.open("a", encoding="utf-8") as config:
             config.write("\n# News Codex project-local settings\n")
             config.write(f"listen_addresses = '{POSTGRES_HOST}'\n")
-            config.write(f"port = {POSTGRES_PORT}\n")
+            config.write(f"port = {self.port}\n")
             config.write("password_encryption = 'scram-sha-256'\n")
 
     def _start_process(self) -> None:
@@ -346,7 +372,7 @@ class LocalPostgresManager:
                 "--host",
                 POSTGRES_HOST,
                 "--port",
-                str(POSTGRES_PORT),
+                str(self.port),
                 "--username",
                 POSTGRES_USER,
                 "--dbname",
@@ -403,7 +429,7 @@ class LocalPostgresManager:
     def _has_database_url(self) -> bool:
         if not self.paths.env_file.exists():
             return False
-        expected = f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DATABASE}"
+        expected = f"@{POSTGRES_HOST}:{self.port}/{POSTGRES_DATABASE}"
         return any(
             line.startswith("DATABASE_URL=") and expected in line
             for line in self.paths.env_file.read_text(encoding="utf-8").splitlines()
@@ -413,13 +439,15 @@ class LocalPostgresManager:
         if not self._is_initialized():
             raise LocalPostgresError("Project-local PostgreSQL is not initialized; run db init")
 
-    @staticmethod
-    def _default_port_in_use() -> bool:
+    def _default_port_in_use(self) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
             connection.settimeout(0.25)
-            return connection.connect_ex((POSTGRES_HOST, POSTGRES_PORT)) == 0
+            return connection.connect_ex((POSTGRES_HOST, self.port)) == 0
 
 
 def build_local_postgres_manager(project_root: Path | None = None) -> LocalPostgresManager:
     root = project_root or Path.cwd()
-    return LocalPostgresManager(LocalPostgresPaths.discover(root))
+    return LocalPostgresManager(
+        LocalPostgresPaths.discover(root),
+        port=resolve_postgres_port(root),
+    )

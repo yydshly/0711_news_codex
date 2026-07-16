@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import newsradar.local_postgres as local_postgres
 from newsradar.local_postgres import (
     LocalPostgresError,
     LocalPostgresManager,
@@ -18,6 +19,67 @@ def make_install(root: Path) -> Path:
     for name in ("initdb.exe", "pg_ctl.exe", "createdb.exe", "pg_isready.exe", "psql.exe"):
         (bin_dir / name).touch()
     return bin_dir
+
+
+def make_paths(tmp_path: Path) -> LocalPostgresPaths:
+    return LocalPostgresPaths(
+        project_root=tmp_path,
+        bin_dir=make_install(tmp_path),
+        data_dir=tmp_path / ".local" / "postgres" / "data",
+        log_file=tmp_path / ".local" / "postgres" / "postgres.log",
+        env_file=tmp_path / ".env",
+    )
+
+
+def test_postgres_port_environment_overrides_project_env(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text(
+        "NEWSRADAR_POSTGRES_PORT=55111\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEWSRADAR_POSTGRES_PORT", "55232")
+
+    assert local_postgres.resolve_postgres_port(tmp_path) == 55232
+
+
+def test_postgres_port_reads_project_env_when_process_env_is_unset(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text(
+        "NEWSRADAR_POSTGRES_PORT=55232\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("NEWSRADAR_POSTGRES_PORT", raising=False)
+
+    assert local_postgres.resolve_postgres_port(tmp_path) == 55232
+
+
+@pytest.mark.parametrize("value", ["text", "0", "1023", "65536"])
+def test_invalid_postgres_port_is_rejected(tmp_path, monkeypatch, value) -> None:
+    monkeypatch.setenv("NEWSRADAR_POSTGRES_PORT", value)
+
+    with pytest.raises(LocalPostgresError, match="1024.*65535"):
+        local_postgres.resolve_postgres_port(tmp_path)
+
+
+def test_configured_port_is_used_for_status_and_database_url(tmp_path) -> None:
+    paths = make_paths(tmp_path)
+    paths.data_dir.mkdir(parents=True)
+    (paths.data_dir / "PG_VERSION").write_text("18", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        normalized = [str(part) for part in command]
+        calls.append(normalized)
+        return subprocess.CompletedProcess(normalized, 0, stdout="ready", stderr="")
+
+    manager = LocalPostgresManager(paths, port=55232, runner=runner)
+
+    manager.status()
+    manager.write_database_url("secret")
+
+    status_command = calls[0]
+    assert status_command[status_command.index("--port") + 1] == "55232"
+    env_contents = paths.env_file.read_text(encoding="utf-8")
+    assert "NEWSRADAR_POSTGRES_PORT=55232" in env_contents
+    assert "@127.0.0.1:55232/newsradar" in env_contents
 
 
 def test_repair_dependency_is_part_of_postgres_discovery() -> None:
