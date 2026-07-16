@@ -760,17 +760,23 @@ def create_app(
             catalog_state=catalog_state if catalog_state in {"current", "archived"} else "current",
         )
         result, error_response = query_with_timestamp_safely(
-            request, lambda service: service.targets(filters)
+            request,
+            lambda service: (
+                service.targets(filters),
+                service.target_conclusion_summary(),
+            ),
         )
         if error_response is not None:
             return error_response
         assert result is not None
-        rows, latest_probe_at = result
+        payload, latest_probe_at = result
+        rows, conclusion_summary = payload
         return templates.TemplateResponse(
             request=request,
             name="targets.html",
             context={
                 "targets": rows,
+                "conclusion_summary": conclusion_summary,
                 "filters": filters,
                 "target_type_options": _TARGET_TYPES,
                 "coverage_options": _COVERAGE_MODES,

@@ -12,6 +12,17 @@
     <p>这里展示登记目标及其最近内容探测。尚未探测不代表成功，间接发现也不代表已直接读取内容。</p>
   </section>
 
+  <section class="panel" aria-labelledby="target-conclusion-summary-heading">
+    <div class="section-heading"><div><p class="eyebrow">来源可用性收口</p><h2 id="target-conclusion-summary-heading">当前目标结论汇总</h2></div></div>
+    <dl class="capability-metrics">
+      <div><dt>总目标数</dt><dd>{{ conclusion_summary.total }}</dd></div>
+      <div><dt>实际成功数</dt><dd>{{ conclusion_summary.actual_success }}</dd></div>
+      <div><dt>可修复数</dt><dd>{{ conclusion_summary.fixable }}</dd></div>
+      <div><dt>需要用户操作数</dt><dd>{{ conclusion_summary.user_action }}</dd></div>
+      <div><dt>近期不处理数</dt><dd>{{ conclusion_summary.deferred }}</dd></div>
+    </dl>
+  </section>
+
   <form class="panel filter-form target-filters" method="get" action="/targets" aria-label="筛选 Target">
     <label>关键词
       <input type="search" name="q" maxlength="100" value="{{ filters.get('q', '') }}" placeholder="名称或 ID">
@@ -36,12 +47,14 @@
     {% if targets %}
     <div class="table-scroll" role="region" aria-label="Target 列表" tabindex="0">
       <table>
-        <thead><tr><th scope="col">名称</th><th scope="col">Provider</th><th scope="col">类型</th><th scope="col">角色</th><th scope="col">覆盖</th><th scope="col">可用性</th><th scope="col">试用状态</th><th scope="col">试用说明</th><th scope="col">首选协议</th><th scope="col">风险</th><th scope="col">最新内容时间</th><th scope="col">最新内容探测结果</th></tr></thead>
+        <thead><tr><th scope="col">名称</th><th scope="col">Provider</th><th scope="col">当前结论</th><th scope="col">中文原因和下一步动作</th><th scope="col">类型</th><th scope="col">角色</th><th scope="col">覆盖</th><th scope="col">可用性</th><th scope="col">试用状态</th><th scope="col">试用说明</th><th scope="col">首选协议</th><th scope="col">风险</th><th scope="col">最新内容时间</th><th scope="col">最新内容探测结果</th></tr></thead>
         <tbody>
         {% for target in targets %}
           <tr>
             <th scope="row"><a href="/targets/{{ target.source_id }}">{{ target.name }}</a><small>{{ target.source_id }}</small></th>
             <td>{% if target.provider_id == 'independent' %}{{ target.provider_name }}{% else %}<a href="/providers/{{ target.provider_id }}">{{ target.provider_name }}</a>{% endif %}</td>
+            <td><span class="status status-{{ 'healthy' if target.conclusion_bucket == 'actual_success' else 'blocked' }}">{{ target.conclusion_label }}</span></td>
+            <td>{{ target.conclusion_reason }}<small>{{ target.next_action }}</small></td>
             <td>{{ target.target_type_label }}</td>
             <td>{{ target.role_labels | join('、') if target.role_labels else '未记录' }}</td>
             <td>{{ target.coverage_label }}</td>

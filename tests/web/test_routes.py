@@ -27,6 +27,7 @@ from newsradar.web.viewmodels import (
     ProviderDetail,
     ProviderRow,
     RiskView,
+    TargetConclusionSummary,
     TargetDetail,
     TargetRow,
 )
@@ -218,6 +219,9 @@ class FakeDashboardService:
         self.calls.append("targets")
         self.target_filters = filters
         return [self._target_row()]
+
+    def target_conclusion_summary(self):
+        return TargetConclusionSummary(1, 0, 1, 0, 0)
 
     def target_detail(self, source_id: str):
         self.calls.append("target_detail")
@@ -887,3 +891,18 @@ def test_probe_and_gap_pages_use_safe_database_error_boundary():
 def test_unknown_provider_and_target_return_404(client):
     assert client.get("/providers/unknown").status_code == 404
     assert client.get("/targets/unknown").status_code == 404
+def test_target_catalog_shows_operational_conclusion_summary(db_session):
+    from newsradar.web.queries import DashboardQueryService
+
+    @contextmanager
+    def real_service_context():
+        yield DashboardQueryService(db_session)
+
+    with TestClient(create_app(lambda: real_service_context())) as real_client:
+        response = real_client.get("/targets")
+
+    assert response.status_code == 200
+    for label in ("总目标数", "实际成功数", "可修复数", "需要用户操作数", "近期不处理数"):
+        assert label in response.text
+    for label in ("当前结论", "中文原因和下一步动作", "只能间接发现", "需要付费"):
+        assert label in response.text

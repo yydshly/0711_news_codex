@@ -63,6 +63,20 @@ class TargetRow:
     role_labels: tuple[str, ...] = ()
     trial_label: str = "尚未评估"
     trial_reason: str = "尚未评估试用资格"
+    conclusion_code: str = "needs_technical_validation"
+    conclusion_bucket: str = "fixable"
+    conclusion_label: str = "需要技术验证"
+    conclusion_reason: str = "当前没有足够证据。"
+    next_action: str = "检查最近运行记录。"
+
+
+@dataclass(frozen=True, slots=True)
+class TargetConclusionSummary:
+    total: int
+    actual_success: int
+    fixable: int
+    user_action: int
+    deferred: int
 
 
 @dataclass(frozen=True, slots=True)

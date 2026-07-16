@@ -10,6 +10,7 @@ from sqlalchemy import Select, case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
+    FetchRunRecord,
     ProviderDefinitionRecord,
     ProviderProbeRunRecord,
     SourceAccessMethodRecord,
@@ -31,6 +32,7 @@ from newsradar.web.capability_queries import (
     CatalogSnapshot,
 )
 from newsradar.web.i18n import explain_failure, zh_label
+from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
 from newsradar.web.viewmodels import (
     AccessMethodView,
     DashboardSummary,
@@ -44,6 +46,7 @@ from newsradar.web.viewmodels import (
     ResearchCandidateView,
     ResearchTargetView,
     RiskView,
+    TargetConclusionSummary,
     TargetDetail,
     TargetRow,
 )
@@ -698,6 +701,22 @@ class DashboardQueryService:
         records = self._session.scalars(statement.order_by(SourceDefinitionRecord.name)).all()
         return self._target_rows_for_records(records)
 
+    def target_conclusion_summary(self) -> TargetConclusionSummary:
+        records = self._session.scalars(
+            select(SourceDefinitionRecord).where(SourceDefinitionRecord.catalog_state == "current")
+        ).all()
+        rows = self._target_rows_for_records(records)
+        counts = defaultdict(int)
+        for row in rows:
+            counts[row.conclusion_bucket] += 1
+        return TargetConclusionSummary(
+            total=len(rows),
+            actual_success=counts["actual_success"],
+            fixable=counts["fixable"],
+            user_action=counts["user_action"],
+            deferred=counts["deferred"],
+        )
+
     def target_detail(self, source_id: str) -> TargetDetail | None:
         source = self._session.get(SourceDefinitionRecord, source_id)
         if source is None:
@@ -934,6 +953,14 @@ class DashboardQueryService:
         }
         risks = self._latest_risks(source_ids)
         latest_runs = self._latest_content_runs(source_ids)
+        successful_fetch_ids = set(
+            self._session.scalars(
+                select(FetchRunRecord.source_id).where(
+                    FetchRunRecord.source_id.in_(source_ids),
+                    FetchRunRecord.outcome.in_(("succeeded", "no_change")),
+                )
+            )
+        )
         trial_decisions, _ = self._trial_decisions(records)
         rows = []
         for source in records:
@@ -941,6 +968,14 @@ class DashboardQueryService:
             risk = risks.get(source.id)
             latest = latest_runs.get(source.id)
             trial = trial_decisions[source.id]
+            conclusion = conclude_source(
+                SourceConclusionInput(
+                    coverage_mode=source.coverage_mode,
+                    availability=source.availability,
+                    successful_fetch=source.id in successful_fetch_ids,
+                    latest_probe_outcome=latest.outcome if latest else None,
+                )
+            )
             rows.append(
                 TargetRow(
                     source_id=source.id,
@@ -965,6 +1000,11 @@ class DashboardQueryService:
                     role_labels=tuple(zh_label("role", role) for role in source.roles),
                     trial_label=self._trial_label(trial),
                     trial_reason=trial.reason,
+                    conclusion_code=conclusion.code,
+                    conclusion_bucket=conclusion.bucket,
+                    conclusion_label=conclusion.label,
+                    conclusion_reason=conclusion.reason,
+                    next_action=conclusion.next_action,
                 )
             )
         return rows

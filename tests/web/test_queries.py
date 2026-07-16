@@ -375,3 +375,22 @@ def test_browser_evidence_url_fails_closed_for_non_public_schemes() -> None:
         _public_evidence_url("https://example.test/feed?token=secret#fragment")
         == "https://example.test/feed"
     )
+def test_target_rows_have_one_conclusion_and_complete_operational_summary(
+    query_service,
+) -> None:
+    rows = query_service.targets()
+    summary = query_service.target_conclusion_summary()
+    by_id = {row.source_id: row for row in rows}
+
+    assert by_id["github-openai-python"].conclusion_code == "capable_pending_acceptance"
+    assert by_id["search-ai"].conclusion_code == "indirect_discovery"
+    assert by_id["x-openai"].conclusion_code == "payment_required"
+    assert all(row.conclusion_label and row.conclusion_reason and row.next_action for row in rows)
+    assert summary.total == len(rows)
+    assert (
+        summary.actual_success
+        + summary.fixable
+        + summary.user_action
+        + summary.deferred
+        == summary.total
+    )
