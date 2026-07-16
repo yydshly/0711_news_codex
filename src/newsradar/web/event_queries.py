@@ -67,6 +67,9 @@ class EventRow:
     importance: float
     credibility: float
     independent_root_count: int
+    official_root_count: int
+    professional_root_count: int
+    confirmation_summary: str
     enrichment_origin: str
     trend_direction: str
     trend_label: str
@@ -678,10 +681,13 @@ class EventQueryService:
         breakdown = _score_breakdown(score)
         trend = payload.get("trend")
         trend = trend if isinstance(trend, dict) else {}
+        evidence_summary = payload.get("evidence_summary")
+        evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+        status = display.status if display is not None else event.status
         return EventRow(
             event_id=event.id,
             visibility="snapshot" if display is not None else event.visibility,
-            status=display.status if display is not None else event.status,
+            status=status,
             display_tier=display.display_tier if display is not None else event.display_tier,
             rank_score=float(score.heat) if display is not None else float(event.rank_score),
             category=display.category if display is not None else event.category,
@@ -695,6 +701,11 @@ class EventQueryService:
             importance=_numeric_score(breakdown.get("importance")),
             credibility=_numeric_score(breakdown.get("credibility")),
             independent_root_count=_independent_root_count(payload.get("evidence")),
+            official_root_count=_safe_count(evidence_summary.get("official_roots")),
+            professional_root_count=_safe_count(
+                evidence_summary.get("professional_roots")
+            ),
+            confirmation_summary=_confirmation_summary(status, evidence_summary),
             enrichment_origin=str(enrichment.get("origin", "rule_fallback")),
             trend_direction=_trend_direction(trend.get("direction")),
             trend_label=_trend_view(trend).label,
@@ -790,6 +801,26 @@ def _missing_confirmation(value: dict[str, object]) -> tuple[str, ...]:
     return tuple(
         labels.get(str(item), "仍缺少可审计的独立确认条件")
         for item in _as_sequence(value.get("missing_confirmation"))[:10]
+    )
+
+
+def _confirmation_summary(status: str, summary: dict[str, object]) -> str:
+    official = _safe_count(summary.get("official_roots"))
+    professional = _safe_count(summary.get("professional_roots"))
+    if status == "confirmed" and official:
+        return "已由官方一手来源确认"
+    if status == "confirmed" and professional >= 2:
+        return f"已由 {professional} 家独立专业媒体交叉确认"
+    if professional == 1:
+        return "当前有 1 家独立专业媒体，仍缺少 1 个独立媒体证据根"
+    return "当前仅有聚合/社区发现信号，尚无独立确认"
+
+
+def _safe_count(value: object) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
     )
 
 

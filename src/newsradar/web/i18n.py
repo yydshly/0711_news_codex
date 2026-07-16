@@ -135,6 +135,7 @@ LABELS: dict[str, dict[str, str]] = {
         "credibility:social_or_community_only_cap": "仅社交或社区证据，可信度受限",
         "heat:60_importance_40_credibility": "热度由重要度与可信度共同计算",
         "official_independent_root": "独立官方一手来源确认",
+        "official_or_two_professional_roots": "官方一手来源或两个独立专业媒体证据根确认",
         "preprint_not_peer_reviewed": "预印本尚未经同行评审",
         "evidence_not_yet_sufficient_for_hotspot": "证据尚不足以进入热点",
         "insufficient_event_quality": "事件质量未达到展示门槛",

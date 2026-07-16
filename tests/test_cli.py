@@ -119,7 +119,13 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
             "progress_current": 2,
             "progress_total": 3,
             "requested_scope": {"profile_id": "safe-profile", "profile_digest": "safe"},
-            "result_summary": {"member_total": 3, "completed_members": 2},
+            "result_summary": {
+                "member_total": 3,
+                "completed_members": 2,
+                "evidence_capable_members": 2,
+                "direct_evidence_fetch_succeeded": 1,
+                "confirmed_event_count": 1,
+            },
         },
     )()
     members = [
@@ -191,6 +197,8 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
         assert secret not in rendered
     assert "Authorization" not in rendered
     assert "Cookie" not in rendered
+    assert "证据型成员：2" in rendered
+    assert "直接证据抓取成功：1" in rendered
 
 
 def write_source(root: Path) -> None:

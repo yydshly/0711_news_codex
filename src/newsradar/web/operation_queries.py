@@ -30,6 +30,20 @@ class OperationDetail:
     requested_scope: dict[str, object]
     attempts: tuple[OperationAttemptRecord, ...]
     events: tuple[OperationEventRecord, ...]
+    wave_metrics: HighValueWaveMetricsView | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HighValueWaveMetricsView:
+    member_total: int
+    evidence_capable_members: int
+    direct_evidence_fetch_succeeded: int
+    events_with_official_root: int
+    events_with_one_professional_root: int
+    events_with_two_professional_roots: int
+    confirmed_event_count: int
+    ambiguous_pairs_checked: int
+    model_pair_fallback_count: int
 
 
 class OperationQueryService:
@@ -71,6 +85,11 @@ class OperationQueryService:
             requested_scope=dict(record.requested_scope),
             attempts=attempts,
             events=events,
+            wave_metrics=(
+                _wave_metrics(record.result_summary)
+                if record.operation_type == "high_value_news_wave"
+                else None
+            ),
         )
 
     @staticmethod
@@ -87,3 +106,32 @@ class OperationQueryService:
             error_message=record.error_message,
             retry_allowed=is_retryable_error(record.error_code),
         )
+
+
+def _wave_metrics(value: object) -> HighValueWaveMetricsView:
+    summary = value if isinstance(value, dict) else {}
+    return HighValueWaveMetricsView(
+        member_total=_safe_count(summary.get("member_total")),
+        evidence_capable_members=_safe_count(summary.get("evidence_capable_members")),
+        direct_evidence_fetch_succeeded=_safe_count(
+            summary.get("direct_evidence_fetch_succeeded")
+        ),
+        events_with_official_root=_safe_count(summary.get("events_with_official_root")),
+        events_with_one_professional_root=_safe_count(
+            summary.get("events_with_one_professional_root")
+        ),
+        events_with_two_professional_roots=_safe_count(
+            summary.get("events_with_two_professional_roots")
+        ),
+        confirmed_event_count=_safe_count(summary.get("confirmed_event_count")),
+        ambiguous_pairs_checked=_safe_count(summary.get("ambiguous_pairs_checked")),
+        model_pair_fallback_count=_safe_count(summary.get("model_pair_fallback_count")),
+    )
+
+
+def _safe_count(value: object) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
+    )

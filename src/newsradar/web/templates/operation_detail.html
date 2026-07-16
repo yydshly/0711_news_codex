@@ -11,6 +11,17 @@
   {% if operation_detail.operation.error_message %}<p>错误：{{ operation_detail.operation.error_code or 'unknown' }}：{{ operation_detail.operation.error_message }}</p>{% endif %}
   {% if operation_detail.operation.status in ('queued', 'running') %}<form method="post" action="/operations/{{ operation_detail.operation.operation_id }}/cancel"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">请求取消</button></form>{% elif operation_detail.operation.status in ('succeeded', 'partial', 'failed', 'interrupted', 'cancelled') and operation_detail.operation.retry_allowed %}<form method="post" action="/operations/{{ operation_detail.operation.operation_id }}/retry"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">重新入队</button></form>{% endif %}
 </section>
+{% if operation_detail.wave_metrics %}<section class="panel"><h2>证据确认覆盖</h2><dl class="capability-metrics">
+  <div><dt>波次成员</dt><dd>{{ operation_detail.wave_metrics.member_total }}</dd></div>
+  <div><dt>证据型成员</dt><dd>{{ operation_detail.wave_metrics.evidence_capable_members }}</dd></div>
+  <div><dt>直接证据抓取成功</dt><dd>{{ operation_detail.wave_metrics.direct_evidence_fetch_succeeded }}</dd></div>
+  <div><dt>含官方证据根事件</dt><dd>{{ operation_detail.wave_metrics.events_with_official_root }}</dd></div>
+  <div><dt>含一个专业媒体根事件</dt><dd>{{ operation_detail.wave_metrics.events_with_one_professional_root }}</dd></div>
+  <div><dt>含两个专业媒体根事件</dt><dd>{{ operation_detail.wave_metrics.events_with_two_professional_roots }}</dd></div>
+  <div><dt>已确认事件</dt><dd>{{ operation_detail.wave_metrics.confirmed_event_count }}</dd></div>
+  <div><dt>边界候选检查</dt><dd>{{ operation_detail.wave_metrics.ambiguous_pairs_checked }}</dd></div>
+  <div><dt>模型配对保守回退</dt><dd>{{ operation_detail.wave_metrics.model_pair_fallback_count }}</dd></div>
+</dl></section>{% endif %}
 <section class="panel"><h2>尝试记录</h2>{% if operation_detail.attempts %}<ul>{% for attempt in operation_detail.attempts %}<li>第 {{ attempt.attempt_number }} 次：{{ attempt.status }}{% if attempt.error_code %}（{{ attempt.error_code }}）{% endif %}</li>{% endfor %}</ul>{% else %}<p>Worker 尚未领取此任务。</p>{% endif %}</section>
 <section class="panel"><h2>运行事件</h2>{% if operation_detail.events %}<ul>{% for event in operation_detail.events %}<li>{{ event.level }} / {{ event.phase or '未分类' }}：{{ event.message }}</li>{% endfor %}</ul>{% else %}<p>暂无运行事件。</p>{% endif %}</section>
 {% endblock %}

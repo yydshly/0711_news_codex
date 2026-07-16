@@ -27,6 +27,17 @@ def _add_wave_snapshot(session, refs: list[tuple[int, int]]) -> int:
         result_summary={
             "member_total": 2,
             "completed_members": 2,
+            "evidence_capable_members": 1,
+            "direct_evidence_fetch_succeeded": 1,
+            "events_with_official_root": 1,
+            "events_with_one_professional_root": 0,
+            "events_with_two_professional_roots": 0,
+            "confirmed_event_count": 1,
+            "ambiguous_pairs_checked": 2,
+            "model_pair_fallback_count": 1,
+            "api_key": "page-secret",
+            "Authorization": "Bearer page-secret",
+            "Cookie": "session=page-secret",
             "event_manifest_complete": True,
             "event_manifest_count": len(refs),
             "event_version_snapshots": [
@@ -134,6 +145,22 @@ def test_event_detail_explains_roles_missing_confirmation_and_heat(db_session, m
     assert response.status_code == 200
     for expected in ("热度拆解", "趋势", "来源角色", "缺失确认条件", "上升"):
         assert expected in response.text
+
+
+def test_wave_operation_page_shows_allow_listed_coverage_without_secrets(
+    db_session, monkeypatch
+):
+    operation_id = _add_wave_snapshot(db_session, [])
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    with TestClient(create_app()) as client:
+        response = client.get(f"/operations/{operation_id}")
+
+    assert response.status_code == 200
+    for expected in ("证据型成员", "直接证据抓取成功", "已确认事件", "1"):
+        assert expected in response.text
+    for forbidden in ("api_key", "Authorization", "Cookie", "page-secret"):
+        assert forbidden not in response.text
 
 
 def test_event_update_only_enqueues_and_requires_safe_write(db_session, monkeypatch):

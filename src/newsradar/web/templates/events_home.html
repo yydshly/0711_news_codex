@@ -33,6 +33,7 @@
     <p class="eyebrow">已确认 · 独立证据 {{ event.independent_root_count }} · {{ event.trend_label }}</p>
     <h3><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h3>
     <p>{{ event.zh_summary }}</p>
+    <p class="metric-note">{{ event.confirmation_summary }}</p>
     <p><strong>为什么热门：</strong>{{ event.why_it_matters }}</p>
   </article>
   {% else %}<p>本次完整快照中，最近 24 小时暂无已确认热点。</p>{% endfor %}
@@ -46,6 +47,7 @@
     <p class="eyebrow">早期信号 · 热度 {{ event.heat|round(1) }}</p>
     <h3><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h3>
     <p>{{ event.zh_summary }}</p>
+    <p class="metric-note">{{ event.confirmation_summary }}</p>
     <p><strong>为什么热门：</strong>{{ event.why_it_matters }}</p>
   </article>
   {% else %}<p>本次完整快照中暂无需要跟踪的早期信号。</p>{% endfor %}

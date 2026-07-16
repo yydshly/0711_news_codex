@@ -16,7 +16,7 @@
   <p>{{ event_detail.event.zh_summary }}</p>
   <h3>为何值得关注</h3><p>{{ event_detail.why_it_matters }}</p>
   <p><strong>独立证据根 {{ event_detail.event.independent_root_count }}</strong> · 排名 {{ event_detail.event.rank_score|round(1) }} · 重要度 {{ event_detail.event.importance|round(1) }} · 可信度 {{ event_detail.event.credibility|round(1) }} · 热度 {{ event_detail.event.heat|round(1) }}</p>
-  <h3>展示与确认依据</h3><ul>{% for reason in event_detail.event.tier_reasons %}<li>{{ reason }}</li>{% else %}<li>当前版本未记录额外分层原因。</li>{% endfor %}</ul>
+  <h3>展示与确认依据</h3><p><strong>{{ event_detail.event.confirmation_summary }}</strong></p><ul>{% for reason in event_detail.event.tier_reasons %}<li>{{ reason }}</li>{% else %}<li>当前版本未记录额外分层原因。</li>{% endfor %}</ul>
 </section>
 
 <section class="panel" aria-labelledby="wave-explanation-heading">

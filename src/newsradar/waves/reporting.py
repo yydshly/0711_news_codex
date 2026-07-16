@@ -39,6 +39,17 @@ def render_high_value_wave_report(
         f"- 成员完成：{_safe(_value(summary, 'completed_members') or 0)}/{_safe(total)}",
         f"- 模型降级：{model_mode}",
         "",
+        "## 证据确认覆盖",
+        "",
+        f"- 证据型成员：{_count(summary, 'evidence_capable_members')}",
+        f"- 直接证据抓取成功：{_count(summary, 'direct_evidence_fetch_succeeded')}",
+        f"- 含官方证据根事件：{_count(summary, 'events_with_official_root')}",
+        f"- 含一个专业媒体根事件：{_count(summary, 'events_with_one_professional_root')}",
+        f"- 含两个专业媒体根事件：{_count(summary, 'events_with_two_professional_roots')}",
+        f"- 已确认事件：{_count(summary, 'confirmed_event_count')}",
+        f"- 边界候选检查：{_count(summary, 'ambiguous_pairs_checked')}",
+        f"- 模型配对保守回退：{_count(summary, 'model_pair_fallback_count')}",
+        "",
         "## 已确认热点",
         "",
         *_event_lines(confirmed, empty="本轮没有满足官方或独立媒体证据规则的事件。"),
@@ -100,6 +111,11 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 def _value(value: Mapping[str, object], key: str) -> object:
     return value.get(key)
+
+
+def _count(value: Mapping[str, object], key: str) -> int:
+    item = value.get(key)
+    return item if isinstance(item, int) and not isinstance(item, bool) and item >= 0 else 0
 
 
 def _cell(value: object) -> str:

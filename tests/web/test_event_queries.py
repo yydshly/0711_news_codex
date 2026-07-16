@@ -133,6 +133,44 @@ def _pipeline_snapshot(session, *, refs: list[tuple[int, int]], now: datetime):
     return operation
 
 
+def test_event_rows_explain_confirmation_from_immutable_evidence_summary(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    expected_cases = (
+        (51, "confirmed", 1, 0, "已由官方一手来源确认"),
+        (52, "confirmed", 0, 2, "已由 2 家独立专业媒体交叉确认"),
+        (53, "emerging", 0, 1, "当前有 1 家独立专业媒体，仍缺少 1 个独立媒体证据根"),
+        (54, "emerging", 0, 0, "当前仅有聚合/社区发现信号"),
+    )
+    for event_id, status, official, professional, _expected in expected_cases:
+        _event(
+            db_session,
+            event_id=event_id,
+            status=status,
+            title=f"事件 {event_id}",
+            occurred_at=now,
+            display_tier="hotspot" if status == "confirmed" else "signal",
+        )
+        version = db_session.query(EventVersionRecord).filter_by(event_id=event_id).one()
+        version.payload["evidence_summary"] = {
+            "official_roots": official,
+            "professional_roots": professional,
+        }
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(version, "payload")
+    db_session.commit()
+
+    service = EventQueryService(db_session)
+    for event_id, _status, official, professional, expected in expected_cases:
+        detail = service.get_event(event_id)
+        assert detail is not None
+        assert detail.event.official_root_count == official
+        assert detail.event.professional_root_count == professional
+        assert expected in detail.event.confirmation_summary
+
+
 def test_latest_operation_page_uses_exact_version_not_current_pointer(db_session):
     from newsradar.web.event_queries import EventQueryService
 
