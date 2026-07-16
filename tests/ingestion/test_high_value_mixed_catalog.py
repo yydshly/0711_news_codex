@@ -81,3 +81,24 @@ def test_washington_post_primary_registers_official_public_rss_without_activatio
     assert str(source.access_methods[0].url) == (
         "https://feeds.washingtonpost.com/rss/business/technology"
     )
+
+
+def test_manual_newsletters_register_official_sitemaps_without_activation() -> None:
+    from pathlib import Path
+
+    from newsradar.sources.yaml_loader import load_source_tree
+
+    sources = {item.id: item for item in load_source_tree(Path("sources"))}
+    expected = {
+        "universe-bens-bites-1": "https://www.bensbites.com/sitemap.xml",
+        "universe-tldr-ai-1": "https://ai.tldr.tech/sitemap.xml",
+    }
+
+    for source_id, sitemap_url in expected.items():
+        source = sources[source_id]
+        assert source.availability.value == "manual_only"
+        assert source.ingestion.enabled is False
+        assert source.access_methods[0].kind.value == "sitemap"
+        assert str(source.access_methods[0].url) == sitemap_url
+        assert source.research.status.value == "needs_research"
+        assert source.research.candidates[0].kind.value == "sitemap"
