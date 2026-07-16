@@ -75,3 +75,17 @@ def test_indirect_conclusion_distinguishes_no_sample_and_unresolved_origin() -> 
     assert "5 条样本" in unresolved.reason
     assert "0 条解析出原媒体文章 URL" in unresolved.reason
     assert "1 条重复候选" in unresolved.next_action
+
+
+def test_manual_source_with_public_candidate_is_fixable_not_user_action() -> None:
+    from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
+
+    conclusion = conclude_source(
+        SourceConclusionInput(
+            "catalog_only", "manual_only", False, None, has_public_candidate=True
+        )
+    )
+
+    assert conclusion.code == "public_candidate_pending_acceptance"
+    assert conclusion.bucket == "fixable"
+    assert conclusion.label == "已有公开路径待验收"

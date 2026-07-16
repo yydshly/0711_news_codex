@@ -1002,6 +1002,13 @@ class DashboardQueryService:
                 source.id, (0, 0, 0)
             )
             duplicate_count = duplicate_counts[source.id]
+            public_candidate = any(
+                method.source_id == source.id
+                and method.kind != "html"
+                and not method.requires_manual_approval
+                and not (method.auth_envs or method.auth_env)
+                for method in methods.values()
+            )
             conclusion = conclude_source(
                 SourceConclusionInput(
                     coverage_mode=source.coverage_mode,
@@ -1012,6 +1019,7 @@ class DashboardQueryService:
                     indirect_published_count=published_count,
                     indirect_origin_resolved_count=resolved_count,
                     indirect_duplicate_count=duplicate_count,
+                    has_public_candidate=public_candidate,
                 )
             )
             rows.append(

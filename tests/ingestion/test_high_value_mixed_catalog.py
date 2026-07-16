@@ -64,3 +64,20 @@ def test_restricted_media_are_explicit_indirect_google_news_targets() -> None:
         assert source.access_methods[0].kind.value == "rss"
         assert str(source.access_methods[0].url) == "https://news.google.com/rss/search"
         assert source.ingestion.enabled is True
+def test_washington_post_primary_registers_official_public_rss_without_activation() -> None:
+    from pathlib import Path
+
+    from newsradar.sources.yaml_loader import load_source_tree
+
+    source = next(
+        item
+        for item in load_source_tree(Path("sources"))
+        if item.id == "universe-washington-post-1"
+    )
+
+    assert source.availability.value == "manual_only"
+    assert source.ingestion.enabled is False
+    assert source.access_methods[0].kind.value == "rss"
+    assert str(source.access_methods[0].url) == (
+        "https://feeds.washingtonpost.com/rss/business/technology"
+    )

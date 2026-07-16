@@ -21,9 +21,12 @@ topics:
 authority_score: 4
 poll_interval_minutes: 60
 access_methods:
+- kind: rss
+  url: https://feeds.washingtonpost.com/rss/business/technology
+  priority: 1
 - kind: html
   url: https://www.washingtonpost.com/technology/
-  priority: 1
+  priority: 2
   requires_manual_approval: true
 expected_fields:
 - title
@@ -38,11 +41,28 @@ risk:
   operating_cost: 4
   evidence:
   - https://www.washingtonpost.com/technology/
+  - https://www.washingtonpost.com/information/2026/05/21/washington-post-rss-feeds/
+  - https://feeds.washingtonpost.com/rss/business/technology
   - https://www.washingtonpost.com/information/2022/01/01/terms-of-service/
   hard_block_reason: manual_only
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  conclusion: 官方 Technology RSS 已确认可公开访问，但当前返回 0 条内容；保留 manual_only，等待获得可验证样本。
+  reviewed_at: '2026-07-16'
+  candidates:
+  - key: washington-post-technology-rss
+    kind: rss
+    implementation: feedparser
+    officiality: official
+    authentication: none
+    roles: [discovery, evidence]
+    fields: [title, canonical_url, published_at, summary]
+    limitations: [当前 HTTP 200 但条目数为 0, 未通过字段完整性验收]
+    evidence:
+    - https://www.washingtonpost.com/information/2026/05/21/washington-post-rss-feeds/
+    - https://feeds.washingtonpost.com/rss/business/technology
+    reviewed_at: '2026-07-16'
+    sample_status: blocked
+    decision: primary

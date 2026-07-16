@@ -13,6 +13,7 @@ class SourceConclusionInput:
     indirect_published_count: int = 0
     indirect_origin_resolved_count: int = 0
     indirect_duplicate_count: int = 0
+    has_public_candidate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,14 @@ def conclude_source(value: SourceConclusionInput) -> SourceConclusion:
             "需要平台或合规审批",
             "自动访问必须先完成官方权限、条款或 robots 审查。",
             "完成审批并保存可验证依据后再启用。",
+        )
+    if value.availability == "manual_only" and value.has_public_candidate:
+        return _result(
+            "public_candidate_pending_acceptance",
+            "fixable",
+            "已有公开路径待验收",
+            "已登记无需凭据的官方公开访问方式，但尚无合格样本。",
+            "等待内容出现后复查核心字段，再决定是否启用生产抓取。",
         )
     if value.availability == "manual_only":
         return _result(
