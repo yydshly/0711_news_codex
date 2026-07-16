@@ -313,7 +313,7 @@ Implement repository transitions with SQLAlchemy `select(record).with_for_update
 
 ```python
 _ALLOWED_TRANSITIONS = {
-    "pending": {"confirmed", "dismissed", "expired", "failed"},
+    "pending": {"confirmed", "dismissed", "applied", "expired", "failed"},
     "confirmed": {"applied", "expired", "failed"},
     "dismissed": set(),
     "applied": set(),
@@ -589,7 +589,7 @@ git commit -m "feat: generate safe event merge candidates"
 - Modify: `tests/operations/test_commands.py`
 
 **Interfaces:**
-- Produces `OperationCommandService.enqueue_event_merge_decision(candidate_id: int, decision: Literal["confirm", "dismiss", "recheck"], trigger: str) -> int`.
+- Produces `OperationCommandService.enqueue_event_merge_decision(candidate_id: int, decision: Literal["apply", "confirm", "dismiss", "recheck"], trigger: str) -> int`.
 - Reuses `OperationType.EVENT_MERGE` for candidate application, but its scope must contain `candidate_id`; bare `event_id/target_event_id` merge scopes are invalid.
 - Produces `EventMergeService.apply(candidate_id, operation_id, checkpoint) -> MergeApplyResult` and `review(candidate_id, decision, operation_id) -> EventMergeCandidateRecord`.
 - Extends `EventRepository.publish_complete_event` with keyword `visibility: EventVisibility = EventVisibility.CURRENT` so a complete immutable version can be published directly as `legacy` without a transient current state.
@@ -644,7 +644,11 @@ def test_apply_failure_rolls_back_both_versions_and_releases_leases(monkeypatch)
     assert all_leases_are_clear()
 ```
 
-Add tests for idempotent retry, already-applied candidate, dismissed candidate, timeout/cancel, quality input unavailable, and one-candidate failure isolation.
+Add tests proving `apply` accepts only pending `legacy_identity` and
+`deterministic_merge` candidates, while `confirm` accepts only pending
+`manual_review` candidates. Also test idempotent retry, already-applied candidate,
+dismissed candidate, timeout/cancel, quality input unavailable, and one-candidate
+failure isolation.
 
 - [ ] **Step 3: Add legacy publication as an explicit repository parameter**
 
@@ -684,6 +688,10 @@ if record is None:
     raise LookupError("event_merge_candidate_not_found")
 if record.status not in {"confirmed", "pending"}:
     raise ValueError("event_merge_candidate_not_applicable")
+if record.status == "pending" and record.candidate_type == "manual_review":
+    raise ValueError("event_merge_manual_confirmation_required")
+if record.status == "confirmed" and record.candidate_type != "manual_review":
+    raise ValueError("event_merge_confirmation_type_mismatch")
 current_left = load_event_facts(session, record.left_event_id)
 current_right = load_event_facts(session, record.right_event_id)
 if (
@@ -752,10 +760,15 @@ If revalidation fails before leases, mark only the candidate expired. If any pub
 
 Remove `OperationType.EVENT_MERGE` from `_EVENT_TYPES` and delete the branch in `_validate_event_action()` / `_apply_event_action()` that merges by `target_event_id`. Route `event_merge` to `EventMergeOperationHandler` in `cli.run_worker`. Keep recluster, enrich, split, and exclude behavior unchanged.
 
-- [ ] **Step 7: Implement confirm, dismiss, and recheck semantics**
+- [ ] **Step 7: Implement apply, confirm, dismiss, and recheck semantics**
 
+- `apply`: only pending `legacy_identity` or `deterministic_merge` candidates may
+  proceed directly to authoritative revalidation and application. Scan never calls
+  this automatically; it is triggered by an explicit page action or controlled
+  apply Operation after candidate inspection.
 - `dismiss`: transition pending candidate to dismissed in a short Worker transaction; no event leases.
-- `confirm`: pending manual candidate becomes confirmed, then the same Operation revalidates and applies it; deterministic and legacy candidates may be applied without a human content judgment only after they have been generated and remain valid.
+- `confirm`: only a pending `manual_review` candidate may become confirmed; the same
+  Operation then revalidates and applies it.
 - `recheck`: expire the old pending candidate and rescan only its two event IDs into a new versioned candidate; never mutate events.
 
 Store `reviewed_operation_id`, `applied_operation_id`, resulting survivor/legacy Event IDs and version numbers, and stable Chinese diagnostic codes.
@@ -844,6 +857,17 @@ def test_confirm_only_enqueues_candidate_operation(client, monkeypatch) -> None:
     )
     assert response.status_code == 303
     assert observed == [(3, "confirm", "web")]
+
+
+def test_apply_only_enqueues_automatic_candidate_operation(client, monkeypatch) -> None:
+    observed = capture_merge_command(monkeypatch)
+    response = client.post(
+        "/event-merge-candidates/2/apply",
+        data={"action_token": valid_action_token(client)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert observed == [(2, "apply", "web")]
 
 
 def test_bare_event_id_merge_is_rejected(client) -> None:
@@ -997,7 +1021,7 @@ Apply only inspected candidates through the web/Operation/Worker path. Verify:
 
 - [ ] **Step 7: Run real browser acceptance on an isolated port**
 
-Start the feature service on a temporary port such as 8879 without disturbing 8766. Using the in-app browser, verify summary metrics, filters, one candidate of each type, sanitized external links, confirm/dismiss/recheck actions, Operation redirects, expired-candidate diagnostics, and both resulting Event detail pages. Stop only the temporary service afterward.
+Start the feature service on a temporary port such as 8879 without disturbing 8766. Using the in-app browser, verify summary metrics, filters, one candidate of each type, sanitized external links, apply/confirm/dismiss/recheck actions, Operation redirects, expired-candidate diagnostics, and both resulting Event detail pages. Stop only the temporary service afterward.
 
 - [ ] **Step 8: Run final full verification**
 
