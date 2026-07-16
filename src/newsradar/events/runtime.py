@@ -126,6 +126,14 @@ class EventOperationHandler:
                     "pair_cache_hit_count": result.pair_cache_hit_count,
                     "ambiguous_pairs_checked": result.ambiguous_pairs_checked,
                     "model_pair_fallback_count": result.model_pair_fallback_count,
+                    "events_with_official_root": result.events_with_official_root,
+                    "events_with_one_professional_root": (
+                        result.events_with_one_professional_root
+                    ),
+                    "events_with_two_professional_roots": (
+                        result.events_with_two_professional_roots
+                    ),
+                    "confirmed_event_count": result.confirmed_event_count,
                     "pair_model_error_counts": result.pair_model_error_counts,
                     "created_event_versions": result.created_event_versions,
                     "candidate_count": result.candidate_count,

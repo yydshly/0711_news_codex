@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from re import fullmatch
@@ -28,6 +28,10 @@ from newsradar.events.clustering import (
     candidate_pairs,
     cluster_candidates,
     evaluate_pair_rules,
+)
+from newsradar.events.coverage import (
+    EvidenceCoverageMetrics,
+    summarize_event_version_payloads,
 )
 from newsradar.events.entities import ENTITY_RULE_VERSION, extract_entities
 from newsradar.events.evidence import assess_evidence, count_suppressed_independent_roots
@@ -103,6 +107,10 @@ class PipelineResult:
     pair_cache_hit_count: int
     ambiguous_pairs_checked: int
     model_pair_fallback_count: int
+    events_with_official_root: int
+    events_with_one_professional_root: int
+    events_with_two_professional_roots: int
+    confirmed_event_count: int
     pair_model_error_counts: dict[str, int]
     duplicate_root_suppressed_count: int
     model_success_count: int
@@ -257,6 +265,7 @@ class EventPipeline:
             engagement_by_item=selection.engagement_by_item,
             now=snapshot_now,
         )
+        evidence_coverage = self._summarize_event_versions(event_version_snapshots)
         checkpoint("after_event_publish")
         return PipelineResult(
             current_event_ids=tuple(sorted(set(event_ids))),
@@ -279,6 +288,14 @@ class EventPipeline:
             pair_cache_hit_count=self._pair_metrics["cache_hit"],
             ambiguous_pairs_checked=self._pair_metrics["ambiguous_checked"],
             model_pair_fallback_count=self._pair_metrics["model_pair_fallback"],
+            events_with_official_root=evidence_coverage.events_with_official_root,
+            events_with_one_professional_root=(
+                evidence_coverage.events_with_one_professional_root
+            ),
+            events_with_two_professional_roots=(
+                evidence_coverage.events_with_two_professional_roots
+            ),
+            confirmed_event_count=evidence_coverage.confirmed_event_count,
             pair_model_error_counts=dict(sorted(self._pair_model_error_counts.items())),
             duplicate_root_suppressed_count=duplicate_root_suppressed_count,
             model_success_count=model_success_count,
@@ -601,6 +618,26 @@ class EventPipeline:
                 session.commit()
             decisions[(final.left_raw_item_id, final.right_raw_item_id)] = final
         return decisions
+
+    def _summarize_event_versions(
+        self, manifest: tuple[tuple[int, int], ...]
+    ) -> EvidenceCoverageMetrics:
+        """Read the exact version manifest; never follow mutable current pointers."""
+        payloads: list[Mapping[str, object]] = []
+        with self._session_factory() as session:
+            for event_id, version_number in manifest:
+                payload = session.scalar(
+                    select(EventVersionRecord.payload).where(
+                        EventVersionRecord.event_id == event_id,
+                        EventVersionRecord.version_number == version_number,
+                    )
+                )
+                if payload is None:
+                    raise EventPublicationConflict(
+                        "Event version manifest references a missing immutable snapshot"
+                    )
+                payloads.append(payload if isinstance(payload, Mapping) else {})
+        return summarize_event_version_payloads(payloads)
 
     @staticmethod
     def _compare_pair(

@@ -507,6 +507,63 @@ def test_pipeline_cached_explicit_different_event_is_not_counted_as_fallback(
     assert pipeline._pair_metrics["model_pair_fallback"] == 0
 
 
+def test_pipeline_summarizes_only_exact_event_version_manifest() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        event_record = EventRecord(
+            canonical_key="event:coverage",
+            status="confirmed",
+            current_version_number=2,
+        )
+        db.add(event_record)
+        db.flush()
+        db.add_all(
+            (
+                EventVersionRecord(
+                    event_id=event_record.id,
+                    version_number=1,
+                    payload={
+                        "status": "emerging",
+                        "evidence_summary": {
+                            "official_roots": 0,
+                            "professional_roots": 1,
+                        },
+                    },
+                ),
+                EventVersionRecord(
+                    event_id=event_record.id,
+                    version_number=2,
+                    payload={
+                        "status": "confirmed",
+                        "evidence_summary": {
+                            "official_roots": 1,
+                            "professional_roots": 0,
+                        },
+                    },
+                ),
+            )
+        )
+        db.commit()
+        metrics = EventPipeline.production(db)._summarize_event_versions(
+            ((event_record.id, 1),)
+        )
+
+    assert metrics.events_with_official_root == 0
+    assert metrics.events_with_one_professional_root == 1
+    assert metrics.confirmed_event_count == 0
+
+
+def test_pipeline_rejects_missing_event_version_manifest_reference() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        pipeline = EventPipeline.production(db)
+
+        with pytest.raises(EventPublicationConflict, match="manifest"):
+            pipeline._summarize_event_versions(((999, 7),))
+
+
 def test_pipeline_checkpoint_cancels_inflight_async_enrichment_promptly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

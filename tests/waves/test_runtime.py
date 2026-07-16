@@ -117,6 +117,12 @@ def test_wave_runs_event_stage_after_all_members_reach_terminal_state(monkeypatc
                 current_event_ids=(41,),
                 event_version_snapshots=((41, 2),),
                 model_fallback_count=1,
+                events_with_official_root=1,
+                events_with_one_professional_root=0,
+                events_with_two_professional_roots=1,
+                confirmed_event_count=1,
+                ambiguous_pairs_checked=3,
+                model_pair_fallback_count=1,
             )
 
     monkeypatch.setattr(
@@ -132,6 +138,11 @@ def test_wave_runs_event_stage_after_all_members_reach_terminal_state(monkeypatc
             "window_hours": 24,
             "window_end": datetime.now(UTC).isoformat(),
         }
+        member = db.query(HighValueWaveMemberRecord).filter_by(
+            operation_run_id=operation_id,
+            source_id=source.id,
+        ).one()
+        member.roles_snapshot = ["discovery", "evidence"]
         db.commit()
         lease = OperationLease(
             operation_id,
@@ -162,6 +173,14 @@ def test_wave_runs_event_stage_after_all_members_reach_terminal_state(monkeypatc
         {"event_id": 41, "version_number": 2}
     ]
     assert result.result_summary["model_degraded"] is True
+    assert result.result_summary["evidence_capable_members"] == 1
+    assert result.result_summary["direct_evidence_fetch_succeeded"] == 1
+    assert result.result_summary["events_with_official_root"] == 1
+    assert result.result_summary["events_with_one_professional_root"] == 0
+    assert result.result_summary["events_with_two_professional_roots"] == 1
+    assert result.result_summary["confirmed_event_count"] == 1
+    assert result.result_summary["ambiguous_pairs_checked"] == 3
+    assert result.result_summary["model_pair_fallback_count"] == 1
 
 
 def test_stale_definition_finishes_without_network() -> None:

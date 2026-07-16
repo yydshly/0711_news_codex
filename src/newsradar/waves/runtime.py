@@ -288,11 +288,20 @@ class HighValueWaveHandler:
                 )
             )
         summary = Counter(row.state for row in rows)
+        evidence_members = [
+            row
+            for row in rows
+            if row.fetchable and "evidence" in row.roles_snapshot
+        ]
         result_summary = {
             **dict(sorted(summary.items())),
             "fetch_succeeded": summary.get("succeeded", 0),
             "member_total": len(rows),
             "completed_members": len(rows) - summary.get("pending", 0) - summary.get("running", 0),
+            "evidence_capable_members": len(evidence_members),
+            "direct_evidence_fetch_succeeded": sum(
+                row.state == "succeeded" for row in evidence_members
+            ),
         }
         status = (
             OperationStatus.SUCCEEDED
@@ -362,7 +371,20 @@ class HighValueWaveHandler:
             "event_version_snapshots": event_refs,
             "event_manifest_count": len(event_refs),
             "event_manifest_complete": True,
-            "model_degraded": event_result.model_fallback_count > 0,
+            "events_with_official_root": event_result.events_with_official_root,
+            "events_with_one_professional_root": (
+                event_result.events_with_one_professional_root
+            ),
+            "events_with_two_professional_roots": (
+                event_result.events_with_two_professional_roots
+            ),
+            "confirmed_event_count": event_result.confirmed_event_count,
+            "ambiguous_pairs_checked": event_result.ambiguous_pairs_checked,
+            "model_pair_fallback_count": event_result.model_pair_fallback_count,
+            "model_degraded": (
+                event_result.model_fallback_count > 0
+                or event_result.model_pair_fallback_count > 0
+            ),
         }
         return OperationResult(
             status=member_result.status,
