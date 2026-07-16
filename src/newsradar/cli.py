@@ -18,6 +18,8 @@ from newsradar.ai.health import check_minimax_config, check_minimax_live
 from newsradar.ai.minimax import ModelUsage
 from newsradar.credentials import SettingsCredentials
 from newsradar.db.models import (
+    EventScoreRecord,
+    EventVersionRecord,
     HighValueWaveMemberRecord,
     OperationRunRecord,
     SourceAcquisitionCandidateRecord,
@@ -88,7 +90,9 @@ from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
 from newsradar.waves.planning import build_wave_plan
+from newsradar.waves.reporting import render_high_value_wave_report
 from newsradar.waves.runtime import HighValueWaveHandler
+from newsradar.waves.scheduling import enqueue_due
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
@@ -190,6 +194,24 @@ def enqueue_wave(
     typer.echo(f"已创建高价值新闻波次任务：{operation_id}")
 
 
+@waves_app.command("enqueue-due")
+def enqueue_due_wave(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    """Queue one due frozen wave only; this command never starts a worker or fetch."""
+    try:
+        with create_session() as session:
+            plan = _wave_plan_from_local_catalog(profile, session)
+            result = enqueue_due(OperationCommandService(session), plan, now=datetime.now(UTC))
+    except ValueError as exc:
+        typer.echo(f"enqueue_due_failed: {exc}", err=True)
+        raise typer.Exit(2) from None
+    if result.operation_id is None:
+        typer.echo(f"enqueue_due_not_queued: {result.reason}")
+    else:
+        typer.echo(f"enqueue_due_queued: {result.operation_id}")
+
+
 def _load_high_value_wave_operation(operation_id: int):
     with create_session() as session:
         operation = session.get(OperationRunRecord, operation_id)
@@ -203,6 +225,56 @@ def _load_high_value_wave_operation(operation_id: int):
             )
         )
     return operation, members
+
+
+def _load_high_value_wave_report(operation_id: int):
+    """Read immutable event refs from one wave without falling back to current events."""
+    operation, members = _load_high_value_wave_operation(operation_id)
+    summary = operation.result_summary if isinstance(operation.result_summary, dict) else {}
+    snapshots = summary.get("event_version_snapshots", [])
+    if not isinstance(snapshots, list) or not snapshots:
+        return operation, members, []
+    with create_session() as session:
+        events: list[dict[str, object]] = []
+        for ref in snapshots:
+            if not isinstance(ref, dict):
+                continue
+            event_id, version_number = ref.get("event_id"), ref.get("version_number")
+            if not isinstance(event_id, int) or not isinstance(version_number, int):
+                continue
+            version = session.scalar(
+                select(EventVersionRecord).where(
+                    EventVersionRecord.event_id == event_id,
+                    EventVersionRecord.version_number == version_number,
+                )
+            )
+            score = session.scalar(
+                select(EventScoreRecord).where(
+                    EventScoreRecord.event_id == event_id,
+                    EventScoreRecord.version_number == version_number,
+                )
+            )
+            if version is None or score is None:
+                continue
+            payload = version.payload if isinstance(version.payload, dict) else {}
+            enrichment = (
+                payload.get("enrichment") if isinstance(payload.get("enrichment"), dict) else {}
+            )
+            trend = payload.get("trend") if isinstance(payload.get("trend"), dict) else {}
+            events.append(
+                {
+                    "title": version.zh_title or enrichment.get("zh_title") or "未命名事件",
+                    "signal_state": "confirmed"
+                    if payload.get("status") == "confirmed"
+                    else "early_signal",
+                    "heat": score.heat,
+                    "trend": trend.get("direction", "暂无"),
+                    "evidence_roots": score.breakdown.get("independent_root_count", 0)
+                    if isinstance(score.breakdown, dict)
+                    else 0,
+                }
+            )
+    return operation, members, events
 
 
 def _wave_member_counts(members) -> dict[str, int]:
@@ -237,7 +309,7 @@ def write_wave_report(
 ) -> None:
     """Render a scrubbed Chinese report for one frozen wave without touching the network."""
     try:
-        operation, members = _load_high_value_wave_operation(operation_id)
+        operation, members, events = _load_high_value_wave_report(operation_id)
     except LookupError:
         typer.echo("未找到高价值新闻波次任务", err=True)
         raise typer.Exit(2) from None
@@ -271,7 +343,9 @@ def write_wave_report(
         )
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        output.write_text(
+            render_high_value_wave_report(operation, members, events), encoding="utf-8"
+        )
     except OSError:
         typer.echo("high_value_wave_report_write_failed", err=True)
         raise typer.Exit(1) from None

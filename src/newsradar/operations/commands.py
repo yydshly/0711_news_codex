@@ -227,6 +227,30 @@ class OperationCommandService:
             operation_id = record.id
         return operation_id
 
+    def latest_high_value_wave(self, profile_id: str) -> OperationRunRecord | None:
+        """Return the newest durable wave for one profile without touching sources.
+
+        JSON expressions differ between SQLite (tests) and PostgreSQL (runtime), so this
+        bounded operation list is filtered in Python rather than relying on a dialect-
+        specific JSON operator.  It is only used by the manual due-check command.
+        """
+        if not profile_id:
+            raise ValueError("profile_id_required")
+        records = self.session.scalars(
+            select(OperationRunRecord)
+            .where(OperationRunRecord.operation_type == OperationType.HIGH_VALUE_NEWS_WAVE.value)
+            .order_by(OperationRunRecord.id.desc())
+        )
+        return next(
+            (
+                record
+                for record in records
+                if isinstance(record.requested_scope, dict)
+                and record.requested_scope.get("profile_id") == profile_id
+            ),
+            None,
+        )
+
     def _active_high_value_wave_id(self) -> int | None:
         return self.session.scalar(
             select(OperationRunRecord.id).where(

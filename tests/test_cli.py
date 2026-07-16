@@ -189,7 +189,8 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
         "cli-repr-secret",
     ):
         assert secret not in rendered
-    assert "Authorization: [REDACTED]" in rendered
+    assert "Authorization" not in rendered
+    assert "Cookie" not in rendered
 
 
 def write_source(root: Path) -> None:
