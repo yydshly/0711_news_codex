@@ -79,6 +79,7 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
     source = SourceDefinition.model_validate(valid_source())
     provider = type("Provider", (), {"id": source.provider_id})()
     syncs: list[str] = []
+    build_kwargs: dict[str, object] = {}
 
     class SourceRepo:
         def __init__(self, session):
@@ -89,6 +90,9 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
 
         def latest_probe_snapshots(self, source_ids):
             return {}
+
+        def successful_fetch_access(self, source_ids):
+            return {source.id: source.access_methods[0].kind.value}
 
     class ProviderRepo:
         def __init__(self, session):
@@ -158,7 +162,10 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
     monkeypatch.setattr("newsradar.cli.load_provider_tree", lambda root: [provider])
     monkeypatch.setattr(
         "newsradar.cli.build_wave_plan",
-        lambda *args, **kwargs: type("Plan", (), {"profile_id": "safe-profile"})(),
+        lambda *args, **kwargs: (
+            build_kwargs.update(kwargs)
+            or type("Plan", (), {"profile_id": "safe-profile"})()
+        ),
     )
     monkeypatch.setattr("newsradar.cli.SourceRepository", SourceRepo)
     monkeypatch.setattr("newsradar.cli.ProviderRepository", ProviderRepo)
@@ -180,6 +187,9 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
     assert enqueue.exit_code == 0
     assert "88" in enqueue.stdout
     assert syncs == ["providers", "sources"]
+    assert build_kwargs["successful_fetch_access"] == {
+        source.id: source.access_methods[0].kind.value
+    }
     assert status.exit_code == 0
     assert "2/3" in status.stdout
     assert report.exit_code == 0

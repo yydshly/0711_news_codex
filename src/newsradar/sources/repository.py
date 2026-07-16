@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import ModelUsage
 from newsradar.db.models import (
+    FetchRunRecord,
     ModelUsageRecord,
     SourceAccessMethodRecord,
     SourceAcquisitionCandidateRecord,
@@ -359,6 +360,28 @@ class SourceRepository:
     def latest_probe_snapshot(self, source_id: str) -> ProbeSnapshot | None:
         """Return the newest completed probe state, or ``None`` when none exists."""
         return self.latest_probe_snapshots([source_id]).get(source_id)
+
+    def successful_fetch_access(self, source_ids: Sequence[str]) -> dict[str, str]:
+        """Return the reviewed access kind used by each source's latest completed fetch."""
+        requested_ids = tuple(dict.fromkeys(source_ids))
+        if not requested_ids:
+            return {}
+        rows = self.session.execute(
+            select(FetchRunRecord.source_id, SourceAccessMethodRecord.kind)
+            .join(
+                SourceAccessMethodRecord,
+                SourceAccessMethodRecord.id == FetchRunRecord.access_method_id,
+            )
+            .where(
+                FetchRunRecord.source_id.in_(requested_ids),
+                FetchRunRecord.outcome.in_(("succeeded", "no_change")),
+            )
+            .order_by(FetchRunRecord.id.desc())
+        )
+        access_by_source: dict[str, str] = {}
+        for source_id, access_kind in rows:
+            access_by_source.setdefault(source_id, access_kind)
+        return access_by_source
 
     def latest_probe_snapshots(
         self, source_ids: Sequence[str], *, finished_at_lte=None

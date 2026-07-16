@@ -178,3 +178,63 @@ def test_requires_credentials_source_unlocks_with_configured_or_public_probed_me
     assert configured_member["openai-youtube"].blocked_reason is None
     assert fallback_member["openai-youtube"].fetchable is True
     assert fallback_member["openai-youtube"].blocked_reason is None
+
+
+def test_successful_fetch_allows_approved_wave_attempt_after_probe_degradation() -> None:
+    from newsradar.sources.yaml_loader import load_source_tree
+    from newsradar.waves.loader import load_wave_profile
+    from newsradar.waves.planning import build_wave_plan
+
+    profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
+    sources = load_source_tree(Path("sources"))
+    probes = {
+        "anthropic-bluesky": SimpleNamespace(
+            outcome="degraded", access_kind="public_api"
+        ),
+        "gdelt-ai": SimpleNamespace(outcome="failed", access_kind="public_api"),
+        "anthropic-youtube": SimpleNamespace(
+            outcome="degraded", access_kind="rest_api"
+        ),
+    }
+
+    plan = build_wave_plan(
+        profile,
+        sources,
+        probes,
+        configured_credentials={"YOUTUBE_API_KEY"},
+        successful_fetch_access={
+            "anthropic-bluesky": "public_api",
+            "gdelt-ai": "public_api",
+            "anthropic-youtube": "rest_api",
+        },
+    )
+    members = {member.source_id: member for member in plan.members}
+
+    assert members["anthropic-bluesky"].fetchable is True
+    assert members["gdelt-ai"].fetchable is False
+    assert members["gdelt-ai"].blocked_reason == "not_approved"
+    assert members["anthropic-youtube"].fetchable is True
+
+
+def test_successful_fetch_cannot_bypass_credentials_or_access_method_review() -> None:
+    from newsradar.sources.yaml_loader import load_source_tree
+    from newsradar.waves.loader import load_wave_profile
+    from newsradar.waves.planning import build_wave_plan
+
+    profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
+    sources = load_source_tree(Path("sources"))
+
+    plan = build_wave_plan(
+        profile,
+        sources,
+        latest_probes={},
+        configured_credentials=set(),
+        successful_fetch_access={
+            "anthropic-youtube": "rest_api",
+            "anthropic-bluesky": "unreviewed_api",
+        },
+    )
+    members = {member.source_id: member for member in plan.members}
+
+    assert members["anthropic-youtube"].blocked_reason == "missing_credentials"
+    assert members["anthropic-bluesky"].blocked_reason == "fetch_method_mismatch"

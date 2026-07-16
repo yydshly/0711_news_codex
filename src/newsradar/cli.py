@@ -168,12 +168,15 @@ def _wave_plan_from_local_catalog(profile: Path, session):
     ProviderRepository(session).sync(providers)
     SourceRepository(session).sync(sources)
     session.commit()
-    probes = SourceRepository(session).latest_probe_snapshots(list(loaded.source_ids))
+    repository = SourceRepository(session)
+    source_ids = list(loaded.source_ids)
+    probes = repository.latest_probe_snapshots(source_ids)
     return build_wave_plan(
         loaded,
         sources,
         probes,
         SettingsCredentials().configured_names(),
+        successful_fetch_access=repository.successful_fetch_access(source_ids),
     )
 
 

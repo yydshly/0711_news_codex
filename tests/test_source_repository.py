@@ -28,6 +28,34 @@ def make_session() -> Session:
     return Session(engine)
 
 
+def test_successful_fetch_access_returns_reviewed_method_for_completed_outcomes() -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    with make_session() as session:
+        repository = SourceRepository(session)
+        repository.sync([source])
+        method = session.scalar(select(SourceAccessMethodRecord))
+        assert method is not None
+        session.add_all(
+            [
+                FetchRunRecord(
+                    source_id=source.id,
+                    access_method_id=method.id,
+                    outcome="failed",
+                ),
+                FetchRunRecord(
+                    source_id=source.id,
+                    access_method_id=method.id,
+                    outcome="succeeded",
+                ),
+            ]
+        )
+        session.flush()
+
+        assert repository.successful_fetch_access([source.id]) == {
+            source.id: method.kind
+        }
+
+
 def test_sync_creates_current_definition_and_immutable_version() -> None:
     source = SourceDefinition.model_validate(valid_source())
     with make_session() as session:

@@ -46,23 +46,36 @@ class WavePlan:
         return frozenset(member.source_id for member in self.fetchable)
 
 
-def _pick_method(source: SourceDefinition, probe: object | None):
+def _pick_method(
+    source: SourceDefinition,
+    probe: object | None,
+    successful_fetch_access: str | None,
+):
     probe_kind = getattr(probe, "access_kind", None)
-    if probe_kind is None:
-        return None, "no_probe"
-    if getattr(probe, "outcome", None) != "success":
-        return None, "probe_not_successful"
-    method = next((item for item in source.access_methods if item.kind.value == probe_kind), None)
+    if probe_kind is not None and getattr(probe, "outcome", None) == "success":
+        method = next(
+            (item for item in source.access_methods if item.kind.value == probe_kind), None
+        )
+        return (method, None) if method is not None else (None, "probe_method_mismatch")
+    if successful_fetch_access is None:
+        return (None, "no_probe") if probe_kind is None else (None, "probe_not_successful")
+    method = next(
+        (item for item in source.access_methods if item.kind.value == successful_fetch_access),
+        None,
+    )
     if method is None:
-        return None, "probe_method_mismatch"
+        return None, "fetch_method_mismatch"
     return method, None
 
 
 def _member(
-    source: SourceDefinition, probe: object | None, credentials: Set[str]
+    source: SourceDefinition,
+    probe: object | None,
+    credentials: Set[str],
+    successful_fetch_access: str | None,
 ) -> WaveMemberSnapshot:
     _, definition_hash = canonical_definition(source)
-    method, reason = _pick_method(source, probe)
+    method, reason = _pick_method(source, probe, successful_fetch_access)
     if source.availability is Availability.REQUIRES_CREDENTIALS:
         selected_method_is_usable = method is not None and set(method.auth_envs) <= credentials
         some_credential_method_is_configured = any(
@@ -84,7 +97,9 @@ def _member(
             )
         )
     if reason is None:
-        if source.coverage_mode is not CoverageMode.DIRECT:
+        if not source.ingestion.enabled:
+            reason = "not_approved"
+        elif source.coverage_mode is not CoverageMode.DIRECT:
             reason = "indirect_access"
         elif method is not None and method.requires_manual_approval:
             reason = "requires_approval"
@@ -110,13 +125,20 @@ def build_wave_plan(
     sources: Iterable[SourceDefinition],
     latest_probes: Mapping[str, object],
     configured_credentials: Set[str],
+    successful_fetch_access: Mapping[str, str] | None = None,
 ) -> WavePlan:
+    successful_fetch_access = successful_fetch_access or {}
     catalog = {source.id: source for source in sources}
     missing_ids = sorted(set(profile.source_ids) - set(catalog))
     if missing_ids:
         raise ValueError(f"Unknown source id: {', '.join(missing_ids)}")
     members = tuple(
-        _member(catalog[source_id], latest_probes.get(source_id), configured_credentials)
+        _member(
+            catalog[source_id],
+            latest_probes.get(source_id),
+            configured_credentials,
+            successful_fetch_access.get(source_id),
+        )
         for source_id in sorted(profile.source_ids)
     )
     payload = {
