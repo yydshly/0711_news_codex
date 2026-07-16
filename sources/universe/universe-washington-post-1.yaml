@@ -2,12 +2,11 @@ id: universe-washington-post-1
 name: The Washington Post Technology primary
 provider_id: washington-post
 target_type: publisher_feed
-availability: manual_only
-coverage_mode: catalog_only
+availability: ready
+coverage_mode: direct
 official_identity_url: https://www.washingtonpost.com/technology/
-reviewed_at: '2026-07-11'
-unlock_requirements:
-- Unlock official The Washington Post Technology access
+reviewed_at: '2026-07-16'
+unlock_requirements: []
 status: candidate
 nature: professional_media
 roles:
@@ -21,12 +20,15 @@ topics:
 authority_score: 4
 poll_interval_minutes: 60
 access_methods:
+- kind: sitemap
+  url: https://www.washingtonpost.com/sitemaps/news-sitemap.xml.gz
+  priority: 1
 - kind: rss
   url: https://feeds.washingtonpost.com/rss/business/technology
-  priority: 1
+  priority: 2
 - kind: html
   url: https://www.washingtonpost.com/technology/
-  priority: 2
+  priority: 3
   requires_manual_approval: true
 expected_fields:
 - title
@@ -34,24 +36,44 @@ expected_fields:
 - published_at
 - summary
 risk:
-  terms: 4
-  authentication: 4
-  stability: 2
+  terms: 1
+  authentication: 0
+  stability: 1
   data_quality: 1
-  operating_cost: 4
+  operating_cost: 0
   evidence:
   - https://www.washingtonpost.com/technology/
   - https://www.washingtonpost.com/information/2026/05/21/washington-post-rss-feeds/
   - https://feeds.washingtonpost.com/rss/business/technology
   - https://www.washingtonpost.com/information/2022/01/01/terms-of-service/
-  hard_block_reason: manual_only
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
+  - https://www.washingtonpost.com/robots.txt
+  - https://www.washingtonpost.com/sitemaps/news-sitemap.xml.gz
+ingestion: {enabled: true, approved_at: '2026-07-16', max_items_per_run: 20}
+notes: 'Official News Sitemap discovery only; no article-body or subscription access. Fallback: empty RSS, then manual HTML.'
 
 research:
-  status: needs_research
-  conclusion: 官方 Technology RSS 已确认可公开访问，但当前返回 0 条内容；保留 manual_only，等待获得可验证样本。
+  status: verified
+  purpose: Discover public Washington Post news URLs without fetching article bodies.
+  wanted_information: [title, canonical_url, published_at]
+  conclusion: Official robots publishes this News Sitemap; a controlled sample returned 20 records with title, URL, and publication time. The Technology RSS remains an empty fallback.
+  risk_conclusion: Sitemap records are discovery leads only; no article body or subscription content is accessed, and metadata cannot independently confirm an event.
+  no_fallback_reason: The RSS currently has zero entries and HTML remains manual-only; the root Sitemap Index is not expanded.
   reviewed_at: '2026-07-16'
   candidates:
+  - key: washington-post-news-sitemap
+    kind: sitemap
+    implementation: httpx
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at]
+    limitations: [No article body or summary, subscription content is not bypassed, metadata cannot independently confirm events]
+    evidence:
+    - https://www.washingtonpost.com/robots.txt
+    - https://www.washingtonpost.com/sitemaps/news-sitemap.xml.gz
+    reviewed_at: '2026-07-16'
+    sample_status: succeeded
+    decision: primary
   - key: washington-post-technology-rss
     kind: rss
     implementation: feedparser
@@ -65,4 +87,4 @@ research:
     - https://feeds.washingtonpost.com/rss/business/technology
     reviewed_at: '2026-07-16'
     sample_status: blocked
-    decision: primary
+    decision: fallback

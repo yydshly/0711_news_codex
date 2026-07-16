@@ -64,23 +64,63 @@ def test_restricted_media_are_explicit_indirect_google_news_targets() -> None:
         assert source.access_methods[0].kind.value == "rss"
         assert str(source.access_methods[0].url) == "https://news.google.com/rss/search"
         assert source.ingestion.enabled is True
-def test_washington_post_primary_registers_official_public_rss_without_activation() -> None:
+def test_washington_post_uses_official_news_sitemap_with_rss_fallback() -> None:
     from pathlib import Path
 
+    from newsradar.providers.yaml_loader import load_provider_tree
     from newsradar.sources.yaml_loader import load_source_tree
 
-    source = next(
-        item
-        for item in load_source_tree(Path("sources"))
-        if item.id == "universe-washington-post-1"
-    )
+    providers = {item.id: item for item in load_provider_tree(Path("providers"))}
+    sources = {item.id: item for item in load_source_tree(Path("sources"))}
+    source = sources["universe-washington-post-1"]
+    provider = providers[source.provider_id]
 
-    assert source.availability.value == "manual_only"
-    assert source.ingestion.enabled is False
-    assert source.access_methods[0].kind.value == "rss"
+    assert provider.availability.value == "ready"
+    assert provider.auth_mode.value == "none"
+    assert source.availability.value == "ready"
+    assert source.coverage_mode.value == "direct"
+    assert source.ingestion.enabled is True
+    assert source.ingestion.max_items_per_run == 20
+    assert source.access_methods[0].kind.value == "sitemap"
     assert str(source.access_methods[0].url) == (
+        "https://www.washingtonpost.com/sitemaps/news-sitemap.xml.gz"
+    )
+    assert source.access_methods[1].kind.value == "rss"
+    assert str(source.access_methods[1].url) == (
         "https://feeds.washingtonpost.com/rss/business/technology"
     )
+    assert source.research.status.value == "verified"
+
+
+def test_discord_communities_remains_manual_until_concrete_authorized_target() -> None:
+    from pathlib import Path
+
+    from newsradar.providers.yaml_loader import load_provider_tree
+    from newsradar.sources.yaml_loader import load_source_tree
+
+    providers = {item.id: item for item in load_provider_tree(Path("providers"))}
+    sources = {item.id: item for item in load_source_tree(Path("sources"))}
+    provider = providers["discord"]
+    source = sources["universe-discord-1"]
+
+    assert provider.availability.value == "manual_only"
+    assert source.availability.value == "manual_only"
+    assert source.coverage_mode.value == "catalog_only"
+    assert source.ingestion.enabled is False
+    assert source.research.status.value == "needs_research"
+    combined = " ".join(
+        [
+            source.research.conclusion or "",
+            source.research.risk_conclusion or "",
+            *source.unlock_requirements,
+            *provider.unlock_requirements,
+        ]
+    ).lower()
+    assert "blog" in combined
+    assert "server" in combined
+    assert "channel" in combined
+    assert "administrator" in combined
+    assert "bot" in combined
 
 
 def test_validated_newsletters_use_shared_official_sitemap_ingestion() -> None:

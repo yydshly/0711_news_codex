@@ -5,9 +5,11 @@ target_type: account
 availability: manual_only
 coverage_mode: catalog_only
 official_identity_url: https://discord.com/
-reviewed_at: '2026-07-11'
+reviewed_at: '2026-07-16'
 unlock_requirements:
-- Unlock official Discord Communities access
+- User names a concrete Discord server and channel Target.
+- Server administrator authorizes an official Discord Bot or OAuth application.
+- Bot receives channel view and message-history permissions plus any required intents.
 status: candidate
 nature: social
 roles:
@@ -38,11 +40,34 @@ risk:
   operating_cost: 0
   evidence:
   - https://discord.com/developers/docs/intro
+  - https://discord.com/developers/docs/topics/oauth2
+  - https://discord.com/developers/docs/resources/guild
+  - https://discord.com/developers/docs/events/gateway#gateway-intents
   - https://discord.com/terms
   hard_block_reason: manual_only
 notes: 'Fallback: no additional audited method; coverage status is explicit.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: needs_research
+  purpose: Record the authorization boundary for a future user-named Discord server and channel Target.
+  wanted_information: [server_id, channel_id, title, canonical_url, published_at, summary]
+  conclusion: Discord company blog RSS is company content, not Discord Communities. No concrete server or channel Target and no administrator-authorized Bot or OAuth application exist, so collection remains manual-only.
+  risk_conclusion: Do not use user Cookies, login sessions, unofficial clients, self-bot accounts, or permission bypasses. A future Target requires server administrator authorization, channel permissions, and applicable Gateway intents.
+  no_fallback_reason: Public company-blog and server-directory pages do not provide the named community messages required by this Target.
+  reviewed_at: '2026-07-16'
+  candidates:
+  - key: discord-authorized-bot
+    kind: oauth_api
+    implementation: manual-review
+    officiality: official
+    authentication: oauth
+    roles: [discovery, metadata]
+    fields: [server_id, channel_id, title, canonical_url, published_at, summary]
+    limitations: [Requires concrete server and channel, administrator authorization, Bot permissions, and applicable Gateway intents]
+    evidence:
+    - https://discord.com/developers/docs/topics/oauth2
+    - https://discord.com/developers/docs/resources/guild
+    - https://discord.com/developers/docs/events/gateway#gateway-intents
+    reviewed_at: '2026-07-16'
+    sample_status: blocked
+    decision: manual_only

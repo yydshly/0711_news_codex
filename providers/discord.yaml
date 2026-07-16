@@ -12,10 +12,12 @@ capabilities:
 - content
 - engagement
 required_env: []
-reviewed_at: '2026-07-11'
+reviewed_at: '2026-07-16'
 evidence:
 - https://discord.com/developers/docs/intro
 - https://discord.com/terms
 unlock_requirements:
-- Obtain official Discord Communities access for manual only
-notes: Capability metadata only; content coverage is assessed per target.
+- User names a concrete Discord server and channel Target.
+- Server administrator authorizes an official Discord Bot or OAuth application.
+- Bot receives channel view and message-history permissions plus any required intents.
+notes: Discord company blog RSS is not community content; no generic community collection is enabled.

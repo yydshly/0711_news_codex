@@ -4,18 +4,20 @@ category: professional_media
 homepage: https://www.washingtonpost.com/technology/
 docs_url: https://www.washingtonpost.com/technology/
 terms_url: https://www.washingtonpost.com/information/2022/01/01/terms-of-service/
-auth_mode: manual
+auth_mode: none
 cost_tier: paid
-availability: manual_only
+availability: ready
 capabilities:
 - discovery
 - content
 - engagement
 required_env: []
-reviewed_at: '2026-07-11'
+reviewed_at: '2026-07-16'
 evidence:
 - https://www.washingtonpost.com/technology/
 - https://www.washingtonpost.com/information/2022/01/01/terms-of-service/
-unlock_requirements:
-- Obtain official The Washington Post Technology access for manual only
-notes: Capability metadata only; content coverage is assessed per target.
+- https://www.washingtonpost.com/robots.txt
+- https://www.washingtonpost.com/sitemaps/news-sitemap.xml.gz
+- https://www.washingtonpost.com/information/2026/05/21/washington-post-rss-feeds/
+unlock_requirements: []
+notes: Official News Sitemap discovery only; article bodies and subscription content are not accessed.
