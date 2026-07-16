@@ -101,6 +101,8 @@ class PipelineResult:
     pair_model_merge_count: int
     pair_separate_count: int
     pair_cache_hit_count: int
+    ambiguous_pairs_checked: int
+    model_pair_fallback_count: int
     pair_model_error_counts: dict[str, int]
     duplicate_root_suppressed_count: int
     model_success_count: int
@@ -275,6 +277,8 @@ class EventPipeline:
             pair_model_merge_count=self._pair_metrics["model_merge"],
             pair_separate_count=self._pair_metrics["separate"],
             pair_cache_hit_count=self._pair_metrics["cache_hit"],
+            ambiguous_pairs_checked=self._pair_metrics["ambiguous_checked"],
+            model_pair_fallback_count=self._pair_metrics["model_pair_fallback"],
             pair_model_error_counts=dict(sorted(self._pair_model_error_counts.items())),
             duplicate_root_suppressed_count=duplicate_root_suppressed_count,
             model_success_count=model_success_count,
@@ -423,6 +427,7 @@ class EventPipeline:
                 ClusterItem(
                     raw_item_id=row["raw_item_id"],
                     title=row["title"],
+                    summary=row["summary"],
                     canonical_url=row["canonical_url"],
                     canonical_url_hash=row["canonical_url_hash"],
                     original_url=row["original_url"],
@@ -530,6 +535,9 @@ class EventPipeline:
         """Persist deterministic pair outcomes before clustering can union members."""
         decisions = {}
         for left, right in candidate_pairs(items):
+            rule = evaluate_pair_rules(left, right)
+            if rule.kind is PairDecisionKind.MODEL_BOUNDARY:
+                self._pair_metrics["ambiguous_checked"] += 1
             fingerprint = pair_input_fingerprint(left, right)
             with self._session_factory() as session:
                 repository = EventRepository(session)
@@ -541,15 +549,25 @@ class EventPipeline:
                 )
                 if existing is not None:
                     self._pair_metrics["cache_hit"] += 1
+                    if (
+                        rule.kind is PairDecisionKind.MODEL_BOUNDARY
+                        and existing.model_same_event is None
+                    ):
+                        self._pair_metrics["model_pair_fallback"] += 1
                     decisions[(existing.left_raw_item_id, existing.right_raw_item_id)] = (
                         _stored_pair_decision(existing)
                     )
                     continue
-            rule = evaluate_pair_rules(left, right)
             semantic = None
             model_runs: tuple[EventModelRun, ...] = ()
             if rule.kind is PairDecisionKind.MODEL_BOUNDARY:
                 semantic, model_runs = self._compare_pair(left, right)
+                if (
+                    semantic is None
+                    or semantic.origin == "rule_fallback"
+                    or semantic.decision == "uncertain"
+                ):
+                    self._pair_metrics["model_pair_fallback"] += 1
             final = finalize_pair_decision(rule, semantic, fingerprint)
             if final.decision == "merge":
                 metric = (

@@ -403,7 +403,7 @@ def test_pipeline_uses_model_only_for_anchored_boundary_pair(
         del self
         calls.append((left.raw_item_ids[0], right.raw_item_ids[0]))
         return PairSemanticDecision(
-            same_event=True,
+            decision="same_event",
             confidence=0.91,
             rationale="same launch",
             origin="model",
@@ -417,6 +417,94 @@ def test_pipeline_uses_model_only_for_anchored_boundary_pair(
 
     assert calls == [(1, 2)]
     assert decisions[(1, 2)].decision == "merge"
+
+
+def test_pipeline_counts_boundary_fallback_and_cached_uncertain_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    items = (
+        ClusterItem(
+            raw_item_id=1,
+            title="OpenAI launches Orion reasoning model",
+            entities=("model:orion",),
+            published_at=now,
+        ),
+        ClusterItem(
+            raw_item_id=2,
+            title="Orion reasoning model released by OpenAI",
+            entities=("model:orion",),
+            published_at=now,
+        ),
+    )
+
+    async def compare(self, left, right):
+        del self, left, right
+        return PairSemanticDecision(
+            decision="uncertain",
+            confidence=0,
+            rationale="规则回退：语义配对不可用",
+            origin="rule_fallback",
+        )
+
+    monkeypatch.setattr(
+        "newsradar.events.pipeline.EventMiniMaxAdapter.compare_candidate_pair", compare
+    )
+    with Session(engine) as db:
+        pipeline = EventPipeline.production(db)
+        first = pipeline._resolve_pair_decisions(items)
+        second = pipeline._resolve_pair_decisions(items)
+
+    assert first[(1, 2)].decision == "separate"
+    assert first[(1, 2)].model_same_event is None
+    assert second == first
+    assert pipeline._pair_metrics["ambiguous_checked"] == 2
+    assert pipeline._pair_metrics["model_pair_fallback"] == 2
+    assert pipeline._pair_metrics["cache_hit"] == 1
+
+
+def test_pipeline_cached_explicit_different_event_is_not_counted_as_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+    items = (
+        ClusterItem(
+            raw_item_id=1,
+            title="OpenAI launches Orion reasoning model",
+            entities=("model:orion",),
+            published_at=now,
+        ),
+        ClusterItem(
+            raw_item_id=2,
+            title="Orion reasoning model released by OpenAI",
+            entities=("model:orion",),
+            published_at=now,
+        ),
+    )
+
+    async def compare(self, left, right):
+        del self, left, right
+        return PairSemanticDecision(
+            decision="different_event",
+            confidence=0.92,
+            rationale="different releases",
+            origin="model",
+        )
+
+    monkeypatch.setattr(
+        "newsradar.events.pipeline.EventMiniMaxAdapter.compare_candidate_pair", compare
+    )
+    with Session(engine) as db:
+        pipeline = EventPipeline.production(db)
+        pipeline._resolve_pair_decisions(items)
+        pipeline._resolve_pair_decisions(items)
+
+    assert pipeline._pair_metrics["ambiguous_checked"] == 2
+    assert pipeline._pair_metrics["model_pair_fallback"] == 0
 
 
 def test_pipeline_checkpoint_cancels_inflight_async_enrichment_promptly(

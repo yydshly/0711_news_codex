@@ -22,7 +22,10 @@ def pair_input_fingerprint(left: ClusterItem, right: ClusterItem) -> str:
         {
             "id": item.raw_item_id,
             "title": item.title[:500],
-            "entities": sorted(item.entities),
+            "summary": item.summary[:1_000],
+            "entities": list(item.entities[:20]),
+            "source_nature": item.source_nature,
+            "publisher": (item.publisher_name or "")[:500],
             "published_hour": (
                 item.published_at.isoformat(timespec="hours")
                 if item.published_at is not None
@@ -72,7 +75,7 @@ def finalize_pair_decision(
         rule.structural_anchor
         and semantic is not None
         and semantic.origin == "model"
-        and semantic.same_event
+        and semantic.decision == "same_event"
         and semantic.confidence >= 0.85
     ):
         decision = "merge"
@@ -85,6 +88,10 @@ def finalize_pair_decision(
         rule_score=rule.score,
         rule_reasons=rule.reasons,
         decision=decision,
-        model_same_event=semantic.same_event if semantic else None,
+        model_same_event=(
+            None
+            if semantic is None or semantic.decision == "uncertain"
+            else semantic.decision == "same_event"
+        ),
         model_confidence=semantic.confidence if semantic else None,
     )

@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from newsradar.events.clustering import (
     candidate_pairs,
     cluster_candidates,
@@ -28,7 +30,7 @@ def test_model_cannot_merge_without_structural_anchor() -> None:
         kind=PairDecisionKind.MODEL_BOUNDARY,
     )
     semantic = PairSemanticDecision(
-        same_event=True,
+        decision="same_event",
         confidence=0.99,
         rationale="similar topic",
         origin="model",
@@ -49,13 +51,59 @@ def test_high_confidence_model_can_confirm_anchored_boundary_pair() -> None:
         kind=PairDecisionKind.MODEL_BOUNDARY,
     )
     semantic = PairSemanticDecision(
-        same_event=True,
+        decision="same_event",
         confidence=0.91,
         rationale="same release",
         origin="model",
     )
 
     assert finalize_pair_decision(rule, semantic, "b" * 64).decision == "merge"
+
+
+@pytest.mark.parametrize(
+    "semantic",
+    [
+        None,
+        PairSemanticDecision(
+            decision="uncertain",
+            confidence=0.99,
+            rationale="insufficient evidence",
+            origin="model",
+        ),
+        PairSemanticDecision(
+            decision="different_event",
+            confidence=0.99,
+            rationale="different release",
+            origin="model",
+        ),
+        PairSemanticDecision(
+            decision="same_event",
+            confidence=0.84,
+            rationale="below threshold",
+            origin="model",
+        ),
+    ],
+)
+def test_boundary_pair_fails_closed_without_high_confidence_same_event(
+    semantic: PairSemanticDecision | None,
+) -> None:
+    rule = PairRuleDecision(
+        left_raw_item_id=1,
+        right_raw_item_id=2,
+        score=0.68,
+        reasons=("shared_object_entity", "same_action"),
+        structural_anchor=True,
+        kind=PairDecisionKind.MODEL_BOUNDARY,
+    )
+
+    final = finalize_pair_decision(rule, semantic, "c" * 64)
+
+    assert final.decision == "separate"
+    assert final.model_same_event is (
+        None
+        if semantic is None or semantic.decision == "uncertain"
+        else semantic.decision == "same_event"
+    )
 
 
 def test_pair_fingerprint_is_order_independent_and_excludes_url_query_data() -> None:
@@ -77,6 +125,28 @@ def test_pair_fingerprint_is_order_independent_and_excludes_url_query_data() -> 
 
     assert pair_input_fingerprint(left, right) == pair_input_fingerprint(right, left)
     assert safe_root_identity(left) == "news.example.test/posts/orion"
+
+
+def test_pair_fingerprint_changes_when_bounded_model_context_changes() -> None:
+    left = ClusterItem(
+        raw_item_id=1,
+        title="OpenAI launches Orion",
+        summary="Initial release details",
+        entities=("model:orion",),
+        source_nature="first_party",
+        publisher_name="OpenAI",
+    )
+    right = left.model_copy(update={"raw_item_id": 2})
+    baseline = pair_input_fingerprint(left, right)
+
+    for update in (
+        {"summary": "Updated release details"},
+        {"source_nature": "professional_media"},
+        {"publisher_name": "Reuters"},
+        {"entities": ("model:orion", "product:api")},
+    ):
+        changed = right.model_copy(update=update)
+        assert pair_input_fingerprint(left, changed) != baseline
 
 
 def test_rule_pairs_merge_identical_canonical_evidence_directly() -> None:

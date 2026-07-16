@@ -124,6 +124,8 @@ class EventOperationHandler:
                     "pair_model_merge_count": result.pair_model_merge_count,
                     "pair_separate_count": result.pair_separate_count,
                     "pair_cache_hit_count": result.pair_cache_hit_count,
+                    "ambiguous_pairs_checked": result.ambiguous_pairs_checked,
+                    "model_pair_fallback_count": result.model_pair_fallback_count,
                     "pair_model_error_counts": result.pair_model_error_counts,
                     "created_event_versions": result.created_event_versions,
                     "candidate_count": result.candidate_count,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from newsradar.events.schema import (
     ClusterItem,
     EntityType,
     EventEnrichment,
+    PairSemanticDecision,
 )
 from newsradar.settings import Settings
 
@@ -385,7 +387,10 @@ async def test_compare_and_entity_suggestion_are_advisory_and_use_fast_model() -
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if "Compare the candidate pair" in body["messages"][0]["content"]:
-            content = '{"same_event":true,"confidence":0.8,"rationale":"same release"}'
+            content = (
+                '{"decision":"same_event","confidence":0.8,'
+                '"rationale":"same release"}'
+            )
         else:
             content = (
                 '{"entities":[{"canonical_key":"openai","name":"OpenAI",'
@@ -400,7 +405,97 @@ async def test_compare_and_entity_suggestion_are_advisory_and_use_fast_model() -
         entities = await adapter.suggest_entities(candidate_context())
 
     assert pair.same_event is True
+    assert pair.decision == "same_event"
     assert entities.entities[0].entity_type is EntityType.ORGANIZATION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["no_key", "invalid_json", "timeout", "rate_limit"])
+async def test_pair_comparison_failures_return_uncertain(failure: str) -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if failure == "invalid_json":
+            return httpx.Response(
+                200, json=response_payload("not-json"), request=request
+            )
+        if failure == "timeout":
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(429, request=request)
+
+    settings = Settings(minimax_api_key=None if failure == "no_key" else "secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await EventMiniMaxAdapter(settings, http).compare_candidate_pair(
+            candidate_context(), candidate_context()
+        )
+
+    assert result == PairSemanticDecision(
+        decision="uncertain",
+        confidence=0,
+        rationale="规则回退：语义配对不可用",
+        origin="rule_fallback",
+    )
+    assert calls == (0 if failure == "no_key" else 2 if failure == "invalid_json" else 1)
+
+
+@pytest.mark.asyncio
+async def test_pair_context_is_bounded_and_excludes_urls_and_private_payloads() -> None:
+    captured = ""
+    entities = tuple(f"entity:{index:02d}" for index in range(25))
+    item = ClusterItem(
+        raw_item_id=7,
+        title="T" * 500 + "TITLE_TAIL https://example.test/?token=secret",
+        summary="S" * 1000 + "SUMMARY_TAIL",
+        canonical_url="https://example.test/private?token=secret",
+        original_url="https://origin.test/private?cookie=secret",
+        published_at=datetime(2026, 7, 16, 8, 30, tzinfo=UTC),
+        source_nature="professional_media",
+        publisher_name="Example Publisher",
+        entities=entities,
+    )
+    candidate = CandidateCluster(
+        candidate_key="bounded",
+        title=item.title,
+        items=(item,),
+        raw_item_ids=(item.raw_item_id,),
+        metadata={"secret": "METADATA_SECRET"},
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured
+        captured = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            json=response_payload(
+                '{"decision":"different_event","confidence":0.9,'
+                '"rationale":"different facts"}'
+            ),
+            request=request,
+        )
+
+    settings = Settings(minimax_api_key="secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await EventMiniMaxAdapter(settings, http).compare_candidate_pair(
+            candidate, candidate
+        )
+
+    assert result.decision == "different_event"
+    assert "S" * 1000 in captured
+    assert "2026-07-16T08:30:00+00:00" in captured
+    assert "professional_media" in captured
+    assert "Example Publisher" in captured
+    assert "entity:19" in captured
+    assert "entity:20" not in captured
+    for forbidden in (
+        "TITLE_TAIL",
+        "SUMMARY_TAIL",
+        "token=secret",
+        "cookie=secret",
+        "METADATA_SECRET",
+    ):
+        assert forbidden not in captured
 
 
 @pytest.mark.asyncio

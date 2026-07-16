@@ -167,9 +167,10 @@ class EventMiniMaxAdapter:
         self, left: CandidateCluster, right: CandidateCluster
     ) -> PairSemanticDecision:
         fallback = PairSemanticDecision(
-            same_event=False,
+            decision="uncertain",
             confidence=0,
-            rationale="Rule fallback: semantic comparison unavailable",
+            rationale="规则回退：语义配对不可用",
+            origin="rule_fallback",
         )
         prompt = (
             f"{UNTRUSTED_PREAMBLE}\nCompare the candidate pair as advisory context only. "
@@ -270,19 +271,35 @@ class EventMiniMaxAdapter:
             f"{EventMiniMaxAdapter._bounded_title(candidate.title)}"
         ]
         for item in candidate.items[:5]:
-            lines.append(
-                "untrusted_evidence_title: "
-                f"id={item.raw_item_id}; "
-                f"title={EventMiniMaxAdapter._bounded_title(item.title)}"
-            )
+            facts = [
+                f"id={item.raw_item_id}",
+                f"title={EventMiniMaxAdapter._bounded_title(item.title)}",
+                f"summary={EventMiniMaxAdapter._bounded_summary(item.summary)}",
+                f"published_at={item.published_at.isoformat() if item.published_at else ''}",
+                f"source_nature={item.source_nature or ''}",
+                f"publisher={EventMiniMaxAdapter._bounded_publisher(item.publisher_name or '')}",
+                f"rule_entities={json.dumps(item.entities[:20], ensure_ascii=False)}",
+            ]
+            lines.append("untrusted_evidence: " + "; ".join(facts))
         return "\n".join(lines)
 
     @staticmethod
     def _bounded_title(value: str) -> str:
-        without_url_queries = re.sub(
-            r"((?:https?:)?//[^\s?#]+|www\.[^\s?#]+)[?#][^\s]*",
-            r"\1",
+        return EventMiniMaxAdapter._without_urls(value)[:500]
+
+    @staticmethod
+    def _bounded_summary(value: str) -> str:
+        return EventMiniMaxAdapter._without_urls(value)[:1_000]
+
+    @staticmethod
+    def _bounded_publisher(value: str) -> str:
+        return EventMiniMaxAdapter._without_urls(value)[:500]
+
+    @staticmethod
+    def _without_urls(value: str) -> str:
+        return re.sub(
+            r"(?:https?:)?//[^\s]+|www\.[^\s]+",
+            "[url omitted]",
             value,
             flags=re.IGNORECASE,
         )
-        return without_url_queries[:500]

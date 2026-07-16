@@ -111,6 +111,7 @@ class ClusterItem(_Schema):
     evidence_role: EvidenceRole | None = None
     similarity: float = Field(default=0, ge=0, le=1)
     title: str = ""
+    summary: str = Field(default="", max_length=2_000)
     canonical_url: str | None = None
     canonical_url_hash: str | None = None
     original_url: str | None = None
@@ -247,10 +248,15 @@ class EventEnrichment(_Schema):
 class PairSemanticDecision(_Schema):
     """Advisory semantic comparison; deterministic clustering remains authoritative."""
 
-    same_event: bool
+    decision: Literal["same_event", "different_event", "uncertain"]
     confidence: float = Field(ge=0, le=1)
     rationale: str
     origin: Literal["model", "rule_fallback"] = "rule_fallback"
+
+    @property
+    def same_event(self) -> bool:
+        """Read-only compatibility view; uncertain remains fail-closed."""
+        return self.decision == "same_event"
 
 
 class EntitySuggestions(_Schema):
