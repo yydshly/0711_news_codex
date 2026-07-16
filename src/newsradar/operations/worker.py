@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any
 
@@ -66,6 +66,7 @@ class Worker:
             return False
         last_heartbeat = self._clock()
         cancellation_seen = Event()
+        checkpoint_lock = Lock()
 
         def log(message: str) -> None:
             scope = lease.requested_scope
@@ -83,19 +84,20 @@ class Worker:
 
         def checkpoint(boundary: str) -> None:
             nonlocal last_heartbeat
-            if cancellation_seen.is_set() or (
-                self._lease_guard is not None and not self._lease_guard(lease)
-            ) or (
-                self._lease_guard is None and self.repository.is_cancel_requested(lease)
-            ):
-                raise OperationCancelled()
-            now = self._clock()
-            if (
-                self._lease_guard is None
-                and now - last_heartbeat >= self._heartbeat_interval_seconds
-            ):
-                self._heartbeat(lease)
-                last_heartbeat = now
+            with checkpoint_lock:
+                if cancellation_seen.is_set() or (
+                    self._lease_guard is not None and not self._lease_guard(lease)
+                ) or (
+                    self._lease_guard is None and self.repository.is_cancel_requested(lease)
+                ):
+                    raise OperationCancelled()
+                now = self._clock()
+                if (
+                    self._lease_guard is None
+                    and now - last_heartbeat >= self._heartbeat_interval_seconds
+                ):
+                    self._heartbeat(lease)
+                    last_heartbeat = now
 
         try:
             log("operation_started")

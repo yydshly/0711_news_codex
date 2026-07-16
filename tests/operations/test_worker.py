@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Barrier, Event, Lock, Thread
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -246,4 +247,47 @@ def test_monitored_handler_does_not_use_owner_session_from_background_thread() -
             monitor_interval_seconds=0.01,
         ).run_once(lambda lease, checkpoint: checkpoint("background"))
 
+    assert processed is True
+
+
+def test_worker_serializes_concurrent_checkpoint_guards() -> None:
+    with session() as db:
+        repository = OperationRepository(db)
+        repository.enqueue(OperationType.FETCH, {})
+        start = Barrier(4)
+        release = Event()
+        counter_lock = Lock()
+        active = 0
+        max_active = 0
+
+        def guard(_lease) -> bool:
+            nonlocal active, max_active
+            with counter_lock:
+                active += 1
+                max_active = max(max_active, active)
+            release.wait(timeout=1)
+            with counter_lock:
+                active -= 1
+            return True
+
+        def handler(_lease, checkpoint) -> None:
+            def run_checkpoint(index: int) -> None:
+                start.wait(timeout=1)
+                checkpoint(f"parallel-{index}")
+
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(run_checkpoint, index) for index in range(3)]
+                start.wait(timeout=1)
+                time.sleep(0.05)
+                release.set()
+                for future in futures:
+                    future.result(timeout=1)
+
+        processed = Worker(
+            repository,
+            "worker",
+            lease_guard=guard,
+        ).run_once(handler)
+
         assert processed is True
+        assert max_active == 1
