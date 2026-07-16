@@ -19,6 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
 from newsradar.credentials import SettingsCredentials
+from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.db.models import OperationRunRecord, SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
@@ -33,6 +34,7 @@ from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
 from newsradar.waves.planning import build_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
+from newsradar.web.daily_report_queries import DailyReportQueryService
 from newsradar.web.event_queries import EventQueryService
 from newsradar.web.i18n import format_datetime_zh, format_duration_ms, zh_label
 from newsradar.web.item_queries import ItemQueryService
@@ -471,6 +473,134 @@ def create_app(
                 "latest_probe_at": None,
             },
         )
+
+    @app.get("/daily-reports", response_class=HTMLResponse)
+    def daily_reports(request: Request) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                service = DailyReportQueryService(session)
+                reports = service.list_reports()
+                snapshot_available = service.has_complete_event_snapshot()
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="daily_reports.html",
+            context={
+                "reports": reports,
+                "snapshot_available": snapshot_available,
+                "action_token": issue_action_token(request),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.post("/daily-reports")
+    async def generate_daily_report(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        from newsradar.daily_reports import DailyReportService
+
+        try:
+            window_hours = int(values.get("window_hours", "24"))
+            with create_session() as session:
+                report = DailyReportService(session).generate(window_hours)
+                report_id = report.id
+        except (TypeError, ValueError) as error:
+            status_code = 409 if str(error) == "complete_event_snapshot_required" else 422
+            raise HTTPException(status_code=status_code, detail=str(error)) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.get("/daily-reports/{report_id}", response_class=HTMLResponse)
+    def daily_report_detail(request: Request, report_id: int) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                detail = DailyReportQueryService(session).detail(report_id)
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        if detail is None:
+            raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="daily_report_detail.html",
+            context={
+                "daily_report": detail,
+                "action_token": issue_action_token(request),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": detail.report.window_end,
+            },
+        )
+
+    @app.post("/daily-reports/{report_id}/items/{item_id}/included")
+    async def set_daily_report_item_included(
+        request: Request, report_id: int, item_id: int
+    ) -> RedirectResponse:
+        values = await require_safe_action(request)
+        included = values.get("included") == "true"
+        try:
+            with create_session() as session:
+                DailyReportRepository(session).set_included(
+                    report_id, item_id, included=included
+                )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.post("/daily-reports/{report_id}/items/{item_id}/move")
+    async def move_daily_report_item(
+        request: Request, report_id: int, item_id: int
+    ) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            with create_session() as session:
+                DailyReportRepository(session).move_item(
+                    report_id, item_id, direction=values.get("direction", "")
+                )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.post("/daily-reports/{report_id}/archive")
+    async def archive_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        _values = await require_safe_action(request)
+        try:
+            with create_session() as session:
+                DailyReportRepository(session).archive(report_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.post("/daily-reports/{report_id}/revise")
+    async def revise_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        _values = await require_safe_action(request)
+        from newsradar.daily_reports import DailyReportService
+
+        try:
+            with create_session() as session:
+                revision = DailyReportService(session).revise(report_id)
+                revision_id = revision.id
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-reports/{revision_id}", status_code=303)
 
     @app.get("/events/{event_id}", response_class=HTMLResponse)
     def event_detail(

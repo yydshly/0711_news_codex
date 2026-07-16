@@ -341,6 +341,7 @@ def test_generate_sanitizes_evidence_and_never_calls_network_or_model(
 
     assert all("?" not in (item["url"] or "") for item in evidence)
     assert all("#" not in (item["url"] or "") for item in evidence)
+    assert all("@" not in (item["url"] or "") for item in evidence)
 
 
 def test_public_url_rejects_malformed_ipv6() -> None:

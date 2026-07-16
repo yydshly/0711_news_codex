@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}中文日报 · News Codex{% endblock %}
+{% block header %}<h1>中文日报</h1>{% endblock %}
+{% block content %}
+<section class="panel">
+  <p class="eyebrow">手动生成 · 固定事件快照</p>
+  <h2>中文日报</h2>
+  <p>生成日报只读取已完成的事件快照，不会重新抓取、重新聚类或调用 MiniMax。</p>
+  <p class="metric-note">支持最近 24、48 或 72 小时的固定窗口。</p>
+  {% if snapshot_available %}
+  <form method="post" action="/daily-reports">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <label>时间窗口
+      <select name="window_hours">
+        <option value="24">最近24小时</option>
+        <option value="48">最近48小时</option>
+        <option value="72">最近72小时</option>
+      </select>
+    </label>
+    <button type="submit">生成日报草稿</button>
+  </form>
+  {% else %}<p>尚无完整事件运行快照，请先完成事件构建。</p>{% endif %}
+</section>
+
+<section class="panel" aria-labelledby="daily-report-history-heading">
+  <h2 id="daily-report-history-heading">日报存档</h2>
+  {% if reports %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>日期</th><th>修订</th><th>状态</th><th>窗口截止</th><th>确认数</th><th>线索数</th></tr></thead>
+      <tbody>
+      {% for report in reports %}
+      <tr>
+        <td><a href="/daily-reports/{{ report.report_id }}">{{ report.report_date.isoformat() }}</a></td>
+        <td>第 {{ report.revision }} 版</td>
+        <td>{{ '草稿' if report.status == 'draft' else '已归档' }}</td>
+        <td>{{ report.window_end|format_datetime_zh }}</td>
+        <td>{{ report.confirmed_count }}</td>
+        <td>{{ report.emerging_count }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p>尚未生成日报。</p>{% endif %}
+</section>
+{% endblock %}

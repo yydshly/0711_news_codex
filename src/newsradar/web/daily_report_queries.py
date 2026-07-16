@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+
+from sqlalchemy import case, select
+from sqlalchemy.orm import Session
+
+from newsradar.db.models import DailyReportItemRecord, DailyReportRecord
+from newsradar.events.operation_snapshots import latest_complete_event_snapshot
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportSummaryView:
+    report_id: int
+    report_date: date
+    revision: int
+    status: str
+    window_hours: int
+    window_end: datetime
+    source_operation_id: int
+    confirmed_count: int
+    emerging_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportItemView:
+    item_id: int
+    event_id: int
+    event_version_number: int
+    section: str
+    position: int
+    included: bool
+    snapshot: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportDetailView:
+    report: DailyReportSummaryView
+    generation_summary: dict[str, object]
+    supersedes_report_id: int | None
+    archived_at: datetime | None
+    confirmed: tuple[DailyReportItemView, ...]
+    emerging: tuple[DailyReportItemView, ...]
+
+
+class DailyReportQueryService:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def list_reports(self, *, limit: int = 100) -> tuple[DailyReportSummaryView, ...]:
+        records = self.session.scalars(
+            select(DailyReportRecord)
+            .order_by(
+                DailyReportRecord.report_date.desc(),
+                DailyReportRecord.revision.desc(),
+                DailyReportRecord.id.desc(),
+            )
+            .limit(max(1, min(limit, 100)))
+        )
+        return tuple(self._summary(record) for record in records)
+
+    def detail(self, report_id: int) -> DailyReportDetailView | None:
+        record = self.session.get(DailyReportRecord, report_id)
+        if record is None:
+            return None
+        rows = tuple(
+            self.session.scalars(
+                select(DailyReportItemRecord)
+                .where(DailyReportItemRecord.daily_report_id == report_id)
+                .order_by(
+                    case((DailyReportItemRecord.section == "confirmed", 0), else_=1),
+                    DailyReportItemRecord.position,
+                    DailyReportItemRecord.id,
+                )
+            )
+        )
+        views = tuple(
+            DailyReportItemView(
+                item_id=row.id,
+                event_id=row.event_id,
+                event_version_number=row.event_version_number,
+                section=row.section,
+                position=row.position,
+                included=row.included,
+                snapshot=dict(row.snapshot) if isinstance(row.snapshot, dict) else {},
+            )
+            for row in rows
+        )
+        return DailyReportDetailView(
+            report=self._summary(record, rows=rows),
+            generation_summary=(
+                dict(record.generation_summary)
+                if isinstance(record.generation_summary, dict)
+                else {}
+            ),
+            supersedes_report_id=record.supersedes_report_id,
+            archived_at=record.archived_at,
+            confirmed=tuple(row for row in views if row.section == "confirmed"),
+            emerging=tuple(row for row in views if row.section == "emerging"),
+        )
+
+    def has_complete_event_snapshot(self, *, now: datetime | None = None) -> bool:
+        return latest_complete_event_snapshot(self.session, now=now) is not None
+
+    def _summary(
+        self,
+        record: DailyReportRecord,
+        *,
+        rows: tuple[DailyReportItemRecord, ...] | None = None,
+    ) -> DailyReportSummaryView:
+        loaded = rows
+        if loaded is None:
+            loaded = tuple(
+                self.session.scalars(
+                    select(DailyReportItemRecord).where(
+                        DailyReportItemRecord.daily_report_id == record.id,
+                        DailyReportItemRecord.included.is_(True),
+                    )
+                )
+            )
+        return DailyReportSummaryView(
+            report_id=record.id,
+            report_date=record.report_date,
+            revision=record.revision,
+            status=record.status,
+            window_hours=record.window_hours,
+            window_end=record.window_end,
+            source_operation_id=record.source_operation_id,
+            confirmed_count=sum(
+                row.included and row.section == "confirmed" for row in loaded
+            ),
+            emerging_count=sum(
+                row.included and row.section == "emerging" for row in loaded
+            ),
+        )
