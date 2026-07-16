@@ -72,3 +72,25 @@ All checks passed!
 git diff --check
 passed
 ```
+
+## P1 第二次修复记录（结构化脱敏）
+
+复审发现上一版只在扁平文本上扩展规则，仍会先把 `dict`、`list`、`tuple` 转为字符串；因此带引号的 JSON / Python `repr` 键、嵌套诊断字段和日志 `extra` 仍可能绕过字段名脱敏。另一个问题是 `env or os.environ` 会把显式的空环境 `env={}` 当作未传入环境，测试无法证明不会读取进程中的真实变量。
+
+- 新增 `redact_value()`：递归清理 mapping、list、tuple；任何敏感键（含 `*_API_KEY`、`*_TOKEN`、`*_SECRET`、`DATABASE_URL`、Cookie、Authorization）直接替换为 `[REDACTED]`。
+- `redact()` 继续提供文本接口；完整 JSON 或 Python `repr` 会安全解析后清理，内嵌字符串中的带引号敏感键由保守规则清理。显式 `env={}` 不再回退读取 `os.environ`。
+- JSONL formatter 对安全结构保留 JSON 结构，对嵌套敏感字段递归清理，而不是先 `str(dict)`。
+- 新增回归覆盖：合成 JSON、repr、嵌套 dict/list/tuple、formatter extra、WaveRepository 持久化及 CLI Markdown 报告；全部使用合成值，且显式验证 `env={}`。
+
+验证：
+
+```text
+uv run pytest tests/operations/test_logging.py tests/waves/test_repository.py tests/test_cli.py tests/web/test_high_value_wave_pages.py tests/web/test_event_routes.py -q
+72 passed
+
+uv run ruff check src/newsradar/operations/logging.py src/newsradar/waves/repository.py tests/operations/test_logging.py tests/waves/test_repository.py tests/test_cli.py
+All checks passed
+
+git diff --check
+passed
+```

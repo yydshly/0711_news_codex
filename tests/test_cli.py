@@ -135,7 +135,10 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
                 "conclusion": (
                     "DATABASE_URL=postgresql://user:database-secret@db/news "
                     "MINIMAX_API_KEY=minimax-secret GITHUB_TOKEN=github-secret "
-                    "YOUTUBE_API_KEY=youtube-secret Authorization: Bearer authorization-secret"
+                    "YOUTUBE_API_KEY=youtube-secret Authorization: Bearer authorization-secret "
+                    '{"MINIMAX_API_KEY": "cli-json-secret", '
+                    '"nested": [{"github_token": "cli-nested-secret"}]} '
+                    "{'YOUTUBE_API_KEY': 'cli-repr-secret'}"
                 ),
             },
         )()
@@ -181,6 +184,9 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
         "github-secret",
         "youtube-secret",
         "authorization-secret",
+        "cli-json-secret",
+        "cli-nested-secret",
+        "cli-repr-secret",
     ):
         assert secret not in rendered
     assert "Authorization: [REDACTED]" in rendered

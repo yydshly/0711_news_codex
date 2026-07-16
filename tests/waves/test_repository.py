@@ -138,6 +138,42 @@ def test_finish_member_scrubs_environment_style_secrets_before_persistence(
     assert "Authorization: [REDACTED]" in stored
 
 
+def test_finish_member_scrubs_quoted_and_nested_structured_secret_text(session: Session) -> None:
+    session.add(
+        OperationRunRecord(
+            id=14,
+            operation_type="high_value_news_wave",
+            trigger="test",
+            status="running",
+            requested_scope={},
+            result_summary={},
+            progress_total=1,
+        )
+    )
+    session.commit()
+    repository = WaveRepository(session)
+    repository.create_members(14, plan(member("a")))
+    repository.claim_member(14, "a", claim_attempt_id=1)
+
+    conclusion = (
+        '{"MINIMAX_API_KEY": "persist-json-secret", '
+        '"nested": [{"github_token": "persist-nested-secret"}]} '
+        "{'YOUTUBE_API_KEY': 'persist-repr-secret'}"
+    )
+    repository.finish_member(
+        14,
+        "a",
+        state="failed",
+        result_code="internal",
+        conclusion=conclusion,
+        claim_attempt_id=1,
+    )
+
+    stored = WaveRepository(session).members(14)[0].conclusion or ""
+    for secret in ("persist-json-secret", "persist-nested-secret", "persist-repr-secret"):
+        assert secret not in stored
+
+
 def test_blocked_member_is_claimable_then_finishes_once_without_network(session: Session) -> None:
     session.add(
         OperationRunRecord(
