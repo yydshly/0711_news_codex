@@ -8,6 +8,7 @@ from .schema import (
     ReportStatus,
     validate_window_hours,
 )
+from .service import DailyReportService
 
 __all__ = [
     "ALLOWED_WINDOW_HOURS",
@@ -15,6 +16,7 @@ __all__ = [
     "REPORT_TIMEZONE",
     "DailyReportDraft",
     "DailyReportItemDraft",
+    "DailyReportService",
     "ReportSection",
     "ReportStatus",
     "validate_window_hours",
