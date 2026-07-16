@@ -190,6 +190,7 @@ class FetcherFactory:
         from .mastodon import MastodonFetcher
         from .reddit import RedditFetcher
         from .rss import RssFetcher
+        from .sitemap import SitemapFetcher
         from .techmeme import TechmemeFetcher
         from .youtube import YouTubeFetcher
 
@@ -219,6 +220,8 @@ class FetcherFactory:
             return MastodonFetcher(self.policy)
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
             return RssFetcher(self.policy)
+        if method.kind is AccessKind.SITEMAP:
+            return SitemapFetcher(self.policy)
         raise ValueError(f"unsupported_fetch_method:{method.kind.value}")
 
     @staticmethod
@@ -235,6 +238,8 @@ class FetcherFactory:
         if host == "news.google.com" and method.kind is AccessKind.RSS:
             return True
         if method.kind in {AccessKind.RSS, AccessKind.ATOM}:
+            return True
+        if method.kind is AccessKind.SITEMAP:
             return True
         return method.kind is AccessKind.PUBLIC_API and (
             path.startswith("/api/v1/accounts/")
