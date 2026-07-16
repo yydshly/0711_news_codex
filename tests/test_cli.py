@@ -661,6 +661,7 @@ def test_youtube_research_probe_uses_safe_factory_and_passes_bounded_video_ids(
             "youtube-data-api",
             "--video-id",
             "abcdefghijk",
+            "--no-persist",
         ],
     )
 

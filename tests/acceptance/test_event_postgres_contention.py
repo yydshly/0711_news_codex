@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
 from uuid import uuid4
@@ -36,10 +37,12 @@ from newsradar.settings import Settings
 
 
 def _postgres_engine_or_skip():
+    if os.getenv("NEWSRADAR_RUN_POSTGRES_ACCEPTANCE") != "1":
+        pytest.skip("set NEWSRADAR_RUN_POSTGRES_ACCEPTANCE=1 to run real PostgreSQL acceptance")
     database_url = Settings().database_url
     if not database_url or not database_url.startswith("postgresql"):
         pytest.skip("project-local PostgreSQL DATABASE_URL is not configured")
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = create_engine(database_url, pool_pre_ping=True, connect_args={"connect_timeout": 3})
     try:
         with engine.connect() as connection:
             if connection.dialect.name != "postgresql":
