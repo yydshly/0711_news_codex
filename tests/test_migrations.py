@@ -69,8 +69,21 @@ def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
         if constraint.name in expected_checks
     } == expected_checks
     assert {index.name for index in model_table.indexes} == {
-        "ix_event_merge_candidates_status_type"
+        "ix_event_merge_candidates_status_type",
+        "uq_event_merge_candidate_root",
     }
+    model_root_index = next(
+        index
+        for index in model_table.indexes
+        if index.name == "uq_event_merge_candidate_root"
+    )
+    assert model_root_index.unique
+    assert str(model_root_index.dialect_options["sqlite"]["where"]) == (
+        "supersedes_candidate_id IS NULL"
+    )
+    assert str(model_root_index.dialect_options["postgresql"]["where"]) == (
+        "supersedes_candidate_id IS NULL"
+    )
     assert {
         (tuple(foreign_key.parent.name for foreign_key in constraint.elements), ondelete)
         for constraint in model_table.foreign_key_constraints
@@ -115,9 +128,26 @@ def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
         assert unique_constraints["uq_event_merge_candidate_supersedes"] == (
             "supersedes_candidate_id",
         )
-        assert {
-            index["name"] for index in inspector.get_indexes("event_merge_candidates")
-        } == {"ix_event_merge_candidates_status_type"}
+        indexes = {
+            index["name"]: index
+            for index in inspector.get_indexes("event_merge_candidates")
+        }
+        assert set(indexes) == {
+            "ix_event_merge_candidates_status_type",
+            "uq_event_merge_candidate_root",
+        }
+        root_index = indexes["uq_event_merge_candidate_root"]
+        assert root_index["unique"] == 1
+        assert tuple(root_index["column_names"]) == (
+            "left_event_id",
+            "left_version_number",
+            "right_event_id",
+            "right_version_number",
+            "algorithm_version",
+        )
+        assert str(root_index["dialect_options"]["sqlite_where"]) == (
+            "supersedes_candidate_id IS NULL"
+        )
         foreign_keys = inspector.get_foreign_keys("event_merge_candidates")
         assert {
             (tuple(foreign_key["constrained_columns"]), foreign_key["referred_table"])

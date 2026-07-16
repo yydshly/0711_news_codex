@@ -101,6 +101,20 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
+        "uq_event_merge_candidate_root",
+        "event_merge_candidates",
+        [
+            "left_event_id",
+            "left_version_number",
+            "right_event_id",
+            "right_version_number",
+            "algorithm_version",
+        ],
+        unique=True,
+        sqlite_where=sa.text("supersedes_candidate_id IS NULL"),
+        postgresql_where=sa.text("supersedes_candidate_id IS NULL"),
+    )
+    op.create_index(
         "ix_event_merge_candidates_status_type",
         "event_merge_candidates",
         ["status", "candidate_type", "id"],
@@ -110,5 +124,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(
         "ix_event_merge_candidates_status_type", table_name="event_merge_candidates"
+    )
+    op.drop_index(
+        "uq_event_merge_candidate_root", table_name="event_merge_candidates"
     )
     op.drop_table("event_merge_candidates")

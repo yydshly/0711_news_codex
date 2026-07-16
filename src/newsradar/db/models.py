@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
     true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -762,6 +763,17 @@ class EventMergeCandidateRecord(Base):
         ),
         UniqueConstraint(
             "supersedes_candidate_id", name="uq_event_merge_candidate_supersedes"
+        ),
+        Index(
+            "uq_event_merge_candidate_root",
+            "left_event_id",
+            "left_version_number",
+            "right_event_id",
+            "right_version_number",
+            "algorithm_version",
+            unique=True,
+            sqlite_where=text("supersedes_candidate_id IS NULL"),
+            postgresql_where=text("supersedes_candidate_id IS NULL"),
         ),
         Index("ix_event_merge_candidates_status_type", "status", "candidate_type", "id"),
     )

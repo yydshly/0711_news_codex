@@ -29,6 +29,9 @@ class EventMergeCandidateRepository:
     def upsert_candidate(
         self, draft: MergeCandidateDraft, generated_operation_id: int
     ) -> EventMergeCandidateRecord:
+        existing = self.session.scalar(self._chain_statement(draft))
+        if existing is not None:
+            return existing
         values = self._candidate_values(
             draft,
             generated_operation_id,
@@ -45,12 +48,13 @@ class EventMergeCandidateRepository:
                     "right_event_id",
                     "right_version_number",
                     "algorithm_version",
-                    "input_fingerprint",
-                    "revision",
-                ]
+                ],
+                index_where=EventMergeCandidateRecord.supersedes_candidate_id.is_(
+                    None
+                ),
             )
         )
-        record = self.session.scalar(self._matching_statement(draft))
+        record = self.session.scalar(self._chain_statement(draft))
         assert record is not None
         return record
 
@@ -68,11 +72,20 @@ class EventMergeCandidateRepository:
             return existing
         if parent.status != MergeCandidateStatus.PENDING.value:
             raise ValueError("event_merge_candidate_not_reviewable")
-        if {
+        if (
             parent.left_event_id,
+            parent.left_version_number,
             parent.right_event_id,
-        } != {draft.left.event_id, draft.right.event_id}:
-            raise ValueError("event_merge_revision_pair_changed")
+            parent.right_version_number,
+            parent.algorithm_version,
+        ) != (
+            draft.left.event_id,
+            draft.left.version_number,
+            draft.right.event_id,
+            draft.right.version_number,
+            draft.algorithm_version,
+        ):
+            raise ValueError("event_merge_revision_chain_changed")
         self.mark_expired(parent_id, reason_code)
         values = self._candidate_values(
             draft,
@@ -188,7 +201,7 @@ class EventMergeCandidateRepository:
         record.result_summary = dict(result)
         return record
 
-    def _matching_statement(self, draft: MergeCandidateDraft):
+    def _chain_statement(self, draft: MergeCandidateDraft):
         return (
             select(EventMergeCandidateRecord)
             .where(
@@ -199,7 +212,6 @@ class EventMergeCandidateRepository:
                 EventMergeCandidateRecord.right_version_number
                 == draft.right.version_number,
                 EventMergeCandidateRecord.algorithm_version == draft.algorithm_version,
-                EventMergeCandidateRecord.input_fingerprint == draft.input_fingerprint,
             )
             .order_by(EventMergeCandidateRecord.revision.desc())
         )

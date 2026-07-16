@@ -23,7 +23,9 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
+from newsradar.event_merges.facts import load_event_facts
 from newsradar.event_merges.repository import EventMergeCandidateRepository
+from newsradar.event_merges.rules import classify_pair
 from newsradar.event_merges.schema import EventMergeFacts, MergeCandidateType
 from newsradar.event_merges.service import (
     EventMergeLeaseUnavailable,
@@ -88,13 +90,19 @@ def test_legacy_identity_revalidation_requires_exact_cross_algorithm_membership(
         MergeCandidateType.LEGACY_IDENTITY,
         legacy,
         current,
-        latest_snapshot_event_ids=frozenset({3, 9}),
+        latest_snapshot_event_ids=frozenset({9}),
     )
     assert not candidate_still_safe(
         MergeCandidateType.LEGACY_IDENTITY,
         legacy,
         current,
-        latest_snapshot_event_ids=frozenset({9}),
+        latest_snapshot_event_ids=frozenset(),
+    )
+    assert not candidate_still_safe(
+        MergeCandidateType.LEGACY_IDENTITY,
+        legacy,
+        current,
+        latest_snapshot_event_ids=frozenset({3}),
     )
     assert not candidate_still_safe(
         MergeCandidateType.LEGACY_IDENTITY,
@@ -111,23 +119,24 @@ def test_legacy_identity_revalidation_requires_exact_cross_algorithm_membership(
 
 
 def test_survivor_selection_uses_snapshot_then_algorithm_then_lower_id(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     legacy = _pair_facts(3).model_copy(update={"algorithm_versions": ("cluster-v2",)})
     current = _pair_facts(9)
-    monkeypatch.setattr(
-        "newsradar.event_merges.service.latest_complete_event_snapshot",
-        lambda session: SimpleNamespace(event_versions=(EventVersionRef(9, 1),)),
-    )
     service = EventMergeService(SimpleNamespace())
 
     survivor, absorbed = service._select_survivor(
-        SimpleNamespace(candidate_type="legacy_identity"), legacy, current
+        SimpleNamespace(candidate_type="legacy_identity"),
+        legacy,
+        current,
+        latest_snapshot_event_ids=frozenset({9}),
     )
     assert (survivor.event_id, absorbed.event_id) == (9, 3)
 
     survivor, absorbed = service._select_survivor(
-        SimpleNamespace(candidate_type="deterministic_merge"), legacy, current
+        SimpleNamespace(candidate_type="deterministic_merge"),
+        legacy,
+        current,
+        latest_snapshot_event_ids=frozenset(),
     )
     assert (survivor.event_id, absorbed.event_id) == (9, 3)
 
@@ -136,6 +145,7 @@ def test_survivor_selection_uses_snapshot_then_algorithm_then_lower_id(
         SimpleNamespace(candidate_type="deterministic_merge"),
         current,
         same_algorithm,
+        latest_snapshot_event_ids=frozenset(),
     )
     assert (survivor.event_id, absorbed.event_id) == (2, 9)
 
@@ -276,6 +286,73 @@ def _seed_candidate(
     candidate = session.scalar(select(EventMergeCandidateRecord))
     assert candidate is not None
     return candidate
+
+
+def _seed_legacy_candidate(session: Session) -> EventMergeCandidateRecord:
+    _seed_event(session, 1, 11, url="https://publisher.test/legacy-story")
+    _seed_event(session, 2, 22, url="https://publisher.test/current-story")
+    _seed_scan_operation(session)
+    _seed_merge_operation(session)
+    _seed_quality(session, 11)
+    legacy_cluster = session.scalar(
+        select(EventCandidateRecord).where(
+            EventCandidateRecord.candidate_key == "event-1"
+        )
+    )
+    current_membership = session.scalar(
+        select(EventItemRecord).where(
+            EventItemRecord.event_id == 2,
+            EventItemRecord.raw_item_id == 22,
+        )
+    )
+    assert legacy_cluster is not None
+    assert current_membership is not None
+    legacy_cluster.algorithm_version = "cluster-v2"
+    session.delete(current_membership)
+    session.add(
+        EventItemRecord(event_id=2, raw_item_id=11, added_version_number=1)
+    )
+    session.commit()
+    draft = classify_pair(
+        load_event_facts(session, 1),
+        load_event_facts(session, 2),
+        frozenset({2}),
+    )
+    assert draft is not None
+    assert draft.candidate_type is MergeCandidateType.LEGACY_IDENTITY
+    candidate = EventMergeCandidateRepository(session).upsert_candidate(draft, 50)
+    session.commit()
+    return candidate
+
+
+def test_apply_uses_one_frozen_latest_snapshot_for_validation_and_survivor(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _seed_legacy_candidate(session)
+    snapshots = (
+        SimpleNamespace(event_versions=(EventVersionRef(2, 1),)),
+        SimpleNamespace(event_versions=(EventVersionRef(1, 1),)),
+    )
+    calls = 0
+
+    def changing_snapshot(_session):
+        nonlocal calls
+        snapshot = snapshots[min(calls, len(snapshots) - 1)]
+        calls += 1
+        return snapshot
+
+    monkeypatch.setattr(
+        "newsradar.event_merges.service.latest_complete_event_snapshot",
+        changing_snapshot,
+    )
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result.status == "succeeded"
+    assert result.survivor_event_id == 2
+    assert result.legacy_event_id == 1
+    assert calls == 1
 
 
 def _rows(session: Session, model) -> list[tuple]:

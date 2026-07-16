@@ -56,11 +56,6 @@ def candidate_still_safe(
     if left.visibility != "current" or right.visibility != "current":
         return False
     expected = MergeCandidateType(candidate_type)
-    if expected is MergeCandidateType.LEGACY_IDENTITY and not {
-        left.event_id,
-        right.event_id,
-    }.issubset(latest_snapshot_event_ids):
-        return False
     current = classify_pair(
         left,
         right,
@@ -238,6 +233,7 @@ class EventMergeService:
                                 left=current_left,
                                 right=current_right,
                                 operation_id=operation_id,
+                                latest_snapshot_event_ids=latest_snapshot_ids,
                             )
                             checkpoint("after_event_merge_mutation")
                             repository.mark_applied(
@@ -328,8 +324,14 @@ class EventMergeService:
         left: EventMergeFacts,
         right: EventMergeFacts,
         operation_id: int,
+        latest_snapshot_event_ids: frozenset[int],
     ) -> MergeApplyResult:
-        survivor_facts, legacy_facts = self._select_survivor(record, left, right)
+        survivor_facts, legacy_facts = self._select_survivor(
+            record,
+            left,
+            right,
+            latest_snapshot_event_ids=latest_snapshot_event_ids,
+        )
         survivor = self.session.get(EventRecord, survivor_facts.event_id)
         legacy = self.session.get(EventRecord, legacy_facts.event_id)
         if survivor is None or legacy is None:
@@ -411,16 +413,16 @@ class EventMergeService:
         record: EventMergeCandidateRecord,
         left: EventMergeFacts,
         right: EventMergeFacts,
+        *,
+        latest_snapshot_event_ids: frozenset[int],
     ) -> tuple[EventMergeFacts, EventMergeFacts]:
         if record.candidate_type == MergeCandidateType.LEGACY_IDENTITY.value:
-            latest = latest_complete_event_snapshot(self.session)
-            referenced = (
-                {reference.event_id for reference in latest.event_versions}
-                if latest is not None
-                else set()
-            )
-            if (left.event_id in referenced) != (right.event_id in referenced):
-                survivor = left if left.event_id in referenced else right
+            if (left.event_id in latest_snapshot_event_ids) != (
+                right.event_id in latest_snapshot_event_ids
+            ):
+                survivor = (
+                    left if left.event_id in latest_snapshot_event_ids else right
+                )
                 return survivor, right if survivor is left else left
         current_cluster = "cluster-v3"
         if (current_cluster in left.algorithm_versions) != (

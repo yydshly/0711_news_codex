@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import Engine, create_engine, event, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -128,18 +129,23 @@ def test_repository_upsert_is_idempotent_for_same_versioned_input(session: Sessi
 
 def test_repository_locked_get_refreshes_identity_mapped_candidate(
     session: Session,
+    engine: Engine,
 ) -> None:
     repository = EventMergeCandidateRepository(session)
     record = repository.upsert_candidate(draft(), 10)
-    session.flush()
-    session.execute(
-        update(EventMergeCandidateRecord)
-        .where(EventMergeCandidateRecord.id == record.id)
-        .values(status=MergeCandidateStatus.DISMISSED.value)
-        .execution_options(synchronize_session=False)
-    )
+    record_id = record.id
+    session.commit()
+    assert record.status == MergeCandidateStatus.PENDING.value
+    with Session(engine) as concurrent_session:
+        concurrent_session.execute(
+            update(EventMergeCandidateRecord)
+            .where(EventMergeCandidateRecord.id == record_id)
+            .values(status=MergeCandidateStatus.DISMISSED.value)
+        )
+        concurrent_session.commit()
+    assert record.status == MergeCandidateStatus.PENDING.value
 
-    refreshed = repository.get(record.id, for_update=True)
+    refreshed = repository.get(record_id, for_update=True)
 
     assert refreshed is not None
     assert refreshed.status == MergeCandidateStatus.DISMISSED.value
@@ -174,6 +180,37 @@ def test_repository_recheck_creates_one_revision_child_and_reuses_it(
     assert session.query(EventMergeCandidateRecord).count() == 2
 
 
+@pytest.mark.parametrize("changed_field", ["version_number", "algorithm_version"])
+def test_repository_recheck_rejects_changed_chain_identity(
+    session: Session,
+    changed_field: str,
+) -> None:
+    repository = EventMergeCandidateRepository(session)
+    original = draft()
+    parent = repository.upsert_candidate(original, 10)
+    if changed_field == "version_number":
+        changed = original.model_copy(
+            update={
+                "left": original.left.model_copy(
+                    update={"version_number": original.left.version_number + 1}
+                )
+            }
+        )
+    else:
+        changed = original.model_copy(update={"algorithm_version": "event-merge-v2"})
+
+    with pytest.raises(ValueError, match="event_merge_revision_chain_changed"):
+        repository.create_revision(
+            parent.id,
+            changed,
+            generated_operation_id=11,
+            reason_code="event_merge_recheck_requested",
+        )
+
+    assert parent.status == MergeCandidateStatus.PENDING.value
+    assert session.query(EventMergeCandidateRecord).count() == 1
+
+
 def test_repository_scan_reuses_latest_matching_revision(session: Session) -> None:
     repository = EventMergeCandidateRepository(session)
     parent = repository.upsert_candidate(draft(), 10)
@@ -189,6 +226,86 @@ def test_repository_scan_reuses_latest_matching_revision(session: Session) -> No
 
     assert scanned.id == child.id
     assert scanned.revision == 2
+    assert session.query(EventMergeCandidateRecord).count() == 2
+
+
+def test_repository_scan_with_changed_fingerprint_reuses_existing_chain(
+    session: Session,
+) -> None:
+    repository = EventMergeCandidateRepository(session)
+    first_draft = draft()
+    changed_draft = first_draft.model_copy(
+        update={"input_fingerprint": "b" * 64}
+    )
+    parent = repository.upsert_candidate(first_draft, 10)
+    child = repository.create_revision(
+        parent.id,
+        changed_draft,
+        generated_operation_id=11,
+        reason_code="event_merge_recheck_requested",
+    )
+    session.flush()
+
+    scanned = repository.upsert_candidate(changed_draft, 12)
+
+    assert scanned.id == child.id
+    assert session.query(EventMergeCandidateRecord).count() == 2
+    assert (
+        session.query(EventMergeCandidateRecord)
+        .filter(EventMergeCandidateRecord.supersedes_candidate_id.is_(None))
+        .count()
+        == 1
+    )
+
+
+def test_database_rejects_second_root_for_same_stable_chain(session: Session) -> None:
+    repository = EventMergeCandidateRepository(session)
+    first_draft = draft()
+    changed_draft = first_draft.model_copy(
+        update={"input_fingerprint": "b" * 64}
+    )
+    repository.upsert_candidate(first_draft, 10)
+    session.flush()
+
+    with pytest.raises(IntegrityError):
+        session.execute(
+            repository._insert(EventMergeCandidateRecord).values(
+                repository._candidate_values(
+                    changed_draft,
+                    12,
+                    revision=1,
+                    supersedes_candidate_id=None,
+                )
+            )
+        )
+
+
+def test_repository_second_session_reuses_existing_revision_chain(
+    session: Session,
+    engine: Engine,
+) -> None:
+    repository = EventMergeCandidateRepository(session)
+    first_draft = draft()
+    changed_draft = first_draft.model_copy(
+        update={"input_fingerprint": "b" * 64}
+    )
+    parent = repository.upsert_candidate(first_draft, 10)
+    child = repository.create_revision(
+        parent.id,
+        changed_draft,
+        generated_operation_id=11,
+        reason_code="event_merge_recheck_requested",
+    )
+    child_id = child.id
+    session.commit()
+
+    with Session(engine) as second_session:
+        scanned = EventMergeCandidateRepository(second_session).upsert_candidate(
+            changed_draft, 12
+        )
+        second_session.commit()
+        assert scanned.id == child_id
+
     assert session.query(EventMergeCandidateRecord).count() == 2
 
 
