@@ -82,6 +82,88 @@ def test_configured_port_is_used_for_status_and_database_url(tmp_path) -> None:
     assert "@127.0.0.1:55232/newsradar" in env_contents
 
 
+def test_parse_windows_excluded_port_ranges() -> None:
+    output = """
+Protocol tcp Port Exclusion Ranges
+
+Start Port    End Port
+----------    --------
+     50000       50059     *
+     55409       55508
+"""
+
+    assert local_postgres.parse_excluded_port_ranges(output) == (
+        (50000, 50059),
+        (55409, 55508),
+    )
+
+
+def test_windows_port_exclusion_uses_netsh_output(monkeypatch) -> None:
+    monkeypatch.setattr(local_postgres.sys, "platform", "win32")
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="55409       55508\n",
+            stderr="",
+        )
+
+    assert local_postgres.windows_port_is_excluded(55432, runner=runner) is True
+    assert calls == [
+        [
+            "netsh",
+            "interface",
+            "ipv4",
+            "show",
+            "excludedportrange",
+            "protocol=tcp",
+        ]
+    ]
+
+
+def test_windows_excluded_port_is_rejected_with_recovery_instruction(tmp_path) -> None:
+    paths = make_paths(tmp_path)
+    paths.data_dir.mkdir(parents=True)
+    (paths.data_dir / "PG_VERSION").write_text("18", encoding="utf-8")
+
+    manager = LocalPostgresManager(
+        paths,
+        port=55432,
+        runner=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 3, stdout="not running", stderr=""
+        ),
+        port_in_use=lambda: False,
+        port_excluded=lambda port: port == 55432,
+    )
+
+    with pytest.raises(
+        LocalPostgresError,
+        match="55432.*NEWSRADAR_POSTGRES_PORT=55232",
+    ):
+        manager.start()
+
+
+def test_nonexcluded_port_preserves_existing_occupied_port_error(tmp_path) -> None:
+    paths = make_paths(tmp_path)
+    paths.data_dir.mkdir(parents=True)
+    (paths.data_dir / "PG_VERSION").write_text("18", encoding="utf-8")
+    manager = LocalPostgresManager(
+        paths,
+        port=55232,
+        runner=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 3, stdout="not running", stderr=""
+        ),
+        port_in_use=lambda: True,
+        port_excluded=lambda _: False,
+    )
+
+    with pytest.raises(LocalPostgresError, match="55232.*already in use"):
+        manager.start()
+
+
 def test_repair_dependency_is_part_of_postgres_discovery() -> None:
     assert "psql.exe" in LocalPostgresPaths.required_binaries
 

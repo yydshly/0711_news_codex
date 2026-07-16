@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import socket
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -22,6 +24,7 @@ class LocalPostgresError(RuntimeError):
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+PortExcluded = Callable[[int], bool]
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,39 @@ def resolve_postgres_port(project_root: Path) -> int:
     return port
 
 
+def parse_excluded_port_ranges(output: str) -> tuple[tuple[int, int], ...]:
+    ranges: list[tuple[int, int]] = []
+    for line in output.splitlines():
+        match = re.fullmatch(r"\s*(\d+)\s+(\d+)(?:\s+\*)?\s*", line)
+        if match:
+            ranges.append((int(match.group(1)), int(match.group(2))))
+    return tuple(ranges)
+
+
+def windows_port_is_excluded(port: int, *, runner: Runner = subprocess.run) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        result = runner(
+            [
+                "netsh",
+                "interface",
+                "ipv4",
+                "show",
+                "excludedportrange",
+                "protocol=tcp",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    return any(start <= port <= end for start, end in parse_excluded_port_ranges(result.stdout))
+
+
 class LocalPostgresManager:
     def __init__(
         self,
@@ -127,11 +163,13 @@ class LocalPostgresManager:
         port: int = POSTGRES_DEFAULT_PORT,
         runner: Runner = subprocess.run,
         port_in_use: Callable[[], bool] | None = None,
+        port_excluded: PortExcluded | None = None,
     ) -> None:
         self.paths = paths
         self.port = port
         self._runner = runner
         self._port_in_use = port_in_use or self._default_port_in_use
+        self._port_excluded = port_excluded or (lambda _: False)
 
     def initialize(self, *, password: str | None = None) -> str:
         has_cluster = self._is_initialized()
@@ -143,8 +181,7 @@ class LocalPostgresManager:
                 "Local PostgreSQL state is inconsistent: .env and data directory must both "
                 "exist or both be absent"
             )
-        if self._port_in_use():
-            raise LocalPostgresError(f"Port {self.port} is already in use")
+        self._ensure_port_available()
 
         generated_password = password or secrets.token_urlsafe(32)
         runtime_dir = self.paths.data_dir.parent
@@ -219,8 +256,7 @@ class LocalPostgresManager:
         started = False
         try:
             if not self._cluster_running():
-                if self._port_in_use():
-                    raise LocalPostgresError(f"Port {self.port} is already in use")
+                self._ensure_port_available()
                 self._start_process()
                 started = True
             if not self._database_exists(password):
@@ -277,8 +313,7 @@ class LocalPostgresManager:
         self._require_initialized()
         if self._cluster_running():
             return "Project-local PostgreSQL is already running."
-        if self._port_in_use():
-            raise LocalPostgresError(f"Port {self.port} is already in use")
+        self._ensure_port_available()
         self._start_process()
         return f"Project-local PostgreSQL started at {POSTGRES_HOST}:{self.port}."
 
@@ -439,6 +474,15 @@ class LocalPostgresManager:
         if not self._is_initialized():
             raise LocalPostgresError("Project-local PostgreSQL is not initialized; run db init")
 
+    def _ensure_port_available(self) -> None:
+        if self._port_excluded(self.port):
+            raise LocalPostgresError(
+                f"Port {self.port} is reserved by Windows; set "
+                "NEWSRADAR_POSTGRES_PORT=55232 and run newsradar db repair"
+            )
+        if self._port_in_use():
+            raise LocalPostgresError(f"Port {self.port} is already in use")
+
     def _default_port_in_use(self) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
             connection.settimeout(0.25)
@@ -450,4 +494,5 @@ def build_local_postgres_manager(project_root: Path | None = None) -> LocalPostg
     return LocalPostgresManager(
         LocalPostgresPaths.discover(root),
         port=resolve_postgres_port(root),
+        port_excluded=windows_port_is_excluded,
     )
