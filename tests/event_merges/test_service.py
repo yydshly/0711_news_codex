@@ -1,3 +1,4 @@
+from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
@@ -18,9 +19,30 @@ from newsradar.db.models import (
     SourceDefinitionRecord,
 )
 from newsradar.event_merges.repository import EventMergeCandidateRepository
-from newsradar.event_merges.service import EventMergeService
+from newsradar.event_merges.schema import EventMergeFacts
+from newsradar.event_merges.service import EventMergeService, _iter_bounded_event_pairs
+from newsradar.operations.worker import OperationCancelled
 
 NOW = datetime(2026, 7, 16, 4, tzinfo=UTC)
+
+
+def _pair_facts(event_id: int) -> EventMergeFacts:
+    return EventMergeFacts(
+        event_id=event_id,
+        version_number=1,
+        visibility="current",
+        canonical_key=f"event-{event_id}",
+        algorithm_versions=("cluster-v3",),
+        raw_item_ids=(10,),
+        source_ids=(f"source-{event_id}",),
+        publishers=(),
+        published_at=(NOW,),
+        safe_url_identities=(),
+        strong_identities=(),
+        object_entities=("model:orion",),
+        actions=("launch",),
+        evidence_roots=(),
+    )
 
 
 @pytest.fixture
@@ -250,3 +272,126 @@ def test_scan_isolates_one_candidate_integrity_failure(
     assert attempts == 3
     assert session.query(EventMergeCandidateRecord).count() == 2
     assert result.failure_reasons == {"candidate_integrity_failed": 1}
+
+
+def test_pair_stream_checkpoints_before_materializing_dense_bucket() -> None:
+    checkpoints: list[str] = []
+    failures: Counter[str] = Counter()
+    stream = _iter_bounded_event_pairs(
+        tuple(_pair_facts(event_id) for event_id in range(1, 20)),
+        checkpoints.append,
+        failures,
+        max_bucket_fanout=100,
+        max_pairs=100,
+    )
+
+    first = next(stream)
+
+    assert first == (1, 2)
+    assert checkpoints[0].startswith("event_merge_pair_bucket:")
+
+
+def test_pair_stream_enforces_bucket_fanout_and_total_pair_budget() -> None:
+    fanout_failures: Counter[str] = Counter()
+    fanout_pairs = tuple(
+        _iter_bounded_event_pairs(
+            tuple(_pair_facts(event_id) for event_id in range(1, 8)),
+            lambda _: None,
+            fanout_failures,
+            max_bucket_fanout=4,
+            max_pairs=2,
+        )
+    )
+    budget_failures: Counter[str] = Counter()
+    budget_pairs = tuple(
+        _iter_bounded_event_pairs(
+            tuple(_pair_facts(event_id) for event_id in range(1, 8)),
+            lambda _: None,
+            budget_failures,
+            max_bucket_fanout=10,
+            max_pairs=2,
+        )
+    )
+
+    assert fanout_pairs == ()
+    assert fanout_failures["pair_bucket_fanout_exceeded"] >= 1
+    assert len(budget_pairs) == 2
+    assert budget_failures == {"pair_budget_exhausted": 1}
+
+
+def test_pair_stream_propagates_checkpoint_cancellation_identity() -> None:
+    cancellation = OperationCancelled("cancel-now")
+
+    def cancel(_boundary: str) -> None:
+        raise cancellation
+
+    stream = _iter_bounded_event_pairs(
+        tuple(_pair_facts(event_id) for event_id in range(1, 20)),
+        cancel,
+        Counter(),
+        max_bucket_fanout=100,
+        max_pairs=100,
+    )
+
+    with pytest.raises(OperationCancelled) as caught:
+        next(stream)
+
+    assert caught.value is cancellation
+
+
+def test_pair_stream_checkpoints_within_dense_bucket() -> None:
+    cancellation = OperationCancelled("cancel-dense-bucket")
+
+    def cancel_on_progress(boundary: str) -> None:
+        if boundary.startswith("event_merge_pair_bucket_progress:"):
+            raise cancellation
+
+    stream = _iter_bounded_event_pairs(
+        tuple(_pair_facts(event_id) for event_id in range(1, 20)),
+        cancel_on_progress,
+        Counter(),
+        max_bucket_fanout=100,
+        max_pairs=1_000,
+    )
+
+    with pytest.raises(OperationCancelled) as caught:
+        tuple(stream)
+
+    assert caught.value is cancellation
+
+
+def test_scan_redacts_untrusted_evidence_roots_before_candidate_snapshot(
+    session: Session,
+) -> None:
+    shared = "https://www.reuters.com/technology/orion-1"
+    _seed_event(session, 1, 11, url=shared)
+    _seed_event(session, 2, 22, url=shared)
+    malicious_evidence = [
+        {
+            "root_evidence_key": (
+                "https://user:password@example.com/story?token=secret#private"
+            )
+        },
+        {"root_evidence_key": "publisher:reuters"},
+        {"root_evidence_key": "authorization:Bearer-secret"},
+        {"root_evidence_key": "user:pass@example.com/private"},
+        {"root_evidence_key": "unsafe\x00control"},
+    ]
+    for version in session.scalars(select(EventVersionRecord)):
+        version.payload = {"evidence": malicious_evidence}
+    _seed_scan_operation(session)
+    session.commit()
+
+    result = EventMergeService(session).scan(50, lambda _: None)
+    record = session.scalar(select(EventMergeCandidateRecord))
+
+    assert result.candidate_type_counts == {"deterministic_merge": 1}
+    assert record is not None
+    serialized = repr(record.facts_snapshot)
+    assert "example.com/story" in serialized
+    assert "publisher:reuters" in serialized
+    assert "secret" not in serialized.casefold()
+    assert "password" not in serialized.casefold()
+    assert "authorization" not in serialized.casefold()
+    assert "user:pass" not in serialized.casefold()
+    assert "\x00" not in serialized

@@ -31,6 +31,12 @@ _KEY_NUMBER = re.compile(
     re.I,
 )
 _MAX_TEXT = 10_000
+_SAFE_EVIDENCE_ROOT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,999}$")
+_SENSITIVE_EVIDENCE_ROOT = re.compile(
+    r"(?:api[_-]?key|authorization|bearer|credential|password|secret|token)",
+    re.I,
+)
+_CREDENTIAL_SHAPED_EVIDENCE_ROOT = re.compile(r"^[^:/@\s]+:[^/@\s]+@")
 
 
 def safe_url_identity(value: str | None) -> str | None:
@@ -47,9 +53,15 @@ def safe_url_identity(value: str | None) -> str | None:
 
 
 def strong_url_identity(value: str | None) -> str | None:
-    identity = safe_url_identity(value)
-    if identity is None or identity.split("/", 1)[0] in _INTERMEDIARY_HOSTS:
+    if not value:
         return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.hostname and parsed.hostname.casefold() in _INTERMEDIARY_HOSTS:
+        return None
+    identity = safe_url_identity(value)
     return identity
 
 
@@ -158,10 +170,28 @@ def _evidence_roots(payload: dict) -> tuple[str, ...]:
     if not isinstance(evidence, list):
         return ()
     roots = {
-        root[:1000]
+        safe_root
         for row in evidence[:1000]
         if isinstance(row, dict)
         and isinstance((root := row.get("root_evidence_key")), str)
-        and root
+        and (safe_root := _safe_evidence_root(root)) is not None
     }
     return tuple(sorted(roots))
+
+
+def _safe_evidence_root(value: str) -> str | None:
+    bounded = value.strip()[:1000]
+    try:
+        parsed = urlsplit(bounded)
+    except ValueError:
+        return None
+    if parsed.scheme in {"http", "https"}:
+        return safe_url_identity(bounded)
+    if (
+        not bounded
+        or _SENSITIVE_EVIDENCE_ROOT.search(bounded)
+        or _CREDENTIAL_SHAPED_EVIDENCE_ROOT.search(bounded)
+        or _SAFE_EVIDENCE_ROOT.fullmatch(bounded) is None
+    ):
+        return None
+    return bounded

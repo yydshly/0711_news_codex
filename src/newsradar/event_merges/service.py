@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -19,6 +19,9 @@ from newsradar.event_merges.schema import EventMergeFacts
 from newsradar.events.operation_snapshots import latest_complete_event_snapshot
 
 _TIME_BUCKET_SECONDS = 48 * 60 * 60
+MAX_PAIR_BUCKET_FANOUT = 500
+MAX_SCAN_PAIRS = 10_000
+_PAIR_CHECKPOINT_INTERVAL = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,9 +84,14 @@ class EventMergeService:
             else:
                 self.session.commit()
 
-        pairs, overlapping_memberships = _bounded_event_pairs(facts_by_id.values())
+        facts_values = tuple(facts_by_id.values())
+        overlapping_memberships = _overlapping_current_memberships(facts_values)
         candidate_types: Counter[str] = Counter()
-        for left_id, right_id in pairs:
+        pair_count = 0
+        for left_id, right_id in _iter_bounded_event_pairs(
+            facts_values, checkpoint, failures
+        ):
+            pair_count += 1
             checkpoint(f"event_merge_pair:{left_id}:{right_id}")
             left = facts_by_id[left_id]
             right = facts_by_id[right_id]
@@ -120,7 +128,6 @@ class EventMergeService:
             )
         )
         self.session.commit()
-        facts_values = tuple(facts_by_id.values())
         return MergeScanResult(
             candidate_type_counts=dict(sorted(candidate_types.items())),
             status_counts=dict(sorted(status_counts.items())),
@@ -133,7 +140,7 @@ class EventMergeService:
                 len(facts.source_ids) > 1 for facts in facts_values
             ),
             overlapping_current_membership_count=overlapping_memberships,
-            pair_count=len(pairs),
+            pair_count=pair_count,
         )
 
     def _expire_stale_candidates(
@@ -175,14 +182,18 @@ class EventMergeService:
                 failures["candidate_expiry_failed"] += 1
 
 
-def _bounded_event_pairs(
+def _iter_bounded_event_pairs(
     facts_values: Iterable[EventMergeFacts],
-) -> tuple[tuple[tuple[int, int], ...], int]:
+    checkpoint: Callable[[str], None],
+    failures: Counter[str],
+    *,
+    max_bucket_fanout: int = MAX_PAIR_BUCKET_FANOUT,
+    max_pairs: int = MAX_SCAN_PAIRS,
+) -> Iterator[tuple[int, int]]:
     facts = tuple(facts_values)
     raw_index: defaultdict[int, list[int]] = defaultdict(list)
     strong_index: defaultdict[str, list[int]] = defaultdict(list)
     object_time_index: defaultdict[tuple[str, int], list[int]] = defaultdict(list)
-    pairs: set[tuple[int, int]] = set()
     for item in facts:
         for raw_item_id in item.raw_item_ids:
             raw_index[raw_item_id].append(item.event_id)
@@ -196,29 +207,71 @@ def _bounded_event_pairs(
             for bucket in buckets:
                 object_time_index[(entity, bucket)].append(item.event_id)
 
-    for members in (*raw_index.values(), *strong_index.values()):
-        _add_pairs(pairs, members)
-    for (entity, bucket), members in object_time_index.items():
-        _add_cross_pairs(pairs, members, object_time_index.get((entity, bucket + 1), ()))
-        _add_pairs(pairs, members)
-    overlap_count = sum(len(set(members)) > 1 for members in raw_index.values())
-    return tuple(sorted(pairs)), overlap_count
+    buckets: list[tuple[str, tuple[int, ...], tuple[int, ...] | None]] = []
+    buckets.extend(
+        (f"raw:{key}", tuple(sorted(set(members))), None)
+        for key, members in sorted(raw_index.items())
+    )
+    buckets.extend(
+        (f"strong:{key}", tuple(sorted(set(members))), None)
+        for key, members in sorted(strong_index.items())
+    )
+    for (entity, bucket), members in sorted(object_time_index.items()):
+        buckets.append(
+            (f"object_time:{entity}:{bucket}", tuple(sorted(set(members))), None)
+        )
+        adjacent = object_time_index.get((entity, bucket + 1))
+        if adjacent:
+            buckets.append(
+                (
+                    f"object_time_adjacent:{entity}:{bucket}",
+                    tuple(sorted(set(members))),
+                    tuple(sorted(set(adjacent))),
+                )
+            )
+
+    yielded: set[tuple[int, int]] = set()
+    for label, left_members, right_members in buckets:
+        checkpoint(f"event_merge_pair_bucket:{label}")
+        bucket_members = set(left_members)
+        if right_members is not None:
+            bucket_members.update(right_members)
+        if len(bucket_members) > max_bucket_fanout:
+            failures["pair_bucket_fanout_exceeded"] += 1
+            continue
+        examined = 0
+        for pair in _bucket_pairs(left_members, right_members):
+            examined += 1
+            if examined % _PAIR_CHECKPOINT_INTERVAL == 0:
+                checkpoint(f"event_merge_pair_bucket_progress:{label}:{examined}")
+            if pair in yielded:
+                continue
+            if len(yielded) >= max_pairs:
+                failures["pair_budget_exhausted"] += 1
+                return
+            yielded.add(pair)
+            yield pair
 
 
-def _add_pairs(pairs: set[tuple[int, int]], members: Iterable[int]) -> None:
-    unique = tuple(sorted(set(members)))
-    for index, left in enumerate(unique):
-        for right in unique[index + 1 :]:
-            pairs.add((left, right))
-
-
-def _add_cross_pairs(
-    pairs: set[tuple[int, int]], left_members: Iterable[int], right_members: Iterable[int]
-) -> None:
-    for left in set(left_members):
-        for right in set(right_members):
+def _bucket_pairs(
+    left_members: tuple[int, ...], right_members: tuple[int, ...] | None
+) -> Iterator[tuple[int, int]]:
+    if right_members is None:
+        for index, left in enumerate(left_members):
+            for right in left_members[index + 1 :]:
+                yield left, right
+        return
+    for left in left_members:
+        for right in right_members:
             if left != right:
-                pairs.add((min(left, right), max(left, right)))
+                yield min(left, right), max(left, right)
+
+
+def _overlapping_current_memberships(facts: Iterable[EventMergeFacts]) -> int:
+    memberships: Counter[int] = Counter(
+        raw_item_id for item in facts for raw_item_id in item.raw_item_ids
+    )
+    return sum(count > 1 for count in memberships.values())
 
 
 def _aware_utc(value: datetime) -> datetime:

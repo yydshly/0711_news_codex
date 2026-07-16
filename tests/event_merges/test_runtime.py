@@ -1,10 +1,13 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from newsradar.event_merges.runtime import EventMergeOperationHandler
 from newsradar.event_merges.service import MergeScanResult
 from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
+from newsradar.operations.worker import OperationCancelled
 
 NOW = datetime.now(UTC)
 
@@ -73,3 +76,37 @@ def test_runtime_reports_isolated_scan_failures_as_partial(monkeypatch) -> None:
 
     assert result.status is OperationStatus.PARTIAL
     assert result.retryable is False
+
+
+def test_runtime_propagates_worker_checkpoint_control_flow(monkeypatch) -> None:
+    session = type("Session", (), {"close": lambda self: None})()
+    cancellation = OperationCancelled("lease-lost")
+    monkeypatch.setattr(
+        "newsradar.event_merges.runtime.EventMergeService.scan",
+        lambda self, operation_id, checkpoint: (_ for _ in ()).throw(cancellation),
+    )
+
+    with pytest.raises(OperationCancelled) as caught:
+        EventMergeOperationHandler.production(lambda: session)(
+            OperationLease(5, 1, 1, "worker", _scope(), "event_merge_scan"),
+            lambda _: None,
+        )
+
+    assert caught.value is cancellation
+
+
+def test_runtime_redacts_retryable_session_factory_failure() -> None:
+    secret = "postgresql://user:private-password@database/news"
+
+    def fail_session():
+        raise RuntimeError(secret)
+
+    result = EventMergeOperationHandler.production(fail_session)(
+        OperationLease(5, 1, 1, "worker", _scope(), "event_merge_scan"),
+        lambda _: None,
+    )
+
+    assert result.status is OperationStatus.FAILED
+    assert result.error_code == "event_merge_runtime_unavailable"
+    assert result.retryable is True
+    assert secret not in (result.error_message or "")

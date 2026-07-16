@@ -14,7 +14,7 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
-from newsradar.event_merges.facts import load_event_facts
+from newsradar.event_merges.facts import load_event_facts, strong_url_identity
 
 
 @pytest.fixture
@@ -140,3 +140,16 @@ def test_event_facts_sort_and_deduplicate_active_membership(session) -> None:
     facts = load_event_facts(session, event_id)
 
     assert facts.raw_item_ids == (10,)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://news.google.com:443/rss/articles/abc",
+        "https://news.google.com:8443/rss/articles/abc",
+        "https://news.yahoo.com:443/story/abc",
+        "https://news.yahoo.com:8443/story/abc",
+    ],
+)
+def test_intermediary_host_with_any_explicit_port_is_never_strong(url: str) -> None:
+    assert strong_url_identity(url) is None

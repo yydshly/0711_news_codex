@@ -13,7 +13,7 @@ from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.operations.deadlines import OperationDeadline, OperationTimedOut
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
-from newsradar.operations.worker import OperationResult
+from newsradar.operations.worker import OperationCancelled, OperationResult
 
 
 class EventMergeOperationHandler:
@@ -48,7 +48,15 @@ class EventMergeOperationHandler:
                 error_message=str(error),
                 retryable=False,
             )
-        session = self._session_factory()
+        try:
+            session = self._session_factory()
+        except Exception:
+            return OperationResult(
+                status=OperationStatus.FAILED,
+                error_code="event_merge_runtime_unavailable",
+                error_message="Event merge database session is unavailable",
+                retryable=True,
+            )
         if session is None:
             return OperationResult(
                 status=OperationStatus.FAILED,
@@ -71,6 +79,8 @@ class EventMergeOperationHandler:
                 error_message=str(error),
                 retryable=False,
             )
+        except OperationCancelled:
+            raise
         except Exception:
             return OperationResult(
                 status=OperationStatus.FAILED,
