@@ -113,6 +113,74 @@ async def test_youtube_probe_normalizes_playlist_items() -> None:
 
 
 @pytest.mark.asyncio
+async def test_youtube_channels_probe_resolves_uploads_playlist_before_sampling() -> None:
+    requests: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        assert request.url.params["key"] == "test-key"
+        if request.url.path.endswith("/channels"):
+            assert request.url.params["id"] == "channel-1"
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "contentDetails": {
+                                "relatedPlaylists": {"uploads": "uploads-1"}
+                            }
+                        }
+                    ]
+                },
+                request=request,
+            )
+        assert request.url.path.endswith("/playlistItems")
+        assert request.url.params["playlistId"] == "uploads-1"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": "playlist-item",
+                        "snippet": {
+                            "title": "Channel upload",
+                            "description": "Upload description",
+                            "publishedAt": "2026-07-10T12:00:00Z",
+                            "channelTitle": "Official Channel",
+                            "resourceId": {"videoId": "video-2"},
+                        },
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    source = source_with(
+        {
+            "kind": "rest_api",
+            "url": "https://www.googleapis.com/youtube/v3/channels",
+            "priority": 1,
+            "auth_env": "YOUTUBE_API_KEY",
+            "params": {"id": "channel-1"},
+        }
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = (
+            await ProbeFactory(client, credentials=Credentials({"YOUTUBE_API_KEY": "test-key"}))
+            .create(source.access_methods[0])
+            .probe(source, source.access_methods[0])
+        )
+
+    assert requests == [
+        "/youtube/v3/channels",
+        "/youtube/v3/playlistItems",
+    ]
+    assert result.outcome == "success"
+    assert result.samples[0].canonical_url == "https://www.youtube.com/watch?v=video-2"
+    assert result.samples[0].author == "Official Channel"
+
+
+@pytest.mark.asyncio
 async def test_bluesky_probe_normalizes_author_feed() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

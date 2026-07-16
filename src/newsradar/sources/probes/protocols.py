@@ -68,11 +68,38 @@ class HackerNewsProbe(JsonApiProbe):
 class YouTubeProbe(JsonApiProbe):
     async def _request(self, method):
         params = dict(method.params)
-        params["key"] = self.credentials.require("YOUTUBE_API_KEY")
-        return await self.client.get(
+        key = self.credentials.require("YOUTUBE_API_KEY")
+        params["key"] = key
+        if method.url.path.endswith("/channels"):
+            params.setdefault("part", "contentDetails")
+        response = await self.client.get(
             str(method.url),
             headers={"User-Agent": "NewsCodexSourceProbe/0.1 (+local audited registry)"},
             params=params,
+            follow_redirects=True,
+        )
+        if not method.url.path.endswith("/channels") or response.status_code >= 400:
+            return response
+        rows = response.json().get("items", [])
+        uploads = (
+            rows[0]
+            .get("contentDetails", {})
+            .get("relatedPlaylists", {})
+            .get("uploads")
+            if rows and isinstance(rows[0], dict)
+            else None
+        )
+        if not isinstance(uploads, str) or not uploads:
+            return synthetic_response(response, {"items": []})
+        return await self.client.get(
+            "https://www.googleapis.com/youtube/v3/playlistItems",
+            headers={"User-Agent": "NewsCodexSourceProbe/0.1 (+local audited registry)"},
+            params={
+                "part": "snippet",
+                "playlistId": uploads,
+                "maxResults": "5",
+                "key": key,
+            },
             follow_redirects=True,
         )
 
