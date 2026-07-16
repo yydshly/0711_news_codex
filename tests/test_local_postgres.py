@@ -164,6 +164,83 @@ def test_nonexcluded_port_preserves_existing_occupied_port_error(tmp_path) -> No
         manager.start()
 
 
+def make_initialized_port_paths(
+    tmp_path: Path,
+    *,
+    database_port: int = 55432,
+    config_port: int = 55432,
+) -> LocalPostgresPaths:
+    paths = make_paths(tmp_path)
+    paths.data_dir.mkdir(parents=True)
+    (paths.data_dir / "PG_VERSION").write_text("18", encoding="utf-8")
+    (paths.data_dir / "postgresql.conf").write_text(
+        "# Existing PostgreSQL settings\n"
+        "max_connections = 100\n"
+        "# News Codex project-local settings\n"
+        "listen_addresses = '127.0.0.1'\n"
+        f"port = {config_port}\n",
+        encoding="utf-8",
+    )
+    paths.env_file.write_text(
+        "MINIMAX_API_KEY=keep-existing\n"
+        "DATABASE_URL=postgresql+psycopg://newsradar:hidden"
+        f"@127.0.0.1:{database_port}/newsradar\n",
+        encoding="utf-8",
+    )
+    return paths
+
+
+def test_repair_migrates_stopped_existing_cluster_to_configured_port(tmp_path) -> None:
+    paths = make_initialized_port_paths(tmp_path)
+    original_version = (paths.data_dir / "PG_VERSION").read_bytes()
+
+    def stopped_runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, 3, stdout="not running", stderr="")
+
+    manager = LocalPostgresManager(
+        paths,
+        port=55232,
+        runner=stopped_runner,
+        port_in_use=lambda: False,
+        port_excluded=lambda _: False,
+    )
+
+    message = manager.repair()
+
+    config = (paths.data_dir / "postgresql.conf").read_text(encoding="utf-8")
+    env_contents = paths.env_file.read_text(encoding="utf-8")
+    assert "port = 55232" in config
+    assert "port = 55432" not in config
+    assert "@127.0.0.1:55232/newsradar" in env_contents
+    assert "NEWSRADAR_POSTGRES_PORT=55232" in env_contents
+    assert "MINIMAX_API_KEY=keep-existing" in env_contents
+    assert (paths.data_dir / "PG_VERSION").read_bytes() == original_version
+    assert "without deleting data" in message
+
+
+def test_repair_refuses_port_switch_while_cluster_is_running(tmp_path) -> None:
+    paths = make_initialized_port_paths(tmp_path)
+    original_config = (paths.data_dir / "postgresql.conf").read_bytes()
+    original_env = paths.env_file.read_bytes()
+
+    def running_runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="server is running", stderr="")
+
+    manager = LocalPostgresManager(
+        paths,
+        port=55232,
+        runner=running_runner,
+        port_in_use=lambda: False,
+        port_excluded=lambda _: False,
+    )
+
+    with pytest.raises(LocalPostgresError, match="db stop"):
+        manager.repair()
+
+    assert (paths.data_dir / "postgresql.conf").read_bytes() == original_config
+    assert paths.env_file.read_bytes() == original_env
+
+
 def test_repair_dependency_is_part_of_postgres_discovery() -> None:
     assert "psql.exe" in LocalPostgresPaths.required_binaries
 

@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import quote
 
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import ArgumentError
+
 POSTGRES_HOST = "127.0.0.1"
 POSTGRES_DEFAULT_PORT = 55432
 POSTGRES_USER = "newsradar"
@@ -240,7 +243,8 @@ class LocalPostgresManager:
 
     def repair(self, *, password: str | None = None) -> str:
         has_cluster = self._is_initialized()
-        has_database_url = self._has_database_url()
+        project_url = self._project_database_url()
+        has_database_url = project_url is not None
         if not has_cluster:
             if has_database_url:
                 raise LocalPostgresError(
@@ -248,6 +252,22 @@ class LocalPostgresManager:
                     "DATABASE_URL; preserve .env and backups, then restore data manually"
                 )
             raise LocalPostgresError("Project-local PostgreSQL is not initialized; run db init")
+        if project_url is not None and project_url.port != self.port:
+            if self._cluster_running():
+                raise LocalPostgresError(
+                    "Project-local PostgreSQL must be stopped with newsradar db stop before "
+                    "switching ports"
+                )
+            self._ensure_port_available()
+            self._write_cluster_port()
+            migrated_url = project_url.set(port=self.port).render_as_string(hide_password=False)
+            self._write_env_values(
+                {
+                    "DATABASE_URL": migrated_url,
+                    "NEWSRADAR_POSTGRES_PORT": str(self.port),
+                }
+            )
+            return "Project-local PostgreSQL repaired without deleting data or logs."
         if has_database_url:
             return "Project-local PostgreSQL does not require repair."
         if not password:
@@ -288,11 +308,17 @@ class LocalPostgresManager:
             f"postgresql+psycopg://{POSTGRES_USER}:{encoded_password}"
             f"@{POSTGRES_HOST}:{self.port}/{POSTGRES_DATABASE}"
         )
+        self._write_env_values(
+            {
+                "DATABASE_URL": database_url,
+                "NEWSRADAR_POSTGRES_PORT": str(self.port),
+            }
+        )
+        return "Updated the local DATABASE_URL without exposing credentials."
+
+    def _write_env_values(self, values: dict[str, str]) -> None:
         lines = self._initial_env_lines()
-        replacements = {
-            "DATABASE_URL": f"DATABASE_URL={database_url}",
-            "NEWSRADAR_POSTGRES_PORT": f"NEWSRADAR_POSTGRES_PORT={self.port}",
-        }
+        replacements = {key: f"{key}={value}" for key, value in values.items()}
         updated: list[str] = []
         replaced: set[str] = set()
         for line in lines:
@@ -303,11 +329,13 @@ class LocalPostgresManager:
                     replaced.add(key)
                 continue
             updated.append(line)
-        for key in ("NEWSRADAR_POSTGRES_PORT", "DATABASE_URL"):
+        for key in values:
             if key not in replaced:
                 updated.insert(0, replacements[key])
-        self.paths.env_file.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
-        return "Updated the local DATABASE_URL without exposing credentials."
+        self._atomic_write_text(
+            self.paths.env_file,
+            "\n".join(updated).rstrip() + "\n",
+        )
 
     def start(self) -> str:
         self._require_initialized()
@@ -367,6 +395,35 @@ class LocalPostgresManager:
             config.write(f"listen_addresses = '{POSTGRES_HOST}'\n")
             config.write(f"port = {self.port}\n")
             config.write("password_encryption = 'scram-sha-256'\n")
+
+    def _write_cluster_port(self) -> None:
+        config_path = self.paths.data_dir / "postgresql.conf"
+        contents = config_path.read_text(encoding="utf-8")
+        active_port = re.compile(r"(?m)^\s*port\s*=\s*\d+\s*$")
+        if active_port.search(contents):
+            updated = active_port.sub(f"port = {self.port}", contents)
+        else:
+            updated = contents.rstrip() + f"\nport = {self.port}\n"
+        self._atomic_write_text(config_path, updated)
+
+    @staticmethod
+    def _atomic_write_text(path: Path, contents: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                delete=False,
+            ) as temporary:
+                temporary.write(contents)
+                temporary_path = Path(temporary.name)
+            temporary_path.replace(path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def _start_process(self) -> None:
         self.paths.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -462,13 +519,24 @@ class LocalPostgresManager:
         return (self.paths.data_dir / "PG_VERSION").is_file()
 
     def _has_database_url(self) -> bool:
-        if not self.paths.env_file.exists():
-            return False
-        expected = f"@{POSTGRES_HOST}:{self.port}/{POSTGRES_DATABASE}"
-        return any(
-            line.startswith("DATABASE_URL=") and expected in line
-            for line in self.paths.env_file.read_text(encoding="utf-8").splitlines()
-        )
+        project_url = self._project_database_url()
+        return project_url is not None and project_url.port == self.port
+
+    def _project_database_url(self) -> URL | None:
+        value = _read_env_value(self.paths.env_file, "DATABASE_URL")
+        if value is None:
+            return None
+        try:
+            url = make_url(value)
+        except ArgumentError:
+            return None
+        if (
+            url.host != POSTGRES_HOST
+            or url.username != POSTGRES_USER
+            or url.database != POSTGRES_DATABASE
+        ):
+            return None
+        return url
 
     def _require_initialized(self) -> None:
         if not self._is_initialized():

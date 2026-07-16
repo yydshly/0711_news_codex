@@ -794,6 +794,19 @@ def test_db_repair_passes_hidden_password_without_printing_it(monkeypatch) -> No
     fake.repair.assert_called_once_with(password="private-value")
 
 
+def test_db_repair_without_password_does_not_prompt_for_port_migration(monkeypatch) -> None:
+    fake = Mock()
+    fake.repair.return_value = "Database port migrated."
+    monkeypatch.setattr("newsradar.cli.build_local_postgres_manager", lambda: fake)
+
+    result = runner.invoke(app, ["db", "repair"])
+
+    assert result.exit_code == 0
+    assert "Database port migrated." in result.stdout
+    assert "password" not in result.output.lower()
+    fake.repair.assert_called_once_with(password=None)
+
+
 def test_powershell_wrapper_limits_actions_and_delegates_to_cli() -> None:
     wrapper = Path("scripts/postgres.ps1").read_text(encoding="utf-8")
 

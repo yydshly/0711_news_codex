@@ -395,7 +395,7 @@ def stop_database() -> None:
 def repair_database(
     password: Annotated[
         str | None,
-        typer.Option("--password", prompt=True, hide_input=True),
+        typer.Option("--password", hide_input=True),
     ] = None,
 ) -> None:
     try:
