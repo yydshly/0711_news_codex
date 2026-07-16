@@ -29,8 +29,92 @@ class EventMergeCandidateRepository:
     def upsert_candidate(
         self, draft: MergeCandidateDraft, generated_operation_id: int
     ) -> EventMergeCandidateRecord:
+        values = self._candidate_values(
+            draft,
+            generated_operation_id,
+            revision=1,
+            supersedes_candidate_id=None,
+        )
+        self.session.execute(
+            self._insert(EventMergeCandidateRecord)
+            .values(values)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "left_event_id",
+                    "left_version_number",
+                    "right_event_id",
+                    "right_version_number",
+                    "algorithm_version",
+                    "input_fingerprint",
+                    "revision",
+                ]
+            )
+        )
+        record = self.session.scalar(self._matching_statement(draft))
+        assert record is not None
+        return record
+
+    def create_revision(
+        self,
+        parent_id: int,
+        draft: MergeCandidateDraft,
+        *,
+        generated_operation_id: int,
+        reason_code: str,
+    ) -> EventMergeCandidateRecord:
+        parent = self._require_locked(parent_id)
+        existing = self.child_of(parent_id, for_update=True)
+        if existing is not None:
+            return existing
+        if parent.status != MergeCandidateStatus.PENDING.value:
+            raise ValueError("event_merge_candidate_not_reviewable")
+        if {
+            parent.left_event_id,
+            parent.right_event_id,
+        } != {draft.left.event_id, draft.right.event_id}:
+            raise ValueError("event_merge_revision_pair_changed")
+        self.mark_expired(parent_id, reason_code)
+        values = self._candidate_values(
+            draft,
+            generated_operation_id,
+            revision=parent.revision + 1,
+            supersedes_candidate_id=parent.id,
+        )
+        self.session.execute(
+            self._insert(EventMergeCandidateRecord)
+            .values(values)
+            .on_conflict_do_nothing(
+                index_elements=["supersedes_candidate_id"]
+            )
+        )
+        child = self.child_of(parent_id, for_update=True)
+        assert child is not None
+        return child
+
+    def child_of(
+        self, candidate_id: int, *, for_update: bool = False
+    ) -> EventMergeCandidateRecord | None:
+        statement = select(EventMergeCandidateRecord).where(
+            EventMergeCandidateRecord.supersedes_candidate_id == candidate_id
+        )
+        if for_update:
+            statement = statement.with_for_update().execution_options(
+                populate_existing=True
+            )
+        return self.session.scalar(statement)
+
+    @staticmethod
+    def _candidate_values(
+        draft: MergeCandidateDraft,
+        generated_operation_id: int,
+        *,
+        revision: int,
+        supersedes_candidate_id: int | None,
+    ) -> dict[str, object]:
         now = datetime.now(UTC)
-        values = {
+        return {
+            "revision": revision,
+            "supersedes_candidate_id": supersedes_candidate_id,
             "left_event_id": draft.left.event_id,
             "left_version_number": draft.left.version_number,
             "right_event_id": draft.right.event_id,
@@ -51,23 +135,6 @@ class EventMergeCandidateRepository:
             "created_at": now,
             "updated_at": now,
         }
-        self.session.execute(
-            self._insert(EventMergeCandidateRecord)
-            .values(values)
-            .on_conflict_do_nothing(
-                index_elements=[
-                    "left_event_id",
-                    "left_version_number",
-                    "right_event_id",
-                    "right_version_number",
-                    "algorithm_version",
-                    "input_fingerprint",
-                ]
-            )
-        )
-        record = self.session.scalar(self._unique_statement(draft))
-        assert record is not None
-        return record
 
     def get(
         self, candidate_id: int, *, for_update: bool = False
@@ -76,7 +143,9 @@ class EventMergeCandidateRepository:
             EventMergeCandidateRecord.id == candidate_id
         )
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(
+                populate_existing=True
+            )
         return self.session.scalar(statement)
 
     def mark_reviewed(
@@ -119,14 +188,20 @@ class EventMergeCandidateRepository:
         record.result_summary = dict(result)
         return record
 
-    def _unique_statement(self, draft: MergeCandidateDraft):
-        return select(EventMergeCandidateRecord).where(
-            EventMergeCandidateRecord.left_event_id == draft.left.event_id,
-            EventMergeCandidateRecord.left_version_number == draft.left.version_number,
-            EventMergeCandidateRecord.right_event_id == draft.right.event_id,
-            EventMergeCandidateRecord.right_version_number == draft.right.version_number,
-            EventMergeCandidateRecord.algorithm_version == draft.algorithm_version,
-            EventMergeCandidateRecord.input_fingerprint == draft.input_fingerprint,
+    def _matching_statement(self, draft: MergeCandidateDraft):
+        return (
+            select(EventMergeCandidateRecord)
+            .where(
+                EventMergeCandidateRecord.left_event_id == draft.left.event_id,
+                EventMergeCandidateRecord.left_version_number
+                == draft.left.version_number,
+                EventMergeCandidateRecord.right_event_id == draft.right.event_id,
+                EventMergeCandidateRecord.right_version_number
+                == draft.right.version_number,
+                EventMergeCandidateRecord.algorithm_version == draft.algorithm_version,
+                EventMergeCandidateRecord.input_fingerprint == draft.input_fingerprint,
+            )
+            .order_by(EventMergeCandidateRecord.revision.desc())
         )
 
     def _require_locked(self, candidate_id: int) -> EventMergeCandidateRecord:

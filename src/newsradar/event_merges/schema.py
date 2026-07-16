@@ -64,6 +64,8 @@ class MergeCandidateDraft(BaseModel):
 
 class MergeCandidateDetail(MergeCandidateDraft):
     id: int = Field(gt=0)
+    revision: int = Field(gt=0)
+    supersedes_candidate_id: int | None = Field(default=None, gt=0)
     status: MergeCandidateStatus
     generated_operation_id: int = Field(gt=0)
     reviewed_operation_id: int | None = Field(default=None, gt=0)

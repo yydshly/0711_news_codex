@@ -2,7 +2,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, update
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -126,6 +126,99 @@ def test_repository_upsert_is_idempotent_for_same_versioned_input(session: Sessi
     assert session.query(EventMergeCandidateRecord).count() == 1
 
 
+def test_repository_locked_get_refreshes_identity_mapped_candidate(
+    session: Session,
+) -> None:
+    repository = EventMergeCandidateRepository(session)
+    record = repository.upsert_candidate(draft(), 10)
+    session.flush()
+    session.execute(
+        update(EventMergeCandidateRecord)
+        .where(EventMergeCandidateRecord.id == record.id)
+        .values(status=MergeCandidateStatus.DISMISSED.value)
+        .execution_options(synchronize_session=False)
+    )
+
+    refreshed = repository.get(record.id, for_update=True)
+
+    assert refreshed is not None
+    assert refreshed.status == MergeCandidateStatus.DISMISSED.value
+
+
+def test_repository_recheck_creates_one_revision_child_and_reuses_it(
+    session: Session,
+) -> None:
+    repository = EventMergeCandidateRepository(session)
+    parent = repository.upsert_candidate(draft(), 10)
+    session.flush()
+
+    child = repository.create_revision(
+        parent.id,
+        draft(),
+        generated_operation_id=11,
+        reason_code="event_merge_recheck_requested",
+    )
+    retried = repository.create_revision(
+        parent.id,
+        draft(),
+        generated_operation_id=11,
+        reason_code="event_merge_recheck_requested",
+    )
+    session.flush()
+
+    assert retried.id == child.id
+    assert parent.status == MergeCandidateStatus.EXPIRED.value
+    assert child.status == MergeCandidateStatus.PENDING.value
+    assert child.revision == 2
+    assert child.supersedes_candidate_id == parent.id
+    assert session.query(EventMergeCandidateRecord).count() == 2
+
+
+def test_repository_scan_reuses_latest_matching_revision(session: Session) -> None:
+    repository = EventMergeCandidateRepository(session)
+    parent = repository.upsert_candidate(draft(), 10)
+    child = repository.create_revision(
+        parent.id,
+        draft(),
+        generated_operation_id=11,
+        reason_code="event_merge_recheck_requested",
+    )
+    session.flush()
+
+    scanned = repository.upsert_candidate(draft(), 12)
+
+    assert scanned.id == child.id
+    assert scanned.revision == 2
+    assert session.query(EventMergeCandidateRecord).count() == 2
+
+
+@pytest.mark.parametrize("terminal_status", ["expired", "applied"])
+def test_repository_scan_reuses_terminal_latest_revision(
+    session: Session,
+    terminal_status: str,
+) -> None:
+    repository = EventMergeCandidateRepository(session)
+    deterministic = draft(MergeCandidateType.DETERMINISTIC_MERGE)
+    parent = repository.upsert_candidate(deterministic, 10)
+    child = repository.create_revision(
+        parent.id,
+        deterministic,
+        generated_operation_id=11,
+        reason_code="event_merge_recheck_requested",
+    )
+    if terminal_status == "expired":
+        repository.mark_expired(child.id, "event_merge_version_changed")
+    else:
+        repository.mark_applied(child.id, 12, {"status": "succeeded"})
+    session.flush()
+
+    scanned = repository.upsert_candidate(deterministic, 10)
+
+    assert scanned.id == child.id
+    assert scanned.status == terminal_status
+    assert session.query(EventMergeCandidateRecord).count() == 2
+
+
 def test_repository_upsert_stores_only_bounded_facts_and_copy(session: Session) -> None:
     record = EventMergeCandidateRepository(session).upsert_candidate(draft(), 10)
     session.flush()
@@ -134,6 +227,8 @@ def test_repository_upsert_stores_only_bounded_facts_and_copy(session: Session) 
     assert (record.left_version_number, record.right_version_number) == (4, 2)
     assert record.status == MergeCandidateStatus.PENDING.value
     assert record.generated_operation_id == 10
+    assert record.revision == 1
+    assert record.supersedes_candidate_id is None
     assert record.reason_codes == ["same_object", "same_action"]
     assert record.facts_snapshot == {
         "left": draft().left.model_dump(mode="json"),

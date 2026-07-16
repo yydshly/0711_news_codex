@@ -66,19 +66,47 @@ def test_candidate_still_safe_requires_the_original_candidate_type() -> None:
         update={"strong_identities": ("publisher.test/story",)}
     )
 
-    assert candidate_still_safe(MergeCandidateType.DETERMINISTIC_MERGE, left, right)
-    assert not candidate_still_safe(MergeCandidateType.MANUAL_REVIEW, left, right)
+    assert candidate_still_safe(
+        MergeCandidateType.DETERMINISTIC_MERGE,
+        left,
+        right,
+        latest_snapshot_event_ids=frozenset(),
+    )
+    assert not candidate_still_safe(
+        MergeCandidateType.MANUAL_REVIEW,
+        left,
+        right,
+        latest_snapshot_event_ids=frozenset(),
+    )
 
 
 def test_legacy_identity_revalidation_requires_exact_cross_algorithm_membership() -> None:
     legacy = _pair_facts(3).model_copy(update={"algorithm_versions": ("cluster-v2",)})
     current = _pair_facts(9)
 
-    assert candidate_still_safe(MergeCandidateType.LEGACY_IDENTITY, legacy, current)
+    assert candidate_still_safe(
+        MergeCandidateType.LEGACY_IDENTITY,
+        legacy,
+        current,
+        latest_snapshot_event_ids=frozenset({3, 9}),
+    )
+    assert not candidate_still_safe(
+        MergeCandidateType.LEGACY_IDENTITY,
+        legacy,
+        current,
+        latest_snapshot_event_ids=frozenset({9}),
+    )
+    assert not candidate_still_safe(
+        MergeCandidateType.LEGACY_IDENTITY,
+        legacy.model_copy(update={"visibility": "legacy"}),
+        current,
+        latest_snapshot_event_ids=frozenset({3, 9}),
+    )
     assert not candidate_still_safe(
         MergeCandidateType.LEGACY_IDENTITY,
         legacy.model_copy(update={"raw_item_ids": (11,)}),
         current,
+        latest_snapshot_event_ids=frozenset({3, 9}),
     )
 
 
@@ -302,6 +330,7 @@ def test_apply_recomputes_survivor_and_retires_absorbed_event(session: Session) 
     legacy = session.get(EventRecord, 2)
     assert survivor is not None and survivor.visibility == "current"
     assert legacy is not None and legacy.visibility == "legacy"
+    assert legacy.status == "confirmed"
     assert set(
         session.scalars(
             select(EventItemRecord.raw_item_id).where(
@@ -341,6 +370,91 @@ def test_apply_expires_candidate_when_event_version_changes(session: Session) ->
     assert _rows(session, EventItemRecord) == before_memberships
 
 
+def test_apply_revalidates_after_claim_when_version_changes_after_preread(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _seed_candidate(session)
+    original_claim = EventRepository.claim_event
+    changed = False
+
+    def change_before_first_claim(repository, event_id, operation_id, lease_until):
+        nonlocal changed
+        if not changed:
+            changed = True
+            event = session.get(EventRecord, candidate.left_event_id)
+            assert event is not None
+            session.add(
+                EventVersionRecord(
+                    event_id=event.id,
+                    version_number=2,
+                    payload={"concurrent": True},
+                )
+            )
+            event.current_version_number = 2
+        return original_claim(repository, event_id, operation_id, lease_until)
+
+    monkeypatch.setattr(EventRepository, "claim_event", change_before_first_claim)
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result == result.expired(candidate.id, "event_merge_version_changed")
+    session.refresh(candidate)
+    assert candidate.status == "expired"
+    assert session.get(EventRecord, candidate.right_event_id).visibility == "current"
+    assert session.get(EventRecord, candidate.right_event_id).current_version_number == 1
+
+
+def test_apply_revalidates_membership_after_claim(session: Session, monkeypatch) -> None:
+    candidate = _seed_candidate(session)
+    original_claim = EventRepository.claim_event
+    changed = False
+
+    def change_membership_before_first_claim(
+        repository, event_id, operation_id, lease_until
+    ):
+        nonlocal changed
+        if not changed:
+            changed = True
+            session.add(
+                EventItemRecord(
+                    event_id=candidate.left_event_id,
+                    raw_item_id=22,
+                    added_version_number=1,
+                )
+            )
+        return original_claim(repository, event_id, operation_id, lease_until)
+
+    monkeypatch.setattr(
+        EventRepository, "claim_event", change_membership_before_first_claim
+    )
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result == result.expired(candidate.id, "event_merge_membership_changed")
+    session.refresh(candidate)
+    assert candidate.status == "expired"
+    assert session.get(EventRecord, candidate.right_event_id).visibility == "current"
+
+
+def test_apply_expires_candidate_when_either_event_is_not_current(
+    session: Session,
+) -> None:
+    candidate = _seed_candidate(session)
+    left = session.get(EventRecord, candidate.left_event_id)
+    assert left is not None
+    left.visibility = "legacy"
+    session.commit()
+    versions_before = _rows(session, EventVersionRecord)
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result == result.expired(candidate.id, "event_merge_event_not_current")
+    assert _rows(session, EventVersionRecord) == versions_before
+    session.refresh(candidate)
+    assert candidate.status == "expired"
+
+
 def test_manual_candidate_requires_confirmation_before_apply(session: Session) -> None:
     candidate = _seed_candidate(
         session,
@@ -357,6 +471,51 @@ def test_manual_candidate_requires_confirmation_before_apply(session: Session) -
     assert reviewed.reviewed_operation_id == 51
     result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
     assert result.status == "succeeded"
+
+
+def test_confirm_retry_by_same_operation_continues_after_retryable_lease_failure(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _seed_candidate(
+        session,
+        left_url="https://publisher-a.test/story",
+        right_url="https://publisher-b.test/story",
+    )
+    service = EventMergeService(session)
+    confirmed = service.review(candidate.id, "confirm", 51)
+    original_claim = EventRepository.claim_event
+    attempts = 0
+
+    def fail_once(repository, event_id, operation_id, lease_until):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return False
+        return original_claim(repository, event_id, operation_id, lease_until)
+
+    monkeypatch.setattr(EventRepository, "claim_event", fail_once)
+    with pytest.raises(EventMergeLeaseUnavailable):
+        service.apply(candidate.id, 51, lambda _: None)
+
+    retried = service.review(candidate.id, "confirm", 51)
+    assert retried.id == confirmed.id
+    assert retried.status == "confirmed"
+    result = service.apply(candidate.id, 51, lambda _: None)
+    assert result.status == "succeeded"
+
+
+def test_confirm_retry_by_different_operation_is_rejected(session: Session) -> None:
+    candidate = _seed_candidate(
+        session,
+        left_url="https://publisher-a.test/story",
+        right_url="https://publisher-b.test/story",
+    )
+    service = EventMergeService(session)
+    service.review(candidate.id, "confirm", 51)
+
+    with pytest.raises(ValueError, match="event_merge_candidate_not_reviewable"):
+        service.review(candidate.id, "confirm", 52)
 
 
 def test_apply_claims_events_in_sorted_order_and_releases_reverse(
@@ -607,7 +766,12 @@ def test_recheck_expires_old_candidate_and_only_rescans_its_pair(
     assert candidate.reason_codes[-1] == "event_merge_recheck_requested"
     assert replacement.id != candidate.id
     assert replacement.status == "pending"
+    assert replacement.revision == 2
+    assert replacement.supersedes_candidate_id == candidate.id
     assert replacement.generated_operation_id == 51
+    retried = EventMergeService(session).review(candidate.id, "recheck", 51)
+    assert retried.id == replacement.id
+    assert session.query(EventMergeCandidateRecord).count() == 2
     assert {model: _rows(session, model) for model in protected} == before
 
 

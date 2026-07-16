@@ -100,6 +100,8 @@ def test_merge_candidate_detail_is_an_immutable_ledger_value() -> None:
         id=7,
         **draft.model_dump(),
         status=MergeCandidateStatus.PENDING,
+        revision=1,
+        supersedes_candidate_id=None,
         generated_operation_id=10,
         result_summary={},
         created_at=NOW,
@@ -108,5 +110,6 @@ def test_merge_candidate_detail_is_an_immutable_ledger_value() -> None:
 
     assert detail.left.event_id == 3
     assert detail.status is MergeCandidateStatus.PENDING
+    assert detail.revision == 1
     with pytest.raises(ValidationError, match="frozen"):
         detail.status = MergeCandidateStatus.CONFIRMED

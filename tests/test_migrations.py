@@ -31,6 +31,8 @@ def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
 
     expected_columns = {
         "id",
+        "revision",
+        "supersedes_candidate_id",
         "left_event_id",
         "left_version_number",
         "right_event_id",
@@ -57,6 +59,7 @@ def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
         "ck_event_merge_right_version",
         "ck_event_merge_candidate_type",
         "ck_event_merge_candidate_status",
+        "ck_event_merge_candidate_revision",
     }
     model_table = EventMergeCandidateRecord.__table__
     assert set(model_table.columns.keys()) == expected_columns
@@ -78,6 +81,7 @@ def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
         (("generated_operation_id",), "RESTRICT"),
         (("reviewed_operation_id",), "RESTRICT"),
         (("applied_operation_id",), "RESTRICT"),
+        (("supersedes_candidate_id",), "RESTRICT"),
     }
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -89,10 +93,28 @@ def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
             constraint["name"]
             for constraint in inspector.get_check_constraints("event_merge_candidates")
         } == expected_checks
-        assert {
-            constraint["name"]
-            for constraint in inspector.get_unique_constraints("event_merge_candidates")
-        } == {"uq_event_merge_candidate_input"}
+        unique_constraints = {
+            constraint["name"]: tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints(
+                "event_merge_candidates"
+            )
+        }
+        assert set(unique_constraints) == {
+            "uq_event_merge_candidate_input",
+            "uq_event_merge_candidate_supersedes",
+        }
+        assert unique_constraints["uq_event_merge_candidate_input"] == (
+            "left_event_id",
+            "left_version_number",
+            "right_event_id",
+            "right_version_number",
+            "algorithm_version",
+            "input_fingerprint",
+            "revision",
+        )
+        assert unique_constraints["uq_event_merge_candidate_supersedes"] == (
+            "supersedes_candidate_id",
+        )
         assert {
             index["name"] for index in inspector.get_indexes("event_merge_candidates")
         } == {"ix_event_merge_candidates_status_type"}
@@ -106,6 +128,7 @@ def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
             (("generated_operation_id",), "operation_runs"),
             (("reviewed_operation_id",), "operation_runs"),
             (("applied_operation_id",), "operation_runs"),
+            (("supersedes_candidate_id",), "event_merge_candidates"),
         }
         assert all(
             foreign_key["options"].get("ondelete") == "RESTRICT"

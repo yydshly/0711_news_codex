@@ -627,6 +627,17 @@ class EventRepository:
         )
         return result.rowcount == 1
 
+    def lock_events(self, event_ids: tuple[int, ...]) -> tuple[EventRecord, ...]:
+        return tuple(
+            self.session.scalars(
+                select(EventRecord)
+                .where(EventRecord.id.in_(event_ids))
+                .order_by(EventRecord.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+
     def _insert(self, record_type):
         assert self.session.bind is not None
         if self.session.bind.dialect.name == "postgresql":

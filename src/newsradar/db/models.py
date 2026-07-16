@@ -741,6 +741,7 @@ class EventMergeCandidateRecord(Base):
         CheckConstraint("left_event_id < right_event_id", name="ck_event_merge_pair_order"),
         CheckConstraint("left_version_number > 0", name="ck_event_merge_left_version"),
         CheckConstraint("right_version_number > 0", name="ck_event_merge_right_version"),
+        CheckConstraint("revision > 0", name="ck_event_merge_candidate_revision"),
         CheckConstraint(
             "candidate_type IN ('legacy_identity','deterministic_merge','manual_review')",
             name="ck_event_merge_candidate_type",
@@ -756,12 +757,26 @@ class EventMergeCandidateRecord(Base):
             "right_version_number",
             "algorithm_version",
             "input_fingerprint",
+            "revision",
             name="uq_event_merge_candidate_input",
+        ),
+        UniqueConstraint(
+            "supersedes_candidate_id", name="uq_event_merge_candidate_supersedes"
         ),
         Index("ix_event_merge_candidates_status_type", "status", "candidate_type", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    supersedes_candidate_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "event_merge_candidates.id",
+            name="fk_event_merge_supersedes",
+            ondelete="RESTRICT",
+        )
+    )
     left_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     left_version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     right_event_id: Mapped[int] = mapped_column(Integer, nullable=False)

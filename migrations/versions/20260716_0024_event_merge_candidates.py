@@ -13,6 +13,8 @@ def upgrade() -> None:
     op.create_table(
         "event_merge_candidates",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column("revision", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("supersedes_candidate_id", sa.Integer()),
         sa.Column("left_event_id", sa.Integer(), nullable=False),
         sa.Column("left_version_number", sa.Integer(), nullable=False),
         sa.Column("right_event_id", sa.Integer(), nullable=False),
@@ -46,6 +48,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
+            ["supersedes_candidate_id"],
+            ["event_merge_candidates.id"],
+            name="fk_event_merge_supersedes",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
             ["left_event_id", "left_version_number"],
             ["event_versions.event_id", "event_versions.version_number"],
             name="fk_event_merge_left_version",
@@ -56,6 +64,9 @@ def upgrade() -> None:
             ["event_versions.event_id", "event_versions.version_number"],
             name="fk_event_merge_right_version",
             ondelete="RESTRICT",
+        ),
+        sa.CheckConstraint(
+            "revision > 0", name="ck_event_merge_candidate_revision"
         ),
         sa.CheckConstraint(
             "left_event_id < right_event_id", name="ck_event_merge_pair_order"
@@ -81,7 +92,12 @@ def upgrade() -> None:
             "right_version_number",
             "algorithm_version",
             "input_fingerprint",
+            "revision",
             name="uq_event_merge_candidate_input",
+        ),
+        sa.UniqueConstraint(
+            "supersedes_candidate_id",
+            name="uq_event_merge_candidate_supersedes",
         ),
     )
     op.create_index(
