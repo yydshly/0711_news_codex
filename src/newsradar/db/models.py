@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -718,6 +719,76 @@ class EventRecord(Base):
     current_version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     lease_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operation_runs.id"))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EventMergeCandidateRecord(Base):
+    __tablename__ = "event_merge_candidates"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["left_event_id", "left_version_number"],
+            ["event_versions.event_id", "event_versions.version_number"],
+            name="fk_event_merge_left_version",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["right_event_id", "right_version_number"],
+            ["event_versions.event_id", "event_versions.version_number"],
+            name="fk_event_merge_right_version",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("left_event_id < right_event_id", name="ck_event_merge_pair_order"),
+        CheckConstraint("left_version_number > 0", name="ck_event_merge_left_version"),
+        CheckConstraint("right_version_number > 0", name="ck_event_merge_right_version"),
+        CheckConstraint(
+            "candidate_type IN ('legacy_identity','deterministic_merge','manual_review')",
+            name="ck_event_merge_candidate_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','confirmed','dismissed','applied','expired','failed')",
+            name="ck_event_merge_candidate_status",
+        ),
+        UniqueConstraint(
+            "left_event_id",
+            "left_version_number",
+            "right_event_id",
+            "right_version_number",
+            "algorithm_version",
+            "input_fingerprint",
+            name="uq_event_merge_candidate_input",
+        ),
+        Index("ix_event_merge_candidates_status_type", "status", "candidate_type", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    left_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    left_version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    right_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    right_version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    algorithm_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    facts_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    zh_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    zh_next_action: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_operation_id: Mapped[int] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    reviewed_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT")
+    )
+    applied_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT")
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_summary: Mapped[dict[str, object]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

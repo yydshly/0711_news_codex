@@ -7,6 +7,8 @@ from alembic.config import Config
 from sqlalchemy import TEXT, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
+from newsradar.db.models import EventMergeCandidateRecord
+
 
 def _sqlite_url(path: Path) -> str:
     return f"sqlite:///{path.as_posix()}"
@@ -16,6 +18,112 @@ def _upgrade(database_url: str, revision: str) -> None:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, revision)
+
+
+def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "event-merge-candidates.db")
+    _upgrade(database_url, "20260716_0023")
+    engine = create_engine(database_url)
+
+    _upgrade(database_url, "20260716_0024")
+
+    expected_columns = {
+        "id",
+        "left_event_id",
+        "left_version_number",
+        "right_event_id",
+        "right_version_number",
+        "candidate_type",
+        "status",
+        "algorithm_version",
+        "input_fingerprint",
+        "facts_snapshot",
+        "reason_codes",
+        "zh_reason",
+        "zh_next_action",
+        "generated_operation_id",
+        "reviewed_operation_id",
+        "applied_operation_id",
+        "reviewed_at",
+        "result_summary",
+        "created_at",
+        "updated_at",
+    }
+    expected_checks = {
+        "ck_event_merge_pair_order",
+        "ck_event_merge_left_version",
+        "ck_event_merge_right_version",
+        "ck_event_merge_candidate_type",
+        "ck_event_merge_candidate_status",
+    }
+    model_table = EventMergeCandidateRecord.__table__
+    assert set(model_table.columns.keys()) == expected_columns
+    assert {
+        constraint.name
+        for constraint in model_table.constraints
+        if constraint.name in expected_checks
+    } == expected_checks
+    assert {index.name for index in model_table.indexes} == {
+        "ix_event_merge_candidates_status_type"
+    }
+    assert {
+        (tuple(foreign_key.parent.name for foreign_key in constraint.elements), ondelete)
+        for constraint in model_table.foreign_key_constraints
+        if (ondelete := constraint.ondelete) is not None
+    } == {
+        (("left_event_id", "left_version_number"), "RESTRICT"),
+        (("right_event_id", "right_version_number"), "RESTRICT"),
+        (("generated_operation_id",), "RESTRICT"),
+        (("reviewed_operation_id",), "RESTRICT"),
+        (("applied_operation_id",), "RESTRICT"),
+    }
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert "event_merge_candidates" in inspector.get_table_names()
+        assert {
+            column["name"] for column in inspector.get_columns("event_merge_candidates")
+        } == expected_columns
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("event_merge_candidates")
+        } == expected_checks
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("event_merge_candidates")
+        } == {"uq_event_merge_candidate_input"}
+        assert {
+            index["name"] for index in inspector.get_indexes("event_merge_candidates")
+        } == {"ix_event_merge_candidates_status_type"}
+        foreign_keys = inspector.get_foreign_keys("event_merge_candidates")
+        assert {
+            (tuple(foreign_key["constrained_columns"]), foreign_key["referred_table"])
+            for foreign_key in foreign_keys
+        } == {
+            (("left_event_id", "left_version_number"), "event_versions"),
+            (("right_event_id", "right_version_number"), "event_versions"),
+            (("generated_operation_id",), "operation_runs"),
+            (("reviewed_operation_id",), "operation_runs"),
+            (("applied_operation_id",), "operation_runs"),
+        }
+        assert all(
+            foreign_key["options"].get("ondelete") == "RESTRICT"
+            for foreign_key in foreign_keys
+        )
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.downgrade(config, "20260716_0023")
+
+    with engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert "event_merge_candidates" not in tables
+        assert {"events", "event_versions", "event_items", "daily_reports"} <= tables
+
+    _upgrade(database_url, "20260716_0024")
+    with engine.connect() as connection:
+        assert "event_merge_candidates" in inspect(connection).get_table_names()
 
 
 def test_daily_report_migration_creates_archive_tables_without_changing_events(
