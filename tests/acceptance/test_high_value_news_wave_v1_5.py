@@ -64,12 +64,12 @@ def test_postgres_schema_is_at_current_project_head_for_high_value_wave() -> Non
         engine.dispose()
 
 
-def test_high_value_profile_freezes_all_35_targets_before_any_network_request() -> None:
-    """The profile remains a 35-target, side-effect-free input to every real round."""
+def test_high_value_profile_freezes_all_41_targets_before_any_network_request() -> None:
+    """The profile remains a 41-target, side-effect-free input to every real round."""
     profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
     plan = build_wave_plan(profile, load_source_tree(Path("sources")), {}, set())
 
-    assert len(plan.members) == 35
+    assert len(plan.members) == 41
     assert {member.source_id for member in plan.members} == set(profile.source_ids)
     assert all(member.fetchable is False for member in plan.members)
     assert all(member.blocked_reason is not None for member in plan.members)

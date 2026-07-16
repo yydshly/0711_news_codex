@@ -1,6 +1,40 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+ADDED_EVIDENCE_SOURCE_IDS = frozenset(
+    {
+        "google-ai-blog",
+        "nvidia-developer-blog",
+        "universe-cnbc-1",
+        "universe-mit-tech-review-1",
+        "universe-venturebeat-1",
+        "universe-wired-1",
+    }
+)
+
+
+def test_added_evidence_sources_are_fetchable_with_matching_success_probes() -> None:
+    from newsradar.sources.yaml_loader import load_source_tree
+    from newsradar.waves.loader import load_wave_profile
+    from newsradar.waves.planning import build_wave_plan
+
+    profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
+    sources = load_source_tree(Path("sources"))
+    added = [source for source in sources if source.id in ADDED_EVIDENCE_SOURCE_IDS]
+    probes = {
+        source.id: SimpleNamespace(
+            access_kind=source.access_methods[0].kind.value,
+            outcome="success",
+        )
+        for source in added
+    }
+
+    plan = build_wave_plan(profile, sources, probes, configured_credentials=set())
+    by_id = {member.source_id: member for member in plan.members}
+
+    assert all(by_id[source_id].fetchable for source_id in ADDED_EVIDENCE_SOURCE_IDS)
+    assert all("evidence" in by_id[source_id].roles for source_id in ADDED_EVIDENCE_SOURCE_IDS)
+
 
 def test_persisted_probe_snapshot_can_make_a_wave_member_fetchable() -> None:
     from datetime import UTC, datetime

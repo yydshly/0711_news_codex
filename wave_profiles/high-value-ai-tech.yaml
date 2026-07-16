@@ -39,3 +39,9 @@ source_ids:
   - universe-ars-technica-1
   - openai-news
   - anthropic-newsroom
+  - google-ai-blog
+  - nvidia-developer-blog
+  - universe-cnbc-1
+  - universe-mit-tech-review-1
+  - universe-venturebeat-1
+  - universe-wired-1
