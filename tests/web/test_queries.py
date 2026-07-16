@@ -655,3 +655,66 @@ def test_duplicate_manager_rule_does_not_reclassify_ready_targets(
 
     assert rows["ready-direct-1"].conclusion_code != "duplicate_catalog_target"
     assert rows["ready-indirect-2"].conclusion_code != "duplicate_catalog_target"
+
+
+def test_manual_target_row_uses_reviewed_research_diagnosis(db_session, query_service) -> None:
+    from newsradar.db.models import (
+        SourceAccessMethodRecord,
+        SourceDefinitionRecord,
+        SourceResearchProfileRecord,
+    )
+
+    source = SourceDefinitionRecord(
+        id="reviewed-manual-target",
+        name="Reviewed manual target",
+        provider_id="github",
+        target_type="account",
+        availability="manual_only",
+        coverage_mode="catalog_only",
+        official_identity_url="https://manual.example/community",
+        reviewed_at=date(2026, 7, 16),
+        unlock_requirements=[
+            "指定服务器和频道。",
+            "取得管理员对官方 Bot 的授权。",
+        ],
+        status="candidate",
+        nature="social",
+        language="en",
+        roles=["discovery"],
+        topics=["ai"],
+        authority_score=2,
+        poll_interval_minutes=60,
+        expected_fields=["title", "canonical_url"],
+        notes="manual boundary",
+        definition_hash="reviewed-manual-hash",
+    )
+    db_session.add(source)
+    db_session.flush()
+    db_session.add_all(
+        (
+            SourceAccessMethodRecord(
+                source_id=source.id,
+                kind="html",
+                url="https://manual.example/community",
+                priority=1,
+                requires_manual_approval=True,
+                headers={},
+                params={},
+            ),
+            SourceResearchProfileRecord(
+                source_id=source.id,
+                status="needs_research",
+                wanted_information=[],
+                conclusion="公司博客不等于社区内容，当前没有具体服务器或频道授权。",
+                no_fallback_reason="公开页面不能提供社区消息。",
+                reviewed_at=date(2026, 7, 16),
+            ),
+        )
+    )
+    db_session.commit()
+
+    row = next(item for item in query_service.targets() if item.source_id == source.id)
+
+    assert "公司博客不等于社区内容" in row.conclusion_reason
+    assert "管理员" in row.next_action
+    assert "。；" not in row.next_action

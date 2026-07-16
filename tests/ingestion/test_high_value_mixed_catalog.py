@@ -115,12 +115,12 @@ def test_discord_communities_remains_manual_until_concrete_authorized_target() -
             *source.unlock_requirements,
             *provider.unlock_requirements,
         ]
-    ).lower()
-    assert "blog" in combined
-    assert "server" in combined
-    assert "channel" in combined
-    assert "administrator" in combined
-    assert "bot" in combined
+    )
+    assert "公司博客" in combined
+    assert "服务器" in combined
+    assert "频道" in combined
+    assert "管理员" in combined
+    assert "Bot" in combined
 
 
 def test_validated_newsletters_use_shared_official_sitemap_ingestion() -> None:

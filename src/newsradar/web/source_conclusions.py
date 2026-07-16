@@ -16,6 +16,8 @@ class SourceConclusionInput:
     has_public_candidate: bool = False
     covered_by_successful_target_id: str | None = None
     managed_by_target_id: str | None = None
+    manual_reason: str | None = None
+    manual_next_action: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,8 +84,9 @@ def conclude_source(value: SourceConclusionInput) -> SourceConclusion:
             "manual_only",
             "user_action",
             "只能人工查看",
-            "尚未找到经过审核的 RSS、API、Sitemap 或合规 HTML 路径。",
-            "人工查看；后续仅复查官方公开访问方式。",
+            value.manual_reason
+            or "尚未找到经过审核的 RSS、API、Sitemap 或合规 HTML 路径。",
+            value.manual_next_action or "人工查看；后续仅复查官方公开访问方式。",
         )
     if value.availability == "requires_credentials" and not value.successful_fetch:
         return _result(

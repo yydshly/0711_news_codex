@@ -970,6 +970,14 @@ class DashboardQueryService:
         }
         risks = self._latest_risks(source_ids)
         latest_runs = self._latest_content_runs(source_ids)
+        research_profiles = {
+            profile.source_id: profile
+            for profile in self._session.scalars(
+                select(SourceResearchProfileRecord).where(
+                    SourceResearchProfileRecord.source_id.in_(source_ids)
+                )
+            )
+        }
         indirect_metrics = {
             source_id: (int(item_count), int(published_count), int(resolved_count))
             for source_id, item_count, published_count, resolved_count in self._session.execute(
@@ -1056,6 +1064,7 @@ class DashboardQueryService:
             method = methods.get(source.id)
             risk = risks.get(source.id)
             latest = latest_runs.get(source.id)
+            research_profile = research_profiles.get(source.id)
             trial = trial_decisions[source.id]
             item_count, published_count, resolved_count = indirect_metrics.get(
                 source.id, (0, 0, 0)
@@ -1085,6 +1094,18 @@ class DashboardQueryService:
                     has_public_candidate=public_candidate,
                     covered_by_successful_target_id=covered_by,
                     managed_by_target_id=managed_by_target.get(source.id),
+                    manual_reason=(
+                        research_profile.conclusion
+                        if research_profile and research_profile.status != "placeholder"
+                        else None
+                    ),
+                    manual_next_action=(
+                        " ".join(source.unlock_requirements)
+                        if research_profile
+                        and research_profile.status != "placeholder"
+                        and source.unlock_requirements
+                        else None
+                    ),
                 )
             )
             rows.append(

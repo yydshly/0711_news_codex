@@ -17,7 +17,7 @@ evidence:
 - https://discord.com/developers/docs/intro
 - https://discord.com/terms
 unlock_requirements:
-- User names a concrete Discord server and channel Target.
-- Server administrator authorizes an official Discord Bot or OAuth application.
-- Bot receives channel view and message-history permissions plus any required intents.
+- 用户指定具体的 Discord 服务器和频道 Target。
+- 服务器管理员授权官方 Discord Bot 或 OAuth 应用。
+- Bot 获得频道查看、历史消息权限以及所需的 Gateway intents。
 notes: Discord company blog RSS is not community content; no generic community collection is enabled.

@@ -7,9 +7,9 @@ coverage_mode: catalog_only
 official_identity_url: https://discord.com/
 reviewed_at: '2026-07-16'
 unlock_requirements:
-- User names a concrete Discord server and channel Target.
-- Server administrator authorizes an official Discord Bot or OAuth application.
-- Bot receives channel view and message-history permissions plus any required intents.
+- 用户指定具体的 Discord 服务器和频道 Target。
+- 服务器管理员授权官方 Discord Bot 或 OAuth 应用。
+- Bot 获得频道查看、历史消息权限以及所需的 Gateway intents。
 status: candidate
 nature: social
 roles:
@@ -51,9 +51,9 @@ research:
   status: needs_research
   purpose: Record the authorization boundary for a future user-named Discord server and channel Target.
   wanted_information: [server_id, channel_id, title, canonical_url, published_at, summary]
-  conclusion: Discord company blog RSS is company content, not Discord Communities. No concrete server or channel Target and no administrator-authorized Bot or OAuth application exist, so collection remains manual-only.
-  risk_conclusion: Do not use user Cookies, login sessions, unofficial clients, self-bot accounts, or permission bypasses. A future Target requires server administrator authorization, channel permissions, and applicable Gateway intents.
-  no_fallback_reason: Public company-blog and server-directory pages do not provide the named community messages required by this Target.
+  conclusion: Discord 公司博客 RSS 是公司内容，不等于 Discord Communities 社区消息。当前没有具体服务器或频道 Target，也没有管理员授权的 Bot 或 OAuth 应用，因此只能人工查看。
+  risk_conclusion: 不使用用户 Cookie、登录会话、非官方客户端、自助机器人账号或权限绕过。未来目标必须取得服务器管理员授权、频道权限和适用的 Gateway intents。
+  no_fallback_reason: 公开公司博客与服务器目录不能提供本目标所需的指定社区消息。
   reviewed_at: '2026-07-16'
   candidates:
   - key: discord-authorized-bot

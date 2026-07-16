@@ -91,6 +91,25 @@ def test_manual_source_with_public_candidate_is_fixable_not_user_action() -> Non
     assert conclusion.label == "已有公开路径待验收"
 
 
+def test_manual_source_uses_reviewed_target_specific_diagnosis() -> None:
+    from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
+
+    conclusion = conclude_source(
+        SourceConclusionInput(
+            "catalog_only",
+            "manual_only",
+            False,
+            None,
+            manual_reason="公司博客不等于社区内容，当前没有具体服务器或频道授权。",
+            manual_next_action="指定服务器和频道，并取得管理员对官方 Bot 的授权。",
+        )
+    )
+
+    assert conclusion.code == "manual_only"
+    assert "公司博客不等于社区内容" in conclusion.reason
+    assert "管理员" in conclusion.next_action
+
+
 def test_placeholder_covered_by_successful_target_does_not_inflate_actual_success() -> None:
     from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
 
