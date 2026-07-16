@@ -16,6 +16,69 @@ def _upgrade(database_url: str, revision: str) -> None:
     command.upgrade(config, revision)
 
 
+def test_daily_report_migration_creates_archive_tables_without_changing_events(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-reports.db")
+    _upgrade(database_url, "20260716_0022")
+    before = _seed_event_history(database_url)
+
+    _upgrade(database_url, "head")
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert {"daily_reports", "daily_report_items"} <= set(inspector.get_table_names())
+        report_columns = {column["name"] for column in inspector.get_columns("daily_reports")}
+        item_columns = {
+            column["name"] for column in inspector.get_columns("daily_report_items")
+        }
+        assert {
+            "report_date",
+            "timezone",
+            "window_hours",
+            "window_start",
+            "window_end",
+            "source_operation_id",
+            "status",
+            "revision",
+            "supersedes_report_id",
+            "generation_summary",
+            "generated_at",
+            "archived_at",
+        } <= report_columns
+        assert {
+            "daily_report_id",
+            "event_id",
+            "event_version_number",
+            "section",
+            "position",
+            "included",
+            "snapshot",
+        } <= item_columns
+        after = {
+            table_name: connection.execute(
+                text(f"SELECT count(*) FROM {table_name}")
+            ).scalar_one()
+            for table_name in ("events", "event_versions", "event_items", "event_scores")
+        }
+        assert after == before
+
+
+def test_daily_report_migration_downgrade_removes_only_report_tables(tmp_path: Path) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-reports-downgrade.db")
+    _upgrade(database_url, "head")
+    engine = create_engine(database_url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.downgrade(config, "20260716_0022")
+    with engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert "daily_reports" not in tables
+        assert "daily_report_items" not in tables
+        assert {"events", "event_versions", "event_items", "event_scores"} <= tables
+
+
 def test_high_value_wave_migration_creates_member_snapshots_without_altering_history(
     tmp_path: Path,
 ) -> None:

@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -719,6 +720,77 @@ class EventRecord(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DailyReportRecord(Base):
+    __tablename__ = "daily_reports"
+    __table_args__ = (
+        CheckConstraint("window_hours IN (24, 48, 72)", name="ck_daily_report_window"),
+        CheckConstraint("status IN ('draft', 'archived')", name="ck_daily_report_status"),
+        CheckConstraint("revision > 0", name="ck_daily_report_revision"),
+        UniqueConstraint(
+            "report_date", "window_hours", "revision", name="uq_daily_report_revision"
+        ),
+        Index("ix_daily_reports_date_status", "report_date", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_operation_id: Mapped[int] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    supersedes_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("daily_reports.id", ondelete="RESTRICT")
+    )
+    generation_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DailyReportItemRecord(Base):
+    __tablename__ = "daily_report_items"
+    __table_args__ = (
+        CheckConstraint(
+            "section IN ('confirmed', 'emerging')", name="ck_daily_report_item_section"
+        ),
+        CheckConstraint("position > 0", name="ck_daily_report_item_position"),
+        UniqueConstraint(
+            "daily_report_id",
+            "event_id",
+            "event_version_number",
+            name="uq_daily_report_event_version",
+        ),
+        UniqueConstraint(
+            "daily_report_id", "section", "position", name="uq_daily_report_position"
+        ),
+        Index(
+            "ix_daily_report_items_report_section",
+            "daily_report_id",
+            "section",
+            "position",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    daily_report_id: Mapped[int] = mapped_column(
+        ForeignKey("daily_reports.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    section: Mapped[str] = mapped_column(String(16), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    included: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class EventVersionRecord(Base):
