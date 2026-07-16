@@ -287,6 +287,7 @@ def test_worker_serializes_concurrent_checkpoint_guards() -> None:
             repository,
             "worker",
             lease_guard=guard,
+            monitor_interval_seconds=0.01,
         ).run_once(handler)
 
         assert processed is True

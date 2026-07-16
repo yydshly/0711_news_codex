@@ -67,6 +67,13 @@ class Worker:
         last_heartbeat = self._clock()
         cancellation_seen = Event()
         checkpoint_lock = Lock()
+        lease_guard_lock = Lock()
+
+        def lease_is_current() -> bool:
+            if self._lease_guard is None:
+                return True
+            with lease_guard_lock:
+                return self._lease_guard(lease)
 
         def log(message: str) -> None:
             scope = lease.requested_scope
@@ -86,7 +93,7 @@ class Worker:
             nonlocal last_heartbeat
             with checkpoint_lock:
                 if cancellation_seen.is_set() or (
-                    self._lease_guard is not None and not self._lease_guard(lease)
+                    self._lease_guard is not None and not lease_is_current()
                 ) or (
                     self._lease_guard is None and self.repository.is_cancel_requested(lease)
                 ):
@@ -102,7 +109,11 @@ class Worker:
         try:
             log("operation_started")
             result = self._run_handler_with_monitor(
-                handler, lease, checkpoint, cancellation_seen
+                handler,
+                lease,
+                checkpoint,
+                cancellation_seen,
+                lease_is_current if self._lease_guard is not None else None,
             )  # deliberately outside the lease transaction
         except OperationCancelled:
             self.repository.finish_attempt(lease, OperationStatus.CANCELLED)
@@ -135,9 +146,10 @@ class Worker:
         lease: OperationLease,
         checkpoint: Callable[[str], None],
         cancellation_seen: Event,
+        lease_is_current: Callable[[], bool] | None,
     ) -> OperationResult | None:
         """Keep a production lease alive while uninterruptible network I/O is in flight."""
-        if self._lease_guard is None or self._monitor_interval_seconds <= 0:
+        if lease_is_current is None or self._monitor_interval_seconds <= 0:
             return handler(lease, checkpoint)
         completed, result_box = Event(), []
         error_box: list[Exception] = []
@@ -155,7 +167,7 @@ class Worker:
         )
         thread.start()
         while not completed.wait(self._monitor_interval_seconds):
-            if not self._lease_guard(lease):
+            if not lease_is_current():
                 cancellation_seen.set()
         thread.join()
         if error_box:
