@@ -63,26 +63,33 @@ def _member(
 ) -> WaveMemberSnapshot:
     _, definition_hash = canonical_definition(source)
     method, reason = _pick_method(source, probe)
-    if source.availability is not Availability.READY:
+    if source.availability is Availability.REQUIRES_CREDENTIALS:
+        selected_method_is_usable = method is not None and set(method.auth_envs) <= credentials
+        some_credential_method_is_configured = any(
+            item.auth_envs and set(item.auth_envs) <= credentials
+            for item in source.access_methods
+        )
+        if selected_method_is_usable:
+            reason = None
+        elif method is not None or not some_credential_method_is_configured:
+            reason = "missing_credentials"
+    elif source.availability is not Availability.READY:
         reason = (
-            "missing_credentials"
-            if source.availability is Availability.REQUIRES_CREDENTIALS
+            "requires_approval"
+            if source.availability is Availability.REQUIRES_APPROVAL
             else (
-                "requires_approval"
-                if source.availability is Availability.REQUIRES_APPROVAL
-                else (
-                    "requires_payment"
-                    if source.availability is Availability.REQUIRES_PAYMENT
-                    else f"availability_{source.availability.value}"
-                )
+                "requires_payment"
+                if source.availability is Availability.REQUIRES_PAYMENT
+                else f"availability_{source.availability.value}"
             )
         )
-    elif source.coverage_mode is not CoverageMode.DIRECT:
-        reason = reason or "indirect_access"
-    elif method is not None and method.requires_manual_approval:
-        reason = "requires_approval"
-    elif method is not None and not set(method.auth_envs) <= credentials:
-        reason = "missing_credentials"
+    if reason is None:
+        if source.coverage_mode is not CoverageMode.DIRECT:
+            reason = "indirect_access"
+        elif method is not None and method.requires_manual_approval:
+            reason = "requires_approval"
+        elif method is not None and not set(method.auth_envs) <= credentials:
+            reason = "missing_credentials"
     return WaveMemberSnapshot(
         source_id=source.id,
         provider_id=source.provider_id,

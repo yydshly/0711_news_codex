@@ -119,3 +119,28 @@ def test_source_availability_blocks_take_precedence_over_missing_probe() -> None
 
     assert members["openai-youtube"].blocked_reason == "missing_credentials"
     assert members["anthropic-newsroom"].blocked_reason == "requires_approval"
+
+
+def test_requires_credentials_source_unlocks_with_configured_or_public_probed_method() -> None:
+    from newsradar.sources.yaml_loader import load_source_tree
+    from newsradar.waves.loader import load_wave_profile
+    from newsradar.waves.planning import build_wave_plan
+
+    profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
+    sources = load_source_tree(Path("sources"))
+    rest_probe = {"openai-youtube": SimpleNamespace(outcome="success", access_kind="rest_api")}
+    atom_probe = {"openai-youtube": SimpleNamespace(outcome="success", access_kind="atom")}
+
+    configured = build_wave_plan(
+        profile, sources, rest_probe, configured_credentials={"YOUTUBE_API_KEY"}
+    )
+    public_fallback = build_wave_plan(
+        profile, sources, atom_probe, configured_credentials=set()
+    )
+    configured_member = {member.source_id: member for member in configured.members}
+    fallback_member = {member.source_id: member for member in public_fallback.members}
+
+    assert configured_member["openai-youtube"].fetchable is True
+    assert configured_member["openai-youtube"].blocked_reason is None
+    assert fallback_member["openai-youtube"].fetchable is True
+    assert fallback_member["openai-youtube"].blocked_reason is None
