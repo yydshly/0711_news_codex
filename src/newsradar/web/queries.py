@@ -79,6 +79,21 @@ def _public_evidence_url(value: str) -> str | None:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
+def _normalized_official_identity(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/"),
+            parsed.query,
+            "",
+        )
+    )
+
+
 class DashboardQueryService:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -991,6 +1006,19 @@ class DashboardQueryService:
                 )
             )
         )
+        successful_identity_targets: dict[str, str] = {}
+        for successful_source_id, official_identity_url in self._session.execute(
+            select(SourceDefinitionRecord.id, SourceDefinitionRecord.official_identity_url)
+            .join(FetchRunRecord, FetchRunRecord.source_id == SourceDefinitionRecord.id)
+            .where(
+                FetchRunRecord.outcome.in_(("succeeded", "no_change")),
+                SourceDefinitionRecord.official_identity_url.is_not(None),
+            )
+            .distinct()
+        ):
+            identity = _normalized_official_identity(official_identity_url)
+            if identity:
+                successful_identity_targets.setdefault(identity, successful_source_id)
         trial_decisions, _ = self._trial_decisions(records)
         rows = []
         for source in records:
@@ -1009,6 +1037,10 @@ class DashboardQueryService:
                 and not (method.auth_envs or method.auth_env)
                 for method in methods.values()
             )
+            identity = _normalized_official_identity(source.official_identity_url)
+            covered_by = successful_identity_targets.get(identity) if identity else None
+            if covered_by == source.id:
+                covered_by = None
             conclusion = conclude_source(
                 SourceConclusionInput(
                     coverage_mode=source.coverage_mode,
@@ -1020,6 +1052,7 @@ class DashboardQueryService:
                     indirect_origin_resolved_count=resolved_count,
                     indirect_duplicate_count=duplicate_count,
                     has_public_candidate=public_candidate,
+                    covered_by_successful_target_id=covered_by,
                 )
             )
             rows.append(

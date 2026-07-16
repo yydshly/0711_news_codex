@@ -2,12 +2,11 @@ id: universe-cognitive-revolution-1
 name: The Cognitive Revolution primary
 provider_id: cognitive-revolution
 target_type: publisher_feed
-availability: manual_only
-coverage_mode: catalog_only
+availability: ready
+coverage_mode: direct
 official_identity_url: https://www.cognitiverevolution.ai/
-reviewed_at: '2026-07-11'
-unlock_requirements:
-- 'Obtain official The Cognitive Revolution access: manual_only'
+reviewed_at: '2026-07-16'
+unlock_requirements: []
 status: candidate
 nature: professional_media
 roles:
@@ -20,28 +19,49 @@ topics:
 authority_score: 4
 poll_interval_minutes: 60
 access_methods:
-- kind: html
-  url: https://www.cognitiverevolution.ai/
+- kind: rss
+  url: https://feeds.megaphone.fm/RINTP3108857801
   priority: 1
-  requires_manual_approval: true
 expected_fields:
 - title
 - canonical_url
 - published_at
 - summary
 risk:
-  terms: 4
-  authentication: 4
-  stability: 2
+  terms: 1
+  authentication: 0
+  stability: 1
   data_quality: 1
   operating_cost: 0
   evidence:
   - https://www.cognitiverevolution.ai/
-  - https://www.cognitiverevolution.ai/
-  hard_block_reason: manual_only
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
+  - https://feeds.megaphone.fm/RINTP3108857801
+ingestion:
+  enabled: true
+  approved_at: '2026-07-16'
+  max_items_per_run: 20
+notes: 'Official homepage publishes the credential-free Megaphone RSS feed. Fallback: the separately registered official YouTube target remains available for discovery.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: verified
+  purpose: Discover new Cognitive Revolution podcast episodes from its official public feed.
+  wanted_information: [title, canonical_url, published_at, author, summary]
+  conclusion: The official homepage links this public Megaphone RSS feed; a controlled sample returned 359 entries with title, link, and publication time.
+  risk_conclusion: Use only the public RSS response; no cookies, login, proxy, or HTML bypass is permitted.
+  no_fallback_reason: The official YouTube channel is already registered as a separate target; duplicating it here would create redundant ingestion.
+  reviewed_at: '2026-07-16'
+  candidates:
+  - key: official-megaphone-rss
+    kind: rss
+    implementation: feedparser
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at, author, summary]
+    limitations: [Podcast metadata is a discovery source and is not independent factual confirmation.]
+    evidence:
+    - https://www.cognitiverevolution.ai/
+    - https://feeds.megaphone.fm/RINTP3108857801
+    reviewed_at: '2026-07-16'
+    sample_status: succeeded
+    decision: primary

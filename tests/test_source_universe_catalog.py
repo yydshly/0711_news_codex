@@ -75,3 +75,20 @@ def test_coverage_closure_catalog_facts_are_explicit() -> None:
     assert qwen.unlock_requirements
     assert "Release" in qwen.unlock_requirements[0]
     assert str(qwen.official_identity_url) == "https://github.com/QwenLM/Qwen3"
+
+
+def test_cognitive_revolution_uses_official_public_podcast_feed() -> None:
+    sources = {source.id: source for source in load_source_tree(Path("sources"))}
+    providers = {provider.id: provider for provider in load_provider_tree(Path("providers"))}
+
+    source = sources["universe-cognitive-revolution-1"]
+    provider = providers["cognitive-revolution"]
+
+    assert provider.availability is Availability.READY
+    assert provider.auth_mode.value == "none"
+    assert source.availability is Availability.READY
+    assert source.coverage_mode is CoverageMode.DIRECT
+    assert source.ingestion.enabled is True
+    assert source.access_methods[0].kind.value == "rss"
+    assert str(source.access_methods[0].url) == "https://feeds.megaphone.fm/RINTP3108857801"
+    assert not source.access_methods[0].auth_envs

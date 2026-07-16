@@ -89,3 +89,22 @@ def test_manual_source_with_public_candidate_is_fixable_not_user_action() -> Non
     assert conclusion.code == "public_candidate_pending_acceptance"
     assert conclusion.bucket == "fixable"
     assert conclusion.label == "已有公开路径待验收"
+
+
+def test_placeholder_covered_by_successful_target_does_not_inflate_actual_success() -> None:
+    from newsradar.web.source_conclusions import SourceConclusionInput, conclude_source
+
+    conclusion = conclude_source(
+        SourceConclusionInput(
+            "catalog_only",
+            "manual_only",
+            False,
+            None,
+            covered_by_successful_target_id="no-priors-youtube",
+        )
+    )
+
+    assert conclusion.code == "covered_by_successful_target"
+    assert conclusion.bucket == "deferred"
+    assert conclusion.label == "已由同一官方目标覆盖"
+    assert "no-priors-youtube" in conclusion.reason

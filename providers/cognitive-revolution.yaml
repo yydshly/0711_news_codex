@@ -4,17 +4,16 @@ category: newsletter_podcast
 homepage: https://www.cognitiverevolution.ai/
 docs_url: https://www.cognitiverevolution.ai/
 terms_url: https://www.cognitiverevolution.ai/
-auth_mode: manual
+auth_mode: none
 cost_tier: free
-availability: manual_only
+availability: ready
 capabilities:
 - discovery
 - content
 required_env: []
-reviewed_at: '2026-07-11'
+reviewed_at: '2026-07-16'
 evidence:
 - https://www.cognitiverevolution.ai/
-- https://www.cognitiverevolution.ai/
-unlock_requirements:
-- 'Obtain official The Cognitive Revolution access: manual_only'
-notes: Capability metadata only; content coverage is assessed per target.
+- https://feeds.megaphone.fm/RINTP3108857801
+unlock_requirements: []
+notes: The official homepage publishes a credential-free Megaphone RSS feed; content coverage remains assessed per target.

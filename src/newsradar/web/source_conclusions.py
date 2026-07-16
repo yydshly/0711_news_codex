@@ -14,6 +14,7 @@ class SourceConclusionInput:
     indirect_origin_resolved_count: int = 0
     indirect_duplicate_count: int = 0
     has_public_candidate: bool = False
+    covered_by_successful_target_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,14 @@ def conclude_source(value: SourceConclusionInput) -> SourceConclusion:
             "需要平台或合规审批",
             "自动访问必须先完成官方权限、条款或 robots 审查。",
             "完成审批并保存可验证依据后再启用。",
+        )
+    if value.covered_by_successful_target_id:
+        return _result(
+            "covered_by_successful_target",
+            "deferred",
+            "已由同一官方目标覆盖",
+            f"同一官方身份的目标 {value.covered_by_successful_target_id} 已有真实成功抓取证据。",
+            "保留此目录记录用于追溯；继续由已验证目标抓取，不重复开发或重复入库。",
         )
     if value.availability == "manual_only" and value.has_public_candidate:
         return _result(

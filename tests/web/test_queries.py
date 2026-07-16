@@ -404,3 +404,67 @@ def test_indirect_target_conclusion_reports_observed_field_coverage(query_servic
     assert row.indirect_origin_resolved_count == 0
     assert row.indirect_duplicate_count == 0
     assert "尚无间接发现样本" in row.conclusion_reason
+
+
+def test_catalog_placeholder_inherits_success_from_same_official_identity(
+    db_session, query_service
+) -> None:
+    from newsradar.db.models import (
+        FetchRunRecord,
+        SourceAccessMethodRecord,
+        SourceDefinitionRecord,
+    )
+
+    source = db_session.get(SourceDefinitionRecord, "github-openai-python")
+    now = datetime(2026, 7, 11, 12, 0)
+    placeholder = SourceDefinitionRecord(
+        id="github-openai-placeholder",
+        name="OpenAI Python placeholder",
+        provider_id="github",
+        target_type="publisher_feed",
+        coverage_mode="catalog_only",
+        availability="manual_only",
+        official_identity_url=source.official_identity_url + "/",
+        reviewed_at=source.reviewed_at,
+        unlock_requirements=[],
+        status="candidate",
+        nature="first_party",
+        language="en",
+        roles=["discovery"],
+        topics=["ai"],
+        authority_score=80,
+        poll_interval_minutes=60,
+        expected_fields=["title", "canonical_url"],
+        notes="legacy placeholder",
+        definition_hash="placeholder-hash",
+    )
+    db_session.add(placeholder)
+    db_session.add(
+        SourceAccessMethodRecord(
+            source_id=placeholder.id,
+            kind="html",
+            url=source.official_identity_url,
+            priority=1,
+            requires_manual_approval=True,
+            params={},
+            headers={},
+        )
+    )
+    db_session.add(
+        FetchRunRecord(
+            source_id=source.id,
+            outcome="succeeded",
+            started_at=now,
+            finished_at=now,
+            item_count=1,
+        )
+    )
+    db_session.commit()
+
+    row = next(
+        item for item in query_service.targets() if item.source_id == placeholder.id
+    )
+
+    assert row.conclusion_code == "covered_by_successful_target"
+    assert row.conclusion_bucket == "deferred"
+    assert source.id in row.conclusion_reason
