@@ -227,6 +227,13 @@ def test_daily_report_detail_explains_model_and_evidence_quality(
         "http://169.254.169.254/latest/meta-data",
         "http://10.0.0.8/evidence",
         "http://[::1]/evidence",
+        "http://2130706433/evidence",
+        "http://0x7f000001/evidence",
+        "http://127.1/evidence",
+        "http://0177.0.0.1/evidence",
+        "http://127.0.0.1\\foo",
+        "http://10.0.0.1\\foo",
+        "http://100.64.0.1/evidence",
     ),
 )
 def test_daily_report_detail_never_renders_non_public_snapshot_href(
@@ -455,6 +462,63 @@ def test_generate_route_translates_ambiguous_snapshot_to_chinese(
     assert response.status_code == 409
     assert response.json()["detail"] == "事件运行快照包含冲突版本，暂时无法生成日报。"
     assert "ambiguous_event_snapshot_versions" not in response.text
+
+
+@pytest.mark.parametrize("route", ("generate", "revise"))
+def test_daily_report_routes_translate_exact_revision_conflict_only(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    if route == "revise":
+        DailyReportRepository(db_session).archive(report_id)
+        method = "newsradar.daily_reports.service.DailyReportService.revise"
+        path = f"/daily-reports/{report_id}/revise"
+        data: dict[str, str] = {}
+    else:
+        method = "newsradar.daily_reports.service.DailyReportService.generate"
+        path = "/daily-reports"
+        data = {"window_hours": "24"}
+
+    def reject_conflict(*args, **kwargs):
+        raise RuntimeError("daily_report_revision_conflict")
+
+    monkeypatch.setattr(method, reject_conflict)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    response = client.post(path, data={"action_token": token, **data})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "日报修订发生冲突，请刷新页面后重试。"
+    assert "daily_report_revision_conflict" not in response.text
+
+
+@pytest.mark.parametrize("route", ("generate", "revise"))
+def test_daily_report_routes_do_not_swallow_unknown_runtime_error(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    if route == "revise":
+        DailyReportRepository(db_session).archive(report_id)
+        method = "newsradar.daily_reports.service.DailyReportService.revise"
+        path = f"/daily-reports/{report_id}/revise"
+        data: dict[str, str] = {}
+    else:
+        method = "newsradar.daily_reports.service.DailyReportService.generate"
+        path = "/daily-reports"
+        data = {"window_hours": "24"}
+
+    def reject_unknown(*args, **kwargs):
+        raise RuntimeError("unexpected_runtime_failure")
+
+    monkeypatch.setattr(method, reject_unknown)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    with pytest.raises(RuntimeError, match="unexpected_runtime_failure"):
+        client.post(path, data={"action_token": token, **data})
 
 
 def test_archived_page_does_not_follow_event_current_pointer(

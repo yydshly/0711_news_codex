@@ -174,6 +174,12 @@ def _daily_report_http_error(
     return HTTPException(status_code=status_code, detail=detail)
 
 
+def _daily_report_revision_conflict(error: RuntimeError) -> HTTPException:
+    if str(error) != "daily_report_revision_conflict":
+        raise error
+    return _daily_report_http_error(error, default_status=409)
+
+
 def _source_wave_plan():
     """Load reviewed local definitions only; never probe or open an HTTP client."""
     sources = load_source_tree(Path("sources"))
@@ -546,6 +552,8 @@ def create_app(
                 report_id = report.id
         except ValueError as error:
             raise _daily_report_http_error(error, default_status=422) from error
+        except RuntimeError as error:
+            raise _daily_report_revision_conflict(error) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
@@ -640,6 +648,8 @@ def create_app(
             raise _daily_report_http_error(error, default_status=404) from error
         except ValueError as error:
             raise _daily_report_http_error(error, default_status=409) from error
+        except RuntimeError as error:
+            raise _daily_report_revision_conflict(error) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{revision_id}", status_code=303)

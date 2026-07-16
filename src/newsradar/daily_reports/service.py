@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
@@ -34,12 +35,26 @@ class _InvalidEventSnapshot(ValueError):
     pass
 
 
+_BROWSER_NUMERIC_HOST_PART = re.compile(r"(?:[0-9]+|0[xX][0-9a-fA-F]+)\Z")
+
+
+def _browser_numeric_ipv4_host(hostname: str) -> bool:
+    parts = hostname.split(".")
+    return 1 <= len(parts) <= 4 and all(
+        part and _BROWSER_NUMERIC_HOST_PART.fullmatch(part) for part in parts
+    )
+
+
 def _public_url(value: str | None) -> str | None:
-    if not value:
+    if not value or "\\" in value or any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in value
+    ):
         return None
     try:
         parsed = urlsplit(value)
         hostname = parsed.hostname
+        port = parsed.port
     except ValueError:
         return None
     if (
@@ -51,24 +66,27 @@ def _public_url(value: str | None) -> str | None:
     ):
         return None
     normalized_hostname = hostname.rstrip(".").lower()
-    if normalized_hostname == "localhost" or normalized_hostname.endswith(".localhost"):
+    if (
+        "%" in hostname
+        or normalized_hostname == "localhost"
+        or normalized_hostname.endswith(".localhost")
+    ):
         return None
     try:
         address = ip_address(normalized_hostname)
     except ValueError:
         address = None
-    if address is not None and any(
-        (
-            address.is_private,
-            address.is_loopback,
-            address.is_link_local,
-            address.is_reserved,
-            address.is_unspecified,
-            address.is_multicast,
-        )
-    ):
+    if address is not None and (not address.is_global or address.is_multicast):
         return None
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    if address is None and _browser_numeric_ipv4_host(normalized_hostname):
+        return None
+    rendered_hostname = normalized_hostname
+    if address is not None and address.version == 6:
+        rendered_hostname = f"[{normalized_hostname}]"
+    normalized_netloc = (
+        f"{rendered_hostname}:{port}" if port is not None else rendered_hostname
+    )
+    return urlunsplit((parsed.scheme, normalized_netloc, parsed.path, "", ""))
 
 
 def _snapshot_datetime(value: datetime | None) -> str | None:

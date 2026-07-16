@@ -361,6 +361,15 @@ def test_public_url_rejects_malformed_ipv6() -> None:
         "http://[::1]/evidence",
         "http://[fe80::1]/evidence",
         "http://[ff02::1]/evidence",
+        "http://100.64.0.1/evidence",
+        "http://2130706433/evidence",
+        "http://0x7f000001/evidence",
+        "http://127.1/evidence",
+        "http://0177.0.0.1/evidence",
+        "http://127.0.0.1\\foo",
+        "http://10.0.0.1\\foo",
+        "http://127%2e0%2e0%2e1/evidence",
+        "http://example.com/evidence\tignored",
     ),
 )
 def test_public_url_rejects_local_and_non_public_ip_literals(url: str) -> None:
@@ -375,6 +384,7 @@ def test_public_url_rejects_local_and_non_public_ip_literals(url: str) -> None:
             "https://example.com/evidence",
         ),
         ("https://8.8.8.8/evidence", "https://8.8.8.8/evidence"),
+        ("https://example.com./evidence", "https://example.com/evidence"),
         ("https://[2606:4700:4700::1111]/dns", "https://[2606:4700:4700::1111]/dns"),
     ),
 )
@@ -391,6 +401,13 @@ def test_public_url_keeps_public_hosts_without_query_or_fragment(
         "http://169.254.169.254/latest/meta-data",
         "http://10.0.0.8/evidence",
         "http://[::1]/evidence",
+        "http://2130706433/evidence",
+        "http://0x7f000001/evidence",
+        "http://127.1/evidence",
+        "http://0177.0.0.1/evidence",
+        "http://127.0.0.1\\foo",
+        "http://10.0.0.1\\foo",
+        "http://100.64.0.1/evidence",
     ),
 )
 def test_generate_drops_non_public_evidence_url_from_snapshot(
