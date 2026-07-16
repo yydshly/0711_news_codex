@@ -75,6 +75,12 @@ def test_wave_fetches_only_claimed_fetchable_members_and_blocks_others() -> None
     fetched: list[str] = []
     with _session() as db:
         operation_id = _freeze(db, first, second, blocked, fetchable={"blocked": False})
+        blocked_member = db.query(HighValueWaveMemberRecord).filter_by(
+            operation_run_id=operation_id,
+            source_id="blocked",
+        ).one()
+        blocked_member.conclusion = "missing_credentials"
+        db.commit()
 
         def execute(source, operation_id, checkpoint, scope):
             fetched.append(source.id)
@@ -92,6 +98,7 @@ def test_wave_fetches_only_claimed_fetchable_members_and_blocks_others() -> None
         assert result.result_summary["blocked"] == 1
         assert members["blocked"].state == "blocked"
         assert members["blocked"].conclusion and "冻结" in members["blocked"].conclusion
+        assert "missing_credentials" in members["blocked"].conclusion
         assert db.get(OperationRunRecord, operation_id).progress_current == 3
 
 

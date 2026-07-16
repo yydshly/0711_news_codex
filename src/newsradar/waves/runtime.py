@@ -144,13 +144,14 @@ class HighValueWaveHandler:
                 session.commit()
                 return outcome
             if not member.fetchable:
+                blocked_reason = member.conclusion or "blocked"
                 outcome = self._finish_in_session(
                     repository,
                     operation_id,
                     source_id,
                     "blocked",
                     "blocked",
-                    "冻结快照标记为不可抓取，未发起网络请求",
+                    f"冻结快照标记为不可抓取（{blocked_reason}），未发起网络请求",
                     attempt_id,
                 )
                 session.commit()
