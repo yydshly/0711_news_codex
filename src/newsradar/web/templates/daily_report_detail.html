@@ -7,6 +7,13 @@
   <h2 id="daily-report-meta-heading">第 {{ daily_report.report.revision }} 版 · {{ '草稿' if daily_report.report.status == 'draft' else '已归档' }}</h2>
   <p>时间窗口 {{ daily_report.report.window_hours }} 小时，截至 {{ daily_report.report.window_end|format_datetime_zh }}。本页只展示生成时固定的日报条目。</p>
   <p>确认 {{ daily_report.report.confirmed_count }} 条 · 线索 {{ daily_report.report.emerging_count }} 条{% if daily_report.generation_summary.get('skipped_invalid_event') %} · 跳过无效事件 {{ daily_report.generation_summary.get('skipped_invalid_event') }} 条{% endif %}</p>
+  {% if daily_report.generation_summary.get('minimax_degraded') is sameas true %}
+  <p><strong>MiniMax：已降级</strong>，本版使用规则中文内容；确认状态与来源合法性不由模型决定。</p>
+  {% elif daily_report.generation_summary.get('minimax_degraded') is sameas false %}
+  <p><strong>MiniMax：未降级</strong>，本版包含生成时已有的模型增强内容。</p>
+  {% else %}
+  <p><strong>MiniMax：状态未记录</strong>，请以固定快照中的内容为准。</p>
+  {% endif %}
   {% if daily_report.report.status == 'draft' %}
   <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/archive">
     <input type="hidden" name="action_token" value="{{ action_token }}">
@@ -23,16 +30,21 @@
 <section class="panel" aria-labelledby="confirmed-report-heading">
   <h2 id="confirmed-report-heading">今日确认要闻</h2>
   {% for item in daily_report.confirmed %}
+  {% set evidence_rows = item.snapshot.get('evidence', []) %}
   <article class="event-card{% if not item.included %} muted{% endif %}">
     <p class="eyebrow">已确认 · 事件 #{{ item.event_id }} · 版本 {{ item.event_version_number }}</p>
     <h3>{{ item.snapshot.get('zh_title', '未命名事件') }}</h3>
     <p>{{ item.snapshot.get('zh_summary', '暂无摘要') }}</p>
     <p><strong>为何值得关注：</strong>{{ item.snapshot.get('why_it_matters', '暂无说明') }}</p>
+    <p><strong>证据 {{ evidence_rows|length }} 条</strong>{% if item.snapshot.get('independent_root_count') is not none %} · 独立证据根 {{ item.snapshot.get('independent_root_count') }}{% endif %}</p>
+    {% if item.snapshot.get('confirmation_summary') %}<p><strong>确认说明：{{ item.snapshot.get('confirmation_summary') }}</strong></p>{% endif %}
+    {% if item.snapshot.get('limitations') %}<p><strong>事件限制：{{ item.snapshot.get('limitations')|join('；') }}</strong></p>{% endif %}
     {% if not item.included %}<p><strong>本版未收录</strong></p>{% endif %}
     <h4>公开证据</h4>
     <ul>
-      {% for evidence in item.snapshot.get('evidence', []) %}
-      <li>{% if evidence.get('url') %}<a href="{{ evidence.get('url') }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '证据') }}</a>{% else %}{{ evidence.get('title', '证据') }}{% endif %}{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %}</li>
+      {% for evidence in evidence_rows %}
+      {% set safe_url = evidence.get('url')|daily_report_public_url %}
+      <li>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '证据') }}</a>{% else %}{{ evidence.get('title', '证据') }}{% endif %}{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %} · 来源角色：{{ evidence.get('role')|zh_label('evidence_role') }} · 独立证据：{{ '是' if evidence.get('independent') else '否' }}{% if evidence.get('limitations') %} · 证据限制：{{ evidence.get('limitations')|join('；') }}{% endif %}</li>
       {% else %}<li>当前快照未记录公开证据链接。</li>{% endfor %}
     </ul>
     {% if daily_report.report.status == 'draft' %}
@@ -55,16 +67,21 @@
   <p><strong>尚未确认</strong>：以下内容是值得关注的早期线索，不应作为已确认事实传播。</p>
   <h2 id="emerging-report-heading">值得关注的线索</h2>
   {% for item in daily_report.emerging %}
+  {% set evidence_rows = item.snapshot.get('evidence', []) %}
   <article class="event-card{% if not item.included %} muted{% endif %}">
     <p class="eyebrow">尚未确认 · 事件 #{{ item.event_id }} · 版本 {{ item.event_version_number }}</p>
     <h3>{{ item.snapshot.get('zh_title', '未命名线索') }}</h3>
     <p>{{ item.snapshot.get('zh_summary', '暂无摘要') }}</p>
     <p><strong>为何值得关注：</strong>{{ item.snapshot.get('why_it_matters', '暂无说明') }}</p>
+    <p><strong>证据 {{ evidence_rows|length }} 条</strong>{% if item.snapshot.get('independent_root_count') is not none %} · 独立证据根 {{ item.snapshot.get('independent_root_count') }}{% endif %}</p>
+    {% if item.snapshot.get('confirmation_summary') %}<p><strong>确认说明：{{ item.snapshot.get('confirmation_summary') }}</strong></p>{% endif %}
+    {% if item.snapshot.get('limitations') %}<p><strong>事件限制：{{ item.snapshot.get('limitations')|join('；') }}</strong></p>{% endif %}
     {% if not item.included %}<p><strong>本版未收录</strong></p>{% endif %}
     <h4>公开证据</h4>
     <ul>
-      {% for evidence in item.snapshot.get('evidence', []) %}
-      <li>{% if evidence.get('url') %}<a href="{{ evidence.get('url') }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '证据') }}</a>{% else %}{{ evidence.get('title', '证据') }}{% endif %}{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %}</li>
+      {% for evidence in evidence_rows %}
+      {% set safe_url = evidence.get('url')|daily_report_public_url %}
+      <li>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '证据') }}</a>{% else %}{{ evidence.get('title', '证据') }}{% endif %}{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %} · 来源角色：{{ evidence.get('role')|zh_label('evidence_role') }} · 独立证据：{{ '是' if evidence.get('independent') else '否' }}{% if evidence.get('limitations') %} · 证据限制：{{ evidence.get('limitations')|join('；') }}{% endif %}</li>
       {% else %}<li>当前快照未记录公开证据链接。</li>{% endfor %}
     </ul>
     {% if daily_report.report.status == 'draft' %}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
@@ -38,13 +39,33 @@ def _public_url(value: str | None) -> str | None:
         return None
     try:
         parsed = urlsplit(value)
+        hostname = parsed.hostname
     except ValueError:
         return None
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
+        or not hostname
         or parsed.username is not None
         or parsed.password is not None
+    ):
+        return None
+    normalized_hostname = hostname.rstrip(".").lower()
+    if normalized_hostname == "localhost" or normalized_hostname.endswith(".localhost"):
+        return None
+    try:
+        address = ip_address(normalized_hostname)
+    except ValueError:
+        address = None
+    if address is not None and any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+            address.is_reserved,
+            address.is_unspecified,
+            address.is_multicast,
+        )
     ):
         return None
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))

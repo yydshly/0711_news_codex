@@ -348,6 +348,72 @@ def test_public_url_rejects_malformed_ipv6() -> None:
     assert _public_url("https://[invalid/evidence") is None
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "http://localhost/evidence",
+        "https://news.localhost/evidence",
+        "http://127.0.0.1/evidence",
+        "http://10.0.0.8/evidence",
+        "http://172.16.0.8/evidence",
+        "http://192.168.1.8/evidence",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]/evidence",
+        "http://[fe80::1]/evidence",
+        "http://[ff02::1]/evidence",
+    ),
+)
+def test_public_url_rejects_local_and_non_public_ip_literals(url: str) -> None:
+    assert _public_url(url) is None
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    (
+        (
+            "https://example.com/evidence?token=hidden#fragment",
+            "https://example.com/evidence",
+        ),
+        ("https://8.8.8.8/evidence", "https://8.8.8.8/evidence"),
+        ("https://[2606:4700:4700::1111]/dns", "https://[2606:4700:4700::1111]/dns"),
+    ),
+)
+def test_public_url_keeps_public_hosts_without_query_or_fragment(
+    url: str, expected: str
+) -> None:
+    assert _public_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "http://127.0.0.1/evidence",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.0.0.8/evidence",
+        "http://[::1]/evidence",
+    ),
+)
+def test_generate_drops_non_public_evidence_url_from_snapshot(
+    db_session: Session, url: str
+) -> None:
+    seed_complete_snapshot(db_session)
+    raw = db_session.scalar(
+        select(RawItemRecord)
+        .join(EventItemRecord, EventItemRecord.raw_item_id == RawItemRecord.id)
+        .where(EventItemRecord.event_id == 101)
+    )
+    assert raw is not None
+    raw.original_url = url
+    db_session.commit()
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+    row = next(
+        item for item in DailyReportRepository(db_session).items(report.id) if item.event_id == 101
+    )
+
+    assert row.snapshot["evidence"][0]["url"] is None
+
+
 def test_generate_skips_malformed_evidence_url_and_keeps_later_event(
     db_session: Session,
 ) -> None:

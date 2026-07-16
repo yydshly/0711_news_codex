@@ -93,6 +93,21 @@ ProbeType = Literal["capability", "content"]
 QueryResult = TypeVar("QueryResult")
 PROBE_OUTCOME_VALUES = tuple(outcome.value for outcome in DomainProbeOutcome)
 
+_DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
+    "invalid_daily_report_window": (422, "时间窗口仅支持 24、48 或 72 小时。"),
+    "complete_event_snapshot_required": (409, "尚无完整事件运行快照，请先完成事件构建。"),
+    "ambiguous_event_snapshot_versions": (
+        409,
+        "事件运行快照包含冲突版本，暂时无法生成日报。",
+    ),
+    "invalid_daily_report_move": (422, "移动方向只能是上移或下移。"),
+    "daily_report_not_found": (404, "日报不存在。"),
+    "daily_report_item_not_found": (404, "日报条目不存在或不属于当前日报。"),
+    "daily_report_archived": (409, "该日报已归档，不能再修改。"),
+    "daily_report_must_be_archived": (409, "仅已归档的日报可以创建修订版。"),
+    "daily_report_revision_conflict": (409, "日报修订发生冲突，请刷新页面后重试。"),
+}
+
 _PROVIDER_CATEGORIES = (
     ("social_community", "社交与社区"),
     ("professional_media", "专业媒体"),
@@ -146,6 +161,17 @@ def _normalized_query(value: str | None) -> str | None:
     if value is None:
         return None
     return value.strip()[:100]
+
+
+def _daily_report_http_error(
+    error: Exception, *, default_status: int
+) -> HTTPException:
+    error_code = str(error)
+    logger.info("daily report request rejected", extra={"error_code": error_code})
+    status_code, detail = _DAILY_REPORT_ERRORS.get(
+        error_code, (default_status, "日报操作暂时无法完成。")
+    )
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 def _source_wave_plan():
@@ -216,6 +242,9 @@ def create_app(
     templates.env.filters["zh_label"] = lambda value, dimension: zh_label(dimension, value)
     templates.env.filters["format_datetime_zh"] = format_datetime_zh
     templates.env.filters["format_duration_ms"] = format_duration_ms
+    from newsradar.daily_reports.service import _public_url as daily_report_public_url
+
+    templates.env.filters["daily_report_public_url"] = daily_report_public_url
     templates.env.globals["http_trust_env"] = get_settings().http_trust_env
     app.mount("/static", StaticFiles(directory=_WEB_ROOT / "static"), name="static")
 
@@ -326,9 +355,13 @@ def create_app(
 
     @app.exception_handler(404)
     async def not_found(request: Request, error: Exception) -> HTMLResponse:
+        detail = getattr(error, "detail", None)
+        if not isinstance(detail, str) or detail in {"", "Not Found"}:
+            detail = "这个本地只读页面尚未提供，或地址有误。"
         return templates.TemplateResponse(
             request=request,
             name="not_found.html",
+            context={"not_found_detail": detail},
             status_code=404,
         )
 
@@ -502,13 +535,17 @@ def create_app(
         from newsradar.daily_reports import DailyReportService
 
         try:
-            window_hours = int(values.get("window_hours", "24"))
+            try:
+                window_hours = int(values.get("window_hours", "24"))
+            except (TypeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=422, detail="时间窗口必须是 24、48 或 72 小时。"
+                ) from error
             with create_session() as session:
                 report = DailyReportService(session).generate(window_hours)
                 report_id = report.id
-        except (TypeError, ValueError) as error:
-            status_code = 409 if str(error) == "complete_event_snapshot_required" else 422
-            raise HTTPException(status_code=status_code, detail=str(error)) from error
+        except ValueError as error:
+            raise _daily_report_http_error(error, default_status=422) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
@@ -539,16 +576,21 @@ def create_app(
         request: Request, report_id: int, item_id: int
     ) -> RedirectResponse:
         values = await require_safe_action(request)
-        included = values.get("included") == "true"
+        included_value = values.get("included")
+        if included_value not in {"true", "false"}:
+            raise HTTPException(
+                status_code=422, detail="收录状态必须明确为 true 或 false。"
+            )
+        included = included_value == "true"
         try:
             with create_session() as session:
                 DailyReportRepository(session).set_included(
                     report_id, item_id, included=included
                 )
         except LookupError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=404) from error
         except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=409) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
@@ -564,9 +606,9 @@ def create_app(
                     report_id, item_id, direction=values.get("direction", "")
                 )
         except LookupError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=404) from error
         except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=409) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
@@ -578,9 +620,9 @@ def create_app(
             with create_session() as session:
                 DailyReportRepository(session).archive(report_id)
         except LookupError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=404) from error
         except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=409) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
@@ -595,9 +637,9 @@ def create_app(
                 revision = DailyReportService(session).revise(report_id)
                 revision_id = revision.id
         except LookupError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=404) from error
         except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise _daily_report_http_error(error, default_status=409) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{revision_id}", status_code=303)

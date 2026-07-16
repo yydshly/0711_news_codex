@@ -44,6 +44,8 @@ def seed_daily_report(
     *,
     report_date: date = date(2026, 7, 16),
     operation_id: int = 4101,
+    evidence_url: str = "https://example.com/evidence",
+    minimax_degraded: bool = True,
 ) -> DailyReportRecord:
     if session.get(OperationRunRecord, operation_id) is None:
         session.add(
@@ -84,7 +86,7 @@ def seed_daily_report(
                 "emerging_count": 1,
                 "skipped_invalid_event": 0,
                 "skipped_missing_time": 0,
-                "minimax_degraded": True,
+                "minimax_degraded": minimax_degraded,
             },
             items=(
                 DailyReportItemDraft(
@@ -98,6 +100,9 @@ def seed_daily_report(
                         "why_it_matters": "确认影响",
                         "status": "confirmed",
                         "unconfirmed": False,
+                        "independent_root_count": 2,
+                        "confirmation_summary": "两条独立证据已交叉确认",
+                        "limitations": ["仅覆盖公开资料"],
                         "evidence": [],
                     },
                 ),
@@ -115,13 +120,16 @@ def seed_daily_report(
                         "evidence": [
                             {
                                 "title": "公开证据",
-                                "url": "https://example.com/evidence",
+                                "url": evidence_url,
                                 "published_at": NOW.isoformat(),
                                 "role": "professional_media",
                                 "independent": True,
-                                "limitations": [],
+                                "limitations": ["原始来源尚未回应"],
                             }
                         ],
+                        "independent_root_count": 1,
+                        "confirmation_summary": "仍需第一方来源确认",
+                        "limitations": ["发布时间仍待复核"],
                     },
                 ),
             ),
@@ -185,6 +193,57 @@ def test_daily_report_detail_separates_confirmed_and_unconfirmed(
     assert 'target="_blank" rel="noopener noreferrer"' in response.text
 
 
+@pytest.mark.parametrize(
+    ("minimax_degraded", "model_status"),
+    ((True, "MiniMax：已降级"), (False, "MiniMax：未降级")),
+)
+def test_daily_report_detail_explains_model_and_evidence_quality(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    minimax_degraded: bool,
+    model_status: str,
+) -> None:
+    report = seed_daily_report(db_session, minimax_degraded=minimax_degraded)
+    report_id = report.id
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert model_status in response.text
+    assert "证据 1 条" in response.text
+    assert "独立证据根 2" in response.text
+    assert "确认说明：两条独立证据已交叉确认" in response.text
+    assert "来源角色：专业媒体" in response.text
+    assert "独立证据：是" in response.text
+    assert "证据限制：原始来源尚未回应" in response.text
+    assert "事件限制：发布时间仍待复核" in response.text
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "http://127.0.0.1/evidence",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.0.0.8/evidence",
+        "http://[::1]/evidence",
+    ),
+)
+def test_daily_report_detail_never_renders_non_public_snapshot_href(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+) -> None:
+    report = seed_daily_report(db_session, evidence_url=url)
+    report_id = report.id
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert f'href="{url}"' not in response.text
+
+
 def test_daily_report_posts_require_safe_action_token(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -202,11 +261,38 @@ def test_generate_redirects_and_rejects_invalid_or_missing_snapshot(
         "/daily-reports", data={"action_token": token, "window_hours": "12"}
     )
     assert invalid.status_code == 422, invalid.text
+    assert invalid.json()["detail"] == "时间窗口仅支持 24、48 或 72 小时。"
+    assert "invalid_daily_report_window" not in invalid.text
     client, token = safe_client_with_token(db_session, monkeypatch)
     missing = client.post(
         "/daily-reports", data={"action_token": token, "window_hours": "24"}
     )
     assert missing.status_code == 409
+    assert missing.json()["detail"] == "尚无完整事件运行快照，请先完成事件构建。"
+    assert "complete_event_snapshot_required" not in missing.text
+
+
+@pytest.mark.parametrize("included", (None, "yes", "1", "TRUE", ""))
+def test_included_route_rejects_missing_or_invalid_boolean_without_mutation(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    included: str | None,
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[0]
+    report_id, item_id = report.id, item.id
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    data = {"action_token": token}
+    if included is not None:
+        data["included"] = included
+
+    response = client.post(
+        f"/daily-reports/{report_id}/items/{item_id}/included", data=data
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "收录状态必须明确为 true 或 false。"
+    assert DailyReportRepository(db_session).items(report_id)[0].included is True
 
 
 def test_generate_route_redirects_to_created_draft_without_external_calls(
@@ -317,7 +403,58 @@ def test_daily_report_routes_enforce_ownership_and_not_found(
         data={"action_token": token, "included": "false"},
     )
     assert response.status_code == 404
+    assert "日报条目不存在或不属于当前日报。" in response.text
+    assert "daily_report_item_not_found" not in response.text
     assert client.get("/daily-reports/999999").status_code == 404
+
+
+def test_daily_report_routes_translate_known_conflicts_to_chinese(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[0]
+    report_id, item_id = report.id, item.id
+    DailyReportRepository(db_session).archive(report_id)
+
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    archived = client.post(
+        f"/daily-reports/{report_id}/items/{item_id}/included",
+        data={"action_token": token, "included": "false"},
+    )
+    assert archived.status_code == 409
+    assert archived.json()["detail"] == "该日报已归档，不能再修改。"
+    assert "daily_report_archived" not in archived.text
+
+    draft = seed_daily_report(db_session, report_date=date(2026, 7, 18), operation_id=4103)
+    draft_id = draft.id
+    draft_item_id = DailyReportRepository(db_session).items(draft_id)[0].id
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    invalid_move = client.post(
+        f"/daily-reports/{draft_id}/items/{draft_item_id}/move",
+        data={"action_token": token, "direction": "sideways"},
+    )
+    assert invalid_move.status_code == 422
+    assert invalid_move.json()["detail"] == "移动方向只能是上移或下移。"
+    assert "invalid_daily_report_move" not in invalid_move.text
+
+
+def test_generate_route_translates_ambiguous_snapshot_to_chinese(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def reject_ambiguous(self, window_hours):
+        raise ValueError("ambiguous_event_snapshot_versions")
+
+    monkeypatch.setattr(
+        "newsradar.daily_reports.service.DailyReportService.generate", reject_ambiguous
+    )
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    response = client.post(
+        "/daily-reports", data={"action_token": token, "window_hours": "24"}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "事件运行快照包含冲突版本，暂时无法生成日报。"
+    assert "ambiguous_event_snapshot_versions" not in response.text
 
 
 def test_archived_page_does_not_follow_event_current_pointer(
