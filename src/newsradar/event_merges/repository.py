@@ -58,6 +58,46 @@ class EventMergeCandidateRepository:
         assert record is not None
         return record
 
+    def resolve_recheck(
+        self,
+        parent_id: int,
+        draft: MergeCandidateDraft | None,
+        *,
+        generated_operation_id: int,
+        reason_code: str,
+    ) -> EventMergeCandidateRecord:
+        parent = self._require_locked(parent_id)
+        if parent.status != MergeCandidateStatus.PENDING.value:
+            return self._recheck_retry(parent, generated_operation_id)
+        if draft is None:
+            self.mark_expired(parent_id, reason_code)
+            self._record_recheck(
+                parent,
+                generated_operation_id,
+                outcome="no_candidate",
+                replacement_id=None,
+            )
+            return parent
+        if self._same_chain_identity(parent, draft):
+            replacement = self.create_revision(
+                parent_id,
+                draft,
+                generated_operation_id=generated_operation_id,
+                reason_code=reason_code,
+            )
+            outcome = "revision"
+        else:
+            self.mark_expired(parent_id, reason_code)
+            replacement = self.upsert_candidate(draft, generated_operation_id)
+            outcome = "new_root"
+        self._record_recheck(
+            parent,
+            generated_operation_id,
+            outcome=outcome,
+            replacement_id=replacement.id,
+        )
+        return replacement
+
     def create_revision(
         self,
         parent_id: int,
@@ -72,19 +112,7 @@ class EventMergeCandidateRepository:
             return existing
         if parent.status != MergeCandidateStatus.PENDING.value:
             raise ValueError("event_merge_candidate_not_reviewable")
-        if (
-            parent.left_event_id,
-            parent.left_version_number,
-            parent.right_event_id,
-            parent.right_version_number,
-            parent.algorithm_version,
-        ) != (
-            draft.left.event_id,
-            draft.left.version_number,
-            draft.right.event_id,
-            draft.right.version_number,
-            draft.algorithm_version,
-        ):
+        if not self._same_chain_identity(parent, draft):
             raise ValueError("event_merge_revision_chain_changed")
         self.mark_expired(parent_id, reason_code)
         values = self._candidate_values(
@@ -103,6 +131,62 @@ class EventMergeCandidateRepository:
         child = self.child_of(parent_id, for_update=True)
         assert child is not None
         return child
+
+    @staticmethod
+    def _same_chain_identity(
+        parent: EventMergeCandidateRecord,
+        draft: MergeCandidateDraft,
+    ) -> bool:
+        return (
+            parent.left_event_id,
+            parent.left_version_number,
+            parent.right_event_id,
+            parent.right_version_number,
+            parent.algorithm_version,
+        ) == (
+            draft.left.event_id,
+            draft.left.version_number,
+            draft.right.event_id,
+            draft.right.version_number,
+            draft.algorithm_version,
+        )
+
+    def _recheck_retry(
+        self,
+        parent: EventMergeCandidateRecord,
+        operation_id: int,
+    ) -> EventMergeCandidateRecord:
+        outcome = parent.result_summary.get("recheck_outcome")
+        if (
+            parent.status != MergeCandidateStatus.EXPIRED.value
+            or parent.reviewed_operation_id != operation_id
+            or outcome not in {"no_candidate", "revision", "new_root"}
+        ):
+            raise ValueError("event_merge_candidate_not_reviewable")
+        replacement_id = parent.result_summary.get("recheck_candidate_id")
+        if outcome == "no_candidate" and replacement_id is None:
+            return parent
+        if not isinstance(replacement_id, int) or isinstance(replacement_id, bool):
+            raise ValueError("event_merge_candidate_not_reviewable")
+        replacement = self.get(replacement_id, for_update=True)
+        if replacement is None:
+            raise ValueError("event_merge_candidate_not_reviewable")
+        return replacement
+
+    @staticmethod
+    def _record_recheck(
+        parent: EventMergeCandidateRecord,
+        operation_id: int,
+        *,
+        outcome: str,
+        replacement_id: int | None,
+    ) -> None:
+        parent.reviewed_operation_id = operation_id
+        parent.reviewed_at = datetime.now(UTC)
+        parent.result_summary = {
+            "recheck_outcome": outcome,
+            "recheck_candidate_id": replacement_id,
+        }
 
     def child_of(
         self, candidate_id: int, *, for_update: bool = False

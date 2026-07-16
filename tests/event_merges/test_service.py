@@ -846,10 +846,90 @@ def test_recheck_expires_old_candidate_and_only_rescans_its_pair(
     assert replacement.revision == 2
     assert replacement.supersedes_candidate_id == candidate.id
     assert replacement.generated_operation_id == 51
+    assert candidate.reviewed_operation_id == 51
+    assert candidate.reviewed_at is not None
+    assert candidate.result_summary == {
+        "recheck_outcome": "revision",
+        "recheck_candidate_id": replacement.id,
+    }
     retried = EventMergeService(session).review(candidate.id, "recheck", 51)
     assert retried.id == replacement.id
     assert session.query(EventMergeCandidateRecord).count() == 2
+    with pytest.raises(ValueError, match="event_merge_candidate_not_reviewable"):
+        EventMergeService(session).review(candidate.id, "recheck", 52)
     assert {model: _rows(session, model) for model in protected} == before
+
+
+def test_recheck_changed_version_creates_idempotent_new_root(
+    session: Session,
+) -> None:
+    candidate = _seed_candidate(session)
+    candidate_id = candidate.id
+    left = session.get(EventRecord, candidate.left_event_id)
+    assert left is not None
+    session.add(
+        EventVersionRecord(
+            event_id=left.id,
+            version_number=2,
+            payload={"recheck": "new-version"},
+        )
+    )
+    left.current_version_number = 2
+    session.commit()
+
+    replacement = EventMergeService(session).review(candidate_id, "recheck", 51)
+
+    session.refresh(candidate)
+    assert replacement.id != candidate_id
+    assert replacement.left_version_number == 2
+    assert replacement.revision == 1
+    assert replacement.supersedes_candidate_id is None
+    assert candidate.status == "expired"
+    assert candidate.reviewed_operation_id == 51
+    assert candidate.reviewed_at is not None
+    assert candidate.result_summary == {
+        "recheck_outcome": "new_root",
+        "recheck_candidate_id": replacement.id,
+    }
+    session.expire_all()
+
+    retried = EventMergeService(session).review(candidate_id, "recheck", 51)
+
+    assert retried.id == replacement.id
+    assert session.query(EventMergeCandidateRecord).count() == 2
+    with pytest.raises(ValueError, match="event_merge_candidate_not_reviewable"):
+        EventMergeService(session).review(candidate_id, "recheck", 52)
+
+
+def test_recheck_without_new_candidate_is_operation_idempotent(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _seed_candidate(session)
+    candidate_id = candidate.id
+    monkeypatch.setattr(
+        "newsradar.event_merges.service.classify_pair",
+        lambda left, right, snapshot_ids: None,
+    )
+
+    expired = EventMergeService(session).review(candidate_id, "recheck", 51)
+
+    assert expired.id == candidate_id
+    assert expired.status == "expired"
+    assert expired.reviewed_operation_id == 51
+    assert expired.reviewed_at is not None
+    assert expired.result_summary == {
+        "recheck_outcome": "no_candidate",
+        "recheck_candidate_id": None,
+    }
+    session.expire_all()
+
+    retried = EventMergeService(session).review(candidate_id, "recheck", 51)
+
+    assert retried.id == candidate_id
+    assert session.query(EventMergeCandidateRecord).count() == 1
+    with pytest.raises(ValueError, match="event_merge_candidate_not_reviewable"):
+        EventMergeService(session).review(candidate_id, "recheck", 52)
 
 
 def test_scan_isolates_malformed_event_and_continues(session: Session) -> None:

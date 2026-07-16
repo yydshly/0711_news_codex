@@ -116,10 +116,27 @@ class EventMergeService:
             self.session.commit()
             return record
         if decision == "recheck":
-            existing = repository.child_of(candidate_id, for_update=True)
-            if existing is not None:
-                self.session.commit()
-                return existing
+            draft = None
+            if record.status == MergeCandidateStatus.PENDING.value:
+                left = load_event_facts(self.session, record.left_event_id)
+                right = load_event_facts(self.session, record.right_event_id)
+                latest = latest_complete_event_snapshot(self.session)
+                latest_ids = (
+                    frozenset(
+                        reference.event_id for reference in latest.event_versions
+                    )
+                    if latest is not None
+                    else frozenset()
+                )
+                draft = classify_pair(left, right, latest_ids)
+            reviewed = repository.resolve_recheck(
+                candidate_id,
+                draft,
+                generated_operation_id=operation_id,
+                reason_code="event_merge_recheck_requested",
+            )
+            self.session.commit()
+            return reviewed
         if record.status != MergeCandidateStatus.PENDING.value:
             raise ValueError("event_merge_candidate_not_reviewable")
         if decision == "confirm":
@@ -135,28 +152,6 @@ class EventMergeService:
                 candidate_id,
                 MergeCandidateStatus.DISMISSED,
                 operation_id,
-            )
-        elif decision == "recheck":
-            left = load_event_facts(self.session, record.left_event_id)
-            right = load_event_facts(self.session, record.right_event_id)
-            latest = latest_complete_event_snapshot(self.session)
-            latest_ids = (
-                frozenset(reference.event_id for reference in latest.event_versions)
-                if latest is not None
-                else frozenset()
-            )
-            draft = classify_pair(left, right, latest_ids)
-            reviewed = (
-                repository.create_revision(
-                    candidate_id,
-                    draft,
-                    generated_operation_id=operation_id,
-                    reason_code="event_merge_recheck_requested",
-                )
-                if draft is not None
-                else repository.mark_expired(
-                    candidate_id, "event_merge_recheck_requested"
-                )
             )
         else:
             raise ValueError("event_merge_invalid_review_decision")
