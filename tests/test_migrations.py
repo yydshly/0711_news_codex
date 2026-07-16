@@ -1,9 +1,11 @@
 import subprocess
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import TEXT, create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 
 def _sqlite_url(path: Path) -> str:
@@ -56,6 +58,10 @@ def test_daily_report_migration_creates_archive_tables_without_changing_events(
             "included",
             "snapshot",
         } <= item_columns
+        assert {index["name"] for index in inspector.get_indexes("daily_reports")} >= {
+            "uq_daily_report_identity",
+            "uq_daily_report_supersedes",
+        }
         after = {
             table_name: connection.execute(
                 text(f"SELECT count(*) FROM {table_name}")
@@ -69,6 +75,22 @@ def test_daily_report_migration_downgrade_removes_only_report_tables(tmp_path: P
     database_url = _sqlite_url(tmp_path / "daily-reports-downgrade.db")
     _upgrade(database_url, "head")
     engine = create_engine(database_url)
+    with engine.connect() as connection:
+        trigger_names = set(
+            connection.execute(
+                text(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name LIKE 'trg_daily_report_%'"
+                )
+            ).scalars()
+        )
+        assert trigger_names == {
+            "trg_daily_report_archived_delete",
+            "trg_daily_report_archived_update",
+            "trg_daily_report_item_archived_delete",
+            "trg_daily_report_item_archived_insert",
+            "trg_daily_report_item_archived_update",
+        }
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
     command.downgrade(config, "20260716_0022")
@@ -77,6 +99,150 @@ def test_daily_report_migration_downgrade_removes_only_report_tables(tmp_path: P
         assert "daily_reports" not in tables
         assert "daily_report_items" not in tables
         assert {"events", "event_versions", "event_items", "event_scores"} <= tables
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM sqlite_master "
+                "WHERE type = 'trigger' AND name LIKE 'trg_daily_report_%'"
+            )
+        ).scalar_one() == 0
+
+
+def _daily_report_guard_database(tmp_path: Path):
+    database_url = _sqlite_url(tmp_path / "daily-report-guards.db")
+    _upgrade(database_url, "20260716_0022")
+    _seed_event_history(database_url)
+    _upgrade(database_url, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO operation_runs "
+                "(id, operation_type, trigger, status, requested_scope, result_summary, "
+                "attempt_count, progress_current, created_at, updated_at) VALUES "
+                "(9901, 'event_pipeline', 'test', 'succeeded', '{}', '{}', 1, 0, "
+                "'2026-07-16T03:00:00+00:00', '2026-07-16T04:00:00+00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO daily_reports "
+                "(id, report_date, timezone, window_hours, window_start, window_end, "
+                "source_operation_id, status, revision, supersedes_report_id, "
+                "generation_summary, generated_at, archived_at) VALUES "
+                "(1, '2026-07-16', 'Asia/Shanghai', 24, '2026-07-15T04:00:00+00:00', "
+                "'2026-07-16T04:00:00+00:00', 9901, 'draft', 1, NULL, '{}', "
+                "'2026-07-16T04:00:00+00:00', NULL), "
+                "(2, '2026-07-17', 'Asia/Shanghai', 24, '2026-07-16T04:00:00+00:00', "
+                "'2026-07-17T04:00:00+00:00', 9901, 'draft', 1, NULL, '{}', "
+                "'2026-07-17T04:00:00+00:00', NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO daily_report_items "
+                "(id, daily_report_id, event_id, event_version_number, section, position, "
+                "included, snapshot) VALUES "
+                "(1, 1, 1, 2, 'confirmed', 1, 1, '{}'), "
+                "(2, 2, 1, 1, 'emerging', 2, 1, '{}')"
+            )
+        )
+    return engine
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "UPDATE daily_reports SET generation_summary = '{\"changed\": true}' WHERE id = 1",
+        "DELETE FROM daily_reports WHERE id = 1",
+        "INSERT INTO daily_report_items "
+        "(daily_report_id, event_id, event_version_number, section, position, included, snapshot) "
+        "VALUES (1, 1, 1, 'emerging', 3, 1, '{}')",
+        "UPDATE daily_report_items SET included = 0 WHERE id = 1",
+        "DELETE FROM daily_report_items WHERE id = 1",
+        "UPDATE daily_report_items SET daily_report_id = 1 WHERE id = 2",
+    ),
+)
+def test_daily_report_migration_rejects_direct_sql_mutation_after_archive(
+    tmp_path: Path, statement: str
+) -> None:
+    engine = _daily_report_guard_database(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE daily_reports SET status = 'archived', "
+                "archived_at = '2026-07-16T05:00:00+00:00' WHERE id = 1"
+            )
+        )
+
+    with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+        with engine.begin() as connection:
+            connection.execute(text(statement))
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "INSERT INTO daily_reports "
+        "(report_date, timezone, window_hours, window_start, window_end, source_operation_id, "
+        "status, revision, generation_summary, generated_at, archived_at) VALUES "
+        "('2026-07-18', 'Asia/Shanghai', 24, '2026-07-17', '2026-07-18', 9901, "
+        "'draft', 1, '{}', '2026-07-18', '2026-07-18')",
+        "INSERT INTO daily_reports "
+        "(report_date, timezone, window_hours, window_start, window_end, source_operation_id, "
+        "status, revision, generation_summary, generated_at, archived_at) VALUES "
+        "('2026-07-18', 'Asia/Shanghai', 24, '2026-07-17', '2026-07-18', 9901, "
+        "'archived', 1, '{}', '2026-07-18', NULL)",
+        "UPDATE daily_reports SET archived_at = '2026-07-17' WHERE id = 2",
+    ),
+)
+def test_daily_report_migration_rejects_inconsistent_status_and_archive_time(
+    tmp_path: Path, statement: str
+) -> None:
+    engine = _daily_report_guard_database(tmp_path)
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(text(statement))
+
+
+def test_daily_report_migration_enforces_normal_identity_and_one_direct_child(
+    tmp_path: Path,
+) -> None:
+    engine = _daily_report_guard_database(tmp_path)
+    normal_duplicate = (
+        "INSERT INTO daily_reports "
+        "(report_date, timezone, window_hours, window_start, window_end, source_operation_id, "
+        "status, revision, supersedes_report_id, generation_summary, generated_at, archived_at) "
+        "VALUES ('2026-07-16', 'Asia/Shanghai', 24, '2026-07-15', '2026-07-16', 9901, "
+        "'draft', 2, NULL, '{}', '2026-07-16', NULL)"
+    )
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(text(normal_duplicate))
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO daily_reports "
+                "(report_date, timezone, window_hours, window_start, window_end, "
+                "source_operation_id, status, revision, supersedes_report_id, "
+                "generation_summary, generated_at, archived_at) VALUES "
+                "('2026-07-16', 'Asia/Shanghai', 24, '2026-07-15', '2026-07-16', "
+                "9901, 'draft', 2, 1, '{}', '2026-07-16', NULL)"
+            )
+        )
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO daily_reports "
+                    "(report_date, timezone, window_hours, window_start, window_end, "
+                    "source_operation_id, status, revision, supersedes_report_id, "
+                    "generation_summary, generated_at, archived_at) VALUES "
+                    "('2026-07-16', 'Asia/Shanghai', 24, '2026-07-15', '2026-07-16', "
+                    "9901, 'draft', 3, 1, '{}', '2026-07-16', NULL)"
+                )
+            )
 
 
 def test_high_value_wave_migration_creates_member_snapshots_without_altering_history(

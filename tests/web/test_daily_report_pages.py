@@ -398,6 +398,36 @@ def test_move_and_revise_routes_redirect_to_expected_report(
     assert revised.headers["location"] == f"/daily-reports/{revision.id}"
 
 
+def test_revise_route_from_older_parent_reuses_archived_direct_child(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = seed_daily_report(db_session)
+    parent_id = parent.id
+    repository.archive(parent_id)
+    child = repository.revise(parent_id)
+    child_id = child.id
+    repository.archive(child_id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{parent_id}/revise",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/daily-reports/{child_id}"
+    assert [
+        row.id
+        for row in db_session.scalars(
+            select(DailyReportRecord).where(
+                DailyReportRecord.supersedes_report_id == parent_id
+            )
+        )
+    ] == [child_id]
+
+
 def test_daily_report_routes_enforce_ownership_and_not_found(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

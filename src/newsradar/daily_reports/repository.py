@@ -34,7 +34,7 @@ class DailyReportRepository:
         validate_window_hours(draft.window_hours)
         for attempt in range(MAX_REVISION_ATTEMPTS):
             self._lock_revision(draft.report_date, draft.window_hours)
-            existing = self._matching_draft(draft)
+            existing = self._matching_report(draft)
             if existing is not None:
                 self.session.commit()
                 return existing
@@ -82,7 +82,7 @@ class DailyReportRepository:
                 self.session.rollback()
                 if not self._is_revision_conflict(error):
                     raise
-                existing = self._matching_draft(draft)
+                existing = self._matching_report(draft)
                 if existing is not None:
                     self.session.commit()
                     return existing
@@ -219,14 +219,19 @@ class DailyReportRepository:
             raise LookupError("daily_report_item_not_found")
         return item
 
-    def _matching_draft(self, draft: DailyReportDraft) -> DailyReportRecord | None:
+    def _matching_report(self, draft: DailyReportDraft) -> DailyReportRecord | None:
+        if draft.supersedes_report_id is not None:
+            return self.session.scalar(
+                select(DailyReportRecord).where(
+                    DailyReportRecord.supersedes_report_id == draft.supersedes_report_id
+                )
+            )
         return self.session.scalar(
             select(DailyReportRecord).where(
                 DailyReportRecord.report_date == draft.report_date,
                 DailyReportRecord.window_hours == draft.window_hours,
                 DailyReportRecord.source_operation_id == draft.source_operation_id,
-                DailyReportRecord.status == ReportStatus.DRAFT.value,
-                DailyReportRecord.supersedes_report_id == draft.supersedes_report_id,
+                DailyReportRecord.supersedes_report_id.is_(None),
             )
         )
 
@@ -236,12 +241,23 @@ class DailyReportRepository:
         diagnostics = getattr(original, "diag", None)
         constraint_name = getattr(diagnostics, "constraint_name", None)
         if constraint_name is not None:
-            return constraint_name == "uq_daily_report_revision"
+            return constraint_name in {
+                "uq_daily_report_identity",
+                "uq_daily_report_revision",
+                "uq_daily_report_supersedes",
+            }
 
         sqlite_errorcode = getattr(original, "sqlite_errorcode", None)
         if sqlite_errorcode not in {1555, 2067}:
             return False
-        return (
-            "daily_reports.report_date, daily_reports.window_hours, daily_reports.revision"
-            in str(original)
+        message = str(original)
+        return any(
+            columns in message
+            for columns in (
+                "daily_reports.report_date, daily_reports.window_hours, "
+                "daily_reports.source_operation_id",
+                "daily_reports.report_date, daily_reports.window_hours, "
+                "daily_reports.revision",
+                "daily_reports.supersedes_report_id",
+            )
         )

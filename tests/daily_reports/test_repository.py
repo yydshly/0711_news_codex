@@ -110,7 +110,22 @@ def _integrity_error(*, unique: bool) -> IntegrityError:
     return IntegrityError("INSERT INTO daily_reports", {}, original)
 
 
+def _named_unique_integrity_error(columns: str) -> IntegrityError:
+    original = sqlite3.IntegrityError(f"UNIQUE constraint failed: {columns}")
+    original.sqlite_errorcode = sqlite3.SQLITE_CONSTRAINT_UNIQUE
+    return IntegrityError("INSERT INTO daily_reports", {}, original)
+
+
 def _insert_competing_draft(session: Session, draft: DailyReportDraft) -> DailyReportRecord:
+    revision = int(
+        session.scalar(
+            select(func.max(DailyReportRecord.revision)).where(
+                DailyReportRecord.report_date == draft.report_date,
+                DailyReportRecord.window_hours == draft.window_hours,
+            )
+        )
+        or 0
+    ) + 1
     report = DailyReportRecord(
         report_date=draft.report_date,
         timezone="Asia/Shanghai",
@@ -119,7 +134,7 @@ def _insert_competing_draft(session: Session, draft: DailyReportDraft) -> DailyR
         window_end=draft.window_end,
         source_operation_id=draft.source_operation_id,
         status="draft",
-        revision=1,
+        revision=revision,
         supersedes_report_id=draft.supersedes_report_id,
         generation_summary=draft.generation_summary,
         generated_at=NOW,
@@ -169,6 +184,19 @@ def test_create_draft_is_idempotent_while_same_draft_exists(db_session: Session)
     first = repository.create_draft(_draft(db_session))
     second = repository.create_draft(_draft(db_session))
     assert second.id == first.id
+    assert db_session.scalar(select(func.count()).select_from(DailyReportRecord)) == 1
+
+
+def test_create_draft_reuses_same_normal_report_after_archive(db_session: Session) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    draft = _draft(db_session)
+    original = repository.create_draft(draft)
+    archived = repository.archive(original.id)
+
+    repeated = repository.create_draft(draft)
+
+    assert repeated.id == archived.id
+    assert repeated.status == "archived"
     assert db_session.scalar(select(func.count()).select_from(DailyReportRecord)) == 1
 
 
@@ -238,6 +266,26 @@ def test_repository_rejects_revision_of_draft_and_reuses_existing_revision(
     first = repository.revise(archived.id)
     second = repository.revise(archived.id)
     assert second.id == first.id
+
+
+def test_revise_reuses_archived_direct_child_and_only_child_can_continue_chain(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = repository.archive(repository.create_draft(_draft(db_session)).id)
+    child = repository.revise(parent.id)
+    archived_child = repository.archive(child.id)
+
+    repeated_from_parent = repository.revise(parent.id)
+    grandchild = repository.revise(archived_child.id)
+
+    assert repeated_from_parent.id == archived_child.id
+    assert grandchild.supersedes_report_id == archived_child.id
+    assert db_session.scalars(
+        select(DailyReportRecord).where(
+            DailyReportRecord.supersedes_report_id == parent.id
+        )
+    ).all() == [archived_child]
 
 
 def test_move_at_section_boundary_is_a_no_op(db_session: Session) -> None:
@@ -342,6 +390,88 @@ def test_create_draft_recovers_unique_conflict_and_keeps_session_usable(
     assert db_session.scalar(select(1)) == 1
 
 
+def test_create_draft_recovers_archived_identity_conflict_and_keeps_session_usable(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft = _draft(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original_flush = db_session.flush
+    original_rollback = db_session.rollback
+    conflict_pending = True
+    winner_id: int | None = None
+
+    def conflicting_flush(objects=None) -> None:
+        nonlocal conflict_pending
+        if conflict_pending and any(isinstance(row, DailyReportRecord) for row in db_session.new):
+            conflict_pending = False
+            raise _named_unique_integrity_error(
+                "daily_reports.report_date, daily_reports.window_hours, "
+                "daily_reports.source_operation_id"
+            )
+        original_flush(objects)
+
+    def rollback_with_winner() -> None:
+        nonlocal winner_id
+        original_rollback()
+        if winner_id is None:
+            with Session(db_session.get_bind()) as winning_session:
+                winner_id = _insert_competing_archived_revision(winning_session, draft).id
+
+    monkeypatch.setattr(db_session, "flush", conflicting_flush)
+    monkeypatch.setattr(db_session, "rollback", rollback_with_winner)
+
+    report = repository.create_draft(draft)
+
+    assert report.id == winner_id
+    assert report.status == "archived"
+    assert db_session.scalar(select(1)) == 1
+
+
+def test_create_draft_recovers_direct_child_conflict_and_keeps_session_usable(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = repository.archive(repository.create_draft(_draft(db_session)).id)
+    child_draft = _draft(db_session)
+    child_draft = DailyReportDraft(
+        report_date=child_draft.report_date,
+        window_hours=child_draft.window_hours,
+        window_start=child_draft.window_start,
+        window_end=child_draft.window_end,
+        source_operation_id=child_draft.source_operation_id,
+        generation_summary=child_draft.generation_summary,
+        supersedes_report_id=parent.id,
+        items=child_draft.items,
+    )
+    original_flush = db_session.flush
+    original_rollback = db_session.rollback
+    conflict_pending = True
+    winner_id: int | None = None
+
+    def conflicting_flush(objects=None) -> None:
+        nonlocal conflict_pending
+        if conflict_pending and any(isinstance(row, DailyReportRecord) for row in db_session.new):
+            conflict_pending = False
+            raise _named_unique_integrity_error("daily_reports.supersedes_report_id")
+        original_flush(objects)
+
+    def rollback_with_winner() -> None:
+        nonlocal winner_id
+        original_rollback()
+        if winner_id is None:
+            with Session(db_session.get_bind()) as winning_session:
+                winner_id = _insert_competing_draft(winning_session, child_draft).id
+
+    monkeypatch.setattr(db_session, "flush", conflicting_flush)
+    monkeypatch.setattr(db_session, "rollback", rollback_with_winner)
+
+    report = repository.create_draft(child_draft)
+
+    assert report.id == winner_id
+    assert report.supersedes_report_id == parent.id
+    assert db_session.scalar(select(1)) == 1
+
+
 def test_create_draft_retries_unique_conflicts_only_for_a_finite_time(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -359,7 +489,7 @@ def test_create_draft_retries_unique_conflicts_only_for_a_finite_time(
     assert db_session.scalar(select(1)) == 1
 
 
-def test_create_draft_reallocates_revision_after_different_winner(
+def test_create_draft_reuses_archived_identity_winner_after_revision_conflict(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     draft = _draft(db_session)
@@ -389,9 +519,9 @@ def test_create_draft_reallocates_revision_after_different_winner(
 
     report = repository.create_draft(draft)
 
-    assert report.status == "draft"
-    assert report.revision == 2
-    assert db_session.scalar(select(func.count()).select_from(DailyReportRecord)) == 2
+    assert report.status == "archived"
+    assert report.revision == 1
+    assert db_session.scalar(select(func.count()).select_from(DailyReportRecord)) == 1
 
 
 def test_create_draft_reraises_non_unique_integrity_errors(
