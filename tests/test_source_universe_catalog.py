@@ -91,4 +91,5 @@ def test_cognitive_revolution_uses_official_public_podcast_feed() -> None:
     assert source.ingestion.enabled is True
     assert source.access_methods[0].kind.value == "rss"
     assert str(source.access_methods[0].url) == "https://feeds.megaphone.fm/RINTP3108857801"
+    assert source.access_methods[0].params == {"limit": "20"}
     assert not source.access_methods[0].auth_envs

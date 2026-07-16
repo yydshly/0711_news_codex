@@ -22,6 +22,7 @@ access_methods:
 - kind: rss
   url: https://feeds.megaphone.fm/RINTP3108857801
   priority: 1
+  params: {limit: '20'}
 expected_fields:
 - title
 - canonical_url
@@ -46,7 +47,7 @@ research:
   status: verified
   purpose: Discover new Cognitive Revolution podcast episodes from its official public feed.
   wanted_information: [title, canonical_url, published_at, author, summary]
-  conclusion: The official homepage links this public Megaphone RSS feed; a controlled sample returned 359 entries with title, link, and publication time.
+  conclusion: The official homepage links this public Megaphone RSS feed; its public limit parameter keeps the response bounded while returning 20 entries with title, link, and publication time.
   risk_conclusion: Use only the public RSS response; no cookies, login, proxy, or HTML bypass is permitted.
   no_fallback_reason: The official YouTube channel is already registered as a separate target; duplicating it here would create redundant ingestion.
   reviewed_at: '2026-07-16'
