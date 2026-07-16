@@ -4,17 +4,17 @@ category: newsletter_podcast
 homepage: https://tldr.tech/ai
 docs_url: https://tldr.tech/ai
 terms_url: https://tldr.tech/terms
-auth_mode: manual
+auth_mode: none
 cost_tier: free
-availability: manual_only
+availability: ready
 capabilities:
 - discovery
 - content
 required_env: []
-reviewed_at: '2026-07-11'
+reviewed_at: '2026-07-16'
 evidence:
 - https://tldr.tech/ai
 - https://tldr.tech/terms
-unlock_requirements:
-- 'Obtain official TLDR AI access: manual_only'
-notes: Capability metadata only; content coverage is assessed per target.
+- https://ai.tldr.tech/sitemap.xml
+unlock_requirements: []
+notes: The official robots file publishes a credential-free Sitemap; content coverage remains assessed per target.

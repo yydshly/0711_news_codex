@@ -83,12 +83,14 @@ def test_washington_post_primary_registers_official_public_rss_without_activatio
     )
 
 
-def test_manual_newsletters_register_official_sitemaps_without_activation() -> None:
+def test_validated_newsletters_use_shared_official_sitemap_ingestion() -> None:
     from pathlib import Path
 
+    from newsradar.providers.yaml_loader import load_provider_tree
     from newsradar.sources.yaml_loader import load_source_tree
 
     sources = {item.id: item for item in load_source_tree(Path("sources"))}
+    providers = {item.id: item for item in load_provider_tree(Path("providers"))}
     expected = {
         "universe-bens-bites-1": "https://www.bensbites.com/sitemap.xml",
         "universe-tldr-ai-1": "https://ai.tldr.tech/sitemap.xml",
@@ -96,9 +98,12 @@ def test_manual_newsletters_register_official_sitemaps_without_activation() -> N
 
     for source_id, sitemap_url in expected.items():
         source = sources[source_id]
-        assert source.availability.value == "manual_only"
-        assert source.ingestion.enabled is False
+        assert providers[source.provider_id].availability.value == "ready"
+        assert providers[source.provider_id].auth_mode.value == "none"
+        assert source.availability.value == "ready"
+        assert source.coverage_mode.value == "direct"
+        assert source.ingestion.enabled is True
         assert source.access_methods[0].kind.value == "sitemap"
         assert str(source.access_methods[0].url) == sitemap_url
-        assert source.research.status.value == "needs_research"
+        assert source.research.status.value == "verified"
         assert source.research.candidates[0].kind.value == "sitemap"

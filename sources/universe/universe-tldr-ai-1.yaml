@@ -2,12 +2,11 @@ id: universe-tldr-ai-1
 name: TLDR AI primary
 provider_id: tldr-ai
 target_type: publisher_feed
-availability: manual_only
-coverage_mode: catalog_only
+availability: ready
+coverage_mode: direct
 official_identity_url: https://tldr.tech/ai
-reviewed_at: '2026-07-11'
-unlock_requirements:
-- 'Obtain official TLDR AI access: manual_only'
+reviewed_at: '2026-07-16'
+unlock_requirements: []
 status: candidate
 nature: professional_media
 roles:
@@ -33,9 +32,9 @@ expected_fields:
 - published_at
 - summary
 risk:
-  terms: 4
-  authentication: 4
-  stability: 2
+  terms: 1
+  authentication: 0
+  stability: 1
   data_quality: 1
   operating_cost: 0
   evidence:
@@ -43,12 +42,16 @@ risk:
   - https://tldr.tech/terms
   - https://ai.tldr.tech/robots.txt
   - https://ai.tldr.tech/sitemap.xml
-  hard_block_reason: manual_only
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
+ingestion: {enabled: true, approved_at: '2026-07-16', max_items_per_run: 20}
+notes: 'Official Sitemap discovery only; no article-body requests. Fallback: the reviewed HTML method remains manual-only.'
 
 research:
-  status: needs_research
-  conclusion: 官方 robots.txt 公布 Sitemap；已验证可读取文章 URL 和 lastmod，但尚未完成文章字段验收，保留 manual_only。
+  status: verified
+  conclusion: 官方 Sitemap 受控样本返回 20 条合格发现记录，全部有时间，其中 2 条提供 News Sitemap 正式标题；坏条目被隔离。
+  purpose: Discover public article URLs without fetching article bodies.
+  wanted_information: [canonical_url, published_at, title]
+  risk_conclusion: Sitemap records are discovery leads only and cannot independently confirm an event.
+  no_fallback_reason: The only other reviewed path is manual HTML; automatic article-body fetching is outside this milestone.
   reviewed_at: '2026-07-16'
   candidates:
   - key: tldr-ai-sitemap
@@ -57,11 +60,11 @@ research:
     officiality: official
     authentication: none
     roles: [discovery, metadata]
-    fields: [canonical_url, published_at]
-    limitations: [仅用于发现文章 URL, lastmod 不等同于文章首次发布时间, 未验收标题和摘要]
+    fields: [canonical_url, published_at, title]
+    limitations: [URL slug title is only a discovery label, lastmod may not be first publication time, no article body or summary]
     evidence:
     - https://ai.tldr.tech/robots.txt
     - https://ai.tldr.tech/sitemap.xml
     reviewed_at: '2026-07-16'
-    sample_status: partial
+    sample_status: succeeded
     decision: primary
