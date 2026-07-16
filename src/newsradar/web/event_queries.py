@@ -68,6 +68,9 @@ class EventRow:
     credibility: float
     independent_root_count: int
     enrichment_origin: str
+    trend_direction: str
+    trend_label: str
+    trend_delta: int
     score_reasons: tuple[str, ...]
     tier_reasons: tuple[str, ...]
     detail_href: str
@@ -90,6 +93,9 @@ class EventHomeView:
     current_confirmed_count: int
     current_emerging_count: int
     coverage: EventQualityCoverageView
+    confirmed: tuple[EventRow, ...] = ()
+    early: tuple[EventRow, ...] = ()
+    trends: tuple[EventRow, ...] = ()
     snapshot: SnapshotBannerView | None = None
 
 
@@ -145,6 +151,20 @@ class ModelRunSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceRoleSummary:
+    key: str
+    label: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TrendView:
+    direction: str
+    label: str
+    delta: int
+
+
+@dataclass(frozen=True, slots=True)
 class EventDetailView:
     event: EventRow
     evidence: tuple[EvidenceRow, ...]
@@ -154,6 +174,9 @@ class EventDetailView:
     limitations: tuple[str, ...]
     model_runs: tuple[ModelRunSummary, ...]
     minimax_degraded: bool
+    evidence_roles: tuple[EvidenceRoleSummary, ...]
+    missing_confirmation: tuple[str, ...]
+    trend: TrendView
     snapshot: SnapshotBannerView | None = None
 
     @property
@@ -226,9 +249,7 @@ class EventQueryService:
         complete_snapshots = tuple(
             snapshot for snapshot in snapshots if self._home_snapshot_is_complete(snapshot)
         )
-        home_events = tuple(
-            self._event_row(*snapshot) for snapshot in complete_snapshots
-        )[:limit]
+        home_events = tuple(self._event_row(*snapshot) for snapshot in complete_snapshots)[:limit]
         sections = tuple(
             EventSection(
                 title=zh_label("event_category", category),
@@ -270,6 +291,13 @@ class EventQueryService:
             current_confirmed_count=int(status_counts.get("confirmed", 0)),
             current_emerging_count=int(status_counts.get("emerging", 0)),
             coverage=EventQualityCoverageQueryService(self.session).build(now=now),
+            confirmed=tuple(row for row in home_events if row.status == "confirmed"),
+            early=tuple(row for row in home_events if row.status == "emerging"),
+            trends=tuple(
+                row
+                for row in home_events
+                if row.trend_direction in {"rising", "sustained", "cooling"}
+            ),
         )
 
     def list_events(
@@ -289,7 +317,24 @@ class EventQueryService:
         page = self.latest_operation_page(now=now)
         if page is None:
             return None
-        hotspots = tuple(row for row in page.events if row.display_tier == "hotspot")[:limit]
+        snapshot_end = page.snapshot.window_end
+        confirmed = tuple(
+            row
+            for row in page.events
+            if row.status == "confirmed" and _within_window(row.occurred_at, snapshot_end, 24)
+        )[:limit]
+        early = tuple(
+            row
+            for row in page.events
+            if row.status == "emerging" and _within_window(row.occurred_at, snapshot_end, 24)
+        )[:limit]
+        trends = tuple(
+            row
+            for row in page.events
+            if row.trend_direction in {"rising", "sustained", "cooling"}
+            and _within_window(row.occurred_at, snapshot_end, 24 * 7)
+        )[:limit]
+        hotspots = confirmed
         sections = tuple(
             EventSection(
                 title=zh_label("event_category", category),
@@ -312,6 +357,9 @@ class EventQueryService:
             coverage=EventQualityCoverageQueryService(self.session).build(
                 now=page.snapshot.window_end
             ),
+            confirmed=confirmed,
+            early=early,
+            trends=trends,
             snapshot=page.snapshot,
         )
 
@@ -340,9 +388,7 @@ class EventQueryService:
             events=filtered[:limit],
             filters=active,
             snapshot=_banner(snapshot),
-            tier_counts=tuple(
-                sorted(Counter(row.display_tier for row in rows).items())
-            ),
+            tier_counts=tuple(sorted(Counter(row.display_tier for row in rows).items())),
         )
 
     def get_operation_event(
@@ -465,6 +511,10 @@ class EventQueryService:
         )
         model_runs = _model_run_summaries(payload.get("model_runs"))
         origin = str(enrichment.get("origin", "rule_fallback"))
+        evidence_summary = payload.get("evidence_summary")
+        evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+        trend_payload = payload.get("trend")
+        trend_payload = trend_payload if isinstance(trend_payload, dict) else {}
         return EventDetailView(
             event=row,
             evidence=evidence,
@@ -476,6 +526,9 @@ class EventQueryService:
             limitations=limitations,
             model_runs=model_runs,
             minimax_degraded=origin == "rule_fallback",
+            evidence_roles=_evidence_roles(evidence_summary),
+            missing_confirmation=_missing_confirmation(evidence_summary),
+            trend=_trend_view(trend_payload),
             snapshot=snapshot,
         )
 
@@ -623,6 +676,8 @@ class EventQueryService:
         enrichment = payload.get("enrichment")
         enrichment = enrichment if isinstance(enrichment, dict) else {}
         breakdown = _score_breakdown(score)
+        trend = payload.get("trend")
+        trend = trend if isinstance(trend, dict) else {}
         return EventRow(
             event_id=event.id,
             visibility="snapshot" if display is not None else event.visibility,
@@ -641,6 +696,9 @@ class EventQueryService:
             credibility=_numeric_score(breakdown.get("credibility")),
             independent_root_count=_independent_root_count(payload.get("evidence")),
             enrichment_origin=str(enrichment.get("origin", "rule_fallback")),
+            trend_direction=_trend_direction(trend.get("direction")),
+            trend_label=_trend_view(trend).label,
+            trend_delta=_trend_delta(trend.get("delta")),
             score_reasons=tuple(
                 _safe_display_text(zh_label("event_reason", str(reason)), "未记录")
                 for reason in _as_sequence(breakdown.get("reasons"))
@@ -664,13 +722,17 @@ class EventQueryService:
         payload = version.payload if isinstance(version.payload, dict) else {}
         breakdown = _score_breakdown(score)
         evidence = payload.get("evidence")
-        evidence_complete = isinstance(evidence, (list, tuple)) and bool(evidence) and all(
-            isinstance(item, dict)
-            and isinstance(item.get("raw_item_id"), int)
-            and isinstance(item.get("role"), str)
-            and bool(item.get("root_evidence_key"))
-            and isinstance(item.get("independent"), bool)
-            for item in evidence
+        evidence_complete = (
+            isinstance(evidence, (list, tuple))
+            and bool(evidence)
+            and all(
+                isinstance(item, dict)
+                and isinstance(item.get("raw_item_id"), int)
+                and isinstance(item.get("role"), str)
+                and bool(item.get("root_evidence_key"))
+                and isinstance(item.get("independent"), bool)
+                for item in evidence
+            )
         )
         return bool(
             version.zh_title
@@ -680,8 +742,55 @@ class EventQueryService:
             and evidence_complete
         )
 
+
 def _numeric_score(value: object) -> float:
     return float(value) if _is_finite_number(value) else 0.0
+
+
+def _within_window(value: datetime | None, window_end: datetime, hours: int) -> bool:
+    return value is not None and window_end - timedelta(hours=hours) <= value <= window_end
+
+
+def _trend_direction(value: object) -> str:
+    return value if value in {"rising", "sustained", "cooling"} else "sustained"
+
+
+def _trend_delta(value: object) -> int:
+    return int(value) if _is_finite_number(value) else 0
+
+
+def _trend_view(value: dict[str, object]) -> TrendView:
+    direction = _trend_direction(value.get("direction"))
+    labels = {"rising": "上升", "sustained": "持续", "cooling": "降温"}
+    return TrendView(
+        direction=direction, label=labels[direction], delta=_trend_delta(value.get("delta"))
+    )
+
+
+def _evidence_roles(value: dict[str, object]) -> tuple[EvidenceRoleSummary, ...]:
+    fields = (
+        ("official_roots", "官方一手证据"),
+        ("professional_roots", "专业媒体"),
+        ("community_signals", "社区与社交信号"),
+        ("aggregator_pointers", "聚合发现入口"),
+    )
+    return tuple(
+        EvidenceRoleSummary(key=key, label=label, count=max(0, int(count)))
+        for key, label in fields
+        if _is_finite_number(count := value.get(key))
+    )
+
+
+def _missing_confirmation(value: dict[str, object]) -> tuple[str, ...]:
+    labels = {
+        "professional_media_needed": "需要独立专业媒体或可验证的一手材料确认",
+        "official_or_two_professional_roots_needed": "需要官方一手证据，或两条独立专业媒体证据",
+        "independent_evidence_needed": "需要补充独立证据根",
+    }
+    return tuple(
+        labels.get(str(item), "仍缺少可审计的独立确认条件")
+        for item in _as_sequence(value.get("missing_confirmation"))[:10]
+    )
 
 
 def _banner(snapshot: OperationSnapshotRef) -> SnapshotBannerView:
@@ -701,9 +810,7 @@ def _operation_detail_href(event_id: int, operation_id: int, version_number: int
 
 def _positive_limit(value: object, *, default: int) -> int:
     return (
-        value
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0
-        else default
+        value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default
     )
 
 
@@ -756,9 +863,7 @@ def _version_display(version: EventVersionRecord) -> _VersionDisplay | None:
 
 def _is_finite_number(value: object) -> bool:
     return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and isfinite(float(value))
+        not isinstance(value, bool) and isinstance(value, (int, float)) and isfinite(float(value))
     )
 
 

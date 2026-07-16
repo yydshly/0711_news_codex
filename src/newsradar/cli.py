@@ -18,6 +18,9 @@ from newsradar.ai.health import check_minimax_config, check_minimax_live
 from newsradar.ai.minimax import ModelUsage
 from newsradar.credentials import SettingsCredentials
 from newsradar.db.models import (
+    EventScoreRecord,
+    EventVersionRecord,
+    HighValueWaveMemberRecord,
     OperationRunRecord,
     SourceAcquisitionCandidateRecord,
     SourceAcquisitionProbeRunRecord,
@@ -47,6 +50,7 @@ from newsradar.local_postgres import (
 )
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.fetch_runtime import FetchOperationHandler
+from newsradar.operations.logging import redact
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.router import OperationRouter
 from newsradar.operations.worker import Worker
@@ -84,6 +88,11 @@ from newsradar.sources.probes.runner import ProbeRunner
 from newsradar.sources.reporting import render_source_report
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
+from newsradar.waves.loader import load_wave_profile
+from newsradar.waves.planning import build_wave_plan
+from newsradar.waves.reporting import render_high_value_wave_report
+from newsradar.waves.runtime import HighValueWaveHandler
+from newsradar.waves.scheduling import enqueue_due
 
 app = typer.Typer(help="News Codex source intelligence registry")
 sources_app = typer.Typer(help="Validate, sync, probe, and report audited sources")
@@ -104,6 +113,8 @@ diagnostics_app = typer.Typer(help="Create scrubbed local runtime diagnostics")
 app.add_typer(diagnostics_app, name="diagnostics")
 minimax_app = typer.Typer(help="Inspect the local MiniMax runtime without exposing secrets")
 app.add_typer(minimax_app, name="minimax")
+waves_app = typer.Typer(help="Validate and plan frozen high-value source waves")
+app.add_typer(waves_app, name="waves")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
@@ -117,6 +128,228 @@ CatalogProviderRootOption = Annotated[
 WorkerProviderRootOption = Annotated[
     Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
 ]
+
+
+@waves_app.command("validate")
+def validate_wave_profile(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    loaded = load_wave_profile(profile)
+    typer.echo(f"Validated wave profile {loaded.id}: {len(loaded.source_ids)} sources")
+
+
+@waves_app.command("plan")
+def plan_wave(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    loaded = load_wave_profile(profile)
+    plan = build_wave_plan(loaded, load_source_tree(Path("sources")), {}, set())
+    protected_reasons = {
+        "missing_credentials",
+        "requires_approval",
+        "requires_payment",
+        "availability_requires_approval",
+        "availability_requires_payment",
+    }
+    protected = sum(member.blocked_reason in protected_reasons for member in plan.blocked)
+    covered_roles = sorted({role for member in plan.members for role in member.roles})
+    typer.echo(
+        f"total={len(plan.members)} fetchable={len(plan.fetchable)} "
+        f"blocked_credentials_approval_payment={protected} "
+        f"role_coverage={','.join(covered_roles)} digest={plan.digest}"
+    )
+
+
+def _wave_plan_from_local_catalog(profile: Path, session):
+    """Build a frozen wave plan from reviewed local files and persisted probe state only."""
+    loaded = load_wave_profile(profile)
+    sources = load_source_tree(Path("sources"))
+    providers = load_provider_tree(Path("providers"))
+    ProviderRepository(session).sync(providers)
+    SourceRepository(session).sync(sources)
+    session.commit()
+    probes = SourceRepository(session).latest_probe_snapshots(list(loaded.source_ids))
+    return build_wave_plan(
+        loaded,
+        sources,
+        probes,
+        SettingsCredentials().configured_names(),
+    )
+
+
+@waves_app.command("enqueue")
+def enqueue_wave(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    """Synchronize reviewed YAML and queue one frozen wave; this command never probes."""
+    try:
+        with create_session() as session:
+            plan = _wave_plan_from_local_catalog(profile, session)
+            operation_id = OperationCommandService(session).enqueue_high_value_wave(
+                plan=plan, trigger="cli"
+            )
+    except ValueError as exc:
+        typer.echo(f"无法创建高价值新闻波次：{exc}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"已创建高价值新闻波次任务：{operation_id}")
+
+
+@waves_app.command("enqueue-due")
+def enqueue_due_wave(
+    profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
+) -> None:
+    """Queue one due frozen wave only; this command never starts a worker or fetch."""
+    try:
+        with create_session() as session:
+            plan = _wave_plan_from_local_catalog(profile, session)
+            result = enqueue_due(OperationCommandService(session), plan, now=datetime.now(UTC))
+    except ValueError as exc:
+        typer.echo(f"enqueue_due_failed: {exc}", err=True)
+        raise typer.Exit(2) from None
+    if result.operation_id is None:
+        typer.echo(f"enqueue_due_not_queued: {result.reason}")
+    else:
+        typer.echo(f"enqueue_due_queued: {result.operation_id}")
+
+
+def _load_high_value_wave_operation(operation_id: int):
+    with create_session() as session:
+        operation = session.get(OperationRunRecord, operation_id)
+        if operation is None or operation.operation_type != "high_value_news_wave":
+            raise LookupError("high_value_news_wave_not_found")
+        members = list(
+            session.scalars(
+                select(HighValueWaveMemberRecord)
+                .where(HighValueWaveMemberRecord.operation_run_id == operation_id)
+                .order_by(HighValueWaveMemberRecord.source_id)
+            )
+        )
+    return operation, members
+
+
+def _load_high_value_wave_report(operation_id: int):
+    """Read immutable event refs from one wave without falling back to current events."""
+    operation, members = _load_high_value_wave_operation(operation_id)
+    summary = operation.result_summary if isinstance(operation.result_summary, dict) else {}
+    snapshots = summary.get("event_version_snapshots", [])
+    if not isinstance(snapshots, list) or not snapshots:
+        return operation, members, []
+    with create_session() as session:
+        events: list[dict[str, object]] = []
+        for ref in snapshots:
+            if not isinstance(ref, dict):
+                continue
+            event_id, version_number = ref.get("event_id"), ref.get("version_number")
+            if not isinstance(event_id, int) or not isinstance(version_number, int):
+                continue
+            version = session.scalar(
+                select(EventVersionRecord).where(
+                    EventVersionRecord.event_id == event_id,
+                    EventVersionRecord.version_number == version_number,
+                )
+            )
+            score = session.scalar(
+                select(EventScoreRecord).where(
+                    EventScoreRecord.event_id == event_id,
+                    EventScoreRecord.version_number == version_number,
+                )
+            )
+            if version is None or score is None:
+                continue
+            payload = version.payload if isinstance(version.payload, dict) else {}
+            enrichment = (
+                payload.get("enrichment") if isinstance(payload.get("enrichment"), dict) else {}
+            )
+            trend = payload.get("trend") if isinstance(payload.get("trend"), dict) else {}
+            events.append(
+                {
+                    "title": version.zh_title or enrichment.get("zh_title") or "未命名事件",
+                    "signal_state": "confirmed"
+                    if payload.get("status") == "confirmed"
+                    else "early_signal",
+                    "heat": score.heat,
+                    "trend": trend.get("direction", "暂无"),
+                    "evidence_roots": score.breakdown.get("independent_root_count", 0)
+                    if isinstance(score.breakdown, dict)
+                    else 0,
+                }
+            )
+    return operation, members, events
+
+
+def _wave_member_counts(members) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for member in members:
+        counts[member.state] = counts.get(member.state, 0) + 1
+    return counts
+
+
+@waves_app.command("status")
+def show_wave_status(operation_id: Annotated[int, typer.Argument(min=1)]) -> None:
+    """Show frozen wave state only; no fetch, model call, or retry is performed."""
+    try:
+        operation, members = _load_high_value_wave_operation(operation_id)
+    except LookupError:
+        typer.echo("未找到高价值新闻波次任务", err=True)
+        raise typer.Exit(2) from None
+    total = operation.progress_total if operation.progress_total is not None else len(members)
+    typer.echo(f"高价值新闻波次 {operation.id}：{operation.status}")
+    typer.echo(f"完成度：{operation.progress_current}/{total}")
+    counts = _wave_member_counts(members)
+    if counts:
+        typer.echo(
+            "成员状态：" + "，".join(f"{key}={value}" for key, value in sorted(counts.items()))
+        )
+
+
+@waves_app.command("report")
+def write_wave_report(
+    operation_id: Annotated[int, typer.Argument(min=1)],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Render a scrubbed Chinese report for one frozen wave without touching the network."""
+    try:
+        operation, members, events = _load_high_value_wave_report(operation_id)
+    except LookupError:
+        typer.echo("未找到高价值新闻波次任务", err=True)
+        raise typer.Exit(2) from None
+    total = operation.progress_total if operation.progress_total is not None else len(members)
+    scope = operation.requested_scope if isinstance(operation.requested_scope, dict) else {}
+    summary = operation.result_summary if isinstance(operation.result_summary, dict) else {}
+    lines = [
+        "# 高价值 AI/技术新闻波次报告",
+        "",
+        f"- 任务：{operation.id}",
+        f"- 状态：{operation.status}",
+        f"- 完成度：{operation.progress_current}/{total}",
+        f"- Profile：{redact(scope.get('profile_id', 'unknown'))}",
+        f"- 已完成成员：{redact(summary.get('completed_members', 0))}",
+        "",
+        "## 成员结果",
+        "",
+        "| 来源 | 平台 | 可抓取 | 状态 | 结果码 | 结论 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for member in members:
+        lines.append(
+            "| {source} | {provider} | {fetchable} | {state} | {code} | {conclusion} |".format(
+                source=redact(member.source_id),
+                provider=redact(member.provider_id),
+                fetchable="是" if member.fetchable else "否",
+                state=redact(member.state),
+                code=redact(member.result_code or "-"),
+                conclusion=redact(member.conclusion or "-").replace("|", "\\|"),
+            )
+        )
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            render_high_value_wave_report(operation, members, events), encoding="utf-8"
+        )
+    except OSError:
+        typer.echo("high_value_wave_report_write_failed", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"已生成高价值新闻波次报告：{output}")
 
 
 def _parse_utc_baseline(value: str) -> datetime:
@@ -404,6 +637,7 @@ def run_worker(
             "source_catalog_refresh": CatalogRefreshHandler.production(
                 sources, providers, create_session
             ),
+            "high_value_news_wave": HighValueWaveHandler.production(sources),
             "event_pipeline": EventOperationHandler.production(create_session),
             "event_recluster": EventOperationHandler.production(create_session),
             "event_enrich": EventOperationHandler.production(create_session),

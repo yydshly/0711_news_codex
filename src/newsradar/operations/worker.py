@@ -27,7 +27,9 @@ Handler = Callable[[OperationLease, Callable[[str], None]], OperationResult | No
 LeaseGuard = Callable[[OperationLease], bool]
 
 
-class _Cancelled(Exception):
+class OperationCancelled(Exception):
+    """Signal that a checkpoint observed cancellation or a lost worker lease."""
+
     pass
 
 
@@ -86,7 +88,7 @@ class Worker:
             ) or (
                 self._lease_guard is None and self.repository.is_cancel_requested(lease)
             ):
-                raise _Cancelled()
+                raise OperationCancelled()
             now = self._clock()
             if (
                 self._lease_guard is None
@@ -100,7 +102,7 @@ class Worker:
             result = self._run_handler_with_monitor(
                 handler, lease, checkpoint, cancellation_seen
             )  # deliberately outside the lease transaction
-        except _Cancelled:
+        except OperationCancelled:
             self.repository.finish_attempt(lease, OperationStatus.CANCELLED)
             log("operation_cancelled")
             return False

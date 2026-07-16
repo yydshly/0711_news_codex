@@ -1380,12 +1380,27 @@ def test_pipeline_persists_audited_evidence_for_web_detail() -> None:
         )
 
         detail = EventQueryService(db).get_event(event_id)
+        version = db.scalar(
+            select(EventVersionRecord).where(
+                EventVersionRecord.event_id == event_id,
+                EventVersionRecord.version_number == 1,
+            )
+        )
 
     assert detail is not None
     assert detail.evidence[0].role == "official"
     assert detail.evidence[0].root_evidence_key == "https://example.test/official-1"
     assert detail.evidence[0].independent is True
     assert detail.evidence[0].limitations == ()
+    assert version is not None
+    assert version.payload["status"] == "confirmed"
+    assert version.payload["evidence_summary"] == {
+        "official_roots": 1,
+        "professional_roots": 0,
+        "community_signals": 0,
+        "aggregator_pointers": 0,
+        "missing_confirmation": [],
+    }
 
 
 def test_pipeline_keeps_event_identity_and_source_publication_time_when_new_source_arrives() -> (

@@ -86,6 +86,12 @@ def test_worker_executes_queued_fetch_and_persists_summary() -> None:
         }
 
 
+def test_production_fetch_executor_is_public() -> None:
+    from newsradar.operations.fetch_runtime import execute_production_fetch
+
+    assert callable(execute_production_fetch)
+
+
 def test_worker_keeps_policy_blocked_fetch_terminal_without_retry() -> None:
     from newsradar.operations.fetch_runtime import FetchOperationHandler
 

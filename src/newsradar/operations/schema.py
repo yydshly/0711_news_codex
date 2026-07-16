@@ -8,6 +8,7 @@ class OperationType(StrEnum):
     SOURCE_PROBE = "source_probe"
     SOURCE_REMEDIATION = "source_remediation"
     SOURCE_CATALOG_REFRESH = "source_catalog_refresh"
+    HIGH_VALUE_NEWS_WAVE = "high_value_news_wave"
     FETCH = "fetch"
     EVENT_PIPELINE = "event_pipeline"
     EVENT_RECLUSTER = "event_recluster"

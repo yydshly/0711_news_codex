@@ -1,0 +1,163 @@
+"""Short-transaction persistence for frozen high-value news waves."""
+
+from __future__ import annotations
+
+from sqlalchemy import case, select, update
+from sqlalchemy.orm import Session
+
+from newsradar.db.models import HighValueWaveMemberRecord, OperationRunRecord, utcnow
+from newsradar.events.pipeline import FrozenWaveSelectionMember, FrozenWaveSelectionScope
+from newsradar.operations.logging import redact
+
+from .planning import WavePlan
+
+_UNFINISHED_STATES = ("pending", "running")
+
+
+class WaveRepository:
+    """Persist WavePlan snapshots; never re-resolve live catalog or credentials."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_members(
+        self, operation_run_id: int, plan: WavePlan
+    ) -> list[HighValueWaveMemberRecord]:
+        records = [
+            HighValueWaveMemberRecord(
+                operation_run_id=operation_run_id,
+                source_id=member.source_id,
+                provider_id=member.provider_id,
+                definition_hash=member.definition_hash,
+                nature_snapshot=member.nature,
+                roles_snapshot=list(member.roles),
+                availability_snapshot=member.availability,
+                access_kind_snapshot=member.access_kind,
+                fetchable=member.fetchable,
+                state="pending",
+                conclusion=redact(member.blocked_reason) if member.blocked_reason else None,
+            )
+            for member in plan.members
+        ]
+        self.session.add_all(records)
+        self.session.flush()
+        return records
+
+    def members(self, operation_run_id: int) -> list[HighValueWaveMemberRecord]:
+        return list(
+            self.session.scalars(
+                select(HighValueWaveMemberRecord)
+                .where(HighValueWaveMemberRecord.operation_run_id == operation_run_id)
+                .order_by(HighValueWaveMemberRecord.source_id)
+            )
+        )
+
+    def event_selection_scope(
+        self, operation_run_id: int
+    ) -> FrozenWaveSelectionScope | None:
+        """Return exactly the terminal wave members that produced selectable items.
+
+        A member with no FetchRun has no RawItem provenance and is deliberately
+        absent.  The returned role/nature values are persisted snapshots, not
+        re-resolved from the mutable source catalog.
+        """
+        members = self.members(operation_run_id)
+        if not members:
+            return None
+        return FrozenWaveSelectionScope(
+            tuple(
+                FrozenWaveSelectionMember(
+                    source_id=member.source_id,
+                    fetch_run_id=member.fetch_run_id,
+                    source_nature=member.nature_snapshot,
+                    source_roles=tuple(member.roles_snapshot),
+                )
+                for member in members
+                if member.fetch_run_id is not None
+                and member.state in {"succeeded", "partial"}
+            )
+        )
+
+    def claim_member(
+        self, operation_run_id: int, source_id: str, *, claim_attempt_id: int | None = None
+    ) -> tuple[HighValueWaveMemberRecord, bool]:
+        self._require_claim_attempt_id(claim_attempt_id)
+        record = self._locked_member(operation_run_id, source_id)
+        if record.state == "running" and record.claim_attempt_id == claim_attempt_id:
+            return record, False
+        if record.state not in {"pending", "running"}:
+            return record, False
+        if record.state == "running" and (
+            record.claim_attempt_id is None or record.claim_attempt_id >= claim_attempt_id
+        ):
+            return record, False
+        record.state = "running"
+        record.claim_attempt_id = claim_attempt_id
+        record.started_at = record.started_at or utcnow()
+        self.session.flush()
+        return record, True
+
+    def finish_member(
+        self,
+        operation_run_id: int,
+        source_id: str,
+        *,
+        state: str,
+        result_code: str | None,
+        conclusion: str | None,
+        fetch_run_id: int | None = None,
+        claim_attempt_id: int | None = None,
+    ) -> HighValueWaveMemberRecord:
+        self._require_claim_attempt_id(claim_attempt_id)
+        record = self._locked_member(operation_run_id, source_id)
+        if record.claim_attempt_id != claim_attempt_id:
+            raise PermissionError(
+                f"high value wave member claim lost: {operation_run_id}/{source_id}"
+            )
+        was_unfinished = record.state in _UNFINISHED_STATES
+        record.state, record.result_code, record.conclusion = (
+            state,
+            result_code,
+            redact(conclusion) if conclusion else None,
+        )
+        if fetch_run_id is not None:
+            record.fetch_run_id = fetch_run_id
+        record.finished_at = utcnow()
+        if was_unfinished:
+            self.session.execute(
+                update(OperationRunRecord)
+                .where(OperationRunRecord.id == operation_run_id)
+                .values(
+                    progress_current=case(
+                        (
+                            (OperationRunRecord.progress_total.is_not(None))
+                            & (
+                                OperationRunRecord.progress_current
+                                >= OperationRunRecord.progress_total
+                            ),
+                            OperationRunRecord.progress_current,
+                        ),
+                        else_=OperationRunRecord.progress_current + 1,
+                    )
+                )
+            )
+        self.session.flush()
+        return record
+
+    def _locked_member(self, operation_run_id: int, source_id: str) -> HighValueWaveMemberRecord:
+        record = self.session.scalar(
+            select(HighValueWaveMemberRecord)
+            .where(
+                HighValueWaveMemberRecord.operation_run_id == operation_run_id,
+                HighValueWaveMemberRecord.source_id == source_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError(f"high value wave member not found: {operation_run_id}/{source_id}")
+        return record
+
+    @staticmethod
+    def _require_claim_attempt_id(claim_attempt_id: int | None) -> None:
+        if claim_attempt_id is None or claim_attempt_id <= 0:
+            raise ValueError("claim_attempt_id_required")

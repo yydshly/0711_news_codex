@@ -1,0 +1,41 @@
+id: high-value-ai-tech
+name: AI and technology high-value real-time hotspots
+window_hours: 24
+trend_days: 7
+required_roles: [discovery, engagement, evidence, context]
+source_ids:
+  - hackernews-top
+  - hackernews-new
+  - hackernews-best
+  - reddit-localllama
+  - reddit-machinelearning
+  - reddit-artificial
+  - mastodon-ai-tag
+  - mastodon-machinelearning-tag
+  - mastodon-llm-tag
+  - bluesky-bsky
+  - anthropic-bluesky
+  - huggingface-bluesky
+  - simon-willison-bluesky
+  - techcrunch-bluesky
+  - the-verge-bluesky
+  - openai-youtube
+  - anthropic-youtube
+  - google-deepmind-youtube
+  - huggingface-youtube
+  - techmeme-feed
+  - google-news-ai
+  - google-news-research
+  - google-news-business
+  - google-news-chips-compute
+  - google-news-policy-safety
+  - gdelt-ai
+  - universe-reuters-2
+  - universe-ap-2
+  - universe-bbc-1
+  - universe-guardian-1
+  - universe-techcrunch-1
+  - universe-the-verge-1
+  - universe-ars-technica-1
+  - openai-news
+  - anthropic-newsroom

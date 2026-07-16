@@ -73,6 +73,18 @@ def test_build_score_input_uses_all_six_real_quality_signals() -> None:
     assert "ai_relevance_range:min=80:max=100" in result.reasons
 
 
+def test_quality_snapshot_records_roots_and_whitelisted_velocity_fields() -> None:
+    result = build(
+        engagement_by_item={
+            1: {"views": 120, "not_engagement": 999},
+            2: {"comments": 25, "error_count": 100},
+        }
+    )
+
+    assert result.independent_root_count == 2
+    assert result.engagement_fields == ("comments", "views")
+
+
 def test_quality_inputs_contains_only_bounded_numeric_rule_inputs() -> None:
     inputs = QualityInputs(
         relevance_scores=(100.0, 80.0),

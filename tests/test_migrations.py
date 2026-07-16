@@ -16,6 +16,66 @@ def _upgrade(database_url: str, revision: str) -> None:
     command.upgrade(config, revision)
 
 
+def test_high_value_wave_migration_creates_member_snapshots_without_altering_history(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "high-value-wave.db")
+    _upgrade(database_url, "20260716_0019")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO operation_runs (id, operation_type, trigger, status, requested_scope, "
+                "result_summary, attempt_count, progress_current, created_at, updated_at) VALUES "
+                "(99, 'fetch', 'test', 'succeeded', '{}', '{}', 1, 0, CURRENT_TIMESTAMP, "
+                "CURRENT_TIMESTAMP)"
+            )
+        )
+    _upgrade(database_url, "head")
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert "high_value_wave_members" in inspector.get_table_names()
+        columns = {column["name"] for column in inspector.get_columns("high_value_wave_members")}
+        assert {
+            "nature_snapshot",
+            "roles_snapshot",
+            "fetchable",
+            "claim_attempt_id",
+            "finished_at",
+        } <= columns
+        assert (
+            connection.execute(
+                text("SELECT operation_type FROM operation_runs WHERE id = 99")
+            ).scalar_one()
+            == "fetch"
+        )
+
+
+def test_event_score_observation_time_migration_preserves_existing_scores(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "event-score-observation.db")
+    _upgrade(database_url, "20260716_0020")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO event_scores (event_id, version_number, heat, breakdown, created_at) "
+                "VALUES (1, 1, 50, '{}', '2026-07-08T00:05:00+00:00')"
+            )
+        )
+
+    _upgrade(database_url, "head")
+
+    with engine.connect() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("event_scores")}
+        assert "observed_at" in columns
+        heat = connection.execute(
+            text("SELECT heat FROM event_scores WHERE id = 1")
+        ).scalar_one()
+        assert heat == 50
+
+
 def _seed_event_history(database_url: str) -> dict[str, int]:
     engine = create_engine(database_url)
     with engine.begin() as connection:

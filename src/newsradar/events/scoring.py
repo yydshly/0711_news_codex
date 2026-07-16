@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
+from newsradar.events.evidence import assess_evidence
 from newsradar.events.schema import (
     CandidateCluster,
     EventScoreInput,
     EventStatus,
     EvidenceAssessment,
     EvidenceRole,
+    EvidenceSummary,
     PublicationDecision,
     ScoreBreakdown,
 )
@@ -50,6 +52,8 @@ def score_event(input: EventScoreInput) -> ScoreBreakdown:
         credibility=credibility,
         heat=heat,
         rule_version=SCORE_RULE_VERSION,
+        independent_root_count=input.independent_root_count,
+        engagement_fields=input.engagement_fields,
         reasons=(
             "importance:versioned_weights",
             *input.reasons,
@@ -71,7 +75,7 @@ def decide_publication(
             reasons=("conflicting_assertions",),
         )
 
-    assessments = evidence if evidence is not None else _candidate_assessments(candidate)
+    assessments = evidence if evidence is not None else assess_evidence(candidate.items)
     roots = _independent_roots(assessments)
     if any(role is EvidenceRole.OFFICIAL for role in roots.values()):
         return PublicationDecision(
@@ -92,6 +96,29 @@ def decide_publication(
         status=EventStatus.EMERGING,
         publish_to_top=False,
         reasons=("insufficient_independent_evidence",),
+        missing_confirmation=("official_or_two_professional_roots",),
+    )
+
+
+def summarize_evidence(
+    evidence: Iterable[EvidenceAssessment], decision: PublicationDecision
+) -> EvidenceSummary:
+    """Return the reader-visible, immutable evidence summary for a version."""
+    assessments = tuple(evidence)
+    roots = _independent_roots(assessments)
+    return EvidenceSummary(
+        official_roots=sum(role is EvidenceRole.OFFICIAL for role in roots.values()),
+        professional_roots=sum(
+            role is EvidenceRole.PROFESSIONAL_MEDIA for role in roots.values()
+        ),
+        community_signals=sum(
+            assessment.role in {EvidenceRole.COMMUNITY, EvidenceRole.SOCIAL}
+            for assessment in assessments
+        ),
+        aggregator_pointers=sum(
+            assessment.role is EvidenceRole.AGGREGATOR for assessment in assessments
+        ),
+        missing_confirmation=decision.missing_confirmation,
     )
 
 
@@ -136,25 +163,6 @@ def _role_priority(role: EvidenceRole) -> int:
         EvidenceRole.PROFESSIONAL_MEDIA: 2,
         EvidenceRole.RESEARCH: 1,
     }.get(role, 0)
-
-
-def _candidate_assessments(candidate: CandidateCluster) -> tuple[EvidenceAssessment, ...]:
-    return tuple(
-        EvidenceAssessment(
-            raw_item_id=item.raw_item_id,
-            role=item.evidence_role or EvidenceRole.COMMUNITY,
-            root_evidence_key=item.canonical_url or f"item:{item.raw_item_id}",
-            independent=(
-                item.evidence_role
-                in {
-                    EvidenceRole.OFFICIAL,
-                    EvidenceRole.PROFESSIONAL_MEDIA,
-                    EvidenceRole.RESEARCH,
-                }
-            ),
-        )
-        for item in candidate.items
-    )
 
 
 def _is_disputed(candidate: CandidateCluster) -> bool:

@@ -25,6 +25,11 @@
 {% endif %}
 <section class="panel">
   <p><a href="/">返回事件首页</a> · <a href="/events">最新运行事件</a> · <a href="/events?scope=current_catalog">全局 current 目录</a> · <a href="/events?scope=catalog&amp;visibility=legacy">历史旧版事件</a> · <a href="/emerging">新兴线索</a></p>
+  <form method="post" action="/events/update" class="inline-action">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">更新高价值来源波次</button>
+    <span class="metric-note">仅入队；抓取、模型处理和事件构建均由 Worker 执行。</span>
+  </form>
   <form method="get" action="/events" aria-label="事件筛选">
     <input type="hidden" name="scope" value="{{ event_scope }}">
     <input type="hidden" name="visibility" value="{{ filters.get('visibility', 'current') }}">

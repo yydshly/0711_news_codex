@@ -16,6 +16,183 @@ from .test_source_schema import valid_source
 runner = CliRunner()
 
 
+def test_waves_commands_validate_and_plan_without_database_or_network(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "newsradar.cli.create_session",
+        lambda: (_ for _ in ()).throw(AssertionError("database must not be opened")),
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.httpx.AsyncClient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network must not run")),
+    )
+
+    validate = runner.invoke(
+        app, ["waves", "validate", "--profile", "wave_profiles/high-value-ai-tech.yaml"]
+    )
+    plan = runner.invoke(
+        app, ["waves", "plan", "--profile", "wave_profiles/high-value-ai-tech.yaml"]
+    )
+
+    assert validate.exit_code == 0
+    assert "Validated wave profile high-value-ai-tech" in validate.stdout
+    assert plan.exit_code == 0
+    assert "total=" in plan.stdout
+    assert "fetchable=" in plan.stdout
+    assert "blocked_credentials_approval_payment=8" in plan.stdout
+    assert "role_coverage=" in plan.stdout
+
+
+def test_waves_plan_counts_payment_blockers(monkeypatch) -> None:
+    from newsradar.waves.planning import WaveMemberSnapshot, WavePlan
+
+    plan = WavePlan(
+        profile_id="payment-test",
+        members=(
+            WaveMemberSnapshot(
+                source_id="payment-source",
+                provider_id="provider",
+                definition_hash="0" * 64,
+                roles=("context",),
+                availability="requires_payment",
+                access_kind="",
+                fetchable=False,
+                blocked_reason="requires_payment",
+            ),
+        ),
+        digest="1" * 64,
+        window_hours=24,
+        trend_days=7,
+    )
+    monkeypatch.setattr("newsradar.cli.load_wave_profile", lambda path: object())
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [])
+    monkeypatch.setattr("newsradar.cli.build_wave_plan", lambda *args: plan)
+
+    result = runner.invoke(app, ["waves", "plan", "--profile", "pyproject.toml"])
+
+    assert result.exit_code == 0
+    assert "blocked_credentials_approval_payment=1" in result.stdout
+
+
+def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = SourceDefinition.model_validate(valid_source())
+    provider = type("Provider", (), {"id": source.provider_id})()
+    syncs: list[str] = []
+
+    class SourceRepo:
+        def __init__(self, session):
+            pass
+
+        def sync(self, values):
+            syncs.append("sources")
+
+        def latest_probe_snapshots(self, source_ids):
+            return {}
+
+    class ProviderRepo:
+        def __init__(self, session):
+            pass
+
+        def sync(self, values):
+            syncs.append("providers")
+
+    class Commands:
+        def __init__(self, session):
+            pass
+
+        def enqueue_high_value_wave(self, *, plan, trigger):
+            assert trigger == "cli"
+            return 88
+
+    class Session:
+        def commit(self):
+            return None
+
+    operation = type(
+        "Operation",
+        (),
+        {
+            "id": 88,
+            "operation_type": "high_value_news_wave",
+            "status": "partial",
+            "progress_current": 2,
+            "progress_total": 3,
+            "requested_scope": {"profile_id": "safe-profile", "profile_digest": "safe"},
+            "result_summary": {"member_total": 3, "completed_members": 2},
+        },
+    )()
+    members = [
+        type(
+            "Member",
+            (),
+            {
+                "source_id": "safe-source",
+                "provider_id": "safe-provider",
+                "fetchable": True,
+                "state": "succeeded",
+                "result_code": "success",
+                "conclusion": (
+                    "DATABASE_URL=postgresql://user:database-secret@db/news "
+                    "MINIMAX_API_KEY=minimax-secret GITHUB_TOKEN=github-secret "
+                    "YOUTUBE_API_KEY=youtube-secret Authorization: Bearer authorization-secret "
+                    '{"MINIMAX_API_KEY": "cli-json-secret", '
+                    '"nested": [{"github_token": "cli-nested-secret"}]} '
+                    "{'YOUTUBE_API_KEY': 'cli-repr-secret'}"
+                ),
+            },
+        )()
+    ]
+
+    monkeypatch.setattr(
+        "newsradar.cli.load_wave_profile",
+        lambda path: type("Profile", (), {"source_ids": (source.id,)})(),
+    )
+    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [source])
+    monkeypatch.setattr("newsradar.cli.load_provider_tree", lambda root: [provider])
+    monkeypatch.setattr(
+        "newsradar.cli.build_wave_plan",
+        lambda *args, **kwargs: type("Plan", (), {"profile_id": "safe-profile"})(),
+    )
+    monkeypatch.setattr("newsradar.cli.SourceRepository", SourceRepo)
+    monkeypatch.setattr("newsradar.cli.ProviderRepository", ProviderRepo)
+    monkeypatch.setattr("newsradar.cli.OperationCommandService", Commands)
+    monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(Session()))
+    monkeypatch.setattr(
+        "newsradar.cli._load_high_value_wave_operation", lambda op: (operation, members)
+    )
+    monkeypatch.setattr(
+        "newsradar.cli.httpx.AsyncClient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network must not run")),
+    )
+
+    enqueue = runner.invoke(app, ["waves", "enqueue", "--profile", "pyproject.toml"])
+    status = runner.invoke(app, ["waves", "status", "88"])
+    output = tmp_path / "wave.md"
+    report = runner.invoke(app, ["waves", "report", "88", "--output", str(output)])
+
+    assert enqueue.exit_code == 0
+    assert "88" in enqueue.stdout
+    assert syncs == ["providers", "sources"]
+    assert status.exit_code == 0
+    assert "2/3" in status.stdout
+    assert report.exit_code == 0
+    rendered = output.read_text(encoding="utf-8")
+    for secret in (
+        "database-secret",
+        "minimax-secret",
+        "github-secret",
+        "youtube-secret",
+        "authorization-secret",
+        "cli-json-secret",
+        "cli-nested-secret",
+        "cli-repr-secret",
+    ):
+        assert secret not in rendered
+    assert "Authorization" not in rendered
+    assert "Cookie" not in rendered
+
+
 def write_source(root: Path) -> None:
     root.mkdir()
     (root / "source.yaml").write_text(yaml.safe_dump(valid_source()), encoding="utf-8")
@@ -894,6 +1071,7 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     write_source(root)
     handler = object()
     remediation_handler = object()
+    wave_handler = object()
     calls: list[object] = []
 
     class FakeWorker:
@@ -917,6 +1095,9 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
 
     monkeypatch.setattr("newsradar.cli.FetchOperationHandler.production", lambda sources: handler)
     monkeypatch.setattr(
+        "newsradar.cli.HighValueWaveHandler.production", lambda sources: wave_handler
+    )
+    monkeypatch.setattr(
         "newsradar.cli.SourceRemediationHandler.production",
         lambda sources, create_session: remediation_handler,
     )
@@ -935,6 +1116,7 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     assert len(calls) == 1
     assert calls[0].__class__.__name__ == "OperationRouter"
     assert calls[0]._handlers["source_remediation"] is remediation_handler
+    assert calls[0]._handlers["high_value_news_wave"] is wave_handler
     assert "processed 1 operation" in result.stdout
 
 

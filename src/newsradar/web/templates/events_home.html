@@ -3,7 +3,7 @@
 {% block header %}<h1>事件情报</h1>{% endblock %}
 {% block content %}
 {% if snapshot_unavailable %}
-<section class="panel diagnostic-warning" role="status"><strong>尚无完整事件运行快照</strong><p>首页不会以全局 current 目录替代运行结果。请先完成一次事件构建，或前往 <a href="/events?scope=current_catalog">全局 current 目录</a> 排查记录。</p></section>
+<section class="panel diagnostic-warning" role="status"><strong>尚无完整事件运行快照</strong><p>首页不会以全局 current 目录替代运行结果。请先完成一次事件构建，或前往 <a href="/events?scope=current_catalog">全局 current 目录</a> 排查记录。</p><form method="post" action="/events/update" class="inline-action"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">更新高价值来源波次</button><span class="metric-note">只创建 Worker 任务，不在网页访问外部网站或调用 MiniMax。</span></form></section>
 {% else %}
 <section class="panel capability-hero" aria-labelledby="event-home-heading">
   <p class="eyebrow">最新完整运行 · Operation #{{ event_home.snapshot.operation_id }}</p>
@@ -19,6 +19,47 @@
     <div><dt>最后完成</dt><dd class="text-value">{% if event_home.coverage.last_completed_at %}{{ event_home.coverage.last_completed_at|format_datetime_zh }}{% else %}暂无成功运行{% endif %}</dd></div>
   </dl>
   <p><a href="/events">全部运行事件</a> · <a href="/emerging">新兴线索</a> · <a href="/events?scope=current_catalog">全局 current 目录</a> · <a href="/events?scope=catalog&amp;visibility=legacy">历史旧版事件</a> · <a href="/sources">来源与能力看板</a></p>
+  <form method="post" action="/events/update" class="inline-action">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">更新高价值来源波次</button>
+    <span class="metric-note">只创建 Worker 任务，不在网页访问外部网站或调用 MiniMax。</span>
+  </form>
+</section>
+
+<section class="event-list" aria-label="最近 24 小时已确认热点">
+  <h2>最近 24 小时已确认热点</h2>
+  {% for event in event_home.confirmed %}
+  <article class="panel event-card">
+    <p class="eyebrow">已确认 · 独立证据 {{ event.independent_root_count }} · {{ event.trend_label }}</p>
+    <h3><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h3>
+    <p>{{ event.zh_summary }}</p>
+    <p><strong>为什么热门：</strong>{{ event.why_it_matters }}</p>
+  </article>
+  {% else %}<p>本次完整快照中，最近 24 小时暂无已确认热点。</p>{% endfor %}
+</section>
+
+<section class="event-list" aria-label="早期信号">
+  <h2>早期信号</h2>
+  <p class="metric-note">社区、社交或聚合来源用于发现与热度；未经独立确认不会进入已确认热点。</p>
+  {% for event in event_home.early %}
+  <article class="panel event-card">
+    <p class="eyebrow">早期信号 · 热度 {{ event.heat|round(1) }}</p>
+    <h3><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h3>
+    <p>{{ event.zh_summary }}</p>
+    <p><strong>为什么热门：</strong>{{ event.why_it_matters }}</p>
+  </article>
+  {% else %}<p>本次完整快照中暂无需要跟踪的早期信号。</p>{% endfor %}
+</section>
+
+<section class="event-list" aria-label="7 天趋势">
+  <h2>7 天趋势</h2>
+  {% for event in event_home.trends %}
+  <article class="panel event-card">
+    <p class="eyebrow">{{ event.trend_label }} · 热度变化 {{ '%+d'|format(event.trend_delta) }}</p>
+    <h3><a href="{{ event.detail_href }}">{{ event.zh_title }}</a></h3>
+    <p>{{ event.zh_summary }}</p>
+  </article>
+  {% else %}<p>尚无足够的连续快照来判断 7 天趋势。</p>{% endfor %}
 </section>
 
 <section class="event-list" aria-label="综合热点">

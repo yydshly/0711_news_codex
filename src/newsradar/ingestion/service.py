@@ -21,6 +21,7 @@ from newsradar.ingestion.repository import ItemAction, RawItemRepository
 from newsradar.ingestion.schema import FetchOutcome, FetchResult
 from newsradar.operations.logging import redact
 from newsradar.operations.schema import ErrorCategory
+from newsradar.operations.worker import OperationCancelled
 from newsradar.settings import Settings, get_settings
 from newsradar.sources.schema import SourceDefinition
 
@@ -148,6 +149,8 @@ class IngestionService:
                     f"Source fetch exceeded {self.settings.source_timeout_seconds:g} seconds"
                 ),
             )
+        except OperationCancelled:
+            raise
         except Exception as exc:
             result = FetchResult(
                 outcome=FetchOutcome.FAILED, error_code="fetch_failed", error_message=str(exc)

@@ -89,6 +89,17 @@ def build_score_input(
         ).values()
         if (value := _engagement_value(raw_value)) is not None
     )
+    engagement_fields = tuple(
+        sorted(
+            {
+                key.casefold().replace("-", "_").replace(" ", "_")
+                for raw_item_id in sorted(set(member_ids))
+                for key in filter_engagement_fields(
+                    engagement_by_item.get(raw_item_id, {})
+                )
+            }
+        )
+    )
     occurred_at = candidate.occurred_at or min(
         (item.published_at for item in candidate.items if item.published_at is not None),
         default=None,
@@ -108,11 +119,13 @@ def build_score_input(
         prior_event_exists=prior_event_exists,
         new_independent_root_count=new_root_count,
     )
-    return _score_input(inputs, evidence)
+    return _score_input(inputs, evidence, engagement_fields)
 
 
 def _score_input(
-    inputs: QualityInputs, evidence: tuple[EvidenceAssessment, ...]
+    inputs: QualityInputs,
+    evidence: tuple[EvidenceAssessment, ...],
+    engagement_fields: tuple[str, ...] = (),
 ) -> EventScoreInput:
     relevance = (
         round(sum(inputs.relevance_scores) / len(inputs.relevance_scores))
@@ -159,6 +172,8 @@ def _score_input(
         engagement_velocity=engagement,
         novelty=novelty,
         evidence=evidence,
+        independent_root_count=inputs.independent_root_count,
+        engagement_fields=engagement_fields,
         reasons=(
             relevance_range,
             f"source_coverage:independent_roots={inputs.independent_root_count}",

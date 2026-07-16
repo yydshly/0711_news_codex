@@ -10,7 +10,12 @@ from types import MappingProxyType
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import EventScoreRecord, EventVersionRecord, OperationRunRecord
+from newsradar.db.models import (
+    EventScoreRecord,
+    EventVersionRecord,
+    HighValueWaveMemberRecord,
+    OperationRunRecord,
+)
 from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 
 MAX_SNAPSHOT_EVENTS = 1_000
@@ -41,7 +46,7 @@ def latest_complete_event_snapshot(
     now: datetime | None = None,
     window_hours: int | None = None,
 ) -> OperationSnapshotRef | None:
-    """Return the newest complete, successful immutable event Operation snapshot."""
+    """Return the newest complete immutable event snapshot safe for readers."""
     checked_at = _aware_utc(now or datetime.now(UTC))
     if window_hours is not None and (
         isinstance(window_hours, bool)
@@ -53,8 +58,8 @@ def latest_complete_event_snapshot(
     statement = (
         select(OperationRunRecord)
         .where(
-            OperationRunRecord.operation_type == "event_pipeline",
-            OperationRunRecord.status == "succeeded",
+            OperationRunRecord.operation_type.in_(("event_pipeline", "high_value_news_wave")),
+            OperationRunRecord.status.in_(("succeeded", "partial")),
             OperationRunRecord.created_at <= checked_at,
         )
         .order_by(OperationRunRecord.id.desc())
@@ -81,12 +86,7 @@ def event_snapshot_by_id(
         return None
     checked_at = _aware_utc(now or datetime.now(UTC))
     operation = session.get(OperationRunRecord, operation_id)
-    if (
-        operation is None
-        or operation.operation_type != "event_pipeline"
-        or operation.status != "succeeded"
-        or _aware_utc(operation.created_at) > checked_at
-    ):
+    if operation is None or _aware_utc(operation.created_at) > checked_at:
         return None
     return _validated_snapshot(session, operation, now=checked_at)
 
@@ -99,6 +99,8 @@ def _validated_snapshot(
 ) -> OperationSnapshotRef | None:
     scope = operation.requested_scope
     summary = operation.result_summary
+    if not _operation_can_publish_snapshot(session, operation):
+        return None
     if not isinstance(scope, dict) or not isinstance(summary, dict):
         return None
     window_hours = _positive_int(scope.get("window_hours"))
@@ -125,6 +127,47 @@ def _validated_snapshot(
         algorithm_versions=MappingProxyType(dict(EVENT_ALGORITHM_VERSIONS)),
         event_versions=refs,
     )
+
+
+def _operation_can_publish_snapshot(session: Session, operation: OperationRunRecord) -> bool:
+    """Keep queued, cancelled, and incomplete wave runs out of reader-visible pages."""
+    if operation.operation_type == "event_pipeline":
+        return operation.status == "succeeded"
+    if (
+        operation.operation_type != "high_value_news_wave"
+        or operation.status not in {"succeeded", "partial"}
+        or not isinstance(operation.result_summary, dict)
+    ):
+        return False
+    summary = operation.result_summary
+    member_total = _positive_int(summary.get("member_total"))
+    completed_members = _positive_int(summary.get("completed_members"))
+    if (
+        member_total is None
+        or completed_members is None
+        or member_total != completed_members
+        or summary.get("event_manifest_complete") is not True
+    ):
+        return False
+    manifest_count = summary.get("event_manifest_count")
+    refs = _event_refs(summary.get("event_version_snapshots"))
+    if (
+        isinstance(manifest_count, bool)
+        or not isinstance(manifest_count, int)
+        or manifest_count < 0
+        or refs is None
+        or manifest_count != len(refs)
+    ):
+        return False
+    members = list(
+        session.scalars(
+            select(HighValueWaveMemberRecord).where(
+                HighValueWaveMemberRecord.operation_run_id == operation.id
+            )
+        )
+    )
+    terminal = {"succeeded", "partial", "failed", "blocked", "stale_result", "timeout"}
+    return len(members) == member_total and all(member.state in terminal for member in members)
 
 
 def _event_refs(value: object) -> tuple[EventVersionRef, ...] | None:

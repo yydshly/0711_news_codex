@@ -23,6 +23,18 @@ def test_router_dispatches_fetch_and_event_handlers() -> None:
     assert result.result_summary == {"kind": "event"}
 
 
+def test_router_dispatches_high_value_news_wave_handler() -> None:
+    result = OperationRouter(
+        {
+            "high_value_news_wave": lambda lease, checkpoint: OperationResult(
+                result_summary={"kind": "wave"}
+            )
+        }
+    )(_lease("high_value_news_wave"), lambda _: None)
+
+    assert result.result_summary == {"kind": "wave"}
+
+
 def test_router_rejects_unknown_operation_type_without_retry() -> None:
     result = OperationRouter({})(_lease("unknown"), lambda _: None)
 

@@ -19,6 +19,8 @@ from newsradar.sources.catalog_refresh import (
     CatalogResultCode,
 )
 from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
+from newsradar.waves import WaveMemberSnapshot, WavePlan
+from newsradar.waves.repository import WaveRepository
 
 
 def session() -> Session:
@@ -45,6 +47,83 @@ def catalog_member(
         access_kind="rss",
         lane=lane,
     )
+
+
+def wave_plan(*members: WaveMemberSnapshot) -> WavePlan:
+    return WavePlan("high-value", tuple(members), "wave-digest", 24, 7)
+
+
+def wave_member(source_id: str, *, fetchable: bool = True) -> WaveMemberSnapshot:
+    return WaveMemberSnapshot(
+        source_id, "provider", f"hash-{source_id}", ("discovery",), "ready", "rss", fetchable, None
+    )
+
+
+def test_enqueue_wave_freezes_plan_atomically() -> None:
+    now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+    with session() as db:
+        operation_id = OperationCommandService(
+            db, utcnow=lambda: now, settings=Settings(operation_timeout_seconds=30)
+        ).enqueue_high_value_wave(plan=wave_plan(wave_member("b"), wave_member("a")), trigger="web")
+        operation = db.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        assert operation.operation_type == "high_value_news_wave"
+        assert operation.progress_total == 2
+        assert operation.requested_scope == {
+            "schema_version": 1,
+            "profile_id": "high-value",
+            "profile_digest": "wave-digest",
+            "member_count": 2,
+            "window_hours": 24,
+            "trend_days": 7,
+            "window_end": now.isoformat(),
+            "algorithm_versions": {
+                "relevance": "relevance-v2",
+                "newsworthiness": "newsworthiness-v2",
+                "entities": "entities-v2",
+                "cluster": "cluster-v2",
+                "score": "score-v2",
+            },
+            "deadline_at": "2026-07-16T12:00:30+00:00",
+        }
+        assert [row.source_id for row in WaveRepository(db).members(operation_id)] == ["a", "b"]
+
+
+def test_enqueue_wave_rejects_active_batch_and_rolls_back_member_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with session() as db:
+        service = OperationCommandService(db)
+        service.enqueue_high_value_wave(plan=wave_plan(wave_member("a")), trigger="web")
+        with pytest.raises(ValueError, match="active_high_value_wave_exists"):
+            service.enqueue_high_value_wave(plan=wave_plan(wave_member("b")), trigger="web")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("freeze failed")
+
+    monkeypatch.setattr(WaveRepository, "create_members", fail)
+    with session() as db:
+        with pytest.raises(RuntimeError, match="freeze failed"):
+            OperationCommandService(db).enqueue_high_value_wave(
+                plan=wave_plan(wave_member("a")), trigger="web"
+            )
+        assert db.query(OperationRunRecord).count() == 0
+
+
+def test_enqueue_all_blocked_wave_starts_at_zero_and_is_worker_claimable() -> None:
+    with session() as db:
+        operation_id = OperationCommandService(db).enqueue_high_value_wave(
+            plan=wave_plan(wave_member("blocked", fetchable=False)), trigger="web"
+        )
+
+        operation = db.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        assert (operation.progress_current, operation.progress_total) == (0, 1)
+        member, claimed = WaveRepository(db).claim_member(
+            operation_id, "blocked", claim_attempt_id=1
+        )
+        assert claimed is True
+        assert member.state == "running"
 
 
 def test_enqueue_catalog_refresh_freezes_members_and_scope() -> None:

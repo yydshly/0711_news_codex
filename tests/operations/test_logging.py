@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from newsradar.operations.logging import configure_logging, redact
+from newsradar.operations.logging import configure_logging, redact, redact_value
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.schema import OperationType
 from newsradar.operations.worker import Worker
@@ -28,6 +28,39 @@ def test_redact_removes_key_value_secrets_without_environment_values() -> None:
         assert secret not in redacted
 
 
+def test_redact_value_recursively_scrubs_nested_json_and_repr_without_environment(
+    monkeypatch,
+) -> None:
+    secrets = ("json-key-secret", "repr-token-secret", "nested-secret", "tuple-secret")
+    structured = {
+        "safe": "visible",
+        "MINIMAX_API_KEY": "json-key-secret",
+        "nested": [
+            {"github_token": "nested-secret"},
+            ("safe", {"client_secret": "tuple-secret"}),
+        ],
+    }
+
+    cleaned = redact_value(structured, env={})
+    json_text = redact('{"YOUTUBE_API_KEY": "json-key-secret"}', env={})
+    repr_text = redact("{'GITHUB_TOKEN': 'repr-token-secret'}", env={})
+    monkeypatch.setenv("NEWSRADAR_TEST_REDACTION_ENV", "ambient-environment-secret")
+
+    for secret in secrets:
+        assert secret not in repr(cleaned)
+        assert secret not in json_text
+        assert secret not in repr_text
+    assert cleaned == {
+        "safe": "visible",
+        "MINIMAX_API_KEY": "[REDACTED]",
+        "nested": [
+            {"github_token": "[REDACTED]"},
+            ("safe", {"client_secret": "[REDACTED]"}),
+        ],
+    }
+    assert redact("ambient-environment-secret", env={}) == "ambient-environment-secret"
+
+
 def test_jsonl_redacts_sensitive_extra_field_values(tmp_path: object) -> None:
     logger = configure_logging(tmp_path)  # type: ignore[arg-type]
     logger.info(
@@ -42,6 +75,50 @@ def test_jsonl_redacts_sensitive_extra_field_values(tmp_path: object) -> None:
     )
     assert payload["password"] == "[REDACTED]"
     assert payload["api_key"] == "[REDACTED]"
+
+
+def test_jsonl_redacts_database_url_extra_field(tmp_path: object) -> None:
+    logger = configure_logging(tmp_path)  # type: ignore[arg-type]
+    logger.info(
+        "operation complete",
+        extra={"correlation_id": "op-1", "DATABASE_URL": "postgresql://user:database-secret@db/news"},
+    )
+    for handler in logger.handlers:
+        handler.flush()
+
+    payload = json.loads(
+        (tmp_path / ".local" / "logs" / "newsradar.log").read_text().splitlines()[-1]  # type: ignore[operator]
+    )
+    assert payload["DATABASE_URL"] == "[REDACTED]"
+
+
+def test_jsonl_formatter_preserves_safe_structure_and_redacts_nested_extra_values(
+    tmp_path: object,
+) -> None:
+    logger = configure_logging(tmp_path)  # type: ignore[arg-type]
+    logger.info(
+        "operation complete",
+        extra={
+            "correlation_id": "op-1",
+            "diagnostics": {
+                "safe": "visible",
+                "headers": {"Authorization": "Bearer formatter-secret"},
+                "attempts": [{"youtube_api_key": "nested-formatter-secret"}],
+            },
+        },
+    )
+    for handler in logger.handlers:
+        handler.flush()
+
+    log_text = (tmp_path / ".local" / "logs" / "newsradar.log").read_text()  # type: ignore[operator]
+    payload = json.loads(log_text.splitlines()[-1])
+    assert "formatter-secret" not in log_text
+    assert "nested-formatter-secret" not in log_text
+    assert payload["diagnostics"] == {
+        "safe": "visible",
+        "headers": {"Authorization": "[REDACTED]"},
+        "attempts": [{"youtube_api_key": "[REDACTED]"}],
+    }
 
 
 def test_configure_logging_writes_jsonl_and_rotates(tmp_path: object) -> None:

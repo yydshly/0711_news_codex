@@ -22,6 +22,8 @@ from newsradar.remediation.evidence_links import is_valid_remediation_content_li
 from newsradar.settings import Settings, get_settings
 from newsradar.sources.catalog_refresh import CatalogRefreshPlan
 from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
+from newsradar.waves.planning import WavePlan
+from newsradar.waves.repository import WaveRepository
 
 
 class OperationCommandService:
@@ -193,6 +195,77 @@ class OperationCommandService:
             trigger=trigger,
             retry_of_operation_id=operation_id,
         )
+
+    def enqueue_high_value_wave(self, *, plan: WavePlan, trigger: str) -> int:
+        if self.session.in_transaction():
+            self.session.commit()
+        window_end = self._utcnow()
+        with self.session.begin():
+            self._lock_high_value_wave_enqueue()
+            if self._active_high_value_wave_id() is not None:
+                raise ValueError("active_high_value_wave_exists")
+            record = OperationRepository(self.session).enqueue(
+                OperationType.HIGH_VALUE_NEWS_WAVE,
+                {
+                    "schema_version": 1,
+                    "profile_id": plan.profile_id,
+                    "profile_digest": plan.digest,
+                    "member_count": len(plan.members),
+                    "window_hours": plan.window_hours,
+                    "trend_days": plan.trend_days,
+                    "window_end": window_end.isoformat(),
+                    "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+                    "deadline_at": (
+                        window_end + timedelta(seconds=self._settings.operation_timeout_seconds)
+                    ).isoformat(),
+                },
+                trigger=trigger,
+                in_transaction=True,
+            )
+            WaveRepository(self.session).create_members(record.id, plan)
+            record.progress_total = len(plan.members)
+            operation_id = record.id
+        return operation_id
+
+    def latest_high_value_wave(self, profile_id: str) -> OperationRunRecord | None:
+        """Return the newest durable wave for one profile without touching sources.
+
+        JSON expressions differ between SQLite (tests) and PostgreSQL (runtime), so this
+        bounded operation list is filtered in Python rather than relying on a dialect-
+        specific JSON operator.  It is only used by the manual due-check command.
+        """
+        if not profile_id:
+            raise ValueError("profile_id_required")
+        records = self.session.scalars(
+            select(OperationRunRecord)
+            .where(OperationRunRecord.operation_type == OperationType.HIGH_VALUE_NEWS_WAVE.value)
+            .order_by(OperationRunRecord.id.desc())
+        )
+        return next(
+            (
+                record
+                for record in records
+                if isinstance(record.requested_scope, dict)
+                and record.requested_scope.get("profile_id") == profile_id
+            ),
+            None,
+        )
+
+    def _active_high_value_wave_id(self) -> int | None:
+        return self.session.scalar(
+            select(OperationRunRecord.id).where(
+                OperationRunRecord.operation_type == OperationType.HIGH_VALUE_NEWS_WAVE.value,
+                OperationRunRecord.status.in_(
+                    [OperationStatus.QUEUED.value, OperationStatus.RUNNING.value]
+                ),
+            )
+        )
+
+    def _lock_high_value_wave_enqueue(self) -> None:
+        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+            self.session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('newsradar:high-value-wave-enqueue'))")
+            )
 
     def recover_abandoned_source_catalog_refresh(
         self, operation_id: int, *, trigger: str, confirm_abandoned: bool

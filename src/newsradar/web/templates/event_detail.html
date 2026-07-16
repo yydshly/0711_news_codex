@@ -19,6 +19,15 @@
   <h3>展示与确认依据</h3><ul>{% for reason in event_detail.event.tier_reasons %}<li>{{ reason }}</li>{% else %}<li>当前版本未记录额外分层原因。</li>{% endfor %}</ul>
 </section>
 
+<section class="panel" aria-labelledby="wave-explanation-heading">
+  <h2 id="wave-explanation-heading">热度拆解与确认状态</h2>
+  <p><strong>趋势：</strong>{{ event_detail.trend.label }}{% if event_detail.trend.delta %}（热度变化 {{ '%+d'|format(event_detail.trend.delta) }}）{% endif %}</p>
+  <h3>来源角色</h3>
+  <ul>{% for role in event_detail.evidence_roles %}<li>{{ role.label }}：{{ role.count }}</li>{% else %}<li>当前版本未记录来源角色汇总。</li>{% endfor %}</ul>
+  <h3>缺失确认条件</h3>
+  <ul>{% for item in event_detail.missing_confirmation %}<li>{{ item }}</li>{% else %}<li>当前版本已具备其记录的确认条件。</li>{% endfor %}</ul>
+</section>
+
 <section class="panel" aria-labelledby="score-heading">
   <h2 id="score-heading">六项质量评分</h2>
   <dl class="glossary-grid">

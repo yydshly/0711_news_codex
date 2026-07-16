@@ -187,6 +187,8 @@ class EventScoreInput(_Schema):
     novelty: float = Field(ge=0, le=100)
     evidence: tuple[EvidenceAssessment, ...] = ()
     reasons: tuple[str, ...] = ()
+    independent_root_count: int = Field(default=0, ge=0)
+    engagement_fields: tuple[str, ...] = ()
 
 
 class ScoreBreakdown(_Schema):
@@ -201,6 +203,8 @@ class ScoreBreakdown(_Schema):
     heat: float = Field(ge=0, le=100)
     rule_version: str
     reasons: tuple[str, ...]
+    independent_root_count: int = Field(default=0, ge=0)
+    engagement_fields: tuple[str, ...] = ()
 
 
 class TierDecision(_Schema):
@@ -213,11 +217,22 @@ class PublicationDecision(_Schema):
     status: EventStatus
     publish_to_top: bool
     reasons: tuple[str, ...] = ()
+    missing_confirmation: tuple[str, ...] = ()
 
     @property
     def should_publish(self) -> bool:
         """Compatibility alias for callers that only need a publish gate."""
         return self.publish_to_top
+
+
+class EvidenceSummary(_Schema):
+    """Frozen count of the evidence roles present in one event version."""
+
+    official_roots: int = Field(default=0, ge=0)
+    professional_roots: int = Field(default=0, ge=0)
+    community_signals: int = Field(default=0, ge=0)
+    aggregator_pointers: int = Field(default=0, ge=0)
+    missing_confirmation: tuple[str, ...] = ()
 
 
 class EventEnrichment(_Schema):
@@ -261,9 +276,13 @@ class PublishedEvent(_Schema):
     status: EventStatus
     category: EventCategory | None = None
     occurred_at: datetime | None = None
+    snapshot_at: datetime | None = None
     enrichment: EventEnrichment | None = None
     score: ScoreBreakdown | None = None
     evidence: tuple[EvidenceAssessment, ...] = ()
+    evidence_summary: EvidenceSummary = Field(default_factory=EvidenceSummary)
     source_item_ids: tuple[int, ...] = ()
     display_tier: EventTier = EventTier.SIGNAL
     rank_score: float = Field(default=0, ge=0, le=100)
+    heat_breakdown: dict = Field(default_factory=dict)
+    trend: dict = Field(default_factory=dict)

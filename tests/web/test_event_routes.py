@@ -112,7 +112,7 @@ def _add_pipeline_snapshot(session, refs: list[tuple[int, int]]):
     return operation.id
 
 
-def test_home_shows_confirmed_events_and_not_social_only(db_session, monkeypatch):
+def test_home_separates_confirmed_events_from_early_social_signals(db_session, monkeypatch):
     _add_event(db_session)
     _add_event(db_session, 42, "emerging", "社交线索")
     operation_id = _add_pipeline_snapshot(db_session, [(41, 1), (42, 1)])
@@ -122,7 +122,9 @@ def test_home_shows_confirmed_events_and_not_social_only(db_session, monkeypatch
     assert response.status_code == 200
     assert f"Operation #{operation_id}" in response.text
     assert "确认事件" in response.text
-    assert "社交线索" not in response.text
+    assert "最近 24 小时已确认热点" in response.text
+    assert "早期信号" in response.text
+    assert "社交线索" in response.text
 
 
 def test_emerging_page_labels_unconfirmed_social_signal(db_session, monkeypatch):

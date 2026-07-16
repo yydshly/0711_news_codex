@@ -322,6 +322,8 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 .capability-metrics dd { color: var(--healthy); font-size: 1.55rem; font-weight: 700; }
 .capability-metrics .text-value { font-size: 1rem; }
 .metric-note { margin: 1rem 0 0; color: var(--muted); font-size: 0.85rem; }
+.inline-action { display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center; margin-top: 1rem; }
+.inline-action button { margin: 0; }
 .capability-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .result-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .result-list li { display: grid; gap: 0.25rem; padding: 0.8rem 0; border-bottom: 1px solid var(--line); }
