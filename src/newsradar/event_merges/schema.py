@@ -72,3 +72,19 @@ class MergeCandidateDetail(MergeCandidateDraft):
     result_summary: dict[str, object] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+
+
+class MergeApplyResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: str
+    candidate_id: int = Field(gt=0)
+    survivor_event_id: int | None = None
+    survivor_version_number: int | None = None
+    legacy_event_id: int | None = None
+    legacy_version_number: int | None = None
+    error_code: str | None = None
+
+    @classmethod
+    def expired(cls, candidate_id: int, error_code: str) -> "MergeApplyResult":
+        return cls(status="expired", candidate_id=candidate_id, error_code=error_code)

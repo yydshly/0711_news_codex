@@ -1,6 +1,8 @@
 from collections import Counter
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from json import dumps
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -9,18 +11,29 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
     Base,
+    DailyReportItemRecord,
+    DailyReportRecord,
     EventCandidateRecord,
     EventItemRecord,
     EventMergeCandidateRecord,
     EventRecord,
     EventVersionRecord,
     OperationRunRecord,
+    RawItemProcessingRecord,
     RawItemRecord,
     SourceDefinitionRecord,
 )
 from newsradar.event_merges.repository import EventMergeCandidateRepository
-from newsradar.event_merges.schema import EventMergeFacts
-from newsradar.event_merges.service import EventMergeService, _iter_bounded_event_pairs
+from newsradar.event_merges.schema import EventMergeFacts, MergeCandidateType
+from newsradar.event_merges.service import (
+    EventMergeLeaseUnavailable,
+    EventMergeService,
+    _iter_bounded_event_pairs,
+    candidate_still_safe,
+)
+from newsradar.events.operation_snapshots import EventVersionRef
+from newsradar.events.repository import EventRepository
+from newsradar.operations.deadlines import OperationTimedOut
 from newsradar.operations.worker import OperationCancelled
 
 NOW = datetime(2026, 7, 16, 4, tzinfo=UTC)
@@ -43,6 +56,60 @@ def _pair_facts(event_id: int) -> EventMergeFacts:
         actions=("launch",),
         evidence_roots=(),
     )
+
+
+def test_candidate_still_safe_requires_the_original_candidate_type() -> None:
+    left = _pair_facts(1).model_copy(
+        update={"strong_identities": ("publisher.test/story",)}
+    )
+    right = _pair_facts(2).model_copy(
+        update={"strong_identities": ("publisher.test/story",)}
+    )
+
+    assert candidate_still_safe(MergeCandidateType.DETERMINISTIC_MERGE, left, right)
+    assert not candidate_still_safe(MergeCandidateType.MANUAL_REVIEW, left, right)
+
+
+def test_legacy_identity_revalidation_requires_exact_cross_algorithm_membership() -> None:
+    legacy = _pair_facts(3).model_copy(update={"algorithm_versions": ("cluster-v2",)})
+    current = _pair_facts(9)
+
+    assert candidate_still_safe(MergeCandidateType.LEGACY_IDENTITY, legacy, current)
+    assert not candidate_still_safe(
+        MergeCandidateType.LEGACY_IDENTITY,
+        legacy.model_copy(update={"raw_item_ids": (11,)}),
+        current,
+    )
+
+
+def test_survivor_selection_uses_snapshot_then_algorithm_then_lower_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = _pair_facts(3).model_copy(update={"algorithm_versions": ("cluster-v2",)})
+    current = _pair_facts(9)
+    monkeypatch.setattr(
+        "newsradar.event_merges.service.latest_complete_event_snapshot",
+        lambda session: SimpleNamespace(event_versions=(EventVersionRef(9, 1),)),
+    )
+    service = EventMergeService(SimpleNamespace())
+
+    survivor, absorbed = service._select_survivor(
+        SimpleNamespace(candidate_type="legacy_identity"), legacy, current
+    )
+    assert (survivor.event_id, absorbed.event_id) == (9, 3)
+
+    survivor, absorbed = service._select_survivor(
+        SimpleNamespace(candidate_type="deterministic_merge"), legacy, current
+    )
+    assert (survivor.event_id, absorbed.event_id) == (9, 3)
+
+    same_algorithm = current.model_copy(update={"event_id": 2})
+    survivor, absorbed = service._select_survivor(
+        SimpleNamespace(candidate_type="deterministic_merge"),
+        current,
+        same_algorithm,
+    )
+    assert (survivor.event_id, absorbed.event_id) == (2, 9)
 
 
 @pytest.fixture
@@ -135,6 +202,54 @@ def _seed_scan_operation(session: Session, operation_id: int = 50) -> None:
     )
 
 
+def _seed_merge_operation(session: Session, operation_id: int = 51) -> None:
+    session.add(
+        OperationRunRecord(
+            id=operation_id,
+            operation_type="event_merge",
+            trigger="test",
+            status="running",
+            requested_scope={},
+            result_summary={},
+        )
+    )
+
+
+def _seed_quality(session: Session, *raw_item_ids: int) -> None:
+    session.add_all(
+        RawItemProcessingRecord(
+            raw_item_id=raw_item_id,
+            stage="relevance",
+            algorithm_version="relevance-v2",
+            outcome="included",
+            score=80,
+            reason_codes=["ai_product_action"],
+            details={},
+        )
+        for raw_item_id in raw_item_ids
+    )
+
+
+def _seed_candidate(
+    session: Session,
+    *,
+    left_id: int = 1,
+    right_id: int = 2,
+    left_url: str = "https://publisher.test/story",
+    right_url: str = "https://publisher.test/story",
+) -> EventMergeCandidateRecord:
+    _seed_event(session, left_id, 11, url=left_url)
+    _seed_event(session, right_id, 22, url=right_url)
+    _seed_scan_operation(session)
+    _seed_merge_operation(session)
+    _seed_quality(session, 11, 22)
+    session.commit()
+    EventMergeService(session).scan(50, lambda _: None)
+    candidate = session.scalar(select(EventMergeCandidateRecord))
+    assert candidate is not None
+    return candidate
+
+
 def _rows(session: Session, model) -> list[tuple]:
     columns = tuple(model.__table__.columns)
     return list(session.execute(select(*columns).order_by(columns[0])).all())
@@ -171,6 +286,329 @@ def test_scan_writes_candidates_without_changing_event_or_source_state(session: 
     assert session.query(EventMergeCandidateRecord).count() == 1
     assert {model: _rows(session, model) for model in protected} == before
     assert checkpoints
+
+
+def test_apply_recomputes_survivor_and_retires_absorbed_event(session: Session) -> None:
+    candidate = _seed_candidate(session)
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result.status == "succeeded"
+    assert result.survivor_event_id == 1
+    assert result.survivor_version_number == 2
+    assert result.legacy_event_id == 2
+    assert result.legacy_version_number == 2
+    survivor = session.get(EventRecord, 1)
+    legacy = session.get(EventRecord, 2)
+    assert survivor is not None and survivor.visibility == "current"
+    assert legacy is not None and legacy.visibility == "legacy"
+    assert set(
+        session.scalars(
+            select(EventItemRecord.raw_item_id).where(
+                EventItemRecord.event_id == 1,
+                EventItemRecord.removed_version_number.is_(None),
+            )
+        )
+    ) == {11, 22}
+    assert tuple(
+        session.scalars(
+            select(EventItemRecord.raw_item_id).where(
+                EventItemRecord.event_id == 2,
+                EventItemRecord.removed_version_number.is_(None),
+            )
+        )
+    ) == ()
+    session.refresh(candidate)
+    assert candidate.status == "applied"
+    assert candidate.applied_operation_id == 51
+    assert candidate.result_summary == result.model_dump(mode="json")
+
+
+def test_apply_expires_candidate_when_event_version_changes(session: Session) -> None:
+    candidate = _seed_candidate(session)
+    before_memberships = _rows(session, EventItemRecord)
+    left = session.get(EventRecord, candidate.left_event_id)
+    assert left is not None
+    session.add(EventVersionRecord(event_id=left.id, version_number=2, payload={}))
+    left.current_version_number = 2
+    session.commit()
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result == result.expired(candidate.id, "event_merge_version_changed")
+    session.refresh(candidate)
+    assert candidate.status == "expired"
+    assert _rows(session, EventItemRecord) == before_memberships
+
+
+def test_manual_candidate_requires_confirmation_before_apply(session: Session) -> None:
+    candidate = _seed_candidate(
+        session,
+        left_url="https://publisher-a.test/story",
+        right_url="https://publisher-b.test/story",
+    )
+    assert candidate.candidate_type == "manual_review"
+
+    with pytest.raises(ValueError, match="event_merge_manual_confirmation_required"):
+        EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    reviewed = EventMergeService(session).review(candidate.id, "confirm", 51)
+    assert reviewed.status == "confirmed"
+    assert reviewed.reviewed_operation_id == 51
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+    assert result.status == "succeeded"
+
+
+def test_apply_claims_events_in_sorted_order_and_releases_reverse(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _seed_candidate(session, left_id=9, right_id=3)
+    observed: list[tuple[str, int]] = []
+    original_claim = EventRepository.claim_event
+    original_release = EventRepository.release_event
+
+    def claim(repository, event_id, operation_id, lease_until):
+        observed.append(("claim", event_id))
+        return original_claim(repository, event_id, operation_id, lease_until)
+
+    def release(repository, event_id, operation_id):
+        observed.append(("release", event_id))
+        return original_release(repository, event_id, operation_id)
+
+    monkeypatch.setattr(EventRepository, "claim_event", claim)
+    monkeypatch.setattr(EventRepository, "release_event", release)
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result.status == "succeeded"
+    assert observed == [
+        ("claim", 3),
+        ("claim", 9),
+        ("release", 9),
+        ("release", 3),
+    ]
+
+
+def test_apply_failure_rolls_back_both_versions_and_releases_leases(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _seed_candidate(session)
+    versions_before = _rows(session, EventVersionRecord)
+    calls = 0
+
+    def fail_second_publication(self, event, version):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second publication failed")
+
+    monkeypatch.setattr(
+        EventRepository,
+        "before_current_version_switch",
+        fail_second_publication,
+    )
+
+    with pytest.raises(RuntimeError, match="second publication failed"):
+        EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert _rows(session, EventVersionRecord) == versions_before
+    assert all(
+        event.lease_operation_id is None and event.lease_expires_at is None
+        for event in session.scalars(select(EventRecord).order_by(EventRecord.id))
+    )
+    session.refresh(candidate)
+    assert candidate.status == "pending"
+
+
+@pytest.mark.parametrize(
+    "control_error",
+    [OperationCancelled("cancelled"), OperationTimedOut("timed out")],
+)
+def test_apply_control_flow_rolls_back_and_releases_leases(
+    session: Session, control_error: Exception
+) -> None:
+    candidate = _seed_candidate(session)
+
+    def checkpoint(boundary: str) -> None:
+        if boundary == "before_event_merge_mutation":
+            raise control_error
+
+    with pytest.raises(type(control_error)):
+        EventMergeService(session).apply(candidate.id, 51, checkpoint)
+
+    assert all(
+        event.lease_operation_id is None and event.lease_expires_at is None
+        for event in session.scalars(select(EventRecord).order_by(EventRecord.id))
+    )
+    session.refresh(candidate)
+    assert candidate.status == "pending"
+
+
+def test_apply_quality_input_unavailable_releases_leases(session: Session) -> None:
+    candidate = _seed_candidate(session)
+    session.query(RawItemProcessingRecord).delete()
+    session.commit()
+
+    with pytest.raises(ValueError, match="missing relevance"):
+        EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert all(
+        event.lease_operation_id is None and event.lease_expires_at is None
+        for event in session.scalars(select(EventRecord).order_by(EventRecord.id))
+    )
+    session.refresh(candidate)
+    assert candidate.status == "pending"
+
+
+def test_apply_is_idempotent_after_candidate_is_applied(session: Session) -> None:
+    candidate = _seed_candidate(session)
+    first = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+    versions_after_first = _rows(session, EventVersionRecord)
+
+    second = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert second == first
+    assert _rows(session, EventVersionRecord) == versions_after_first
+
+
+def test_apply_keeps_archived_daily_report_snapshot_byte_equivalent(
+    session: Session,
+) -> None:
+    candidate = _seed_candidate(session)
+    report = DailyReportRecord(
+        report_date=date(2026, 7, 16),
+        timezone="Asia/Shanghai",
+        window_hours=24,
+        window_start=NOW,
+        window_end=NOW,
+        source_operation_id=50,
+        status="archived",
+        revision=1,
+        generation_summary={"event_count": 1},
+        generated_at=NOW,
+        archived_at=NOW,
+    )
+    session.add(report)
+    session.flush()
+    item = DailyReportItemRecord(
+        daily_report_id=report.id,
+        event_id=1,
+        event_version_number=1,
+        section="confirmed",
+        position=1,
+        snapshot={"event_id": 1, "version_number": 1, "zh_title": "归档事件"},
+    )
+    session.add(item)
+    session.commit()
+    before_snapshot = dumps(
+        item.snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    original_version = session.scalar(
+        select(EventVersionRecord).where(
+            EventVersionRecord.event_id == 1,
+            EventVersionRecord.version_number == 1,
+        )
+    )
+    assert original_version is not None
+    before_version = dumps(
+        original_version.payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+    EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+    session.expire_all()
+    persisted_item = session.get(DailyReportItemRecord, item.id)
+    persisted_version = session.get(EventVersionRecord, original_version.id)
+
+    assert persisted_item is not None
+    assert persisted_version is not None
+    assert dumps(
+        persisted_item.snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode() == before_snapshot
+    assert dumps(
+        persisted_version.payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode() == before_version
+
+
+def test_dismissed_candidate_cannot_be_applied(session: Session) -> None:
+    candidate = _seed_candidate(session)
+    reviewed = EventMergeService(session).review(candidate.id, "dismiss", 51)
+    assert reviewed.status == "dismissed"
+
+    with pytest.raises(ValueError, match="event_merge_candidate_not_applicable"):
+        EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+
+def test_confirm_rejects_non_manual_candidate(session: Session) -> None:
+    candidate = _seed_candidate(session)
+
+    with pytest.raises(ValueError, match="event_merge_confirmation_type_mismatch"):
+        EventMergeService(session).review(candidate.id, "confirm", 51)
+
+
+def test_apply_expires_candidate_when_fingerprint_changes(session: Session) -> None:
+    candidate = _seed_candidate(session)
+    raw = session.get(RawItemRecord, 11)
+    assert raw is not None
+    raw.summary = "OpenAI launches a different Atlas model"
+    session.commit()
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result == result.expired(candidate.id, "event_merge_membership_changed")
+    session.refresh(candidate)
+    assert candidate.status == "expired"
+
+
+def test_apply_releases_partial_claim_without_stealing_other_lease(
+    session: Session,
+) -> None:
+    candidate = _seed_candidate(session)
+    other_deadline = datetime.now(UTC).replace(microsecond=0)
+    right = session.get(EventRecord, candidate.right_event_id)
+    assert right is not None
+    right.lease_operation_id = 50
+    right.lease_expires_at = other_deadline.replace(year=other_deadline.year + 1)
+    session.commit()
+
+    with pytest.raises(EventMergeLeaseUnavailable):
+        EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    left = session.get(EventRecord, candidate.left_event_id)
+    session.refresh(right)
+    assert left is not None and left.lease_operation_id is None
+    assert right.lease_operation_id == 50
+    assert right.lease_expires_at is not None
+
+
+def test_recheck_expires_old_candidate_and_only_rescans_its_pair(
+    session: Session,
+) -> None:
+    candidate = _seed_candidate(session)
+    raw = session.get(RawItemRecord, 11)
+    assert raw is not None
+    raw.original_url = "https://publisher.test/story-revised"
+    session.commit()
+    protected = (EventRecord, EventVersionRecord, EventItemRecord)
+    before = {model: _rows(session, model) for model in protected}
+
+    replacement = EventMergeService(session).review(candidate.id, "recheck", 51)
+
+    session.refresh(candidate)
+    assert candidate.status == "expired"
+    assert candidate.reason_codes[-1] == "event_merge_recheck_requested"
+    assert replacement.id != candidate.id
+    assert replacement.status == "pending"
+    assert replacement.generated_operation_id == 51
+    assert {model: _rows(session, model) for model in protected} == before
 
 
 def test_scan_isolates_malformed_event_and_continues(session: Session) -> None:

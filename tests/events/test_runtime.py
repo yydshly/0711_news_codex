@@ -547,7 +547,7 @@ def test_exclude_action_marks_event_rejected_and_releases_lease() -> None:
     assert result.status is OperationStatus.SUCCEEDED
 
 
-def test_merge_validates_both_event_targets_before_returning_unsupported() -> None:
+def test_legacy_merge_scope_is_rejected_by_event_handler() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -566,7 +566,7 @@ def test_merge_validates_both_event_targets_before_returning_unsupported() -> No
         lambda _: None,
     )
 
-    assert result.error_code == "unknown_event"
+    assert result.error_code == "unsupported_operation_type"
 
 
 def test_expired_event_pipeline_returns_timeout_without_publishing() -> None:
@@ -645,7 +645,7 @@ def test_expired_event_action_mutates_nothing() -> None:
     assert result.error_code == "operation_timeout"
 
 
-def test_merge_claims_both_events_in_sorted_order_and_releases_in_reverse(monkeypatch) -> None:
+def test_legacy_merge_scope_never_claims_events(monkeypatch) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -683,14 +683,15 @@ def test_merge_claims_both_events_in_sorted_order_and_releases_in_reverse(monkey
         lambda _: None,
     )
 
-    assert result.status is OperationStatus.SUCCEEDED
-    assert order == [("claim", 1), ("claim", 2), ("release", 2), ("release", 1)]
+    assert result.status is OperationStatus.FAILED
+    assert result.error_code == "unsupported_operation_type"
+    assert order == []
     with Session(engine) as db:
         assert db.get(EventRecord, 1).lease_operation_id is None
         assert db.get(EventRecord, 2).lease_operation_id is None
 
 
-def test_merge_releases_first_lease_when_second_claim_fails(monkeypatch) -> None:
+def test_legacy_merge_scope_cannot_enter_partial_claim_path(monkeypatch) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -730,13 +731,13 @@ def test_merge_releases_first_lease_when_second_claim_fails(monkeypatch) -> None
         lambda _: None,
     )
 
-    assert result.error_code == "event_lease_unavailable"
-    assert order == [("claim", 1), ("claim", 2), ("release", 1)]
+    assert result.error_code == "unsupported_operation_type"
+    assert order == []
     with Session(engine) as db:
         assert db.get(EventRecord, 1).lease_operation_id is None
 
 
-def test_deadline_after_merge_claim_releases_both_leases_and_returns_timeout(monkeypatch) -> None:
+def test_legacy_merge_scope_is_rejected_before_deadline_or_mutation(monkeypatch) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -776,7 +777,7 @@ def test_deadline_after_merge_claim_releases_both_leases_and_returns_timeout(mon
         lambda _: None,
     )
 
-    assert result.error_code == "operation_timeout"
+    assert result.error_code == "unsupported_operation_type"
     assert result.retryable is False
     with Session(engine) as db:
         for event_id in (1, 2):

@@ -191,8 +191,6 @@ class EventOperationHandler:
                 return invalid_result
             repository = EventRepository(session)
             lease_ids = [event_id]
-            if lease.operation_type == OperationType.EVENT_MERGE.value:
-                lease_ids.append(int(lease.requested_scope["target_event_id"]))
             for claimed_id in sorted(lease_ids):
                 deadline.check("before_event_lease")
                 if not repository.claim_event(
@@ -257,7 +255,6 @@ _EVENT_TYPES = frozenset(
         OperationType.EVENT_PIPELINE,
         OperationType.EVENT_RECLUSTER,
         OperationType.EVENT_ENRICH,
-        OperationType.EVENT_MERGE,
         OperationType.EVENT_SPLIT,
         OperationType.EVENT_EXCLUDE,
     }
@@ -297,17 +294,7 @@ def _validate_event_action(
     if scope.get("actor") != "web":
         return _invalid_scope("Event actions require actor=web")
     action = lease.operation_type
-    if action == OperationType.EVENT_MERGE.value:
-        target_event_id = scope.get("target_event_id")
-        if (
-            not isinstance(target_event_id, int)
-            or target_event_id <= 0
-            or target_event_id == event_id
-        ):
-            return _invalid_scope("Merge requires a distinct positive target_event_id")
-        if session.get(EventRecord, target_event_id) is None:
-            return _unknown_event(target_event_id)
-    elif action == OperationType.EVENT_SPLIT.value:
+    if action == OperationType.EVENT_SPLIT.value:
         member_ids = scope.get("member_ids")
         if (
             not isinstance(member_ids, list)
@@ -365,27 +352,6 @@ def _apply_event_action(
             _snapshot(repository, event, status=EventStatus.REJECTED), lease.operation_id
         )
         return {"changed": True}
-    elif action == OperationType.EVENT_MERGE.value:
-        target_id = int(lease.requested_scope["target_event_id"])
-        survivor = session.get(EventRecord, event_id)
-        target = session.get(EventRecord, target_id)
-        assert survivor is not None and target is not None
-        rows = session.scalars(
-            select(EventItemRecord).where(
-                EventItemRecord.event_id == target_id,
-                EventItemRecord.removed_version_number.is_(None),
-            )
-        ).all()
-        survivor_ids = _active_ids(session, event_id)
-        member_ids = tuple(sorted(survivor_ids | {row.raw_item_id for row in rows}))
-        repository.publish_complete_event(
-            _snapshot(repository, survivor, source_item_ids=member_ids), lease.operation_id
-        )
-        repository.publish_complete_event(
-            _snapshot(repository, target, status=EventStatus.REJECTED, source_item_ids=()),
-            lease.operation_id,
-        )
-        return {"changed": True, "merged_event_id": target_id}
     elif action == OperationType.EVENT_SPLIT.value:
         member_ids = set(lease.requested_scope["member_ids"])
         event = session.get(EventRecord, event_id)

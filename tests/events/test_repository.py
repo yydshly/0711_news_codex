@@ -16,6 +16,7 @@ from newsradar.db.models import (
     EventCandidateItemRecord,
     EventItemRecord,
     EventRecord,
+    EventScoreRecord,
     EventVersionRecord,
     RawItemProcessingRecord,
     RawItemRecord,
@@ -198,6 +199,43 @@ def test_complete_version_payload_contains_only_safe_current_model_run_summary()
         assert "input_tokens" not in serialized
         assert "output_tokens" not in serialized
         assert "Authorization" not in serialized
+
+
+def test_publish_complete_event_can_create_full_legacy_version_atomically() -> None:
+    with session() as db:
+        item = raw_item(db)
+        repository = EventRepository(db)
+
+        event = repository.publish_complete_event(
+            published_event(source_item_ids=(item.id,)),
+            operation_id=1,
+            visibility=EventVisibility.LEGACY,
+        )
+        db.commit()
+
+        db.refresh(event)
+        version = db.scalar(
+            select(EventVersionRecord).where(EventVersionRecord.event_id == event.id)
+        )
+        membership = db.scalar(
+            select(EventItemRecord).where(EventItemRecord.event_id == event.id)
+        )
+        score = db.scalar(
+            select(EventScoreRecord).where(EventScoreRecord.event_id == event.id)
+        )
+        assert event.visibility == "legacy"
+        assert event.current_version_number == 1
+        assert version is not None and version.version_number == 1
+        assert membership is not None and membership.raw_item_id == item.id
+        assert membership.added_version_number == 1
+        assert membership.removed_version_number is None
+        assert score is not None and score.version_number == 1
+        assert db.scalar(
+            select(EventRecord.id).where(
+                EventRecord.id == event.id,
+                EventRecord.visibility == "current",
+            )
+        ) is None
 
 
 def test_stage_record_updates_the_same_processing_decision() -> None:

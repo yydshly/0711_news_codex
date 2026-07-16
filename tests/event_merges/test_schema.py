@@ -10,6 +10,7 @@ from newsradar.event_merges import (
     MergeCandidateStatus,
     MergeCandidateType,
 )
+from newsradar.event_merges.schema import MergeApplyResult
 
 NOW = datetime(2026, 7, 16, 4, 0, tzinfo=UTC)
 
@@ -75,6 +76,22 @@ def test_merge_candidate_values_are_immutable() -> None:
 def test_merge_candidate_draft_rejects_non_sha256_fingerprint() -> None:
     with pytest.raises(ValidationError, match="input_fingerprint"):
         merge_draft(input_fingerprint="not-a-fingerprint")
+
+
+def test_merge_apply_result_is_immutable_and_has_expired_constructor() -> None:
+    result = MergeApplyResult.expired(7, "event_merge_version_changed")
+
+    assert result.model_dump() == {
+        "status": "expired",
+        "candidate_id": 7,
+        "survivor_event_id": None,
+        "survivor_version_number": None,
+        "legacy_event_id": None,
+        "legacy_version_number": None,
+        "error_code": "event_merge_version_changed",
+    }
+    with pytest.raises(ValidationError):
+        result.status = "succeeded"  # type: ignore[misc]
 
 
 def test_merge_candidate_detail_is_an_immutable_ledger_value() -> None:

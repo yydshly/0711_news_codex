@@ -646,7 +646,7 @@ def run_worker(
             "event_merge_scan": EventMergeOperationHandler.production(create_session),
             "event_recluster": EventOperationHandler.production(create_session),
             "event_enrich": EventOperationHandler.production(create_session),
-            "event_merge": EventOperationHandler.production(create_session),
+            "event_merge": EventMergeOperationHandler.production(create_session),
             "event_split": EventOperationHandler.production(create_session),
             "event_exclude": EventOperationHandler.production(create_session),
         }

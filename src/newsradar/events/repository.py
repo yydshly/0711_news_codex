@@ -310,6 +310,7 @@ class EventRepository:
         operation_id: int,
         *,
         model_usages: tuple[ModelUsage, ...] = (),
+        visibility: EventVisibility = EventVisibility.CURRENT,
     ) -> EventRecord:
         """Write a complete version before exposing it through the current-version pointer."""
         # Reservation is handled by the worker; this is the short write transaction.
@@ -407,7 +408,7 @@ class EventRepository:
             self.session.flush()
             self.before_current_version_switch(record, version)
             record.status = event.status.value
-            record.visibility = EventVisibility.CURRENT.value
+            record.visibility = visibility.value
             record.category = event.category.value if event.category else None
             record.occurred_at = event.occurred_at
             record.display_tier = event.display_tier.value
@@ -607,6 +608,7 @@ class EventRepository:
                 lease_expires_at=lease_until,
                 updated_at=datetime.now(UTC),
             )
+            .execution_options(synchronize_session=False)
         )
 
     def claim_event(self, event_id: int, operation_id: int, lease_until: datetime) -> bool:

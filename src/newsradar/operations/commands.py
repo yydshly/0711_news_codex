@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from json import dumps
 from time import monotonic, sleep
+from typing import Literal
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -420,13 +421,43 @@ class OperationCommandService:
         self.session.commit()
         return record.id
 
+    def enqueue_event_merge_decision(
+        self,
+        candidate_id: int,
+        decision: Literal["apply", "confirm", "dismiss", "recheck"],
+        trigger: str,
+    ) -> int:
+        if isinstance(candidate_id, bool) or candidate_id <= 0:
+            raise ValueError("event_merge_candidate_required")
+        if decision not in {"apply", "confirm", "dismiss", "recheck"}:
+            raise ValueError("event_merge_invalid_decision")
+        if not trigger:
+            raise ValueError("event_merge_trigger_required")
+        now = self._utcnow()
+        scope = {
+            "candidate_id": candidate_id,
+            "decision": decision,
+            "actor": trigger,
+            "idempotency_key": f"event-merge-decision:{decision}:{candidate_id}:"
+            + sha256(f"{trigger}:{now.isoformat()}".encode()).hexdigest(),
+            "deadline_at": (
+                now + timedelta(seconds=self._settings.operation_timeout_seconds)
+            ).isoformat(),
+        }
+        record = OperationRepository(self.session).enqueue(
+            OperationType.EVENT_MERGE, scope, trigger=trigger
+        )
+        self.session.commit()
+        return record.id
+
     def enqueue_event_action(
         self, action: str, event_id: int, payload: dict | None, trigger: str
     ) -> int:
+        if action == "merge":
+            raise ValueError("event_merge_candidate_required")
         operation_type = {
             "recluster": OperationType.EVENT_RECLUSTER,
             "enrich": OperationType.EVENT_ENRICH,
-            "merge": OperationType.EVENT_MERGE,
             "split": OperationType.EVENT_SPLIT,
             "exclude": OperationType.EVENT_EXCLUDE,
         }.get(action)

@@ -451,6 +451,49 @@ def test_enqueue_event_merge_scan_freezes_versions_window_and_identity() -> None
         assert record.requested_scope["idempotency_key"].startswith("event-merge-scan:")
 
 
+def test_merge_command_requires_candidate_id() -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="event_merge_candidate_required"):
+            OperationCommandService(db).enqueue_event_action(
+                "merge", 1, {"target_event_id": 2}, "web"
+            )
+
+
+def test_confirm_command_freezes_candidate_id_and_deadline() -> None:
+    now = datetime(2026, 7, 16, 4, 30, tzinfo=UTC)
+    with session() as db:
+        operation_id = OperationCommandService(
+            db,
+            utcnow=lambda: now,
+            settings=Settings(operation_timeout_seconds=30),
+        ).enqueue_event_merge_decision(7, "confirm", "web")
+        operation = db.get(OperationRunRecord, operation_id)
+
+        assert operation is not None
+        assert operation.operation_type == "event_merge"
+        assert operation.requested_scope["candidate_id"] == 7
+        assert operation.requested_scope["decision"] == "confirm"
+        assert operation.requested_scope["actor"] == "web"
+        assert operation.requested_scope["deadline_at"] == (
+            now + timedelta(seconds=30)
+        ).isoformat()
+        assert operation.requested_scope["idempotency_key"].startswith(
+            "event-merge-decision:confirm:7:"
+        )
+        assert "event_id" not in operation.requested_scope
+        assert "target_event_id" not in operation.requested_scope
+
+
+def test_merge_decision_rejects_boolean_candidate_id() -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="event_merge_candidate_required"):
+            OperationCommandService(db).enqueue_event_merge_decision(
+                True,  # type: ignore[arg-type]
+                "apply",
+                "web",
+            )
+
+
 def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
     now = datetime(2026, 7, 12, 0, 37, 12, tzinfo=UTC)
     bucket = now.replace(minute=0, second=0, microsecond=0)

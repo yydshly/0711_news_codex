@@ -5,23 +5,59 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import EventMergeCandidateRecord, EventRecord
-from newsradar.event_merges.facts import EVENT_MERGE_RULE_VERSION, load_event_facts
+from newsradar.event_merges.facts import (
+    EVENT_MERGE_RULE_VERSION,
+    load_event_facts,
+    merge_input_fingerprint,
+)
 from newsradar.event_merges.repository import EventMergeCandidateRepository
 from newsradar.event_merges.rules import classify_pair
-from newsradar.event_merges.schema import EventMergeFacts
+from newsradar.event_merges.schema import (
+    EventMergeFacts,
+    MergeApplyResult,
+    MergeCandidateStatus,
+    MergeCandidateType,
+)
 from newsradar.events.operation_snapshots import latest_complete_event_snapshot
+from newsradar.events.pipeline import build_candidate_score_input, load_operation_window_end
+from newsradar.events.publishing import EventPublisher
+from newsradar.events.repository import EventRepository
+from newsradar.events.runtime import _enrichment, _event_cluster_items, _snapshot
+from newsradar.events.schema import CandidateCluster, EventCategory, EventStatus, EventVisibility
 
 _TIME_BUCKET_SECONDS = 48 * 60 * 60
 MAX_PAIR_BUCKET_FANOUT = 500
 MAX_SCAN_PAIRS = 10_000
 _PAIR_CHECKPOINT_INTERVAL = 100
+
+
+class EventMergeLeaseUnavailable(RuntimeError):
+    error_code = "event_merge_lease_unavailable"
+
+    def __init__(self, event_id: int) -> None:
+        super().__init__(f"Event {event_id} is being changed by another worker")
+        self.event_id = event_id
+
+
+def candidate_still_safe(
+    candidate_type: MergeCandidateType | str,
+    left: EventMergeFacts,
+    right: EventMergeFacts,
+) -> bool:
+    expected = MergeCandidateType(candidate_type)
+    current = classify_pair(
+        left,
+        right,
+        frozenset((left.event_id, right.event_id)),
+    )
+    return current is not None and current.candidate_type is expected
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +89,270 @@ class MergeScanResult:
 class EventMergeService:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def review(
+        self,
+        candidate_id: int,
+        decision: str,
+        operation_id: int,
+    ) -> EventMergeCandidateRecord:
+        repository = EventMergeCandidateRepository(self.session)
+        record = repository.get(candidate_id, for_update=True)
+        if record is None:
+            raise LookupError("event_merge_candidate_not_found")
+        if record.status != MergeCandidateStatus.PENDING.value:
+            raise ValueError("event_merge_candidate_not_reviewable")
+        if decision == "confirm":
+            if record.candidate_type != MergeCandidateType.MANUAL_REVIEW.value:
+                raise ValueError("event_merge_confirmation_type_mismatch")
+            reviewed = repository.mark_reviewed(
+                candidate_id,
+                MergeCandidateStatus.CONFIRMED,
+                operation_id,
+            )
+        elif decision == "dismiss":
+            reviewed = repository.mark_reviewed(
+                candidate_id,
+                MergeCandidateStatus.DISMISSED,
+                operation_id,
+            )
+        elif decision == "recheck":
+            left = load_event_facts(self.session, record.left_event_id)
+            right = load_event_facts(self.session, record.right_event_id)
+            latest = latest_complete_event_snapshot(self.session)
+            latest_ids = (
+                frozenset(reference.event_id for reference in latest.event_versions)
+                if latest is not None
+                else frozenset()
+            )
+            draft = classify_pair(left, right, latest_ids)
+            expired = repository.mark_expired(
+                candidate_id, "event_merge_recheck_requested"
+            )
+            reviewed = (
+                repository.upsert_candidate(draft, operation_id)
+                if draft is not None
+                else expired
+            )
+        else:
+            raise ValueError("event_merge_invalid_review_decision")
+        self.session.commit()
+        return reviewed
+
+    def apply(
+        self,
+        candidate_id: int,
+        operation_id: int,
+        checkpoint: Callable[[str], None],
+    ) -> MergeApplyResult:
+        repository = EventMergeCandidateRepository(self.session)
+        record = repository.get(candidate_id, for_update=True)
+        if record is None:
+            raise LookupError("event_merge_candidate_not_found")
+        if record.status == MergeCandidateStatus.APPLIED.value:
+            return MergeApplyResult.model_validate(record.result_summary)
+        if record.status not in {
+            MergeCandidateStatus.CONFIRMED.value,
+            MergeCandidateStatus.PENDING.value,
+        }:
+            raise ValueError("event_merge_candidate_not_applicable")
+        if (
+            record.status == MergeCandidateStatus.PENDING.value
+            and record.candidate_type == MergeCandidateType.MANUAL_REVIEW.value
+        ):
+            raise ValueError("event_merge_manual_confirmation_required")
+        if (
+            record.status == MergeCandidateStatus.PENDING.value
+            and record.candidate_type
+            not in {
+                MergeCandidateType.LEGACY_IDENTITY.value,
+                MergeCandidateType.DETERMINISTIC_MERGE.value,
+            }
+        ):
+            raise ValueError("event_merge_candidate_type_not_directly_applicable")
+        if (
+            record.status == MergeCandidateStatus.CONFIRMED.value
+            and record.candidate_type != MergeCandidateType.MANUAL_REVIEW.value
+        ):
+            raise ValueError("event_merge_confirmation_type_mismatch")
+
+        current_left = load_event_facts(self.session, record.left_event_id)
+        current_right = load_event_facts(self.session, record.right_event_id)
+        if (
+            current_left.version_number != record.left_version_number
+            or current_right.version_number != record.right_version_number
+        ):
+            repository.mark_expired(candidate_id, "event_merge_version_changed")
+            self.session.commit()
+            return MergeApplyResult.expired(
+                candidate_id, "event_merge_version_changed"
+            )
+        if (
+            merge_input_fingerprint(current_left, current_right)
+            != record.input_fingerprint
+        ):
+            repository.mark_expired(candidate_id, "event_merge_membership_changed")
+            self.session.commit()
+            return MergeApplyResult.expired(
+                candidate_id, "event_merge_membership_changed"
+            )
+        if not candidate_still_safe(
+            record.candidate_type, current_left, current_right
+        ):
+            repository.mark_expired(candidate_id, "event_merge_identity_not_strong")
+            self.session.commit()
+            return MergeApplyResult.expired(
+                candidate_id, "event_merge_identity_not_strong"
+            )
+
+        claimed_ids: list[int] = []
+        try:
+            event_repository = EventRepository(self.session)
+            lease_until = datetime.now(UTC) + timedelta(minutes=5)
+            for event_id in sorted((record.left_event_id, record.right_event_id)):
+                if not event_repository.claim_event(
+                    event_id, operation_id, lease_until
+                ):
+                    raise EventMergeLeaseUnavailable(event_id)
+                claimed_ids.append(event_id)
+            self.session.commit()
+            checkpoint("before_event_merge_mutation")
+            with self.session.begin_nested():
+                result = self._publish_revalidated_pair(
+                    record=record,
+                    left=current_left,
+                    right=current_right,
+                    operation_id=operation_id,
+                )
+                checkpoint("after_event_merge_mutation")
+                repository.mark_applied(
+                    candidate_id,
+                    operation_id,
+                    result.model_dump(mode="json"),
+                )
+                for event_id in reversed(claimed_ids):
+                    EventRepository(self.session).release_event(event_id, operation_id)
+            self.session.commit()
+            return result
+        except Exception:
+            self.session.rollback()
+            for event_id in reversed(claimed_ids):
+                EventRepository(self.session).release_event(event_id, operation_id)
+            self.session.commit()
+            raise
+
+    def _publish_revalidated_pair(
+        self,
+        *,
+        record: EventMergeCandidateRecord,
+        left: EventMergeFacts,
+        right: EventMergeFacts,
+        operation_id: int,
+    ) -> MergeApplyResult:
+        survivor_facts, legacy_facts = self._select_survivor(record, left, right)
+        survivor = self.session.get(EventRecord, survivor_facts.event_id)
+        legacy = self.session.get(EventRecord, legacy_facts.event_id)
+        if survivor is None or legacy is None:
+            raise LookupError("event_merge_event_not_found")
+        items_by_id = {
+            item.raw_item_id: item
+            for event_id in (left.event_id, right.event_id)
+            for item in _event_cluster_items(self.session, event_id)
+        }
+        items = tuple(items_by_id[item_id] for item_id in sorted(items_by_id))
+        current = EventRepository(self.session).get_current_event(survivor.id)
+        title = (
+            current.zh_title
+            if current is not None and current.zh_title
+            else next((item.title for item in items if item.title), survivor.canonical_key)
+        )
+        occurred_at = min(
+            (item.published_at for item in items if item.published_at is not None),
+            default=survivor.occurred_at,
+        )
+        candidate = CandidateCluster(
+            candidate_key=survivor.canonical_key,
+            title=title,
+            category=EventCategory(survivor.category) if survivor.category else None,
+            items=items,
+            raw_item_ids=tuple(sorted(items_by_id)),
+            reasons=("event_merge_revalidated",),
+            occurred_at=occurred_at,
+        )
+        snapshot_at = load_operation_window_end(
+            self.session,
+            operation_id,
+        )
+        score_input = build_candidate_score_input(
+            self.session,
+            candidate,
+            now=snapshot_at,
+            prior_event=survivor,
+        )
+        try:
+            safe_enrichment = _enrichment(EventRepository(self.session), survivor)
+        except (TypeError, ValueError):
+            safe_enrichment = None
+        published = EventPublisher(EventRepository(self.session)).assemble_snapshot(
+            candidate,
+            score_input=score_input,
+            enrichment=safe_enrichment,
+            snapshot_at=snapshot_at,
+        ).model_copy(
+            update={
+                "event_id": survivor.id,
+                "canonical_key": survivor.canonical_key,
+            }
+        )
+        survivor_record = EventRepository(self.session).publish_complete_event(
+            published,
+            operation_id,
+        )
+        legacy_record = EventRepository(self.session).publish_complete_event(
+            _snapshot(
+                EventRepository(self.session),
+                legacy,
+                status=EventStatus.REJECTED,
+                source_item_ids=(),
+            ),
+            operation_id,
+            visibility=EventVisibility.LEGACY,
+        )
+        return MergeApplyResult(
+            status="succeeded",
+            candidate_id=record.id,
+            survivor_event_id=survivor_record.id,
+            survivor_version_number=survivor_record.current_version_number,
+            legacy_event_id=legacy_record.id,
+            legacy_version_number=legacy_record.current_version_number,
+        )
+
+    def _select_survivor(
+        self,
+        record: EventMergeCandidateRecord,
+        left: EventMergeFacts,
+        right: EventMergeFacts,
+    ) -> tuple[EventMergeFacts, EventMergeFacts]:
+        if record.candidate_type == MergeCandidateType.LEGACY_IDENTITY.value:
+            latest = latest_complete_event_snapshot(self.session)
+            referenced = (
+                {reference.event_id for reference in latest.event_versions}
+                if latest is not None
+                else set()
+            )
+            if (left.event_id in referenced) != (right.event_id in referenced):
+                survivor = left if left.event_id in referenced else right
+                return survivor, right if survivor is left else left
+        current_cluster = "cluster-v3"
+        if (current_cluster in left.algorithm_versions) != (
+            current_cluster in right.algorithm_versions
+        ):
+            survivor = (
+                left if current_cluster in left.algorithm_versions else right
+            )
+            return survivor, right if survivor is left else left
+        survivor = min((left, right), key=lambda facts: facts.event_id)
+        return survivor, right if survivor is left else left
 
     def scan(
         self,
