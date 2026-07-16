@@ -29,10 +29,17 @@ from newsradar.web.event_queries import (
 )
 
 
+class _InvalidEventSnapshot(ValueError):
+    pass
+
+
 def _public_url(value: str | None) -> str | None:
     if not value:
         return None
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
@@ -41,6 +48,22 @@ def _public_url(value: str | None) -> str | None:
     ):
         return None
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _snapshot_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise _InvalidEventSnapshot("invalid_snapshot_datetime")
+    return value.isoformat()
+
+
+def _snapshot_limitations(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise _InvalidEventSnapshot("invalid_snapshot_limitations")
+    return list(value)
 
 
 def _selected_rows(
@@ -90,6 +113,8 @@ def _item_snapshot(
     detail: EventDetailView,
     section: ReportSection,
 ) -> dict[str, object]:
+    if not isinstance(detail.evidence, (list, tuple)):
+        raise _InvalidEventSnapshot("invalid_snapshot_evidence")
     return {
         "zh_title": detail.event.zh_title,
         "zh_summary": detail.event.zh_summary,
@@ -99,23 +124,19 @@ def _item_snapshot(
         "display_tier": detail.event.display_tier,
         "category": detail.event.category,
         "rank_score": detail.event.rank_score,
-        "occurred_at": (
-            detail.event.occurred_at.isoformat() if detail.event.occurred_at else None
-        ),
+        "occurred_at": _snapshot_datetime(detail.event.occurred_at),
         "independent_root_count": detail.event.independent_root_count,
         "confirmation_summary": detail.event.confirmation_summary,
         "enrichment_origin": detail.event.enrichment_origin,
-        "limitations": list(detail.limitations),
+        "limitations": _snapshot_limitations(detail.limitations),
         "evidence": [
             {
                 "title": item.title,
                 "url": _public_url(item.original_url),
-                "published_at": (
-                    item.published_at.isoformat() if item.published_at else None
-                ),
+                "published_at": _snapshot_datetime(item.published_at),
                 "role": item.role,
                 "independent": item.independent,
-                "limitations": list(item.limitations),
+                "limitations": _snapshot_limitations(item.limitations),
             }
             for item in detail.evidence
         ],
@@ -156,6 +177,9 @@ class DailyReportService:
         if snapshot is None:
             raise ValueError("complete_event_snapshot_required")
 
+        snapshot_event_ids = tuple(ref.event_id for ref in snapshot.event_versions)
+        if len(snapshot_event_ids) != len(set(snapshot_event_ids)):
+            raise ValueError("ambiguous_event_snapshot_versions")
         skipped_missing_time = _snapshot_missing_time_count(self.session, snapshot)
         version_by_event = {
             ref.event_id: ref.version_number for ref in snapshot.event_versions
@@ -168,17 +192,26 @@ class DailyReportService:
                 if section_position >= MAX_ITEMS_PER_SECTION:
                     break
                 version_number = version_by_event.get(row.event_id)
-                detail = (
-                    self._events.get_operation_event(
-                        row.event_id,
-                        page.snapshot.operation_id,
-                        version_number,
-                        now=checked_at,
+                try:
+                    detail = (
+                        self._events.get_operation_event(
+                            row.event_id,
+                            page.snapshot.operation_id,
+                            version_number,
+                            now=checked_at,
+                        )
+                        if version_number is not None
+                        else None
                     )
-                    if version_number is not None
-                    else None
-                )
+                except ValueError:
+                    skipped_invalid += 1
+                    continue
                 if detail is None:
+                    skipped_invalid += 1
+                    continue
+                try:
+                    item_snapshot = _item_snapshot(detail, section)
+                except _InvalidEventSnapshot:
                     skipped_invalid += 1
                     continue
                 section_position += 1
@@ -188,7 +221,7 @@ class DailyReportService:
                         event_version_number=version_number,
                         section=section,
                         position=section_position,
-                        snapshot=_item_snapshot(detail, section),
+                        snapshot=item_snapshot,
                     )
                 )
 

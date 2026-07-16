@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from newsradar.daily_reports import DailyReportService
 from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.service import _public_url
 from newsradar.db.models import (
     Base,
     DailyReportRecord,
@@ -329,6 +331,10 @@ def test_generate_sanitizes_evidence_and_never_calls_network_or_model(
         "httpx.AsyncClient.request",
         lambda *args, **kwargs: pytest.fail("network"),
     )
+    monkeypatch.setattr(
+        "newsradar.ai.minimax.MiniMaxClient.structured",
+        lambda *args, **kwargs: pytest.fail("model"),
+    )
 
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
     evidence = DailyReportRepository(db_session).items(report.id)[0].snapshot["evidence"]
@@ -337,10 +343,106 @@ def test_generate_sanitizes_evidence_and_never_calls_network_or_model(
     assert all("#" not in (item["url"] or "") for item in evidence)
 
 
+def test_public_url_rejects_malformed_ipv6() -> None:
+    assert _public_url("https://[invalid/evidence") is None
+
+
+def test_generate_skips_malformed_evidence_url_and_keeps_later_event(
+    db_session: Session,
+) -> None:
+    seed_complete_snapshot(db_session)
+    broken_raw = db_session.scalar(
+        select(RawItemRecord)
+        .join(EventItemRecord, EventItemRecord.raw_item_id == RawItemRecord.id)
+        .where(EventItemRecord.event_id == 101)
+    )
+    assert broken_raw is not None
+    broken_raw.original_url = "https://[invalid/evidence"
+    db_session.commit()
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+    rows = DailyReportRepository(db_session).items(report.id)
+
+    assert report.generation_summary["skipped_invalid_event"] == 1
+    assert [row.event_id for row in rows if row.section == "confirmed"] == [102]
+
+
+def test_generate_skips_malformed_detail_snapshot_and_keeps_later_event(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_complete_snapshot(db_session)
+    original = EventQueryService.get_operation_event
+
+    def malformed_detail(self, event_id, *args, **kwargs):
+        detail = original(self, event_id, *args, **kwargs)
+        return replace(detail, limitations=None) if event_id == 101 else detail
+
+    monkeypatch.setattr(EventQueryService, "get_operation_event", malformed_detail)
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+    rows = DailyReportRepository(db_session).items(report.id)
+
+    assert report.generation_summary["skipped_invalid_event"] == 1
+    assert [row.event_id for row in rows if row.section == "confirmed"] == [102]
+
+
 def test_generate_requires_complete_snapshot_and_writes_nothing(
     db_session: Session,
 ) -> None:
     with pytest.raises(ValueError, match="complete_event_snapshot_required"):
+        DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+    assert db_session.scalar(select(func.count()).select_from(DailyReportRecord)) == 0
+
+
+def test_generate_rejects_multiple_versions_of_same_event_without_writing(
+    db_session: Session,
+) -> None:
+    seed_complete_snapshot(db_session)
+    first_version = db_session.scalar(
+        select(EventVersionRecord).where(
+            EventVersionRecord.event_id == 101,
+            EventVersionRecord.version_number == 1,
+        )
+    )
+    first_score = db_session.scalar(
+        select(EventScoreRecord).where(
+            EventScoreRecord.event_id == 101,
+            EventScoreRecord.version_number == 1,
+        )
+    )
+    operation = db_session.get(OperationRunRecord, SEEDED_OPERATION_ID)
+    assert first_version is not None
+    assert first_score is not None
+    assert operation is not None
+    db_session.add_all(
+        (
+            EventVersionRecord(
+                event_id=101,
+                version_number=2,
+                zh_title="事件 101 第二版本",
+                zh_summary=first_version.zh_summary,
+                payload=dict(first_version.payload),
+                created_at=NOW,
+            ),
+            EventScoreRecord(
+                event_id=101,
+                version_number=2,
+                heat=first_score.heat,
+                breakdown=dict(first_score.breakdown),
+                created_at=NOW,
+            ),
+        )
+    )
+    summary = dict(operation.result_summary)
+    summary["event_version_snapshots"] = [
+        *summary["event_version_snapshots"],
+        {"event_id": 101, "version_number": 2},
+    ]
+    operation.result_summary = summary
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="ambiguous_event_snapshot_versions"):
         DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
     assert db_session.scalar(select(func.count()).select_from(DailyReportRecord)) == 0
 
@@ -355,8 +457,21 @@ def test_generate_allows_empty_sections_without_lowering_threshold(
     assert DailyReportRepository(db_session).items(report.id) == ()
 
 
-def test_generate_caps_each_section_and_keeps_stable_order(db_session: Session) -> None:
+def test_generate_caps_each_section_and_keeps_stable_order(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seed_ranked_snapshot(db_session, confirmed_count=25, emerging_count=25)
+    original = EventQueryService.get_operation_event
+    monkeypatch.setattr(
+        EventQueryService,
+        "get_operation_event",
+        lambda self, event_id, *args, **kwargs: (
+            None
+            if event_id == 1001
+            else original(self, event_id, *args, **kwargs)
+        ),
+    )
 
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
     rows = DailyReportRepository(db_session).items(report.id)
@@ -369,6 +484,7 @@ def test_generate_caps_each_section_and_keeps_stable_order(db_session: Session) 
             (row.snapshot["rank_score"] for row in selected),
             reverse=True,
         )
+    assert report.generation_summary["skipped_invalid_event"] == 1
 
 
 def test_generate_skips_invalid_detail_and_records_rule_fallback(
