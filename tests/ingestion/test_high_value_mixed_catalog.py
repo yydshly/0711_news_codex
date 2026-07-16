@@ -107,3 +107,35 @@ def test_validated_newsletters_use_shared_official_sitemap_ingestion() -> None:
         assert str(source.access_methods[0].url) == sitemap_url
         assert source.research.status.value == "verified"
         assert source.research.candidates[0].kind.value == "sitemap"
+
+
+def test_professional_media_use_shared_official_news_sitemaps() -> None:
+    from pathlib import Path
+
+    from newsradar.providers.yaml_loader import load_provider_tree
+    from newsradar.sources.yaml_loader import load_source_tree
+
+    sources = {item.id: item for item in load_source_tree(Path("sources"))}
+    providers = {item.id: item for item in load_provider_tree(Path("providers"))}
+    expected = {
+        "universe-axios-1": "https://www.axios.com/sitemaps/news.xml",
+        "universe-forbes-1": "https://www.forbes.com/news_sitemap.xml",
+        "universe-fortune-1": "https://fortune.com/feed/googlenews/articles.xml",
+        "universe-semafor-1": "https://www.semafor.com/sitemap-news.xml",
+    }
+
+    for source_id, sitemap_url in expected.items():
+        source = sources[source_id]
+        provider = providers[source.provider_id]
+        assert provider.availability.value == "ready"
+        assert provider.auth_mode.value == "none"
+        assert source.availability.value == "ready"
+        assert source.coverage_mode.value == "direct"
+        assert source.ingestion.enabled is True
+        assert source.ingestion.max_items_per_run == 20
+        assert source.access_methods[0].kind.value == "sitemap"
+        assert str(source.access_methods[0].url) == sitemap_url
+        assert not source.access_methods[0].auth_envs
+        assert source.access_methods[0].requires_manual_approval is False
+        assert source.research.status.value == "verified"
+        assert source.research.candidates[0].kind.value == "sitemap"

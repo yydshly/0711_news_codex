@@ -45,4 +45,4 @@ def test_placeholder_resolution_reflects_expanded_mixed_source_catalog() -> None
     sources = list(load_source_tree(Path("sources")))
 
     assert len(sources) == 187
-    assert sum(source.ingestion.enabled for source in sources) == 83
+    assert sum(source.ingestion.enabled for source in sources) == 87

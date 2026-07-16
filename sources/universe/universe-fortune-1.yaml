@@ -2,12 +2,11 @@ id: universe-fortune-1
 name: Fortune Technology primary
 provider_id: fortune
 target_type: publisher_feed
-availability: manual_only
-coverage_mode: catalog_only
+availability: ready
+coverage_mode: direct
 official_identity_url: https://fortune.com/tech/
-reviewed_at: '2026-07-11'
-unlock_requirements:
-- 'Obtain official Fortune Technology access: manual_only'
+reviewed_at: '2026-07-16'
+unlock_requirements: []
 status: candidate
 nature: professional_media
 roles:
@@ -21,9 +20,12 @@ topics:
 authority_score: 4
 poll_interval_minutes: 60
 access_methods:
+- kind: sitemap
+  url: https://fortune.com/feed/googlenews/articles.xml
+  priority: 1
 - kind: html
   url: https://fortune.com/tech/
-  priority: 1
+  priority: 2
   requires_manual_approval: true
 expected_fields:
 - title
@@ -31,18 +33,37 @@ expected_fields:
 - published_at
 - summary
 risk:
-  terms: 4
-  authentication: 4
-  stability: 2
+  terms: 1
+  authentication: 0
+  stability: 1
   data_quality: 1
-  operating_cost: 4
+  operating_cost: 0
   evidence:
   - https://fortune.com/tech/
   - https://fortune.com/terms-of-use/
-  hard_block_reason: manual_only
-notes: 'Fallback: no additional audited method; coverage status is explicit.'
+  - https://fortune.com/robots.txt
+  - https://fortune.com/feed/googlenews/articles.xml
+ingestion: {enabled: true, approved_at: '2026-07-16', max_items_per_run: 20}
+notes: 'Official Google News Sitemap discovery only; paywalled bodies are not accessed. Fallback: HTML remains manual-only.'
 
 research:
-  status: placeholder
-  conclusion: Platform-level candidate; no independently collectible Target is confirmed, so it is excluded from real coverage.
-  reviewed_at: '2026-07-12'
+  status: verified
+  purpose: Discover public Fortune news URLs without fetching article bodies.
+  wanted_information: [title, canonical_url, published_at]
+  conclusion: Official robots publishes this Google News Sitemap; a controlled sample returned 20 records with title, URL, and publication time.
+  risk_conclusion: Sitemap records are discovery leads only and cannot independently confirm an event.
+  no_fallback_reason: The only other reviewed path is manual HTML; automatic or paywall article-body fetching is outside this milestone.
+  reviewed_at: '2026-07-16'
+  candidates:
+  - key: official-google-news-sitemap
+    kind: sitemap
+    implementation: httpx
+    officiality: official
+    authentication: none
+    roles: [discovery, metadata]
+    fields: [title, canonical_url, published_at]
+    limitations: [No article body or summary, paywalls are not bypassed, metadata cannot independently confirm events]
+    evidence: [https://fortune.com/robots.txt, https://fortune.com/feed/googlenews/articles.xml]
+    reviewed_at: '2026-07-16'
+    sample_status: succeeded
+    decision: primary

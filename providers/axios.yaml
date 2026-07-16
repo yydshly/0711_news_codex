@@ -4,17 +4,18 @@ category: professional_media
 homepage: https://www.axios.com/technology
 docs_url: https://www.axios.com/technology
 terms_url: https://www.axios.com/terms
-auth_mode: manual
+auth_mode: none
 cost_tier: free
-availability: manual_only
+availability: ready
 capabilities:
 - discovery
 - content
 required_env: []
-reviewed_at: '2026-07-11'
+reviewed_at: '2026-07-16'
 evidence:
 - https://www.axios.com/technology
 - https://www.axios.com/terms
-unlock_requirements:
-- 'Obtain official Axios Technology access: manual_only'
-notes: Capability metadata only; content coverage is assessed per target.
+- https://www.axios.com/robots.txt
+- https://www.axios.com/sitemaps/news.xml
+unlock_requirements: []
+notes: Official News Sitemap discovery only; article-body access remains out of scope.
