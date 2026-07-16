@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,38 @@ def test_lease_renews_and_expired_lease_is_reclaimed() -> None:
         assert reclaimed is not None
         assert reclaimed.operation_id == operation.id
         assert reclaimed.attempt_number == 2
+
+
+def test_renew_lease_locks_attempt_before_operation_to_match_member_foreign_keys() -> None:
+    """Wave-member updates validate attempt then operation FKs in this order.
+
+    Lease maintenance must use the same order or PostgreSQL can deadlock when a
+    member finishes at the same time as a heartbeat.
+    """
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    locked_tables: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def record_lease_row_reads(_conn, _cursor, statement, _parameters, _context, _many):
+        normalized = statement.lower()
+        if not normalized.startswith("select"):
+            return
+        if "from operation_attempts" in normalized:
+            locked_tables.append("operation_attempts")
+        elif "from operation_runs" in normalized:
+            locked_tables.append("operation_runs")
+
+    with Session(engine) as db:
+        repository = OperationRepository(db)
+        repository.enqueue(OperationType.FETCH, {})
+        lease = repository.lease_next("worker-lock-order")
+        assert lease is not None
+        locked_tables.clear()
+
+        assert repository.renew_lease(lease, lease_seconds=60)
+
+    assert locked_tables[:2] == ["operation_attempts", "operation_runs"]
 
 
 def test_failure_requeues_only_until_third_attempt_then_is_terminal() -> None:

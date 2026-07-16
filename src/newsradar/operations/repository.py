@@ -158,12 +158,7 @@ class OperationRepository:
 
     def renew_lease(self, lease: OperationLease, lease_seconds: float = 60) -> bool:
         with self._transaction():
-            operation = self.session.get(
-                OperationRunRecord, lease.operation_id, with_for_update=True
-            )
-            attempt = self.session.get(
-                OperationAttemptRecord, lease.attempt_id, with_for_update=True
-            )
+            operation, attempt = self._lock_lease_rows(lease)
             if (
                 operation is None
                 or attempt is None
@@ -195,12 +190,7 @@ class OperationRepository:
         retry_after_seconds: float | None = None,
     ) -> bool:
         with self._transaction():
-            operation = self.session.get(
-                OperationRunRecord, lease.operation_id, with_for_update=True
-            )
-            attempt = self.session.get(
-                OperationAttemptRecord, lease.attempt_id, with_for_update=True
-            )
+            operation, attempt = self._lock_lease_rows(lease)
             if (
                 operation is None
                 or attempt is None
@@ -296,6 +286,24 @@ class OperationRepository:
             self.session.add(worker)
             self.session.flush()
         return worker
+
+    def _lock_lease_rows(
+        self, lease: OperationLease
+    ) -> tuple[OperationRunRecord | None, OperationAttemptRecord | None]:
+        """Lock a lease in the same order used by member-table FK checks.
+
+        High-value wave and catalog member updates validate their attempt foreign
+        key before their operation foreign key.  Locking the parent rows in the
+        opposite order here creates a PostgreSQL deadlock with concurrent member
+        completion, so the attempt row must always be acquired first.
+        """
+        attempt = self.session.get(
+            OperationAttemptRecord, lease.attempt_id, with_for_update=True
+        )
+        operation = self.session.get(
+            OperationRunRecord, lease.operation_id, with_for_update=True
+        )
+        return operation, attempt
 
     def _lease_expiry(self, seconds: float):
         if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
