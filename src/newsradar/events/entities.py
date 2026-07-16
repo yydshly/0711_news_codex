@@ -39,7 +39,7 @@ _GENERIC_OBJECT_NAME_WORDS = frozenset(
         "intelligence",
     }
 )
-_GENERIC_OBJECT_SUFFIXES = frozenset({"ai", "generative", "llm"})
+_GENERIC_OBJECT_SUFFIXES = frozenset({"ai", "generative", "llm", "reasoning"})
 
 
 def canonical_entity_key(name: str, entity_type: EntityType) -> str:
@@ -125,10 +125,13 @@ def _typed_object_mentions(text: str) -> Iterator[tuple[str, EntityType]]:
     }
     pattern = re.compile(
         r"(?<!\w)(?P<name>[A-Z][A-Za-z0-9.-]*(?:\s+[A-Z0-9][A-Za-z0-9.-]*){0,3})"
+        r"(?:\s+(?P<descriptor>reasoning))?"
         r"\s+(?P<kind>product|model|paper|dataset|project)\b"
     )
     for match in pattern.finditer(text):
         mention_words = match.group("name").strip(" .-").split()
+        if match.group("descriptor"):
+            mention_words.append(match.group("descriptor"))
         while len(mention_words) > 1 and mention_words[-1].casefold() in _GENERIC_OBJECT_SUFFIXES:
             mention_words.pop()
         mention = " ".join(mention_words)

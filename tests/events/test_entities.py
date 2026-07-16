@@ -44,6 +44,18 @@ def test_model_object_identity_ignores_generic_ai_descriptor() -> None:
     assert explicit_ai.canonical_key == plain.canonical_key == "model:orion"
 
 
+def test_model_object_identity_ignores_lowercase_reasoning_descriptor() -> None:
+    launched = extract_entities(
+        RawItemText(title="OpenAI launches Orion reasoning model")
+    )
+    reported = extract_entities(
+        RawItemText(title="Orion reasoning model released by OpenAI")
+    )
+
+    assert "model:orion" in {entity.canonical_key for entity in launched}
+    assert "model:orion" in {entity.canonical_key for entity in reported}
+
+
 @pytest.mark.parametrize(
     ("title", "expected_key"),
     [
