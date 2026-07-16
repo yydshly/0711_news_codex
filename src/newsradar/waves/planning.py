@@ -22,6 +22,7 @@ class WaveMemberSnapshot:
     access_kind: str
     fetchable: bool
     blocked_reason: str | None
+    nature: str = "community"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +94,7 @@ def _member(
         ),
         fetchable=reason is None,
         blocked_reason=reason,
+        nature=source.nature.value,
     )
 
 
@@ -118,6 +120,8 @@ def build_wave_plan(
             {
                 "source_id": member.source_id,
                 "definition_hash": member.definition_hash,
+                "nature": member.nature,
+                "roles": member.roles,
                 "access_kind": member.access_kind,
                 "fetchable": member.fetchable,
                 "blocked_reason": member.blocked_reason,

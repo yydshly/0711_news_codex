@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from re import fullmatch
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.ai.minimax import ModelUsage
@@ -148,6 +148,49 @@ def _stored_pair_decision(record) -> PairFinalDecision:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class FrozenWaveSelectionMember:
+    """One immutable source/fetch pair permitted to enter a Wave manifest."""
+
+    source_id: str
+    fetch_run_id: int
+    source_nature: str
+    source_roles: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenWaveSelectionScope:
+    """Auditable RawItem boundary for a completed high-value Wave.
+
+    This is intentionally optional. Ordinary ``event_pipeline`` operations
+    retain their historical, window-based selection behavior.
+    """
+
+    members: tuple[FrozenWaveSelectionMember, ...]
+
+    def raw_item_predicate(self):
+        pairs = tuple(
+            and_(
+                RawItemRecord.source_id == member.source_id,
+                RawItemRecord.last_seen_run_id == member.fetch_run_id,
+            )
+            for member in self.members
+        )
+        return or_(*pairs) if pairs else None
+
+    def member_for(
+        self, source_id: str, fetch_run_id: int | None
+    ) -> FrozenWaveSelectionMember | None:
+        return next(
+            (
+                member
+                for member in self.members
+                if member.source_id == source_id and member.fetch_run_id == fetch_run_id
+            ),
+            None,
+        )
+
+
 class EventPipeline:
     """Run each event stage in a fresh short-lived database session."""
 
@@ -163,7 +206,12 @@ class EventPipeline:
         return cls(sessionmaker(bind=bind, expire_on_commit=False))
 
     def run(
-        self, *, window_hours: int, operation_id: int, checkpoint: Callable[[str], None]
+        self,
+        *,
+        window_hours: int,
+        operation_id: int,
+        checkpoint: Callable[[str], None],
+        selection_scope: FrozenWaveSelectionScope | None = None,
     ) -> PipelineResult:
         if window_hours <= 0:
             raise ValueError("window_hours must be positive")
@@ -172,7 +220,9 @@ class EventPipeline:
         self._model_tokens = Counter()
         snapshot_now = self._operation_window_end(operation_id, checkpoint=checkpoint)
         checkpoint("before_event_selection")
-        selection = self._select_and_classify_items(window_hours, now=snapshot_now)
+        selection = self._select_and_classify_items(
+            window_hours, now=snapshot_now, selection_scope=selection_scope
+        )
         checkpoint("after_event_selection")
         self._record_relevance_decisions(selection)
         checkpoint("after_event_relevance")
@@ -235,14 +285,24 @@ class EventPipeline:
         )
 
     def _select_and_classify_items(
-        self, window_hours: int, *, now: datetime | None = None
+        self,
+        window_hours: int,
+        *,
+        now: datetime | None = None,
+        selection_scope: FrozenWaveSelectionScope | None = None,
     ) -> SelectionResult:
         snapshot_now = now or datetime.now(UTC)
         cutoff = snapshot_now - timedelta(hours=window_hours)
         with self._session_factory() as session:
             event_time = func.coalesce(RawItemRecord.published_at, RawItemRecord.fetched_at)
-            rows = tuple(
-                session.execute(
+            scope_predicate = (
+                selection_scope.raw_item_predicate() if selection_scope is not None else None
+            )
+            if selection_scope is not None and scope_predicate is None:
+                rows = ()
+            else:
+                rows = tuple(
+                    session.execute(
                     select(
                         RawItemRecord.id.label("raw_item_id"),
                         func.substr(
@@ -282,6 +342,8 @@ class EventPipeline:
                         RawItemRecord.published_at.label("published_at"),
                         RawItemRecord.fetched_at.label("fetched_at"),
                         RawItemRecord.engagement.label("engagement"),
+                        RawItemRecord.source_id.label("source_id"),
+                        RawItemRecord.last_seen_run_id.label("last_seen_run_id"),
                         SourceDefinitionRecord.nature.label("source_nature"),
                         SourceDefinitionRecord.authority_score.label("authority_score"),
                         SourceDefinitionRecord.roles.label("source_roles"),
@@ -292,11 +354,12 @@ class EventPipeline:
                         SourceDefinitionRecord.id == RawItemRecord.source_id,
                     )
                     .where(event_time >= cutoff, event_time <= snapshot_now)
+                    .where(scope_predicate if scope_predicate is not None else True)
                     .order_by(RawItemRecord.id)
+                    )
+                    .mappings()
+                    .all()
                 )
-                .mappings()
-                .all()
-            )
 
         included: list[ClusterItem] = []
         included_texts: list[RawItemText] = []
@@ -307,6 +370,23 @@ class EventPipeline:
         authority_by_item: dict[int, object] = {}
         engagement_by_item: dict[int, dict[str, object]] = {}
         for row in rows:
+            frozen_member = (
+                selection_scope.member_for(
+                    row["source_id"], row["last_seen_run_id"]
+                )
+                if selection_scope is not None
+                else None
+            )
+            source_nature = (
+                frozen_member.source_nature
+                if frozen_member is not None
+                else row["source_nature"]
+            )
+            source_roles = (
+                frozen_member.source_roles
+                if frozen_member is not None
+                else _bounded_values(row["source_roles"], max_chars=64)
+            )
             text = RawItemText(
                 raw_item_id=row["raw_item_id"],
                 title=row["title"],
@@ -349,8 +429,8 @@ class EventPipeline:
                     title_fingerprint=row["title_fingerprint"],
                     entities=(),
                     published_at=row["published_at"] or row["fetched_at"],
-                    source_nature=row["source_nature"],
-                    source_roles=_bounded_values(row["source_roles"], max_chars=64),
+                    source_nature=source_nature,
+                    source_roles=source_roles,
                     publisher_name=row["publisher_name"] or None,
                 )
             )

@@ -6,6 +6,7 @@ from sqlalchemy import case, select, update
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import HighValueWaveMemberRecord, OperationRunRecord, utcnow
+from newsradar.events.pipeline import FrozenWaveSelectionMember, FrozenWaveSelectionScope
 from newsradar.operations.logging import redact
 
 from .planning import WavePlan
@@ -28,6 +29,7 @@ class WaveRepository:
                 source_id=member.source_id,
                 provider_id=member.provider_id,
                 definition_hash=member.definition_hash,
+                nature_snapshot=member.nature,
                 roles_snapshot=list(member.roles),
                 availability_snapshot=member.availability,
                 access_kind_snapshot=member.access_kind,
@@ -47,6 +49,32 @@ class WaveRepository:
                 select(HighValueWaveMemberRecord)
                 .where(HighValueWaveMemberRecord.operation_run_id == operation_run_id)
                 .order_by(HighValueWaveMemberRecord.source_id)
+            )
+        )
+
+    def event_selection_scope(
+        self, operation_run_id: int
+    ) -> FrozenWaveSelectionScope | None:
+        """Return exactly the terminal wave members that produced selectable items.
+
+        A member with no FetchRun has no RawItem provenance and is deliberately
+        absent.  The returned role/nature values are persisted snapshots, not
+        re-resolved from the mutable source catalog.
+        """
+        members = self.members(operation_run_id)
+        if not members:
+            return None
+        return FrozenWaveSelectionScope(
+            tuple(
+                FrozenWaveSelectionMember(
+                    source_id=member.source_id,
+                    fetch_run_id=member.fetch_run_id,
+                    source_nature=member.nature_snapshot,
+                    source_roles=tuple(member.roles_snapshot),
+                )
+                for member in members
+                if member.fetch_run_id is not None
+                and member.state in {"succeeded", "partial"}
             )
         )
 

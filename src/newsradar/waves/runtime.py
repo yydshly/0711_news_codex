@@ -378,10 +378,14 @@ class HighValueWaveHandler:
         """Run synchronous event stages outside the wave event loop and I/O transactions."""
         event_session = self._create_session()
         try:
+            selection_scope = WaveRepository(event_session).event_selection_scope(operation_id)
+            if selection_scope is None:
+                raise ValueError("wave_event_selection_scope_missing")
             return EventPipeline.production(event_session).run(
                 operation_id=operation_id,
                 window_hours=window_hours,
                 checkpoint=checkpoint,
+                selection_scope=selection_scope,
             )
         finally:
             event_session.close()

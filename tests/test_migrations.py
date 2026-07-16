@@ -36,7 +36,13 @@ def test_high_value_wave_migration_creates_member_snapshots_without_altering_his
         inspector = inspect(connection)
         assert "high_value_wave_members" in inspector.get_table_names()
         columns = {column["name"] for column in inspector.get_columns("high_value_wave_members")}
-        assert {"roles_snapshot", "fetchable", "claim_attempt_id", "finished_at"} <= columns
+        assert {
+            "nature_snapshot",
+            "roles_snapshot",
+            "fetchable",
+            "claim_attempt_id",
+            "finished_at",
+        } <= columns
         assert (
             connection.execute(
                 text("SELECT operation_type FROM operation_runs WHERE id = 99")

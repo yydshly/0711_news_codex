@@ -40,6 +40,7 @@ def test_create_members_freezes_wave_plan(session: Session) -> None:
     records = WaveRepository(session).members(11)
 
     assert [record.source_id for record in records] == ["a", "b"]
+    assert records[0].nature_snapshot == "community"
     assert records[0].roles_snapshot == ["discovery"]
     assert records[0].fetchable is False
     assert records[0].state == "pending"

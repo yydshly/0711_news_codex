@@ -512,6 +512,11 @@ class HighValueWaveMemberRecord(Base):
     )
     provider_id: Mapped[str] = mapped_column(String(120), nullable=False)
     definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Evidence attribution must survive a later catalog edit.  The wave event
+    # manifest reads this value, never the live source definition.
+    nature_snapshot: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="community"
+    )
     roles_snapshot: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     availability_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
     access_kind_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
