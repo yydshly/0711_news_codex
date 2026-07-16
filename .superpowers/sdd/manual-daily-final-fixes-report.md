@@ -31,3 +31,10 @@
 
 - PostgreSQL guard 的真实方言 SQL已在本机临时实例验证，但当前 pytest 自动化仅直接运行 SQLite migration；PostgreSQL 真实验证仍属于手动验收证据。
 - ORM `Base.metadata.create_all()` 只用于测试辅助，数据库级 trigger/function 由 Alembic 迁移安装；本次按 brief 文件范围未扩展 ORM 模型元数据或测试框架。
+
+## 同 revision 旧 0023 兼容修复
+
+- 项目数据库曾在相同 `20260716_0023` revision 下创建日报表，但没有后续补入的 `uq_daily_report_identity` / `uq_daily_report_supersedes` 索引；严格 `drop_index` 会使 downgrade 在缺失索引处失败并回滚。
+- TDD RED：升级当前 head 后显式删除两个索引，再 downgrade 到 `20260716_0022`，原实现稳定报 `no such index: uq_daily_report_supersedes`。
+- 最小 GREEN：仅为这两个后加索引的 Alembic `drop_index` 设置 `if_exists=True`；SQLite 回归通过，核心事件表保留。
+- 未连接或修改项目真实数据库；真实数据库同步由根任务在此提交后另行执行。

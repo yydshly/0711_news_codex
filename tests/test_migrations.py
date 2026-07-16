@@ -107,6 +107,27 @@ def test_daily_report_migration_downgrade_removes_only_report_tables(tmp_path: P
         ).scalar_one() == 0
 
 
+def test_daily_report_migration_downgrade_accepts_legacy_0023_without_new_indexes(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "legacy-daily-report-0023.db")
+    _upgrade(database_url, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP INDEX uq_daily_report_supersedes"))
+        connection.execute(text("DROP INDEX uq_daily_report_identity"))
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.downgrade(config, "20260716_0022")
+
+    with engine.connect() as connection:
+        tables = set(inspect(connection).get_table_names())
+        assert "daily_reports" not in tables
+        assert "daily_report_items" not in tables
+        assert {"events", "event_versions", "event_items", "event_scores"} <= tables
+
+
 def _daily_report_guard_database(tmp_path: Path):
     database_url = _sqlite_url(tmp_path / "daily-report-guards.db")
     _upgrade(database_url, "20260716_0022")

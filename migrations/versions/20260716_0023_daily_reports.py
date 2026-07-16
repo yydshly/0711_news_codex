@@ -115,8 +115,10 @@ def downgrade() -> None:
         _drop_postgresql_archive_guards()
     op.drop_index("ix_daily_report_items_report_section", table_name="daily_report_items")
     op.drop_table("daily_report_items")
-    op.drop_index("uq_daily_report_supersedes", table_name="daily_reports")
-    op.drop_index("uq_daily_report_identity", table_name="daily_reports")
+    op.drop_index(
+        "uq_daily_report_supersedes", table_name="daily_reports", if_exists=True
+    )
+    op.drop_index("uq_daily_report_identity", table_name="daily_reports", if_exists=True)
     op.drop_index("ix_daily_reports_date_status", table_name="daily_reports")
     op.drop_table("daily_reports")
 
