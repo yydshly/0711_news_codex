@@ -405,6 +405,7 @@ class SourceRepository:
         return {
             run.source_id: ProbeSnapshot(
                 probe_run_id=run.id,
+                access_kind=run.access_kind,
                 outcome=run.outcome,
                 sample_count=int(run.metrics.get("sample_count") or 0),
                 field_completeness=float(run.metrics.get("field_completeness") or 0.0),

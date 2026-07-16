@@ -2,6 +2,65 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def test_persisted_probe_snapshot_can_make_a_wave_member_fetchable() -> None:
+    from datetime import UTC, datetime
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from newsradar.db.models import Base
+    from newsradar.sources.probes.base import ProbeOutcome, ProbeResult, ProbeSample
+    from newsradar.sources.repository import SourceRepository
+    from newsradar.sources.yaml_loader import load_source_tree
+    from newsradar.waves.planning import build_wave_plan
+    from newsradar.waves.schema import WaveProfile
+
+    source = next(
+        item for item in load_source_tree(Path("sources")) if item.id == "hackernews-top"
+    )
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    finished_at = datetime(2026, 7, 16, tzinfo=UTC)
+
+    with Session(engine) as session:
+        repository = SourceRepository(session)
+        repository.sync([source])
+        repository.save_probe_result(
+            ProbeResult(
+                source_id=source.id,
+                access_kind="public_api",
+                access_url=str(source.access_methods[0].url),
+                outcome=ProbeOutcome.SUCCESS,
+                started_at=finished_at,
+                finished_at=finished_at,
+                sample_count=1,
+                field_completeness=1.0,
+                samples=[
+                    ProbeSample(
+                        external_id="1",
+                        title="OpenAI launches a model",
+                        canonical_url="https://news.ycombinator.com/item?id=1",
+                    )
+                ],
+                suggested_status="candidate",
+                reason="ok",
+            )
+        )
+        probes = repository.latest_probe_snapshots([source.id])
+
+    profile = WaveProfile(
+        id="probe-integration",
+        name="Probe integration",
+        window_hours=24,
+        trend_days=7,
+        required_roles=("discovery",),
+        source_ids=(source.id,),
+    )
+    plan = build_wave_plan(profile, [source], probes, configured_credentials=set())
+
+    assert plan.fetchable_ids == frozenset({source.id})
+
+
 def test_plan_separates_fetchable_and_blocked_without_reading_credentials() -> None:
     from newsradar.sources.yaml_loader import load_source_tree
     from newsradar.waves.loader import load_wave_profile

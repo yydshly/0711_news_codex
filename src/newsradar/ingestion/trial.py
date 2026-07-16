@@ -21,6 +21,7 @@ class ProbeSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     probe_run_id: int | None = None
+    access_kind: str | None = None
     outcome: str
     sample_count: int
     field_completeness: float
