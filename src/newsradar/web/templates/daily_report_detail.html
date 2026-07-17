@@ -98,6 +98,7 @@
   <div class="overview-grid">
     {% for item in items %}
     <article class="overview-brief-card">
+      {% if item.editorial_review and item.editorial_review.decision == 'needs_evidence' %}<span class="overview-brief-warning">尚待进一步确认</span>{% endif %}
       <h4><a href="{{ item.detail_href }}">{{ item.zh_title }}</a></h4>
       <div class="report-field"><strong>中文文章概述</strong><p>{{ item.zh_summary }}</p></div>
       {% if item.why_it_matters %}<div class="report-field"><strong>为何值得关注</strong><p>{{ item.why_it_matters }}</p></div>{% endif %}

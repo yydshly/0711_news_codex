@@ -448,6 +448,15 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 .report-status-needs_evidence,
 .report-status-hotspot { color: var(--blocked); }
 .report-status-signal { color: var(--info); }
+.overview-brief-warning {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--blocked);
+  border-radius: 999px;
+  color: var(--blocked);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
 .report-field + .report-field { margin-top: 0.9rem; }
 .report-field > strong { display: block; color: var(--muted); font-size: 0.82rem; }
 .report-field p {

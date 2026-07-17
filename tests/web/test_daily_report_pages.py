@@ -1051,6 +1051,35 @@ def test_draft_page_renders_overview_summary_all_candidates_and_chinese_review_f
     assert "&lt;script&gt;人工保留标题&lt;/script&gt;" in response.text
 
 
+def test_overview_body_marks_needs_evidence_items_with_explicit_warning(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    item = repository.overview_items(report.id)[0]
+    report_id = report.id
+    repository.save_overview_editorial_review(
+        report.id,
+        item.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="needs_evidence",
+            zh_title="待补证全览标题",
+            zh_summary="待补证全览概述",
+            review_recommendation="继续查找第一方公告。",
+            evidence_assessment="当前只有单一公开来源。",
+        ),
+    )
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert (
+        '<span class="overview-brief-warning">尚待进一步确认</span>'
+        in response.text
+    )
+
+
 def test_archived_page_keeps_overview_audit_history_read_only(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
