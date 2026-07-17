@@ -35,6 +35,7 @@ from newsradar.waves.loader import load_wave_profile
 from newsradar.waves.planning import build_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.daily_report_queries import DailyReportQueryService
+from newsradar.web.event_merge_queries import EventMergeQueryService
 from newsradar.web.event_queries import EventQueryService
 from newsradar.web.i18n import format_datetime_zh, format_duration_ms, zh_label
 from newsradar.web.item_queries import ItemQueryService
@@ -328,6 +329,20 @@ def create_app(
                 status_code=503,
             )
             return None, response
+
+    def event_merge_error_response(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={
+                "error_title": "事件合并候选暂时不可用",
+                "error_message": "候选查询未能安全完成，请查看本地服务日志后重试。",
+                "recovery_command": "",
+                "database_status": "候选查询失败",
+                "database_status_tone": "failed",
+            },
+            status_code=503,
+        )
 
     async def require_safe_action(request: Request) -> dict[str, str]:
         try:
@@ -654,6 +669,146 @@ def create_app(
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{revision_id}", status_code=303)
 
+    @app.get("/event-merge-candidates", response_class=HTMLResponse)
+    def event_merge_candidates(
+        request: Request,
+        status: str | None = "pending",
+        candidate_type: str | None = None,
+        event_id: int | None = None,
+        limit: int = 200,
+    ) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                service = EventMergeQueryService(session)
+                summary = service.summary()
+                candidates = service.list_candidates(
+                    status,
+                    candidate_type,
+                    limit=limit,
+                    event_id=event_id,
+                )
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        except Exception as error:
+            logger.error(
+                "event merge candidate list query failed",
+                extra={"error_type": type(error).__name__},
+            )
+            return event_merge_error_response(request)
+        return templates.TemplateResponse(
+            request=request,
+            name="event_merge_candidates.html",
+            context={
+                "summary": summary,
+                "candidates": candidates,
+                "selected_status": status,
+                "selected_type": candidate_type,
+                "selected_event_id": event_id,
+                "action_token": issue_action_token(request),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.get("/event-merge-candidates/{candidate_id}", response_class=HTMLResponse)
+    def event_merge_candidate_detail(
+        request: Request, candidate_id: int
+    ) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                candidate = EventMergeQueryService(session).get_candidate(candidate_id)
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        except Exception as error:
+            logger.error(
+                "event merge candidate detail query failed",
+                extra={"error_type": type(error).__name__},
+            )
+            return event_merge_error_response(request)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="未找到该事件合并候选。")
+        return templates.TemplateResponse(
+            request=request,
+            name="event_merge_candidate_detail.html",
+            context={
+                "candidate": candidate,
+                "action_token": issue_action_token(request),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.post("/event-merge-candidates/scan")
+    async def scan_event_merge_candidates(request: Request) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                operation_id = OperationCommandService(
+                    session
+                ).enqueue_event_merge_scan("web")
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        except ValueError as error:
+            logger.info(
+                "event merge scan request rejected",
+                extra={"error_code": str(error)[:120]},
+            )
+            raise HTTPException(
+                status_code=422, detail="无法创建事件合并候选扫描任务。"
+            ) from error
+        except Exception as error:
+            logger.error(
+                "event merge scan enqueue failed",
+                extra={"error_type": type(error).__name__},
+            )
+            return event_merge_error_response(request)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+
+    @app.post("/event-merge-candidates/{candidate_id}/{decision}")
+    async def decide_event_merge_candidate(
+        request: Request, candidate_id: int, decision: str
+    ) -> RedirectResponse:
+        await require_safe_action(request)
+        if decision not in {"apply", "confirm", "dismiss", "recheck"}:
+            raise HTTPException(status_code=422, detail="无效的候选处理动作。")
+        try:
+            with create_session() as session:
+                candidate = EventMergeQueryService(session).get_candidate(candidate_id)
+                if candidate is None:
+                    raise HTTPException(status_code=404, detail="未找到该事件合并候选。")
+                if candidate.status != "pending":
+                    raise HTTPException(
+                        status_code=409, detail="该候选已处理或已过期，不能重复操作。"
+                    )
+                if decision not in candidate.allowed_decisions:
+                    raise HTTPException(
+                        status_code=422, detail="该候选类型不允许此处理动作。"
+                    )
+                operation_id = OperationCommandService(
+                    session
+                ).enqueue_event_merge_decision(candidate_id, decision, "web")
+        except HTTPException:
+            raise
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        except ValueError as error:
+            logger.info(
+                "event merge decision rejected",
+                extra={"error_code": str(error)[:120]},
+            )
+            raise HTTPException(
+                status_code=422, detail="无法创建候选处理任务。"
+            ) from error
+        except Exception as error:
+            logger.error(
+                "event merge decision enqueue failed",
+                extra={"error_type": type(error).__name__},
+            )
+            return event_merge_error_response(request)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
+
     @app.get("/events/{event_id}", response_class=HTMLResponse)
     def event_detail(
         request: Request,
@@ -747,24 +902,11 @@ def create_app(
 
     @app.post("/events/merge")
     async def merge_events(request: Request) -> RedirectResponse:
-        values = await require_safe_action(request)
-        try:
-            event_id, target_id = (
-                int(values.get("event_id", "")),
-                int(values.get("target_event_id", "")),
-            )
-            if event_id <= 0 or target_id <= 0 or event_id == target_id:
-                raise ValueError("merge requires two distinct positive event ids")
-            try:
-                with create_session() as session:
-                    operation_id = OperationCommandService(session).enqueue_event_action(
-                        "merge", event_id, {"target_event_id": target_id, "actor": "web"}, "web"
-                    )
-            except (OperationalError, ProgrammingError) as db_error:
-                return database_error_response(request, db_error)
-            return RedirectResponse(url=f"/operations/{operation_id}", status_code=303)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        await require_safe_action(request)
+        raise HTTPException(
+            status_code=409,
+            detail="禁止按事件编号直接合并；请从事件合并候选页面审查并入队。",
+        )
 
     @app.post("/events/{event_id}/split")
     async def split_event(request: Request, event_id: int) -> RedirectResponse:

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}事件合并候选 #{{ candidate.candidate_id }} · News Codex{% endblock %}
+{% block header %}<h1>事件合并候选 #{{ candidate.candidate_id }}</h1>{% endblock %}
+{% block content %}
+<section class="panel" aria-labelledby="candidate-conclusion-heading">
+  <p class="eyebrow">{{ candidate.candidate_type_label }} · {{ candidate.status_label }} · 修订 {{ candidate.revision }}</p>
+  <h2 id="candidate-conclusion-heading">中文结论</h2>
+  {% if candidate.candidate_type == 'legacy_identity' %}
+  <p class="diagnostic-warning"><strong>这是旧算法身份重复审查，不是对两侧新闻内容相同的确认。</strong></p>
+  {% endif %}
+  <p><strong>稳定原因代码：</strong><code>{{ candidate.reason_code }}</code></p>
+  <p><strong>原因：</strong>{{ candidate.zh_reason }}</p>
+  <p><strong>下一步：</strong>{{ candidate.zh_next_action }}</p>
+  <p>算法：{{ candidate.algorithm_version }} · 生成 Operation #{{ candidate.generated_operation_id }}{% if candidate.reviewed_operation_id %} · 审查 Operation #{{ candidate.reviewed_operation_id }}{% endif %}{% if candidate.applied_operation_id %} · 应用 Operation #{{ candidate.applied_operation_id }}{% endif %}</p>
+</section>
+
+{% for side_name, side in [('左侧', candidate.left), ('右侧', candidate.right)] %}
+<section class="panel" aria-labelledby="candidate-side-{{ side.event_id }}">
+  <p class="eyebrow">{{ side_name }} · Event #{{ side.event_id }} · 冻结版本 v{{ side.version_number }} · 冻结可见性 {{ side.visibility }}</p>
+  <h2 id="candidate-side-{{ side.event_id }}">{{ side.title }}</h2>
+  <p>{{ side.summary }}</p>
+  <p><a href="/events/{{ side.event_id }}">查看该 Event 的当前详情</a></p>
+  <dl class="glossary-grid">
+    <div><dt>来源</dt><dd>{{ side.source_ids|join('、') if side.source_ids else '未记录' }}</dd></div>
+    <div><dt>发布方</dt><dd>{{ side.publishers|join('、') if side.publishers else '未记录' }}</dd></div>
+    <div><dt>冻结发布时间</dt><dd>{% for published_at in side.published_at %}{{ published_at|format_datetime_zh }}{% if not loop.last %}、{% endif %}{% else %}未记录{% endfor %}</dd></div>
+    <div><dt>强身份标识</dt><dd>{{ side.strong_identities|join('、') if side.strong_identities else '未记录' }}</dd></div>
+    <div><dt>对象</dt><dd>{{ side.object_entities|join('、') if side.object_entities else '未记录' }}</dd></div>
+    <div><dt>动作</dt><dd>{{ side.actions|join('、') if side.actions else '未记录' }}</dd></div>
+    <div><dt>关键数字</dt><dd>{{ side.key_numbers|join('、') if side.key_numbers else '未记录' }}</dd></div>
+    <div><dt>证据根</dt><dd>{{ side.evidence_roots|join('、') if side.evidence_roots else '未记录或已脱敏' }}</dd></div>
+  </dl>
+  <h3>冻结成员 RawItem</h3>
+  <ul>
+  {% for member in side.members %}
+    <li>RawItem #{{ member.raw_item_id }} · {{ member.source_id }} · {{ member.publisher }} · {% if member.origin_resolution_status == 'resolved' %}已解析原始媒体{% elif member.origin_resolution_status == 'unresolved' %}仍为聚合发现入口{% else %}归属状态未记录{% endif %}{% if member.published_at %} · {{ member.published_at|format_datetime_zh }}{% endif %}：{% if member.public_url %}<a href="{{ member.public_url }}" target="_blank" rel="noopener noreferrer">{{ member.title }}</a>{% else %}{{ member.title }}{% endif %}</li>
+  {% else %}<li>冻结快照未找到可展示的成员。</li>{% endfor %}
+  </ul>
+  {% if side.safe_urls %}<p><strong>脱敏内容标识：</strong>{{ side.safe_urls|join('、') }}</p>{% endif %}
+</section>
+{% endfor %}
+
+<section class="panel" aria-labelledby="candidate-comparison-heading">
+  <h2 id="candidate-comparison-heading">两侧比较</h2>
+  <p><strong>共同强身份标识：</strong>{{ candidate.shared_strong_identities|join('、') if candidate.shared_strong_identities else '无' }}</p>
+  <p><strong>共同对象：</strong>{{ candidate.shared_objects|join('、') if candidate.shared_objects else '无' }}</p>
+  <p><strong>共同动作：</strong>{{ candidate.shared_actions|join('、') if candidate.shared_actions else '无' }}</p>
+  <p><strong>最短发布时间距离：</strong>{% if candidate.time_distance_seconds is not none %}{{ candidate.time_distance_seconds }} 秒{% else %}无法计算{% endif %}</p>
+  <p><strong>冲突：</strong>{{ candidate.conflicts|join('、') if candidate.conflicts else '未发现已记录的硬冲突' }}</p>
+</section>
+
+<section class="panel" aria-labelledby="candidate-actions-heading">
+  <h2 id="candidate-actions-heading">受控处理</h2>
+  <p>网页只创建 Operation；Worker 会在持锁后重新读取当前事实并决定是否允许执行。</p>
+  {% for decision in candidate.allowed_decisions %}
+  <form method="post" action="/event-merge-candidates/{{ candidate.candidate_id }}/{{ decision }}" class="inline-action">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">{{ {'apply':'应用候选','confirm':'确认并应用','dismiss':'保持分开','recheck':'重新检查'}[decision] }}</button>
+  </form>
+  {% else %}<p>该候选已处理、已过期或暂不可操作。</p>{% endfor %}
+  <p><a href="/event-merge-candidates">返回候选列表</a></p>
+</section>
+{% endblock %}

@@ -59,4 +59,7 @@
 </section>
 
 {% if not event_detail.snapshot %}<section class="panel"><h2>受控操作</h2><p>操作只会入队，由 Worker 执行；网页不访问模型或外部网络。</p>{% for action, label in [('recluster','重新聚类'),('enrich','补充摘要'),('exclude','排除事件')] %}<form method="post" action="/events/{{ event_detail.event.event_id }}/{{ action }}"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">{{ label }}</button></form>{% endfor %}</section>{% endif %}
+{% if not event_detail.snapshot and event_detail.event.visibility == 'current' %}
+<section class="panel"><h2>事件合并审查</h2><p><a href="/event-merge-candidates?status=pending&amp;event_id={{ event_detail.event.event_id }}">查看此事件的合并候选</a></p><p class="metric-note">这里只提供只读关联入口，不允许手工填写目标 Event ID。</p></section>
+{% endif %}
 {% endblock %}

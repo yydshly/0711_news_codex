@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}事件合并候选 · News Codex{% endblock %}
+{% block header %}<h1>事件合并候选</h1>{% endblock %}
+{% block content %}
+<section class="panel" aria-labelledby="merge-summary-heading">
+  <p class="eyebrow">只读扫描与受控决策</p>
+  <h2 id="merge-summary-heading">当前事件结构</h2>
+  <p>扫描只生成候选账本，不会修改 Event；所有决策只会进入持久队列，由 Worker 再次校验冻结版本和当前事实。</p>
+  <div class="summary-grid">
+    <span>当前事件 <strong>{{ summary.current_event_count }}</strong></span>
+    <span>单条目事件 <strong>{{ summary.single_member_event_count }}</strong></span>
+    <span>跨来源事件 <strong>{{ summary.cross_source_event_count }}</strong></span>
+    <span>出现在多个当前事件的 RawItem <strong>{{ summary.raw_items_in_multiple_current_events }}</strong></span>
+    <span>旧身份待处理 <strong>{{ summary.legacy_identity_pending_count }}</strong></span>
+    <span>确定性待处理 <strong>{{ summary.deterministic_pending_count }}</strong></span>
+    <span>人工待核对 <strong>{{ summary.manual_pending_count }}</strong></span>
+    <span>已应用 <strong>{{ summary.applied_count }}</strong></span>
+    <span>已排除 <strong>{{ summary.dismissed_count }}</strong></span>
+    <span>已过期 <strong>{{ summary.expired_count }}</strong></span>
+    <span>失败 <strong>{{ summary.failed_count }}</strong></span>
+  </div>
+  <form method="post" action="/event-merge-candidates/scan" class="inline-action">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">重新扫描候选</button>
+    <span class="metric-note">只入队 Operation，不抓取来源、不调用模型、不修改事件。</span>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="merge-list-heading">
+  <h2 id="merge-list-heading">候选列表</h2>
+  <p>
+    <a href="/event-merge-candidates?status=pending">全部待处理</a> ·
+    <a href="/event-merge-candidates?status=pending&amp;candidate_type=legacy_identity">旧算法身份重复</a> ·
+    <a href="/event-merge-candidates?status=pending&amp;candidate_type=deterministic_merge">确定性强身份合并</a> ·
+    <a href="/event-merge-candidates?status=pending&amp;candidate_type=manual_review">需要人工核对</a> ·
+    <a href="/event-merge-candidates?status=expired">已过期</a> ·
+    <a href="/event-merge-candidates?status=applied">已应用</a>
+  </p>
+  {% if selected_event_id %}<p role="status">仅显示与 Event #{{ selected_event_id }} 有关的候选。 <a href="/event-merge-candidates">清除筛选</a></p>{% endif %}
+  {% if candidates %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>候选</th><th>类型</th><th>两侧冻结版本</th><th>当前结论</th><th>状态</th></tr></thead>
+      <tbody>
+      {% for candidate in candidates %}
+      <tr>
+        <td><a href="/event-merge-candidates/{{ candidate.candidate_id }}">#{{ candidate.candidate_id }} · 修订 {{ candidate.revision }}</a></td>
+        <td>{{ candidate.candidate_type_label }}</td>
+        <td>Event #{{ candidate.left_event_id }} v{{ candidate.left_version_number }}：{{ candidate.left_title }}<br>Event #{{ candidate.right_event_id }} v{{ candidate.right_version_number }}：{{ candidate.right_title }}</td>
+        <td>{{ candidate.zh_reason }}<br><small>{{ candidate.zh_next_action }}</small></td>
+        <td>{{ candidate.status_label }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p>当前筛选条件下没有候选。</p>{% endif %}
+  <p class="metric-note">列表最多显示 200 条；候选失败会单独记录，不会阻塞其他候选。</p>
+</section>
+{% endblock %}

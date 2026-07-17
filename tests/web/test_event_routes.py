@@ -212,6 +212,43 @@ def test_recluster_post_only_enqueues_operation(db_session, monkeypatch):
     assert operation.requested_scope["actor"] == "web"
 
 
+def test_current_event_detail_links_to_candidate_search_without_target_input(
+    db_session, monkeypatch
+):
+    _add_event(db_session)
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/events/41")
+
+    assert response.status_code == 200
+    assert "/event-merge-candidates?status=pending&amp;event_id=41" in response.text
+    assert 'name="target_event_id"' not in response.text
+
+
+def test_bare_event_id_merge_is_rejected_without_enqueuing(db_session, monkeypatch):
+    _add_event(db_session)
+    _add_event(db_session, 42)
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+    with TestClient(create_app()) as client:
+        token = (
+            client.get("/events/41").text.split('name="action_token" value="')[1].split('"', 1)[0]
+        )
+        response = client.post(
+            "/events/merge",
+            data={
+                "event_id": "41",
+                "target_event_id": "42",
+                "action_token": token,
+            },
+            headers={"Origin": "http://127.0.0.1", "Host": "127.0.0.1"},
+        )
+
+    assert response.status_code in {409, 422}
+    assert "候选" in response.text
+    assert db_session.query(OperationRunRecord).count() == 0
+
+
 def test_event_detail_does_not_render_unsafe_evidence_href(db_session, monkeypatch):
     from newsradar.db.models import EventItemRecord, RawItemRecord
 
