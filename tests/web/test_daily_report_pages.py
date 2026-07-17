@@ -1061,6 +1061,46 @@ def test_overview_editorial_review_post_returns_chinese_integrity_error(
     assert response.json()["detail"] == "检测到疑似编码损坏的连续问号，请修正中文内容后再继续。"
 
 
+def test_page_hides_corrupted_editorial_history_text_after_repair(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    item = repository.overview_items(report.id)[0]
+    report_id = report.id
+    db_session.add(
+        DailyReportOverviewEditorialReviewRecord(
+            daily_report_overview_item_id=item.id,
+            revision=1,
+            decision="keep",
+            zh_title="????",
+            zh_summary="中文概述。",
+            review_recommendation="继续关注。",
+            evidence_assessment="当前证据可供审核。",
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+    repository.save_overview_editorial_review(
+        report.id,
+        item.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="keep",
+            zh_title="修复后的中文标题",
+            zh_summary="修复后的中文概述。",
+            review_recommendation="继续关注后续公开材料。",
+            evidence_assessment="当前证据可供审核。",
+        ),
+    )
+    repository.archive(report_id)
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    page = client.get(f"/daily-reports/{report_id}")
+
+    assert "????" not in page.text
+    assert "历史审核内容因编码损坏未展示" in page.text
+
+
 def test_draft_page_renders_overview_summary_all_candidates_and_chinese_review_form(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

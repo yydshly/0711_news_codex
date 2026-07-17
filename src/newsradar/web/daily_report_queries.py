@@ -64,6 +64,7 @@ class DailyReportEditorialReviewView:
     review_recommendation: str
     evidence_assessment: str
     created_at: datetime
+    text_integrity_error: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +236,12 @@ class DailyReportQueryService:
                         review_recommendation=review.review_recommendation,
                         evidence_assessment=review.evidence_assessment,
                         created_at=review.created_at,
+                        text_integrity_error=self._has_suspicious_text(
+                            review.zh_title,
+                            review.zh_summary,
+                            review.review_recommendation,
+                            review.evidence_assessment,
+                        ),
                     )
                 )
             review_history_by_item = {
@@ -333,15 +340,11 @@ class DailyReportQueryService:
     def _review_has_suspicious_text(
         review: DailyReportEditorialReviewView | None,
     ) -> bool:
-        return review is not None and any(
-            has_suspicious_question_run(value)
-            for value in (
-                review.zh_title,
-                review.zh_summary,
-                review.review_recommendation,
-                review.evidence_assessment,
-            )
-        )
+        return review is not None and review.text_integrity_error
+
+    @staticmethod
+    def _has_suspicious_text(*values: str) -> bool:
+        return any(has_suspicious_question_run(value) for value in values)
 
     def _audio(self, report_id: int) -> DailyReportAudioView:
         records = self.session.scalars(
@@ -426,6 +429,12 @@ class DailyReportQueryService:
                     review_recommendation=review.review_recommendation,
                     evidence_assessment=review.evidence_assessment,
                     created_at=review.created_at,
+                    text_integrity_error=self._has_suspicious_text(
+                        review.zh_title,
+                        review.zh_summary,
+                        review.review_recommendation,
+                        review.evidence_assessment,
+                    ),
                 )
                 histories.setdefault(review.daily_report_overview_item_id, []).append(view)
                 duplicate_targets[review.daily_report_overview_item_id] = (

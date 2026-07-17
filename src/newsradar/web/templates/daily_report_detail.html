@@ -55,7 +55,11 @@
     <h4>审核历史</h4>
     <ol>
       {% for historical_review in item.editorial_history %}
+      {% if historical_review.text_integrity_error %}
+      <li>第 {{ historical_review.revision }} 版 · 历史审核内容因编码损坏未展示。</li>
+      {% else %}
       <li>第 {{ historical_review.revision }} 版 · {{ historical_review.zh_title }} · {{ historical_review.zh_summary }} · 审核建议：{{ historical_review.review_recommendation }} · 证据评价：{{ historical_review.evidence_assessment }}</li>
+      {% endif %}
       {% endfor %}
     </ol>
   </section>
@@ -181,7 +185,7 @@
   {% elif item.editorial_history %}
   <section aria-label="全览审核历史">
     <h5>全览审核历史</h5>
-    <ol>{% for historical_review in item.editorial_history %}<li>第 {{ historical_review.revision }} 版 · {{ historical_review.zh_title }} · {{ historical_review.zh_summary }} · 审核建议：{{ historical_review.review_recommendation }} · 证据评价：{{ historical_review.evidence_assessment }}</li>{% endfor %}</ol>
+    <ol>{% for historical_review in item.editorial_history %}{% if historical_review.text_integrity_error %}<li>第 {{ historical_review.revision }} 版 · 历史审核内容因编码损坏未展示。</li>{% else %}<li>第 {{ historical_review.revision }} 版 · {{ historical_review.zh_title }} · {{ historical_review.zh_summary }} · 审核建议：{{ historical_review.review_recommendation }} · 证据评价：{{ historical_review.evidence_assessment }}</li>{% endif %}{% endfor %}</ol>
   </section>
   {% elif daily_report.overview.legacy_unreviewed %}
   <p class="metric-note">这是历史日报的只读候选；请先创建修订版再逐条审核。</p>
