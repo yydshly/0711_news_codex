@@ -367,12 +367,123 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 .compact-sample-list { display: grid; gap: 0.35rem; margin: 0; padding-left: 1.1rem; }
 .compact-sample-list li { max-width: 28rem; white-space: normal; }
 
+.daily-report-page {
+  display: grid;
+  gap: 1rem;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.daily-report-page > * { min-width: 0; }
+.daily-report-page .panel { max-width: none; }
+.daily-report-summary { border-color: color-mix(in srgb, var(--info), var(--line) 55%); }
+.daily-report-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 0;
+}
+.daily-report-metrics div {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--panel-2);
+}
+.daily-report-metrics dt,
+.daily-report-metrics small { color: var(--muted); }
+.daily-report-metrics dd {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(1.55rem, 3vw, 2.25rem);
+  font-weight: 700;
+  line-height: 1.2;
+}
+.decision-item-grid,
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.decision-item-card,
+.overview-item-card {
+  min-width: 0;
+  padding: 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--panel-2);
+}
+.decision-item-card h3,
+.overview-item-card h4 {
+  margin: 0.35rem 0 1rem;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.report-card-heading,
+.overview-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.report-card-heading .eyebrow { margin-bottom: 0; }
+.report-status {
+  flex: none;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.report-status-keep,
+.report-status-confirmed { color: var(--healthy); }
+.report-status-needs_evidence,
+.report-status-hotspot { color: var(--blocked); }
+.report-status-signal { color: var(--info); }
+.report-field + .report-field { margin-top: 0.9rem; }
+.report-field > strong { display: block; color: var(--muted); font-size: 0.82rem; }
+.report-field p {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+.overview-counts { justify-content: flex-start; margin: 1rem 0; }
+.overview-counts span {
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.overview-counts strong { color: var(--text); }
+.overview-group { margin-top: 1.5rem; }
+.overview-group .section-heading h3 { margin: 0; }
+.report-transcript {
+  margin: 1rem 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--panel-2), transparent 35%);
+}
+.report-transcript summary { cursor: pointer; color: var(--info); font-weight: 600; }
+.report-transcript .decision-script {
+  margin-top: 0.8rem;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+.daily-report-page audio { width: min(100%, 44rem); }
+
 @media (max-width: 1100px) {
   .dashboard-grid, .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-card, .category-panel, .diagnostic-stack, .probes-panel, .gaps-panel { grid-column: span 1; }
   .category-panel, .diagnostic-stack { grid-row: auto; }
   .capability-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .conclusion-grid { grid-template-columns: minmax(0, 1fr); }
+  .daily-report-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {
@@ -406,4 +517,7 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   .capability-preview-grid,
   .glossary-grid { grid-template-columns: minmax(0, 1fr); }
   .summary-grid { grid-template-columns: minmax(0, 1fr); }
+  .daily-report-metrics,
+  .decision-item-grid,
+  .overview-grid { grid-template-columns: minmax(0, 1fr); }
 }

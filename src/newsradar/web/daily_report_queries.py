@@ -105,10 +105,21 @@ class DailyReportAudioView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportEditorialSummaryView:
+    total_count: int
+    included_count: int
+    needs_evidence_count: int
+    excluded_count: int
+    duplicate_count: int
+    unreviewed_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
     decision_script: str
+    editorial_summary: DailyReportEditorialSummaryView
     overview: DailyReportOverviewView
     audio: DailyReportAudioView
     supersedes_report_id: int | None
@@ -238,6 +249,26 @@ class DailyReportQueryService:
                 else {}
             ),
             decision_script=decision_script,
+            editorial_summary=DailyReportEditorialSummaryView(
+                total_count=len(views),
+                included_count=sum(row.included for row in views),
+                needs_evidence_count=sum(
+                    row.editorial_review is not None
+                    and row.editorial_review.decision == "needs_evidence"
+                    for row in views
+                ),
+                excluded_count=sum(
+                    row.editorial_review is not None
+                    and row.editorial_review.decision == "exclude"
+                    for row in views
+                ),
+                duplicate_count=sum(
+                    row.editorial_review is not None
+                    and row.editorial_review.decision == "duplicate"
+                    for row in views
+                ),
+                unreviewed_count=sum(row.editorial_review is None for row in views),
+            ),
             overview=self._overview(record),
             audio=self._audio(record.id),
             supersedes_report_id=record.supersedes_report_id,

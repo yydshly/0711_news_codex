@@ -270,6 +270,55 @@ def test_daily_report_detail_projects_and_renders_decision_brief(
     assert REVIEW_NEEDS_EVIDENCE.zh_title in response.text
 
 
+def test_detail_projects_editorial_summary_counts(db_session: Session) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    emerging = repository.items(report.id)[1]
+    repository.save_editorial_review(report.id, emerging.id, REVIEW_NEEDS_EVIDENCE)
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    assert detail.editorial_summary.total_count == 2
+    assert detail.editorial_summary.included_count == 2
+    assert detail.editorial_summary.needs_evidence_count == 1
+    assert detail.editorial_summary.excluded_count == 0
+    assert detail.editorial_summary.duplicate_count == 0
+    assert detail.editorial_summary.unreviewed_count == 1
+
+
+def test_daily_report_detail_renders_readable_summary_and_decision_cards(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    emerging = repository.items(report.id)[1]
+    repository.save_editorial_review(report.id, emerging.id, REVIEW_NEEDS_EVIDENCE)
+    report_id = report.id
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert 'class="daily-report-page"' in response.text
+    assert "本期条目" in response.text and ">2</dd>" in response.text
+    assert "决策收录" in response.text
+    assert "待补证" in response.text
+    assert "未收录" in response.text
+    assert response.text.count('class="decision-item-card') == 2
+    assert "中文文章概述" in response.text
+    assert "中文审核建议" in response.text
+    assert "中文证据评价" in response.text
+    assert "<summary>查看决策版播报稿</summary>" in response.text
+
+    styles = client.get("/static/styles.css")
+    assert styles.status_code == 200
+    assert ".daily-report-page" in styles.text
+    assert ".daily-report-metrics" in styles.text
+    assert ".decision-item-card" in styles.text
+    assert ".overview-item-card" in styles.text
+
+
 def test_archived_daily_report_renders_audio_actions_and_latest_player(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -442,7 +491,7 @@ def test_daily_report_audio_artifact_route_serves_only_matching_safe_file(
 
 
 def test_daily_report_detail_overview_uses_bound_operation_snapshot_versions(
-    db_session: Session,
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     confirmed = _event(
         db_session,
@@ -537,6 +586,15 @@ def test_daily_report_detail_overview_uses_bound_operation_snapshot_versions(
     assert "快照已确认事件" in detail.overview.script
     assert "可变当前事件标题" not in detail.overview.script
     assert "不应展示的审计事件" not in detail.overview.script
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report.id}")
+    assert response.status_code == 200
+    assert "已确认（1）" in response.text
+    assert "热点关注（1）" in response.text
+    assert "新兴信号（1）" in response.text
+    assert response.text.count('class="overview-item-card') == 3
+    assert "<summary>查看全览版播报稿</summary>" in response.text
 
 
 def test_detail_projects_empty_editorial_review_fields_for_unreviewed_item(
@@ -878,7 +936,8 @@ def test_draft_actions_redirect_and_archive_locks_editing(
     assert archived.status_code == 303
     page = client.get(f"/daily-reports/{report_id}")
     assert "创建修订版" in page.text
-    assert "上移" not in page.text and "排除" not in page.text
+    assert "上移" not in page.text
+    assert '<option value="exclude"' not in page.text
 
 
 def test_move_and_revise_routes_redirect_to_expected_report(

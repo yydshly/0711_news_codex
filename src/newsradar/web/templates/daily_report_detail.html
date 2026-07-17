@@ -62,14 +62,84 @@
   {% endif %}
 </article>
 {% endmacro %}
+{% macro render_decision_item(item, fallback_title, fallback_summary) %}
+{% set review = item.editorial_review %}
+<article class="decision-item-card">
+  <div class="report-card-heading">
+    <p class="eyebrow">{{ '已确认' if item.section == 'confirmed' else '尚未确认' }} · 事件 #{{ item.event_id }}</p>
+    <span class="report-status report-status-{{ review.decision if review else 'unreviewed' }}">
+      {% if review and review.decision == 'keep' %}保留
+      {% elif review and review.decision == 'needs_evidence' %}待补证
+      {% else %}未人工审核{% endif %}
+    </span>
+  </div>
+  <h3>{{ review.zh_title if review else item.snapshot.get('zh_title', fallback_title) }}</h3>
+  <div class="report-field">
+    <strong>中文文章概述</strong>
+    <p>{{ review.zh_summary if review else item.snapshot.get('zh_summary', fallback_summary) }}</p>
+  </div>
+  <div class="report-field">
+    <strong>中文审核建议</strong>
+    <p>{{ review.review_recommendation if review else '尚未人工审核；请先核对内容和证据后再形成行动建议。' }}</p>
+  </div>
+  <div class="report-field">
+    <strong>中文证据评价</strong>
+    <p>{{ review.evidence_assessment if review else item.snapshot.get('confirmation_summary', '尚未形成中文证据评价。') }}</p>
+  </div>
+</article>
+{% endmacro %}
+{% macro render_overview_group(items, heading, heading_id, tone) %}
+<section class="overview-group" aria-labelledby="{{ heading_id }}">
+  <div class="section-heading">
+    <h3 id="{{ heading_id }}">{{ heading }}（{{ items|length }}）</h3>
+    <span class="report-status report-status-{{ tone }}">{{ items|length }} 条</span>
+  </div>
+  {% if items %}
+  <div class="overview-grid">
+    {% for item in items %}
+    <article class="overview-item-card">
+      <h4><a href="{{ item.detail_href }}">{{ item.zh_title }}</a></h4>
+      <div class="report-field"><strong>中文文章概述</strong><p>{{ item.zh_summary }}</p></div>
+      {% if item.why_it_matters %}<div class="report-field"><strong>为何值得关注</strong><p>{{ item.why_it_matters }}</p></div>{% endif %}
+      {% if item.confirmation_summary %}<div class="report-field"><strong>证据状态</strong><p>{{ item.confirmation_summary }}</p></div>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}<p class="empty-state">本组暂无条目。</p>{% endif %}
+</section>
+{% endmacro %}
 {% block title %}{{ daily_report.report.report_date.isoformat() }} 中文日报 · News Codex{% endblock %}
 {% block header %}<h1>{{ daily_report.report.report_date.isoformat() }} 中文日报</h1>{% endblock %}
 {% block content %}
+<div class="daily-report-page">
+<section class="panel daily-report-summary" aria-labelledby="daily-report-summary-heading">
+  <div class="section-heading">
+    <div><p class="eyebrow">本期内容口径</p><h2 id="daily-report-summary-heading">日报一眼看懂</h2></div>
+    <span class="scope-label">每个栏目最多 20 条</span>
+  </div>
+  <dl class="daily-report-metrics">
+    <div><dt>本期条目</dt><dd>{{ daily_report.editorial_summary.total_count }}</dd><small>固定日报条目总数</small></div>
+    <div><dt>决策收录</dt><dd>{{ daily_report.editorial_summary.included_count }}</dd><small>全部进入决策版</small></div>
+    <div><dt>待补证</dt><dd>{{ daily_report.editorial_summary.needs_evidence_count }}</dd><small>已收录但不能视为确认</small></div>
+    <div><dt>未收录</dt><dd>{{ daily_report.editorial_summary.excluded_count + daily_report.editorial_summary.duplicate_count }}</dd><small>排除 {{ daily_report.editorial_summary.excluded_count }} · 去重 {{ daily_report.editorial_summary.duplicate_count }}</small></div>
+  </dl>
+  {% if daily_report.editorial_summary.unreviewed_count %}<p class="metric-note">尚有 {{ daily_report.editorial_summary.unreviewed_count }} 条未完成人工中文审核。</p>{% endif %}
+</section>
+
 <section class="panel" aria-labelledby="decision-brief-heading">
   <p class="eyebrow">Decision Brief</p>
   <h2 id="decision-brief-heading">今日决策简报</h2>
   <p>以下内容只基于本日报固定快照和人工审核结论；待补证事项不可视为已确认事实。</p>
-  <div class="decision-script">{{ daily_report.decision_script }}</div>
+  {% if daily_report.editorial_summary.included_count %}
+  <div class="decision-item-grid">
+    {% for item in daily_report.confirmed %}{% if item.included %}{{ render_decision_item(item, '未命名事件', '暂无摘要') }}{% endif %}{% endfor %}
+    {% for item in daily_report.emerging %}{% if item.included %}{{ render_decision_item(item, '未命名线索', '暂无摘要') }}{% endif %}{% endfor %}
+  </div>
+  {% else %}<p class="empty-state">本版暂无进入决策简报的条目。</p>{% endif %}
+  <details class="report-transcript">
+    <summary>查看决策版播报稿</summary>
+    <div class="decision-script">{{ daily_report.decision_script }}</div>
+  </details>
   {% if daily_report.report.status == 'archived' %}
   {% set decision_audio = daily_report.audio.decision %}
   {% set decision_operation_status = daily_report.audio.decision_operation_status %}
@@ -93,7 +163,16 @@
   <p class="eyebrow">Intelligence Overview</p>
   <h2 id="overview-heading">情报全览</h2>
   <p>来自本日报绑定的事件运行快照；不会因之后的事件更新而改变。</p>
-  <div class="decision-script">{{ daily_report.overview.script }}</div>
+  <div class="overview-counts" aria-label="情报全览数量">
+    <span>确认 <strong>{{ daily_report.overview.confirmed|length }}</strong></span>
+    <span>热点 <strong>{{ daily_report.overview.hotspots|length }}</strong></span>
+    <span>信号 <strong>{{ daily_report.overview.signals|length }}</strong></span>
+    <span>合计 <strong>{{ daily_report.overview.items|length }}</strong></span>
+  </div>
+  <details class="report-transcript">
+    <summary>查看全览版播报稿</summary>
+    <div class="decision-script">{{ daily_report.overview.script }}</div>
+  </details>
   {% if daily_report.report.status == 'archived' %}
   {% set overview_audio = daily_report.audio.overview %}
   {% set overview_operation_status = daily_report.audio.overview_operation_status %}
@@ -111,12 +190,11 @@
   </form>
   {% endif %}
   {% endif %}
-  <h3>确认 {{ daily_report.overview.confirmed|length }} 条 · 热点 {{ daily_report.overview.hotspots|length }} 条 · 信号 {{ daily_report.overview.signals|length }} 条</h3>
-  <ul>
-    {% for item in daily_report.overview.items %}
-    <li><a href="{{ item.detail_href }}">{{ item.zh_title }}</a> · {{ item.zh_summary }}</li>
-    {% else %}<li>本快照暂无可展示的确认、热点或信号事件。</li>{% endfor %}
-  </ul>
+  {% if daily_report.overview.items %}
+  {{ render_overview_group(daily_report.overview.confirmed, '已确认', 'overview-confirmed-heading', 'confirmed') }}
+  {{ render_overview_group(daily_report.overview.hotspots, '热点关注', 'overview-hotspot-heading', 'hotspot') }}
+  {{ render_overview_group(daily_report.overview.signals, '新兴信号', 'overview-signal-heading', 'signal') }}
+  {% else %}<p class="empty-state">本快照暂无可展示的确认、热点或信号事件。</p>{% endif %}
 </section>
 
 <section class="panel" aria-labelledby="daily-report-meta-heading">
@@ -158,4 +236,5 @@
   {{ render_item(item, '未命名线索', '暂无摘要') }}
   {% else %}<p>本版暂无未确认线索。</p>{% endfor %}
 </section>
+</div>
 {% endblock %}
