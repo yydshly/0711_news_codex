@@ -115,6 +115,10 @@ class DailyReportOverviewView:
     confirmed: tuple[DailyReportOverviewItemView, ...]
     hotspots: tuple[DailyReportOverviewItemView, ...]
     signals: tuple[DailyReportOverviewItemView, ...]
+    included: tuple[DailyReportOverviewItemView, ...]
+    included_confirmed: tuple[DailyReportOverviewItemView, ...]
+    included_hotspots: tuple[DailyReportOverviewItemView, ...]
+    included_signals: tuple[DailyReportOverviewItemView, ...]
     script: str
     summary: DailyReportOverviewEditorialSummaryView
     legacy_unreviewed: bool
@@ -524,11 +528,31 @@ class DailyReportQueryService:
             for item in items
             if item.status != "confirmed" and item.display_tier == "signal"
         )
+        included = tuple(
+            item
+            for item in items
+            if item.editorial_review is not None
+            and item.editorial_review.decision in {"keep", "needs_evidence"}
+        )
         return DailyReportOverviewView(
             items=items,
             confirmed=confirmed,
             hotspots=hotspots,
             signals=signals,
+            included=included,
+            included_confirmed=tuple(
+                item for item in included if item.status == "confirmed"
+            ),
+            included_hotspots=tuple(
+                item
+                for item in included
+                if item.status != "confirmed" and item.display_tier == "hotspot"
+            ),
+            included_signals=tuple(
+                item
+                for item in included
+                if item.status != "confirmed" and item.display_tier == "signal"
+            ),
             script=build_overview_script(
                 report_date=report_date,
                 items=(

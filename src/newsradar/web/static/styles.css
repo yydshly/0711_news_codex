@@ -408,7 +408,9 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   margin-top: 1rem;
 }
 .decision-item-card,
-.overview-item-card {
+.overview-item-card,
+.overview-brief-card,
+.overview-audit-card {
   min-width: 0;
   padding: 1.1rem;
   border: 1px solid var(--line);
@@ -416,7 +418,9 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   background: var(--panel-2);
 }
 .decision-item-card h3,
-.overview-item-card h4 {
+.overview-item-card h4,
+.overview-brief-card h4,
+.overview-audit-card h4 {
   margin: 0.35rem 0 1rem;
   overflow-wrap: anywhere;
   line-height: 1.45;
@@ -460,6 +464,47 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   color: var(--muted);
 }
 .overview-counts strong { color: var(--text); }
+.overview-review-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+.overview-review-metrics div {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: var(--panel-2);
+}
+.overview-review-metrics dt { color: var(--muted); font-size: 0.82rem; }
+.overview-review-metrics dd { margin: 0.2rem 0 0; font-size: 1.55rem; font-weight: 700; }
+.overview-audit-section { margin-top: 1.75rem; }
+.overview-audit-list { display: grid; gap: 1rem; margin-top: 1rem; }
+.overview-audit-card { scroll-margin-top: 1rem; }
+.overview-audit-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.9rem 0; }
+.overview-audit-meta span {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.overview-audit-card p,
+.overview-audit-card li,
+.overview-audit-card label,
+.overview-audit-card textarea,
+.overview-audit-card input,
+.overview-audit-card select { overflow-wrap: anywhere; }
+.overview-audit-card .report-field p,
+.overview-review-editor textarea { white-space: pre-wrap; }
+.overview-review-editor form { display: grid; gap: 0.8rem; margin-top: 0.8rem; }
+.overview-review-editor label { display: grid; gap: 0.3rem; min-width: 0; }
+.overview-review-editor input,
+.overview-review-editor select,
+.overview-review-editor textarea { width: 100%; min-width: 0; }
+.overview-review-editor textarea { min-height: 7rem; resize: vertical; }
+.overview-evidence { margin-top: 0.9rem; }
 .overview-group { margin-top: 1.5rem; }
 .overview-group .section-heading h3 { margin: 0; }
 .report-transcript {
@@ -484,6 +529,7 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   .capability-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .conclusion-grid { grid-template-columns: minmax(0, 1fr); }
   .daily-report-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-review-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {
@@ -520,4 +566,5 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   .daily-report-metrics,
   .decision-item-grid,
   .overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .overview-review-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

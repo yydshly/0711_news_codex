@@ -20,7 +20,10 @@ from starlette.templating import Jinja2Templates
 
 from newsradar.credentials import SettingsCredentials
 from newsradar.daily_reports.repository import DailyReportRepository
-from newsradar.daily_reports.schema import DailyReportEditorialReviewDraft
+from newsradar.daily_reports.schema import (
+    DailyReportEditorialReviewDraft,
+    DailyReportOverviewEditorialReviewDraft,
+)
 from newsradar.db.models import (
     DailyReportAudioArtifactRecord,
     OperationRunRecord,
@@ -110,6 +113,10 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
     "invalid_daily_report_move": (422, "移动方向只能是上移或下移。"),
     "daily_report_not_found": (404, "日报不存在。"),
     "daily_report_item_not_found": (404, "日报条目不存在或不属于当前日报。"),
+    "daily_report_overview_item_not_found": (
+        404,
+        "全览条目不存在或不属于当前日报。",
+    ),
     "daily_report_archived": (409, "该日报已归档，不能再修改。"),
     "daily_report_must_be_archived": (409, "仅已归档的日报可以创建修订版。"),
     "daily_report_revision_conflict": (409, "日报修订发生冲突，请刷新页面后重试。"),
@@ -132,6 +139,22 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
     "invalid_daily_report_editorial_evidence_assessment": (
         422,
         "中文证据评价不能为空且不能超过 2000 个字符。",
+    ),
+    "invalid_daily_report_overview_duplicate_target": (
+        422,
+        "重复项必须关联同一日报中的另一条全览情报。",
+    ),
+    "invalid_daily_report_overview_duplicate_self": (
+        422,
+        "重复项不能关联自身。",
+    ),
+    "daily_report_overview_review_incomplete": (
+        409,
+        "情报全览仍有未审核条目，暂不能生成全览语音。",
+    ),
+    "daily_report_overview_has_no_included_items": (
+        409,
+        "情报全览没有可播报的保留或需补证条目。",
     ),
 }
 
@@ -668,6 +691,39 @@ def create_app(
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.post(
+        "/daily-reports/{report_id}/overview-items/{item_id}/editorial-reviews"
+    )
+    async def save_daily_report_overview_editorial_review(
+        request: Request, report_id: int, item_id: int
+    ) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            draft = DailyReportOverviewEditorialReviewDraft.create(
+                decision=values.get("decision", ""),
+                zh_title=values.get("zh_title", ""),
+                zh_summary=values.get("zh_summary", ""),
+                review_recommendation=values.get("review_recommendation", ""),
+                evidence_assessment=values.get("evidence_assessment", ""),
+                duplicate_of_overview_item_id=values.get(
+                    "duplicate_of_overview_item_id", ""
+                ),
+            )
+            with create_session() as session:
+                DailyReportRepository(session).save_overview_editorial_review(
+                    report_id, item_id, draft
+                )
+        except LookupError as error:
+            raise _daily_report_http_error(error, default_status=404) from error
+        except ValueError as error:
+            raise _daily_report_http_error(error, default_status=422) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(
+            url=f"/daily-reports/{report_id}#overview-item-{item_id}",
+            status_code=303,
+        )
 
     @app.post("/daily-reports/{report_id}/items/{item_id}/move")
     async def move_daily_report_item(

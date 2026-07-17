@@ -636,10 +636,11 @@ def test_daily_report_detail_overview_uses_bound_operation_snapshot_versions(
     client, _token = safe_client_with_token(db_session, monkeypatch)
     response = client.get(f"/daily-reports/{report.id}")
     assert response.status_code == 200
-    assert "已确认（1）" in response.text
-    assert "热点关注（1）" in response.text
-    assert "新兴信号（1）" in response.text
-    assert response.text.count('class="overview-item-card') == 3
+    assert "全部 3 条" in response.text
+    assert "快照已确认事件" in response.text
+    assert "快照热点事件" in response.text
+    assert "快照信号事件" in response.text
+    assert response.text.count('class="overview-audit-card') == 3
     assert "<summary>查看全览版播报稿</summary>" in response.text
 
 
@@ -852,6 +853,15 @@ EDITORIAL_FORM = {
     "evidence_assessment": "公开证据可追溯，但尚未达到独立确认门槛。",
 }
 
+OVERVIEW_EDITORIAL_FORM = {
+    "decision": "needs_evidence",
+    "zh_title": "全览人工标题",
+    "zh_summary": "全览中文文章概述",
+    "review_recommendation": "继续寻找第一方公告。",
+    "evidence_assessment": "目前只有单一公开来源。",
+    "duplicate_of_overview_item_id": "",
+}
+
 
 def test_editorial_review_post_requires_token_and_writes_draft(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
@@ -879,6 +889,110 @@ def test_editorial_review_post_requires_token_and_writes_draft(
     assert saved is not None
     assert saved.emerging[0].editorial_review is not None
     assert saved.emerging[0].editorial_review.zh_title == "人工标题"
+
+
+def test_overview_editorial_review_post_requires_token_and_writes_draft(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).overview_items(report.id)[1]
+    client = TestClient(create_app(), base_url="http://127.0.0.1")
+
+    forbidden = client.post(
+        f"/daily-reports/{report.id}/overview-items/{item.id}/editorial-reviews",
+        data=OVERVIEW_EDITORIAL_FORM,
+    )
+
+    assert forbidden.status_code == 400
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    response = client.post(
+        f"/daily-reports/{report.id}/overview-items/{item.id}/editorial-reviews",
+        data={"action_token": token, **OVERVIEW_EDITORIAL_FORM},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == (
+        f"/daily-reports/{report.id}#overview-item-{item.id}"
+    )
+    saved = DailyReportQueryService(db_session).detail(report.id)
+    assert saved is not None
+    saved_item = next(row for row in saved.overview.items if row.item_id == item.id)
+    assert saved_item.editorial_review is not None
+    assert saved_item.editorial_review.zh_title == "全览人工标题"
+
+
+def test_draft_page_renders_overview_summary_all_candidates_and_chinese_review_form(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    first, second = repository.overview_items(report.id)
+    report_id, first_id, second_id = report.id, first.id, second.id
+    repository.save_overview_editorial_review(
+        report.id,
+        first.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="keep",
+            zh_title="<script>人工保留标题</script>",
+            zh_summary="人工保留概述\n第二段",
+            review_recommendation="继续关注",
+            evidence_assessment="已有第一方证据。",
+        ),
+    )
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert "情报全览审核" in response.text
+    assert "候选总数" in response.text and ">2<" in response.text
+    assert "进入全览" in response.text and ">1<" in response.text
+    assert "未审核" in response.text and "尚有 1 条" in response.text
+    assert response.text.count('class="overview-audit-card') == 2
+    assert f'id="overview-item-{first_id}"' in response.text
+    assert f'id="overview-item-{second_id}"' in response.text
+    assert (
+        f"/daily-reports/{report_id}/overview-items/{second_id}/editorial-reviews"
+        in response.text
+    )
+    assert "中文文章概述" in response.text
+    assert "中文审核建议" in response.text
+    assert "中文证据评价" in response.text
+    assert "<script>人工保留标题</script>" not in response.text
+    assert "&lt;script&gt;人工保留标题&lt;/script&gt;" in response.text
+
+
+def test_archived_page_keeps_overview_audit_history_read_only(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    item = repository.overview_items(report.id)[0]
+    report_id, item_id = report.id, item.id
+    repository.save_overview_editorial_review(
+        report.id,
+        item.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="keep",
+            zh_title="归档全览标题",
+            zh_summary="归档全览概述",
+            review_recommendation="继续关注",
+            evidence_assessment="已有第一方证据。",
+        ),
+    )
+    repository.archive(report.id)
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert "全览审核历史" in response.text
+    assert "编辑全览中文审核" not in response.text
+    assert (
+        f"/daily-reports/{report_id}/overview-items/{item_id}/editorial-reviews"
+        not in response.text
+    )
 
 
 @pytest.mark.parametrize(
