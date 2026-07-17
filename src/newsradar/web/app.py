@@ -20,6 +20,7 @@ from starlette.templating import Jinja2Templates
 
 from newsradar.credentials import SettingsCredentials
 from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.schema import DailyReportEditorialReviewDraft
 from newsradar.db.models import OperationRunRecord, SourceDefinitionRecord
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
@@ -107,6 +108,26 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
     "daily_report_archived": (409, "该日报已归档，不能再修改。"),
     "daily_report_must_be_archived": (409, "仅已归档的日报可以创建修订版。"),
     "daily_report_revision_conflict": (409, "日报修订发生冲突，请刷新页面后重试。"),
+    "invalid_daily_report_editorial_decision": (
+        422,
+        "审核结论仅支持保留、待补证、排除或合并重复。",
+    ),
+    "invalid_daily_report_editorial_title": (
+        422,
+        "中文标题不能为空且不能超过 240 个字符。",
+    ),
+    "invalid_daily_report_editorial_summary": (
+        422,
+        "中文文章概述不能为空且不能超过 4000 个字符。",
+    ),
+    "invalid_daily_report_editorial_recommendation": (
+        422,
+        "中文审核建议不能为空且不能超过 2000 个字符。",
+    ),
+    "invalid_daily_report_editorial_evidence_assessment": (
+        422,
+        "中文证据评价不能为空且不能超过 2000 个字符。",
+    ),
 }
 
 _PROVIDER_CATEGORIES = (
@@ -164,9 +185,7 @@ def _normalized_query(value: str | None) -> str | None:
     return value.strip()[:100]
 
 
-def _daily_report_http_error(
-    error: Exception, *, default_status: int
-) -> HTTPException:
+def _daily_report_http_error(error: Exception, *, default_status: int) -> HTTPException:
     error_code = str(error)
     logger.info("daily report request rejected", extra={"error_code": error_code})
     status_code, detail = _DAILY_REPORT_ERRORS.get(
@@ -601,19 +620,38 @@ def create_app(
         values = await require_safe_action(request)
         included_value = values.get("included")
         if included_value not in {"true", "false"}:
-            raise HTTPException(
-                status_code=422, detail="收录状态必须明确为 true 或 false。"
-            )
+            raise HTTPException(status_code=422, detail="收录状态必须明确为 true 或 false。")
         included = included_value == "true"
         try:
             with create_session() as session:
-                DailyReportRepository(session).set_included(
-                    report_id, item_id, included=included
-                )
+                DailyReportRepository(session).set_included(report_id, item_id, included=included)
         except LookupError as error:
             raise _daily_report_http_error(error, default_status=404) from error
         except ValueError as error:
             raise _daily_report_http_error(error, default_status=409) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.post("/daily-reports/{report_id}/items/{item_id}/editorial-reviews")
+    async def save_daily_report_editorial_review(
+        request: Request, report_id: int, item_id: int
+    ) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            draft = DailyReportEditorialReviewDraft.create(
+                decision=values.get("decision", ""),
+                zh_title=values.get("zh_title", ""),
+                zh_summary=values.get("zh_summary", ""),
+                review_recommendation=values.get("review_recommendation", ""),
+                evidence_assessment=values.get("evidence_assessment", ""),
+            )
+            with create_session() as session:
+                DailyReportRepository(session).save_editorial_review(report_id, item_id, draft)
+        except LookupError as error:
+            raise _daily_report_http_error(error, default_status=404) from error
+        except ValueError as error:
+            raise _daily_report_http_error(error, default_status=422) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
@@ -712,9 +750,7 @@ def create_app(
         )
 
     @app.get("/event-merge-candidates/{candidate_id}", response_class=HTMLResponse)
-    def event_merge_candidate_detail(
-        request: Request, candidate_id: int
-    ) -> HTMLResponse:
+    def event_merge_candidate_detail(request: Request, candidate_id: int) -> HTMLResponse:
         try:
             with create_session() as session:
                 candidate = EventMergeQueryService(session).get_candidate(candidate_id)
@@ -745,9 +781,7 @@ def create_app(
         await require_safe_action(request)
         try:
             with create_session() as session:
-                operation_id = OperationCommandService(
-                    session
-                ).enqueue_event_merge_scan("web")
+                operation_id = OperationCommandService(session).enqueue_event_merge_scan("web")
         except SQLAlchemyError as error:
             return database_error_response(request, error)
         except ValueError as error:
@@ -755,9 +789,7 @@ def create_app(
                 "event merge scan request rejected",
                 extra={"error_type": type(error).__name__},
             )
-            raise HTTPException(
-                status_code=422, detail="无法创建事件合并候选扫描任务。"
-            ) from error
+            raise HTTPException(status_code=422, detail="无法创建事件合并候选扫描任务。") from error
         except Exception as error:
             logger.error(
                 "event merge scan enqueue failed",
@@ -783,12 +815,10 @@ def create_app(
                         status_code=409, detail="该候选已处理或已过期，不能重复操作。"
                     )
                 if decision not in candidate.allowed_decisions:
-                    raise HTTPException(
-                        status_code=422, detail="该候选类型不允许此处理动作。"
-                    )
-                operation_id = OperationCommandService(
-                    session
-                ).enqueue_event_merge_decision(candidate_id, decision, "web")
+                    raise HTTPException(status_code=422, detail="该候选类型不允许此处理动作。")
+                operation_id = OperationCommandService(session).enqueue_event_merge_decision(
+                    candidate_id, decision, "web"
+                )
         except HTTPException:
             raise
         except SQLAlchemyError as error:
@@ -798,9 +828,7 @@ def create_app(
                 "event merge decision rejected",
                 extra={"error_type": type(error).__name__},
             )
-            raise HTTPException(
-                status_code=422, detail="无法创建候选处理任务。"
-            ) from error
+            raise HTTPException(status_code=422, detail="无法创建候选处理任务。") from error
         except Exception as error:
             logger.error(
                 "event merge decision enqueue failed",

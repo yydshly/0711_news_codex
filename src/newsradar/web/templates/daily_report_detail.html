@@ -1,4 +1,67 @@
 {% extends "base.html" %}
+{% macro render_item(item, fallback_title, fallback_summary) %}
+{% set evidence_rows = item.snapshot.get('evidence', []) %}
+{% set review = item.editorial_review %}
+<article class="event-card{% if not item.included %} muted{% endif %}">
+  <p class="eyebrow">{{ '已确认' if item.section == 'confirmed' else '尚未确认' }} · 事件 #{{ item.event_id }} · 版本 {{ item.event_version_number }}</p>
+  <h3>{{ review.zh_title if review else item.snapshot.get('zh_title', fallback_title) }}</h3>
+  <p>{{ review.zh_summary if review else item.snapshot.get('zh_summary', fallback_summary) }}</p>
+  {% if review %}
+  <p><strong>人工审核版本</strong> · 第 {{ review.revision }} 版</p>
+  <p><strong>审核建议：</strong>{{ review.review_recommendation }}</p>
+  <p><strong>证据评价：</strong>{{ review.evidence_assessment }}</p>
+  {% else %}
+  <p><strong>尚未人工审核</strong></p>
+  {% endif %}
+  <p><strong>为何值得关注：</strong>{{ item.snapshot.get('why_it_matters', '暂无说明') }}</p>
+  <p><strong>证据 {{ evidence_rows|length }} 条</strong>{% if item.snapshot.get('independent_root_count') is not none %} · 独立证据根 {{ item.snapshot.get('independent_root_count') }}{% endif %}</p>
+  {% if item.snapshot.get('confirmation_summary') %}<p><strong>确认说明：{{ item.snapshot.get('confirmation_summary') }}</strong></p>{% endif %}
+  {% if item.snapshot.get('limitations') %}<p><strong>事件限制：{{ item.snapshot.get('limitations')|join('；') }}</strong></p>{% endif %}
+  {% if not item.included %}<p><strong>本版未收录</strong></p>{% endif %}
+  <h4>公开证据</h4>
+  <ul>
+    {% for evidence in evidence_rows %}
+    {% set safe_url = evidence.get('url')|daily_report_public_url %}
+    <li>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '证据') }}</a>{% else %}{{ evidence.get('title', '证据') }}{% endif %}{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %} · 来源角色：{{ evidence.get('role')|zh_label('evidence_role') }} · 独立证据：{{ '是' if evidence.get('independent') else '否' }}{% if evidence.get('limitations') %} · 证据限制：{{ evidence.get('limitations')|join('；') }}{% endif %}</li>
+    {% else %}<li>当前快照未记录公开证据链接。</li>{% endfor %}
+  </ul>
+  {% if daily_report.report.status == 'draft' %}
+  <details>
+    <summary>编辑中文审核内容</summary>
+    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/items/{{ item.item_id }}/editorial-reviews">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <label>审核结论
+        <select name="decision">
+          <option value="keep"{% if not review or review.decision == 'keep' %} selected{% endif %}>保留</option>
+          <option value="needs_evidence"{% if review and review.decision == 'needs_evidence' %} selected{% endif %}>待补证</option>
+          <option value="exclude"{% if review and review.decision == 'exclude' %} selected{% endif %}>排除</option>
+          <option value="duplicate"{% if review and review.decision == 'duplicate' %} selected{% endif %}>合并重复</option>
+        </select>
+      </label>
+      <label>中文标题<input type="text" name="zh_title" value="{{ review.zh_title if review else item.snapshot.get('zh_title', '') }}" required maxlength="240"></label>
+      <label>中文文章概述<textarea name="zh_summary" required maxlength="4000">{{ review.zh_summary if review else item.snapshot.get('zh_summary', '') }}</textarea></label>
+      <label>中文审核建议<textarea name="review_recommendation" required maxlength="2000">{{ review.review_recommendation if review else '' }}</textarea></label>
+      <label>中文证据评价<textarea name="evidence_assessment" required maxlength="2000">{{ review.evidence_assessment if review else '' }}</textarea></label>
+      <button type="submit">保存审核</button>
+    </form>
+  </details>
+  <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/items/{{ item.item_id }}/move" class="inline-action">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit" name="direction" value="up">上移</button>
+    <button type="submit" name="direction" value="down">下移</button>
+  </form>
+  {% elif item.editorial_history %}
+  <section aria-label="审核历史">
+    <h4>审核历史</h4>
+    <ol>
+      {% for historical_review in item.editorial_history %}
+      <li>第 {{ historical_review.revision }} 版 · {{ historical_review.zh_title }} · {{ historical_review.zh_summary }} · 审核建议：{{ historical_review.review_recommendation }} · 证据评价：{{ historical_review.evidence_assessment }}</li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+</article>
+{% endmacro %}
 {% block title %}{{ daily_report.report.report_date.isoformat() }} 中文日报 · News Codex{% endblock %}
 {% block header %}<h1>{{ daily_report.report.report_date.isoformat() }} 中文日报</h1>{% endblock %}
 {% block content %}
@@ -30,36 +93,7 @@
 <section class="panel" aria-labelledby="confirmed-report-heading">
   <h2 id="confirmed-report-heading">今日确认要闻</h2>
   {% for item in daily_report.confirmed %}
-  {% set evidence_rows = item.snapshot.get('evidence', []) %}
-  <article class="event-card{% if not item.included %} muted{% endif %}">
-    <p class="eyebrow">已确认 · 事件 #{{ item.event_id }} · 版本 {{ item.event_version_number }}</p>
-    <h3>{{ item.snapshot.get('zh_title', '未命名事件') }}</h3>
-    <p>{{ item.snapshot.get('zh_summary', '暂无摘要') }}</p>
-    <p><strong>为何值得关注：</strong>{{ item.snapshot.get('why_it_matters', '暂无说明') }}</p>
-    <p><strong>证据 {{ evidence_rows|length }} 条</strong>{% if item.snapshot.get('independent_root_count') is not none %} · 独立证据根 {{ item.snapshot.get('independent_root_count') }}{% endif %}</p>
-    {% if item.snapshot.get('confirmation_summary') %}<p><strong>确认说明：{{ item.snapshot.get('confirmation_summary') }}</strong></p>{% endif %}
-    {% if item.snapshot.get('limitations') %}<p><strong>事件限制：{{ item.snapshot.get('limitations')|join('；') }}</strong></p>{% endif %}
-    {% if not item.included %}<p><strong>本版未收录</strong></p>{% endif %}
-    <h4>公开证据</h4>
-    <ul>
-      {% for evidence in evidence_rows %}
-      {% set safe_url = evidence.get('url')|daily_report_public_url %}
-      <li>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '证据') }}</a>{% else %}{{ evidence.get('title', '证据') }}{% endif %}{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %} · 来源角色：{{ evidence.get('role')|zh_label('evidence_role') }} · 独立证据：{{ '是' if evidence.get('independent') else '否' }}{% if evidence.get('limitations') %} · 证据限制：{{ evidence.get('limitations')|join('；') }}{% endif %}</li>
-      {% else %}<li>当前快照未记录公开证据链接。</li>{% endfor %}
-    </ul>
-    {% if daily_report.report.status == 'draft' %}
-    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/items/{{ item.item_id }}/included" class="inline-action">
-      <input type="hidden" name="action_token" value="{{ action_token }}">
-      <input type="hidden" name="included" value="{{ 'true' if not item.included else 'false' }}">
-      <button type="submit">{{ '恢复' if not item.included else '排除' }}</button>
-    </form>
-    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/items/{{ item.item_id }}/move" class="inline-action">
-      <input type="hidden" name="action_token" value="{{ action_token }}">
-      <button type="submit" name="direction" value="up">上移</button>
-      <button type="submit" name="direction" value="down">下移</button>
-    </form>
-    {% endif %}
-  </article>
+  {{ render_item(item, '未命名事件', '暂无摘要') }}
   {% else %}<p>本版暂无确认要闻。</p>{% endfor %}
 </section>
 
@@ -67,36 +101,7 @@
   <p><strong>尚未确认</strong>：以下内容是值得关注的早期线索，不应作为已确认事实传播。</p>
   <h2 id="emerging-report-heading">值得关注的线索</h2>
   {% for item in daily_report.emerging %}
-  {% set evidence_rows = item.snapshot.get('evidence', []) %}
-  <article class="event-card{% if not item.included %} muted{% endif %}">
-    <p class="eyebrow">尚未确认 · 事件 #{{ item.event_id }} · 版本 {{ item.event_version_number }}</p>
-    <h3>{{ item.snapshot.get('zh_title', '未命名线索') }}</h3>
-    <p>{{ item.snapshot.get('zh_summary', '暂无摘要') }}</p>
-    <p><strong>为何值得关注：</strong>{{ item.snapshot.get('why_it_matters', '暂无说明') }}</p>
-    <p><strong>证据 {{ evidence_rows|length }} 条</strong>{% if item.snapshot.get('independent_root_count') is not none %} · 独立证据根 {{ item.snapshot.get('independent_root_count') }}{% endif %}</p>
-    {% if item.snapshot.get('confirmation_summary') %}<p><strong>确认说明：{{ item.snapshot.get('confirmation_summary') }}</strong></p>{% endif %}
-    {% if item.snapshot.get('limitations') %}<p><strong>事件限制：{{ item.snapshot.get('limitations')|join('；') }}</strong></p>{% endif %}
-    {% if not item.included %}<p><strong>本版未收录</strong></p>{% endif %}
-    <h4>公开证据</h4>
-    <ul>
-      {% for evidence in evidence_rows %}
-      {% set safe_url = evidence.get('url')|daily_report_public_url %}
-      <li>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '证据') }}</a>{% else %}{{ evidence.get('title', '证据') }}{% endif %}{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %} · 来源角色：{{ evidence.get('role')|zh_label('evidence_role') }} · 独立证据：{{ '是' if evidence.get('independent') else '否' }}{% if evidence.get('limitations') %} · 证据限制：{{ evidence.get('limitations')|join('；') }}{% endif %}</li>
-      {% else %}<li>当前快照未记录公开证据链接。</li>{% endfor %}
-    </ul>
-    {% if daily_report.report.status == 'draft' %}
-    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/items/{{ item.item_id }}/included" class="inline-action">
-      <input type="hidden" name="action_token" value="{{ action_token }}">
-      <input type="hidden" name="included" value="{{ 'true' if not item.included else 'false' }}">
-      <button type="submit">{{ '恢复' if not item.included else '排除' }}</button>
-    </form>
-    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/items/{{ item.item_id }}/move" class="inline-action">
-      <input type="hidden" name="action_token" value="{{ action_token }}">
-      <button type="submit" name="direction" value="up">上移</button>
-      <button type="submit" name="direction" value="down">下移</button>
-    </form>
-    {% endif %}
-  </article>
+  {{ render_item(item, '未命名线索', '暂无摘要') }}
   {% else %}<p>本版暂无未确认线索。</p>{% endfor %}
 </section>
 {% endblock %}
