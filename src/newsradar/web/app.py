@@ -694,7 +694,7 @@ def create_app(
             with create_session() as session:
                 OperationCommandService(session).archive_and_enqueue_daily_report_audio(
                     report_id=report_id,
-                    trigger="daily_report_archive",
+                    trigger="daily_archive",
                 )
         except LookupError as error:
             raise _daily_report_http_error(error, default_status=404) from error

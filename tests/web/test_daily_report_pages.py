@@ -392,6 +392,8 @@ def test_archiving_daily_report_automatically_queues_decision_audio(
         .order_by(OperationRunRecord.id.desc())
     )
     assert operation is not None
+    assert operation.trigger == "daily_archive"
+    assert len(operation.trigger) <= 16
     assert operation.requested_scope == {
         "daily_report_id": report_id,
         "rendition": "decision",
