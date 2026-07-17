@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import urlunsplit
 
 from sqlalchemy import and_, case, func, select, tuple_
 from sqlalchemy.orm import Session
@@ -16,6 +16,13 @@ from newsradar.db.models import (
     EventRecord,
     EventVersionRecord,
     RawItemRecord,
+)
+from newsradar.url_safety import (
+    MAX_URL_IDENTITY_LENGTH,
+    bounded_url_identity,
+    parse_safe_http_url,
+    path_has_sensitive_key,
+    url_text_is_safe,
 )
 
 _MAX_ROWS = 200
@@ -32,23 +39,6 @@ _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(?:api[_-]?key|authorization|bearer|credential|password|secret|token)"
     r"\s*[:=]\s*[^\s,;]+"
 )
-_SENSITIVE_PATH_KEYS = frozenset(
-    {
-        "token",
-        "accesstoken",
-        "apikey",
-        "credential",
-        "credentials",
-        "password",
-        "secret",
-        "authorization",
-        "bearer",
-        "cookie",
-        "session",
-    }
-)
-_MAX_PATH_UNQUOTE_ROUNDS = 4
-
 _REASON_COPY: dict[str, tuple[str, str]] = {
     "exact_cross_algorithm_membership": (
         "旧算法与当前算法事件包含完全相同的原始条目。",
@@ -624,25 +614,15 @@ def _safe_text(value: object, max_length: int) -> str:
 def _public_url(value: object) -> str | None:
     if not isinstance(value, str) or not value:
         return None
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return None
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or _path_has_sensitive_key(parsed.path)
-    ):
+    parsed = parse_safe_http_url(value)
+    if parsed is None:
         return None
     netloc = parsed.hostname.casefold()
-    try:
-        if parsed.port is not None:
-            netloc += f":{parsed.port}"
-    except ValueError:
-        return None
-    return urlunsplit((parsed.scheme, netloc, parsed.path or "/", "", ""))[:1000]
+    if parsed.port is not None:
+        netloc += f":{parsed.port}"
+    return bounded_url_identity(
+        urlunsplit((parsed.scheme, netloc, parsed.path or "/", "", ""))
+    )
 
 
 def _safe_identity(value: object) -> str | None:
@@ -652,42 +632,13 @@ def _safe_identity(value: object) -> str | None:
         return _public_url(value)
     if any(marker in value for marker in ("?", "#", "@")):
         return None
-    if _path_has_sensitive_key(value):
+    if not url_text_is_safe(value, max_length=MAX_URL_IDENTITY_LENGTH):
+        return None
+    if path_has_sensitive_key(value):
         return None
     if _SECRET_ASSIGNMENT.search(value):
         return None
-    return _safe_text(value, 1000) or None
-
-
-def _path_has_sensitive_key(value: str) -> bool:
-    current = value
-    for _ in range(_MAX_PATH_UNQUOTE_ROUNDS):
-        if _decoded_path_has_sensitive_key(current):
-            return True
-        try:
-            decoded = unquote(current, errors="strict")
-        except (UnicodeDecodeError, ValueError):
-            return True
-        if decoded == current:
-            return False
-        current = decoded
-
-    if _decoded_path_has_sensitive_key(current):
-        return True
-    try:
-        decoded = unquote(current, errors="strict")
-    except (UnicodeDecodeError, ValueError):
-        return True
-    return decoded != current
-
-
-def _decoded_path_has_sensitive_key(value: str) -> bool:
-    for raw_segment in value.split("/"):
-        key = re.split(r"[:=]", raw_segment, maxsplit=1)[0]
-        normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
-        if normalized in _SENSITIVE_PATH_KEYS:
-            return True
-    return False
+    return value
 
 
 def _safe_identities(

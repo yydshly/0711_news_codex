@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from hashlib import sha256
-from urllib.parse import SplitResult, parse_qsl, urlsplit
+from urllib.parse import SplitResult, parse_qsl, urlunsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,6 +23,11 @@ from newsradar.events.clustering import _action as clustering_action
 from newsradar.events.entities import extract_entities
 from newsradar.events.relevance import normalize_text
 from newsradar.events.schema import EntityType, RawItemText
+from newsradar.url_safety import (
+    MAX_URL_QUERY_FIELDS,
+    bounded_url_identity,
+    parse_safe_http_url,
+)
 
 EVENT_MERGE_RULE_VERSION = "event-merge-v2"
 _INTERMEDIARY_HOSTS = frozenset({"news.google.com", "news.yahoo.com"})
@@ -30,7 +35,7 @@ _YOUTUBE_HOSTS = frozenset(
     {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
 )
 _YOUTUBE_SHORT_HOSTS = frozenset({"youtu.be", "www.youtu.be"})
-_YOUTUBE_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_YOUTUBE_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _KEY_NUMBER = re.compile(
     r"(?<![\w.])\d+(?:\.\d+)?(?:\s?(?:%|[BMKT]B?|million|billion))?(?!\w)",
     re.I,
@@ -45,26 +50,15 @@ _CREDENTIAL_SHAPED_EVIDENCE_ROOT = re.compile(r"^[^:/@\s]+:[^/@\s]+@")
 
 
 def safe_url_identity(value: str | None) -> str | None:
-    if not value:
+    parsed = parse_safe_http_url(value)
+    if parsed is None:
         return None
-    try:
-        parsed = urlsplit(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            return None
-        port = f":{parsed.port}" if parsed.port else ""
-    except ValueError:
-        return None
-    return f"{parsed.hostname.casefold()}{port}{parsed.path or '/'}"[:1000]
+    return bounded_url_identity(f"{_netloc(parsed)}{parsed.path or '/'}")
 
 
 def strong_url_identity(value: str | None) -> str | None:
-    if not value:
-        return None
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return None
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    parsed = parse_safe_http_url(value)
+    if parsed is None:
         return None
     hostname = parsed.hostname.casefold()
     if hostname in _INTERMEDIARY_HOSTS:
@@ -73,7 +67,9 @@ def strong_url_identity(value: str | None) -> str | None:
         return _youtube_video_identity(parsed)
     if parsed.query:
         return None
-    return safe_url_identity(value)
+    return bounded_url_identity(
+        urlunsplit((parsed.scheme, _netloc(parsed), parsed.path or "/", "", ""))
+    )
 
 
 def _youtube_video_identity(parsed: SplitResult) -> str | None:
@@ -87,7 +83,16 @@ def _youtube_video_identity(parsed: SplitResult) -> str | None:
     if port not in {None, default_port}:
         return None
     hostname = parsed.hostname.casefold()
-    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    try:
+        query_pairs = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+            max_num_fields=MAX_URL_QUERY_FIELDS,
+            errors="strict",
+        )
+    except (UnicodeDecodeError, ValueError):
+        return None
     if hostname in _YOUTUBE_SHORT_HOSTS:
         video_id = _youtube_path_video_id(parsed.path, allowed_prefixes=())
         if any(key == "v" for key, _ in query_pairs):
@@ -107,6 +112,11 @@ def _youtube_video_identity(parsed: SplitResult) -> str | None:
     if video_id is None or _YOUTUBE_VIDEO_ID.fullmatch(video_id) is None:
         return None
     return f"youtube.com/watch/{video_id}"
+
+
+def _netloc(parsed: SplitResult) -> str:
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"{parsed.hostname.casefold()}{port}"
 
 
 def _youtube_path_video_id(
@@ -237,12 +247,10 @@ def _evidence_roots(payload: dict) -> tuple[str, ...]:
 
 
 def _safe_evidence_root(value: str) -> str | None:
-    bounded = value.strip()[:1000]
-    try:
-        parsed = urlsplit(bounded)
-    except ValueError:
+    bounded = value.strip()
+    if len(bounded) > 1000:
         return None
-    if parsed.scheme in {"http", "https"}:
+    if bounded.casefold().startswith(("http://", "https://")):
         return safe_url_identity(bounded)
     if (
         not bounded

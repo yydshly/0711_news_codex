@@ -18,6 +18,7 @@ from newsradar.event_merges.facts import (
     EVENT_MERGE_RULE_VERSION,
     load_event_facts,
     merge_input_fingerprint,
+    safe_url_identity,
     strong_url_identity,
 )
 from newsradar.event_merges.schema import EventMergeFacts
@@ -124,7 +125,7 @@ def test_event_facts_keep_real_original_media_identity(session) -> None:
 
     facts = load_event_facts(session, event_id)
 
-    assert "www.reuters.com/technology/story-123" in facts.strong_identities
+    assert "https://www.reuters.com/technology/story-123" in facts.strong_identities
     assert "example.com/story" not in facts.strong_identities
     assert "secret" not in repr(facts)
 
@@ -153,6 +154,13 @@ def test_different_youtube_video_ids_have_different_strong_identities() -> None:
     assert first != second
 
 
+@pytest.mark.parametrize("video_id", ["A", "AbCdEf123_", "AbCdEf123_-x"])
+def test_youtube_video_id_must_be_exactly_eleven_safe_characters(
+    video_id: str,
+) -> None:
+    assert strong_url_identity(f"https://youtube.com/watch?v={video_id}") is None
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -164,6 +172,11 @@ def test_different_youtube_video_ids_have_different_strong_identities() -> None:
         "https://youtube.example/watch?v=AbCdEf123_-",
         "https://example.com/watch?id=AbCdEf123_-",
         "https://example.com/story?token=SECRET-MARKER",
+        "https://youtube.com/watch?v=AbCdEf123_-&" + "x=1&" * 32,
+        "https://youtube.com/watch?v=AbCdEf123_-&q=" + "x" * 2050,
+        "https://youtube.com/watch?v=AbCdEf123_-&broken",
+        "https://youtube.com/watch?v=AbCdEf123_-&q=%FF",
+        "https://youtube.com/watch?v=AbCdEf123_-#" + "x" * 4_100,
     ],
 )
 def test_query_bearing_or_ambiguous_urls_are_not_strong(url: str) -> None:
@@ -171,6 +184,93 @@ def test_query_bearing_or_ambiguous_urls_are_not_strong(url: str) -> None:
 
     assert identity is None
     assert "SECRET-MARKER" not in repr(identity)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:password@example.com/story",
+        "https://example.com/sto ry",
+        "https://example.com/story\nnext",
+        "https://example.com/story\x7fnext",
+        "https://example.com\\story",
+    ],
+)
+def test_url_identities_reject_userinfo_whitespace_controls_and_backslash(
+    url: str,
+) -> None:
+    assert safe_url_identity(url) is None
+    assert strong_url_identity(url) is None
+
+
+def test_different_userinfo_urls_are_rejected_instead_of_colliding() -> None:
+    urls = (
+        "https://alice:first@example.com/story",
+        "https://bob:second@example.com/story",
+    )
+
+    assert [safe_url_identity(url) for url in urls] == [None, None]
+    assert [strong_url_identity(url) for url in urls] == [None, None]
+
+
+def test_general_strong_identity_preserves_scheme() -> None:
+    http = strong_url_identity("http://example.com/story")
+    https = strong_url_identity("https://example.com/story")
+
+    assert http == "http://example.com/story"
+    assert https == "https://example.com/story"
+    assert http != https
+    assert safe_url_identity("http://example.com/story") == "example.com/story"
+    assert safe_url_identity("https://example.com/story") == "example.com/story"
+
+
+def test_url_identities_reject_overlong_input_and_output_instead_of_truncating() -> None:
+    overlong_inputs = (
+        "https://example.com/" + "a" * 4_100,
+        "https://example.com/" + "a" * 4_099 + "b",
+    )
+    long_outputs = (
+        "https://example.com/" + "a" * 990 + "x",
+        "https://example.com/" + "a" * 990 + "y",
+    )
+
+    for url in (*overlong_inputs, *long_outputs):
+        assert safe_url_identity(url) is None
+        assert strong_url_identity(url) is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/token/SECRET-MARKER/story",
+        "/api_key=SECRET-MARKER/story",
+        "/credential:SECRET-MARKER/story",
+        "/%2574oken/SECRET-MARKER/story",
+    ],
+)
+def test_url_identities_reject_sensitive_plain_and_encoded_paths(path: str) -> None:
+    url = f"https://example.com{path}"
+
+    safe = safe_url_identity(url)
+    strong = strong_url_identity(url)
+
+    assert safe is None
+    assert strong is None
+    assert "SECRET-MARKER" not in repr((safe, strong))
+
+
+def test_event_facts_never_persist_sensitive_path_marker(session) -> None:
+    event_id = _seed_event(
+        session,
+        canonical_url="https://example.com/%2574oken/SECRET-MARKER/story",
+        original_url="https://example.com/api_key=SECRET-MARKER/story",
+    )
+
+    facts = load_event_facts(session, event_id)
+
+    assert facts.safe_url_identities == ()
+    assert facts.strong_identities == ()
+    assert "SECRET-MARKER" not in repr(facts)
 
 
 def test_merge_fingerprint_uses_current_v2_rule_version() -> None:

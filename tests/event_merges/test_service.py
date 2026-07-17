@@ -17,6 +17,7 @@ from newsradar.db.models import (
     EventItemRecord,
     EventMergeCandidateRecord,
     EventRecord,
+    EventScoreRecord,
     EventVersionRecord,
     OperationRunRecord,
     RawItemProcessingRecord,
@@ -445,6 +446,33 @@ def test_apply_expires_candidate_when_event_version_changes(session: Session) ->
     session.refresh(candidate)
     assert candidate.status == "expired"
     assert _rows(session, EventItemRecord) == before_memberships
+
+
+def test_apply_expires_pending_v1_candidate_before_any_publication(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _seed_candidate(session)
+    candidate.algorithm_version = "event-merge-v1"
+    session.commit()
+    protected = (EventVersionRecord, EventItemRecord, EventScoreRecord)
+    before = {model: _rows(session, model) for model in protected}
+
+    def fail_publication(*_args, **_kwargs):
+        pytest.fail("historical v1 candidate reached publication", pytrace=False)
+
+    monkeypatch.setattr(
+        EventMergeService,
+        "_publish_revalidated_pair",
+        fail_publication,
+    )
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    session.refresh(candidate)
+    assert result == result.expired(candidate.id, "event_merge_algorithm_changed")
+    assert candidate.status == "expired"
+    assert {model: _rows(session, model) for model in protected} == before
 
 
 def test_apply_revalidates_after_claim_when_version_changes_after_preread(
@@ -973,20 +1001,39 @@ def test_real_scan_regression_keeps_partial_overlap_manual_and_youtube_ids_separ
     )
     session.add(EventItemRecord(event_id=2, raw_item_id=453, added_version_number=1))
     youtube_rows = (
-        (10, "A1b2C3d4E5_", "Developer conference keynote"),
-        (11, "F6g7H8i9J0-", "Independent hardware review"),
-        (12, "K1l2M3n4O5_", "Scientific interview"),
-        (13, "P6q7R8s9T0-", "Market analysis discussion"),
-        (14, "U1v2W3x4Y5_", "Open source project demo"),
-        (15, "Z6a7B8c9D0-", "Cloud engineering tutorial"),
-        (16, "E1f2G3h4I5_", "Robotics laboratory tour"),
-        (17, "J6k7L8m9N0-", "Policy roundtable recording"),
+        (87, 392, "-J5KoSMfPLk", "Learning with AI at Any Stage of Life | Fast Campus x OpenAI"),
+        (
+            119,
+            637,
+            "KmfxdySAtNc",
+            "Tune the Harness, Before Tuning the Model with LangChain | Nemotron Labs",
+        ),
+        (
+            132,
+            666,
+            "2kvu6h1FQPc",
+            "Karpathy: Context Windows are a cheap way to manupilate AI",
+        ),
+        (
+            152,
+            731,
+            "jhpmMTus5a0",
+            "The AI Memory Problem: Why Long Context Isn’t Enough — "
+            "Dan Biderman, Engram Co-founder & CEO",
+        ),
+        (
+            282,
+            697,
+            "l2b9UrSsz-w",
+            "Alignment with Awakening: Davidad on Moral Realism, AI Wisdom, "
+            "& why His p(Doom) is Down to 5%",
+        ),
     )
-    for event_id, video_id, title in youtube_rows:
+    for event_id, raw_item_id, video_id, title in youtube_rows:
         _seed_event(
             session,
             event_id,
-            event_id * 100,
+            raw_item_id,
             url=f"https://www.youtube.com/watch?v={video_id}",
             title=title,
         )
@@ -1196,7 +1243,7 @@ def test_scan_redacts_untrusted_evidence_roots_before_candidate_snapshot(
     assert result.candidate_type_counts == {"deterministic_merge": 1}
     assert record is not None
     serialized = repr(record.facts_snapshot)
-    assert "example.com/story" in serialized
+    assert "example.com/story" not in serialized
     assert "publisher:reuters" in serialized
     assert "secret" not in serialized.casefold()
     assert "password" not in serialized.casefold()
