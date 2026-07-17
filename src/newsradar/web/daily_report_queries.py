@@ -6,7 +6,11 @@ from datetime import date, datetime
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import DailyReportItemRecord, DailyReportRecord
+from newsradar.db.models import (
+    DailyReportItemEditorialReviewRecord,
+    DailyReportItemRecord,
+    DailyReportRecord,
+)
 from newsradar.events.operation_snapshots import latest_complete_event_snapshot
 
 
@@ -24,6 +28,18 @@ class DailyReportSummaryView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportEditorialReviewView:
+    review_id: int
+    revision: int
+    decision: str
+    zh_title: str
+    zh_summary: str
+    review_recommendation: str
+    evidence_assessment: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportItemView:
     item_id: int
     event_id: int
@@ -32,6 +48,8 @@ class DailyReportItemView:
     position: int
     included: bool
     snapshot: dict[str, object]
+    editorial_review: DailyReportEditorialReviewView | None
+    editorial_history: tuple[DailyReportEditorialReviewView, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +93,43 @@ class DailyReportQueryService:
                 )
             )
         )
+        review_history_by_item: dict[
+            int, tuple[DailyReportEditorialReviewView, ...]
+        ] = {}
+        if rows:
+            review_views_by_item: dict[int, list[DailyReportEditorialReviewView]] = {}
+            reviews = self.session.scalars(
+                select(DailyReportItemEditorialReviewRecord)
+                .where(
+                    DailyReportItemEditorialReviewRecord.daily_report_item_id.in_(
+                        tuple(row.id for row in rows)
+                    )
+                )
+                .order_by(
+                    DailyReportItemEditorialReviewRecord.daily_report_item_id,
+                    DailyReportItemEditorialReviewRecord.revision,
+                    DailyReportItemEditorialReviewRecord.id,
+                )
+            )
+            for review in reviews:
+                review_views_by_item.setdefault(
+                    review.daily_report_item_id, []
+                ).append(
+                    DailyReportEditorialReviewView(
+                        review_id=review.id,
+                        revision=review.revision,
+                        decision=review.decision,
+                        zh_title=review.zh_title,
+                        zh_summary=review.zh_summary,
+                        review_recommendation=review.review_recommendation,
+                        evidence_assessment=review.evidence_assessment,
+                        created_at=review.created_at,
+                    )
+                )
+            review_history_by_item = {
+                item_id: tuple(history)
+                for item_id, history in review_views_by_item.items()
+            }
         views = tuple(
             DailyReportItemView(
                 item_id=row.id,
@@ -84,6 +139,12 @@ class DailyReportQueryService:
                 position=row.position,
                 included=row.included,
                 snapshot=dict(row.snapshot) if isinstance(row.snapshot, dict) else {},
+                editorial_review=(
+                    review_history_by_item[row.id][-1]
+                    if row.id in review_history_by_item
+                    else None
+                ),
+                editorial_history=review_history_by_item.get(row.id, ()),
             )
             for row in rows
         )

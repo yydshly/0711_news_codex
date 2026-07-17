@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     DailyReportDraft,
+    DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
     ReportSection,
 )
@@ -21,8 +22,25 @@ from newsradar.db.models import (
     OperationRunRecord,
 )
 from newsradar.web.app import create_app
+from newsradar.web.daily_report_queries import DailyReportQueryService
 
 NOW = datetime(2026, 7, 16, 4, tzinfo=UTC)
+
+REVIEW_NEEDS_EVIDENCE = DailyReportEditorialReviewDraft.create(
+    decision="needs_evidence",
+    zh_title="人工标题",
+    zh_summary="人工中文概述",
+    review_recommendation="保留为线索并补充第一方证据",
+    evidence_assessment="现有链接可发现，独立根数仍不足。",
+)
+
+REVIEW_EXCLUDE = DailyReportEditorialReviewDraft.create(
+    decision="exclude",
+    zh_title="排除标题",
+    zh_summary="排除后的中文概述",
+    review_recommendation="不纳入本期日报",
+    evidence_assessment="后续证据不足以支持收录。",
+)
 
 
 def safe_client_with_token(
@@ -191,6 +209,75 @@ def test_daily_report_detail_separates_confirmed_and_unconfirmed(
     assert f"Operation #{operation_id}" in response.text
     assert 'href="https://example.com/evidence"' in response.text
     assert 'target="_blank" rel="noopener noreferrer"' in response.text
+
+
+def test_detail_projects_latest_editorial_review_and_ordered_history(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    item = repository.items(report.id)[1]
+    first = repository.save_editorial_review(
+        report.id, item.id, REVIEW_NEEDS_EVIDENCE
+    )
+    latest = repository.save_editorial_review(report.id, item.id, REVIEW_EXCLUDE)
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    view = next(row for row in detail.emerging if row.item_id == item.id)
+    assert view.snapshot["evidence"] == [
+        {
+            "title": "公开证据",
+            "url": "https://example.com/evidence",
+            "published_at": NOW.isoformat(),
+            "role": "professional_media",
+            "independent": True,
+            "limitations": ["原始来源尚未回应"],
+        }
+    ]
+    assert view.editorial_review is not None
+    assert (
+        view.editorial_review.review_id,
+        view.editorial_review.revision,
+        view.editorial_review.decision,
+        view.editorial_review.zh_summary,
+    ) == (latest.id, 2, "exclude", "排除后的中文概述")
+    assert [review.review_id for review in view.editorial_history] == [
+        first.id,
+        latest.id,
+    ]
+
+
+def test_detail_projects_empty_editorial_review_fields_for_unreviewed_item(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    view = detail.confirmed[0]
+    assert view.editorial_review is None
+    assert view.editorial_history == ()
+
+
+def test_archived_detail_retains_editorial_review_history(db_session: Session) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    item = repository.items(report.id)[1]
+    review = repository.save_editorial_review(
+        report.id, item.id, REVIEW_NEEDS_EVIDENCE
+    )
+    repository.archive(report.id)
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    view = next(row for row in detail.emerging if row.item_id == item.id)
+    assert view.editorial_review is not None
+    assert view.editorial_review.review_id == review.id
+    assert view.editorial_history == (view.editorial_review,)
 
 
 @pytest.mark.parametrize(
