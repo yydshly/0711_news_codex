@@ -927,6 +927,57 @@ class DailyReportItemEditorialReviewRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class DailyReportAudioArtifactRecord(Base):
+    __tablename__ = "daily_report_audio_artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "rendition IN ('decision', 'overview')",
+            name="ck_daily_report_audio_artifact_rendition",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_daily_report_audio_artifact_status",
+        ),
+        Index(
+            "ix_daily_report_audio_artifacts_report_rendition",
+            "daily_report_id",
+            "rendition",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    daily_report_id: Mapped[int] = mapped_column(
+        ForeignKey("daily_reports.id", ondelete="CASCADE"), nullable=False
+    )
+    rendition: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    script: Mapped[str] = mapped_column(Text, nullable=False)
+    script_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    voice_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    audio_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    sample_rate: Mapped[int] = mapped_column(Integer, nullable=False)
+    bitrate: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT")
+    )
+    trace_id: Mapped[str | None] = mapped_column(String(128))
+    audio_duration_ms: Mapped[int | None] = mapped_column(Integer)
+    audio_size_bytes: Mapped[int | None] = mapped_column(Integer)
+    relative_audio_path: Mapped[str | None] = mapped_column(String(512))
+    audio_sha256: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class EventVersionRecord(Base):
     __tablename__ = "event_versions"
     __table_args__ = (UniqueConstraint("event_id", "version_number"),)

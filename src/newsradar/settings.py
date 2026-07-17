@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     database_url: str | None = None
     minimax_api_key: SecretStr | None = None
+    minimax_tts_api_key: SecretStr | None = None
     minimax_base_url: str = "https://api.minimax.io"
     minimax_deep_model: str = "MiniMax-M2.7"
     minimax_fast_model: str = "MiniMax-M2.7-highspeed"
