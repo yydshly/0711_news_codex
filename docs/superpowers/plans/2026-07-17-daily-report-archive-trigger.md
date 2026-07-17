@@ -16,6 +16,7 @@
 - 不修改 MiniMax 模型、语音参数、日报内容或页面布局。
 - 不读取或修改 `.env`，不触碰用户保留报告，不合并或推送分支。
 - 使用当前独立工作树 `D:\codex_project_work\news_codex\.worktrees\fix-daily-report-archive-trigger`。
+- 所有 Python/pytest 命令先执行 `$env:PYTHONPATH=(Resolve-Path 'src').Path`，确保根目录虚拟环境加载当前工作树源码，而不是 editable 安装指向的原 main 源码。
 
 ## File Structure
 
