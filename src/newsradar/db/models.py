@@ -891,6 +891,42 @@ class DailyReportItemRecord(Base):
     snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class DailyReportItemEditorialReviewRecord(Base):
+    __tablename__ = "daily_report_item_editorial_reviews"
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="ck_daily_report_editorial_revision"),
+        CheckConstraint(
+            "decision IN ('keep', 'needs_evidence', 'exclude', 'duplicate')",
+            name="ck_daily_report_editorial_decision",
+        ),
+        UniqueConstraint(
+            "daily_report_item_id",
+            "revision",
+            name="uq_daily_report_editorial_item_revision",
+        ),
+        Index(
+            "ix_daily_report_editorial_reviews_item_revision",
+            "daily_report_item_id",
+            "revision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    daily_report_item_id: Mapped[int] = mapped_column(
+        ForeignKey("daily_report_items.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    zh_title: Mapped[str] = mapped_column(Text, nullable=False)
+    zh_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    review_recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_assessment: Mapped[str] = mapped_column(Text, nullable=False)
+    copied_from_editorial_review_id: Mapped[int | None] = mapped_column(
+        ForeignKey("daily_report_item_editorial_reviews.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class EventVersionRecord(Base):
     __tablename__ = "event_versions"
     __table_args__ = (UniqueConstraint("event_id", "version_number"),)

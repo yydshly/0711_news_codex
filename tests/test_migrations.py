@@ -192,9 +192,14 @@ def test_daily_report_migration_creates_archive_tables_without_changing_events(
     with engine.connect() as connection:
         inspector = inspect(connection)
         assert {"daily_reports", "daily_report_items"} <= set(inspector.get_table_names())
+        assert {"daily_report_item_editorial_reviews"} <= set(inspector.get_table_names())
         report_columns = {column["name"] for column in inspector.get_columns("daily_reports")}
         item_columns = {
             column["name"] for column in inspector.get_columns("daily_report_items")
+        }
+        review_columns = {
+            column["name"]
+            for column in inspector.get_columns("daily_report_item_editorial_reviews")
         }
         assert {
             "report_date",
@@ -223,6 +228,23 @@ def test_daily_report_migration_creates_archive_tables_without_changing_events(
             "uq_daily_report_identity",
             "uq_daily_report_supersedes",
         }
+        assert review_columns >= {
+            "id",
+            "daily_report_item_id",
+            "revision",
+            "decision",
+            "zh_title",
+            "zh_summary",
+            "review_recommendation",
+            "evidence_assessment",
+            "created_at",
+            "copied_from_editorial_review_id",
+        }
+        review_indexes = {
+            index["name"]
+            for index in inspector.get_indexes("daily_report_item_editorial_reviews")
+        }
+        assert "ix_daily_report_editorial_reviews_item_revision" in review_indexes
         after = {
             table_name: connection.execute(
                 text(f"SELECT count(*) FROM {table_name}")
@@ -230,6 +252,26 @@ def test_daily_report_migration_creates_archive_tables_without_changing_events(
             for table_name in ("events", "event_versions", "event_items", "event_scores")
         }
         assert after == before
+
+
+def test_daily_report_editorial_review_migration_round_trips(tmp_path: Path) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-report-editorial-reviews.db")
+    _upgrade(database_url, "20260716_0024")
+    engine = create_engine(database_url)
+
+    _upgrade(database_url, "20260717_0025")
+    with engine.connect() as connection:
+        assert "daily_report_item_editorial_reviews" in inspect(
+            connection
+        ).get_table_names()
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.downgrade(config, "20260716_0024")
+    with engine.connect() as connection:
+        assert "daily_report_item_editorial_reviews" not in inspect(
+            connection
+        ).get_table_names()
 
 
 def test_daily_report_migration_downgrade_removes_only_report_tables(tmp_path: Path) -> None:
