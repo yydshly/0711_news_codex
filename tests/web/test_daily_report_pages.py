@@ -188,9 +188,7 @@ def test_daily_report_list_orders_newest_first_and_counts_only_included(
 
     assert response.status_code == 200
     assert response.text.index("2026-07-17") < response.text.index("2026-07-16")
-    older_row = response.text.split(f'href="/daily-reports/{older_id}"', 1)[1].split(
-        "</tr>", 1
-    )[0]
+    older_row = response.text.split(f'href="/daily-reports/{older_id}"', 1)[1].split("</tr>", 1)[0]
     assert ">0<" in older_row
     assert f'href="/daily-reports/{newer_id}"' in response.text
 
@@ -217,9 +215,7 @@ def test_detail_projects_latest_editorial_review_and_ordered_history(
     report = seed_daily_report(db_session)
     repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
     item = repository.items(report.id)[1]
-    first = repository.save_editorial_review(
-        report.id, item.id, REVIEW_NEEDS_EVIDENCE
-    )
+    first = repository.save_editorial_review(report.id, item.id, REVIEW_NEEDS_EVIDENCE)
     latest = repository.save_editorial_review(report.id, item.id, REVIEW_EXCLUDE)
 
     detail = DailyReportQueryService(db_session).detail(report.id)
@@ -266,9 +262,7 @@ def test_archived_detail_retains_editorial_review_history(db_session: Session) -
     report = seed_daily_report(db_session)
     repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
     item = repository.items(report.id)[1]
-    review = repository.save_editorial_review(
-        report.id, item.id, REVIEW_NEEDS_EVIDENCE
-    )
+    review = repository.save_editorial_review(report.id, item.id, REVIEW_NEEDS_EVIDENCE)
     repository.archive(report.id)
 
     detail = DailyReportQueryService(db_session).detail(report.id)
@@ -347,20 +341,169 @@ def test_daily_report_posts_require_safe_action_token(
     assert response.status_code == 400
 
 
+EDITORIAL_FORM = {
+    "decision": "keep",
+    "zh_title": "人工标题",
+    "zh_summary": "人工中文概述",
+    "review_recommendation": "建议保留并持续补证。",
+    "evidence_assessment": "公开证据可追溯，但尚未达到独立确认门槛。",
+}
+
+
+def test_editorial_review_post_requires_token_and_writes_draft(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[1]
+    client = TestClient(create_app(), base_url="http://127.0.0.1")
+
+    forbidden = client.post(
+        f"/daily-reports/{report.id}/items/{item.id}/editorial-reviews",
+        data=EDITORIAL_FORM,
+    )
+
+    assert forbidden.status_code == 400
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    response = client.post(
+        f"/daily-reports/{report.id}/items/{item.id}/editorial-reviews",
+        data={"action_token": token, **EDITORIAL_FORM},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/daily-reports/{report.id}"
+    saved = DailyReportQueryService(db_session).detail(report.id)
+    assert saved is not None
+    assert saved.emerging[0].editorial_review is not None
+    assert saved.emerging[0].editorial_review.zh_title == "人工标题"
+
+
+@pytest.mark.parametrize(
+    ("values", "detail"),
+    (
+        (
+            {"decision": "discard"},
+            "审核结论仅支持保留、待补证、排除或合并重复。",
+        ),
+        ({"zh_title": ""}, "中文标题不能为空且不能超过 240 个字符。"),
+        (
+            {"zh_summary": "长" * 4001},
+            "中文文章概述不能为空且不能超过 4000 个字符。",
+        ),
+    ),
+)
+def test_editorial_review_post_returns_mapped_chinese_validation_errors(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    values: dict[str, str],
+    detail: str,
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[0]
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report.id}/items/{item.id}/editorial-reviews",
+        data={"action_token": token, **EDITORIAL_FORM, **values},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == detail
+    current = DailyReportQueryService(db_session).detail(report.id)
+    assert current is not None
+    assert current.confirmed[0].editorial_review is None
+
+
+def test_archived_editorial_review_post_returns_chinese_conflict(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[0]
+    report_id, item_id = report.id, item.id
+    DailyReportRepository(db_session).archive(report_id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/items/{item_id}/editorial-reviews",
+        data={"action_token": token, **EDITORIAL_FORM},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该日报已归档，不能再修改。"
+
+
+def test_draft_detail_renders_editorial_form_without_quick_inclusion_actions(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[1]
+    report_id, item_id = report.id, item.id
+    DailyReportRepository(db_session).save_editorial_review(
+        report_id, item_id, REVIEW_NEEDS_EVIDENCE
+    )
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert "编辑中文审核内容" in response.text
+    assert f"/daily-reports/{report_id}/items/{item_id}/editorial-reviews" in response.text
+    assert "人工审核版本" in response.text
+    assert "人工标题" in response.text
+    assert f"/daily-reports/{report_id}/items/{item_id}/included" not in response.text
+    assert "上移" in response.text and "下移" in response.text
+
+
+def test_archived_detail_shows_read_only_editorial_history(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[1]
+    report_id, item_id = report.id, item.id
+    repository = DailyReportRepository(db_session)
+    repository.save_editorial_review(report_id, item_id, REVIEW_NEEDS_EVIDENCE)
+    repository.save_editorial_review(report_id, item_id, REVIEW_EXCLUDE)
+    repository.archive(report_id)
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert "审核历史" in response.text
+    assert "编辑中文审核内容" not in response.text
+    history = response.text.split("<h4>审核历史</h4>", 1)[1]
+    assert history.index("人工标题") < history.index("排除标题")
+
+
+def test_duplicate_editorial_review_marks_item_not_included_on_detail_page(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[1]
+    report_id, item_id = report.id, item.id
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/items/{item_id}/editorial-reviews",
+        data={"action_token": token, **EDITORIAL_FORM, "decision": "duplicate"},
+        follow_redirects=False,
+    )
+    page = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 303
+    assert "本版未收录" in page.text
+
+
 def test_generate_redirects_and_rejects_invalid_or_missing_snapshot(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, token = safe_client_with_token(db_session, monkeypatch)
-    invalid = client.post(
-        "/daily-reports", data={"action_token": token, "window_hours": "12"}
-    )
+    invalid = client.post("/daily-reports", data={"action_token": token, "window_hours": "12"})
     assert invalid.status_code == 422, invalid.text
     assert invalid.json()["detail"] == "时间窗口仅支持 24、48 或 72 小时。"
     assert "invalid_daily_report_window" not in invalid.text
     client, token = safe_client_with_token(db_session, monkeypatch)
-    missing = client.post(
-        "/daily-reports", data={"action_token": token, "window_hours": "24"}
-    )
+    missing = client.post("/daily-reports", data={"action_token": token, "window_hours": "24"})
     assert missing.status_code == 409
     assert missing.json()["detail"] == "尚无完整事件运行快照，请先完成事件构建。"
     assert "complete_event_snapshot_required" not in missing.text
@@ -380,9 +523,7 @@ def test_included_route_rejects_missing_or_invalid_boolean_without_mutation(
     if included is not None:
         data["included"] = included
 
-    response = client.post(
-        f"/daily-reports/{report_id}/items/{item_id}/included", data=data
-    )
+    response = client.post(f"/daily-reports/{report_id}/items/{item_id}/included", data=data)
 
     assert response.status_code == 422
     assert response.json()["detail"] == "收录状态必须明确为 true 或 false。"
@@ -405,12 +546,8 @@ def test_generate_route_redirects_to_created_draft_without_external_calls(
             return original_request(self, *args, **kwargs)
         pytest.fail("network")
 
-    monkeypatch.setattr(
-        "httpx.Client.request", reject_non_test_client
-    )
-    monkeypatch.setattr(
-        "httpx.AsyncClient.request", lambda *args, **kwargs: pytest.fail("network")
-    )
+    monkeypatch.setattr("httpx.Client.request", reject_non_test_client)
+    monkeypatch.setattr("httpx.AsyncClient.request", lambda *args, **kwargs: pytest.fail("network"))
     monkeypatch.setattr(
         "newsradar.ai.minimax.MiniMaxClient.structured",
         lambda *args, **kwargs: pytest.fail("model"),
@@ -477,9 +614,7 @@ def test_move_and_revise_routes_redirect_to_expected_report(
     )
     assert revised.status_code == 303
     revision = db_session.scalar(
-        select(DailyReportRecord).where(
-            DailyReportRecord.supersedes_report_id == report_id
-        )
+        select(DailyReportRecord).where(DailyReportRecord.supersedes_report_id == report_id)
     )
     assert revision is not None
     assert revised.headers["location"] == f"/daily-reports/{revision.id}"
@@ -508,9 +643,7 @@ def test_revise_route_from_older_parent_reuses_archived_direct_child(
     assert [
         row.id
         for row in db_session.scalars(
-            select(DailyReportRecord).where(
-                DailyReportRecord.supersedes_report_id == parent_id
-            )
+            select(DailyReportRecord).where(DailyReportRecord.supersedes_report_id == parent_id)
         )
     ] == [child_id]
 
@@ -572,9 +705,7 @@ def test_generate_route_translates_ambiguous_snapshot_to_chinese(
         "newsradar.daily_reports.service.DailyReportService.generate", reject_ambiguous
     )
     client, token = safe_client_with_token(db_session, monkeypatch)
-    response = client.post(
-        "/daily-reports", data={"action_token": token, "window_hours": "24"}
-    )
+    response = client.post("/daily-reports", data={"action_token": token, "window_hours": "24"})
 
     assert response.status_code == 409
     assert response.json()["detail"] == "事件运行快照包含冲突版本，暂时无法生成日报。"
