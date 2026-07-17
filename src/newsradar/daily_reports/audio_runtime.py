@@ -15,6 +15,10 @@ from newsradar.daily_reports.audio_client import (
 )
 from newsradar.daily_reports.audio_schema import DailyReportAudioRequest
 from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.text_integrity import (
+    TEXT_INTEGRITY_ERROR,
+    ensure_editorial_text_integrity,
+)
 from newsradar.db.models import DailyReportAudioArtifactRecord, DailyReportRecord
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
@@ -99,6 +103,16 @@ class DailyReportAudioHandler:
                 if request.rendition == "decision"
                 else detail.overview.script
             )
+            try:
+                ensure_editorial_text_integrity(script)
+            except ValueError as error:
+                if str(error) != TEXT_INTEGRITY_ERROR:
+                    raise
+                return self._result(
+                    TEXT_INTEGRITY_ERROR,
+                    "检测到疑似编码损坏的连续问号，请修正中文内容后再继续。",
+                    retryable=False,
+                )
             artifact = DailyReportAudioArtifactRecord(
                 daily_report_id=report.id,
                 rendition=request.rendition,

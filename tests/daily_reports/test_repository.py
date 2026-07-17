@@ -20,6 +20,7 @@ from newsradar.daily_reports.schema import (
 from newsradar.db.models import (
     Base,
     DailyReportItemRecord,
+    DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventRecord,
@@ -469,6 +470,32 @@ def test_archived_report_rejects_mutation_and_revision_copies_snapshots(
     assert [row.included for row in repository.items(revision.id)] == [
         row.included for row in repository.items(archived.id)
     ]
+
+
+def test_archive_rejects_latest_corrupted_overview_review_and_keeps_draft(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    report = repository.create_draft(_draft(db_session))
+    item = repository.overview_items(report.id)[0]
+    db_session.add(
+        DailyReportOverviewEditorialReviewRecord(
+            daily_report_overview_item_id=item.id,
+            revision=1,
+            decision="keep",
+            zh_title="中文标题",
+            zh_summary="中文概述。",
+            review_recommendation="????",
+            evidence_assessment="当前证据可供审核。",
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="daily_report_text_corrupted"):
+        repository.archive(report.id)
+
+    assert db_session.get(DailyReportRecord, report.id).status == "draft"
 
 
 def test_repository_rejects_invalid_move_and_foreign_item(db_session: Session) -> None:

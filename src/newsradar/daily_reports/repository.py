@@ -20,6 +20,7 @@ from newsradar.daily_reports.schema import (
     ReportStatus,
     validate_window_hours,
 )
+from newsradar.daily_reports.text_integrity import ensure_editorial_text_integrity
 from newsradar.db.models import (
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
@@ -346,6 +347,7 @@ class DailyReportRepository:
 
     def archive(self, report_id: int, *, commit: bool = True) -> DailyReportRecord:
         report = self._draft_report(report_id)
+        self.assert_text_integrity(report.id)
         report.status = ReportStatus.ARCHIVED.value
         report.archived_at = self._utcnow()
         if commit:
@@ -353,6 +355,26 @@ class DailyReportRepository:
         else:
             self.session.flush()
         return report
+
+    def assert_text_integrity(self, report_id: int) -> None:
+        for item in self.items(report_id):
+            review = self._latest_editorial_review(item.id)
+            if review is not None:
+                ensure_editorial_text_integrity(
+                    review.zh_title,
+                    review.zh_summary,
+                    review.review_recommendation,
+                    review.evidence_assessment,
+                )
+        for item in self.overview_items(report_id):
+            review = self._latest_overview_editorial_review(item.id)
+            if review is not None:
+                ensure_editorial_text_integrity(
+                    review.zh_title,
+                    review.zh_summary,
+                    review.review_recommendation,
+                    review.evidence_assessment,
+                )
 
     def revise(
         self,

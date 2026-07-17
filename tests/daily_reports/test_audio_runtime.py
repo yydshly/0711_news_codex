@@ -11,11 +11,16 @@ from sqlalchemy.orm import Session
 from newsradar.daily_reports.audio_client import SpeechSynthesisResult
 from newsradar.daily_reports.audio_runtime import DailyReportAudioHandler
 from newsradar.daily_reports.repository import DailyReportRepository
-from newsradar.db.models import Base, DailyReportAudioArtifactRecord
+from newsradar.db.models import (
+    Base,
+    DailyReportAudioArtifactRecord,
+    DailyReportItemEditorialReviewRecord,
+)
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
 from newsradar.operations.worker import OperationCancelled
 from tests.web.test_daily_report_pages import (
+    NOW,
     review_overview_for_audio,
     seed_daily_report,
 )
@@ -95,6 +100,45 @@ def test_audio_handler_uses_overview_script_for_overview_rendition(
     assert "News Codex 决策日报" not in scripts[0]
     assert "已审核全览标题 1" in scripts[0]
     assert "已审核全览标题 2" in scripts[0]
+
+
+def test_audio_handler_rejects_corrupted_script_before_synthesis(
+    db_session, tmp_path: Path
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session)
+    repository.archive(report.id)
+    item = repository.items(report.id)[0]
+    db_session.add(
+        DailyReportItemEditorialReviewRecord(
+            daily_report_item_id=item.id,
+            revision=1,
+            decision="keep",
+            zh_title="????",
+            zh_summary="中文概述。",
+            review_recommendation="继续关注。",
+            evidence_assessment="当前证据可供审核。",
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+    synthesized: list[str] = []
+
+    result = DailyReportAudioHandler(
+        lambda: db_session,
+        audio_root=tmp_path,
+        synthesize=lambda script: (
+            synthesized.append(script)
+            or SpeechSynthesisResult(b"ID3", None, None, len(script))
+        ),
+    )(_lease(report.id), lambda _boundary: None)
+
+    assert result.status is OperationStatus.FAILED
+    assert result.error_code == "daily_report_text_corrupted"
+    assert result.error_message == "检测到疑似编码损坏的连续问号，请修正中文内容后再继续。"
+    assert result.retryable is False
+    assert synthesized == []
+    assert db_session.scalar(select(DailyReportAudioArtifactRecord)) is None
 
 
 def test_audio_handler_rejects_unreviewed_overview_before_synthesis(
