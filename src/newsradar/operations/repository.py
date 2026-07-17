@@ -20,6 +20,7 @@ from newsradar.operations.logging import redact
 from newsradar.operations.schema import OperationStatus, OperationType
 
 MAX_ATTEMPTS = 3
+MAX_OPERATION_TRIGGER_LENGTH = 16
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,12 @@ class OperationRepository:
         *,
         in_transaction: bool = False,
     ) -> OperationRunRecord:
+        if (
+            not isinstance(trigger, str)
+            or not trigger.strip()
+            or len(trigger) > MAX_OPERATION_TRIGGER_LENGTH
+        ):
+            raise ValueError("invalid_operation_trigger")
         context = nullcontext() if in_transaction else self._transaction()
         with context:
             record = OperationRunRecord(

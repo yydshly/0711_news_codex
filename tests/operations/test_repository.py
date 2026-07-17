@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
@@ -31,6 +32,32 @@ def test_enqueue_and_lease_next_select_ready_operations_fifo_and_binds_attempt()
         assert db.get(OperationRunRecord, second.id).status == OperationStatus.QUEUED
         attempt = db.scalar(select(OperationAttemptRecord))
         assert attempt is not None and attempt.operation_run_id == first.id
+
+
+@pytest.mark.parametrize("trigger", ["", " ", "x" * 17, None, 1])
+def test_enqueue_rejects_invalid_operation_trigger(trigger: object) -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="^invalid_operation_trigger$"):
+            OperationRepository(db).enqueue(
+                OperationType.FETCH,
+                {},
+                trigger=trigger,  # type: ignore[arg-type]
+            )
+
+        assert db.scalars(select(OperationRunRecord)).all() == []
+
+
+def test_enqueue_accepts_sixteen_character_trigger_without_normalizing() -> None:
+    with session() as db:
+        trigger = "x" * 16
+
+        operation = OperationRepository(db).enqueue(
+            OperationType.FETCH,
+            {},
+            trigger=trigger,
+        )
+
+        assert operation.trigger == trigger
 
 
 def test_lease_query_uses_skip_locked_for_postgresql_workers() -> None:
