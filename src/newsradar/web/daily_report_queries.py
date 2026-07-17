@@ -6,6 +6,10 @@ from datetime import date, datetime
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
+from newsradar.daily_reports.intelligence import (
+    DecisionReportItem,
+    build_decision_script,
+)
 from newsradar.db.models import (
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
@@ -56,6 +60,7 @@ class DailyReportItemView:
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
+    decision_script: str
     supersedes_report_id: int | None
     archived_at: datetime | None
     confirmed: tuple[DailyReportItemView, ...]
@@ -148,6 +153,33 @@ class DailyReportQueryService:
             )
             for row in rows
         )
+        decision_script = build_decision_script(
+            report_date=record.report_date,
+            items=(
+                DecisionReportItem(
+                    included=row.included,
+                    section=row.section,
+                    position=row.position,
+                    snapshot=row.snapshot,
+                    decision=(row.editorial_review.decision if row.editorial_review else None),
+                    zh_title=(row.editorial_review.zh_title if row.editorial_review else None),
+                    zh_summary=(
+                        row.editorial_review.zh_summary if row.editorial_review else None
+                    ),
+                    recommendation=(
+                        row.editorial_review.review_recommendation
+                        if row.editorial_review
+                        else None
+                    ),
+                    evidence_assessment=(
+                        row.editorial_review.evidence_assessment
+                        if row.editorial_review
+                        else None
+                    ),
+                )
+                for row in views
+            ),
+        )
         return DailyReportDetailView(
             report=self._summary(record, rows=rows),
             generation_summary=(
@@ -155,6 +187,7 @@ class DailyReportQueryService:
                 if isinstance(record.generation_summary, dict)
                 else {}
             ),
+            decision_script=decision_script,
             supersedes_report_id=record.supersedes_report_id,
             archived_at=record.archived_at,
             confirmed=tuple(row for row in views if row.section == "confirmed"),

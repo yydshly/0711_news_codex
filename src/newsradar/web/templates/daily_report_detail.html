@@ -65,6 +65,13 @@
 {% block title %}{{ daily_report.report.report_date.isoformat() }} 中文日报 · News Codex{% endblock %}
 {% block header %}<h1>{{ daily_report.report.report_date.isoformat() }} 中文日报</h1>{% endblock %}
 {% block content %}
+<section class="panel" aria-labelledby="decision-brief-heading">
+  <p class="eyebrow">Decision Brief</p>
+  <h2 id="decision-brief-heading">今日决策简报</h2>
+  <p>以下内容只基于本日报固定快照和人工审核结论；待补证事项不可视为已确认事实。</p>
+  <div class="decision-script">{{ daily_report.decision_script }}</div>
+</section>
+
 <section class="panel" aria-labelledby="daily-report-meta-heading">
   <p class="eyebrow">固定日报快照 · Operation #{{ daily_report.report.source_operation_id }}</p>
   <h2 id="daily-report-meta-heading">第 {{ daily_report.report.revision }} 版 · {{ '草稿' if daily_report.report.status == 'draft' else '已归档' }}</h2>

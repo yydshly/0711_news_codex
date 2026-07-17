@@ -245,6 +245,27 @@ def test_detail_projects_latest_editorial_review_and_ordered_history(
     ]
 
 
+def test_daily_report_detail_projects_and_renders_decision_brief(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    item = repository.items(report.id)[1]
+    repository.save_editorial_review(report.id, item.id, REVIEW_NEEDS_EVIDENCE)
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+    assert detail is not None
+    assert "News Codex" in detail.decision_script
+    assert "待补证" in detail.decision_script
+    assert REVIEW_NEEDS_EVIDENCE.zh_title in detail.decision_script
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report.id}")
+    assert response.status_code == 200
+    assert "今日决策简报" in response.text
+    assert REVIEW_NEEDS_EVIDENCE.zh_title in response.text
+
+
 def test_detail_projects_empty_editorial_review_fields_for_unreviewed_item(
     db_session: Session,
 ) -> None:
