@@ -385,7 +385,7 @@ def test_scan_writes_candidates_without_changing_event_or_source_state(session: 
 
     result = EventMergeService(session).scan(50, checkpoints.append)
 
-    assert result.candidate_type_counts == {"deterministic_merge": 1}
+    assert result.candidate_type_counts == {"manual_review": 1}
     assert result.current_event_count == 3
     assert result.single_member_event_count == 3
     assert session.query(EventMergeCandidateRecord).count() == 1
@@ -952,6 +952,55 @@ def test_scan_isolates_malformed_event_and_continues(session: Session) -> None:
 
     assert result.candidate_type_counts == {"deterministic_merge": 1}
     assert result.failure_reasons == {"fact_load_failed": 1}
+
+
+def test_real_scan_regression_keeps_partial_overlap_manual_and_youtube_ids_separate(
+    session: Session,
+) -> None:
+    _seed_event(
+        session,
+        1,
+        453,
+        url="https://publisher.test/shared-story",
+        title="AI company publishes quarterly result",
+    )
+    _seed_event(
+        session,
+        2,
+        382,
+        url="https://publisher.test/second-story",
+        title="Another company announces a different result",
+    )
+    session.add(EventItemRecord(event_id=2, raw_item_id=453, added_version_number=1))
+    youtube_rows = (
+        (10, "A1b2C3d4E5_", "Developer conference keynote"),
+        (11, "F6g7H8i9J0-", "Independent hardware review"),
+        (12, "K1l2M3n4O5_", "Scientific interview"),
+        (13, "P6q7R8s9T0-", "Market analysis discussion"),
+        (14, "U1v2W3x4Y5_", "Open source project demo"),
+        (15, "Z6a7B8c9D0-", "Cloud engineering tutorial"),
+        (16, "E1f2G3h4I5_", "Robotics laboratory tour"),
+        (17, "J6k7L8m9N0-", "Policy roundtable recording"),
+    )
+    for event_id, video_id, title in youtube_rows:
+        _seed_event(
+            session,
+            event_id,
+            event_id * 100,
+            url=f"https://www.youtube.com/watch?v={video_id}",
+            title=title,
+        )
+    _seed_scan_operation(session)
+    session.commit()
+
+    result = EventMergeService(session).scan(50, lambda _: None)
+
+    candidates = session.scalars(select(EventMergeCandidateRecord)).all()
+    assert result.candidate_type_counts == {"manual_review": 1}
+    assert len(candidates) == 1
+    assert (candidates[0].left_event_id, candidates[0].right_event_id) == (1, 2)
+    assert candidates[0].reason_codes == ["partial_membership_overlap"]
+    assert all(candidate.candidate_type != "deterministic_merge" for candidate in candidates)
 
 
 def test_scan_does_not_compare_unindexed_unrelated_events(session: Session, monkeypatch) -> None:

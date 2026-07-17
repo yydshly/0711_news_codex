@@ -14,7 +14,13 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
-from newsradar.event_merges.facts import load_event_facts, strong_url_identity
+from newsradar.event_merges.facts import (
+    EVENT_MERGE_RULE_VERSION,
+    load_event_facts,
+    merge_input_fingerprint,
+    strong_url_identity,
+)
+from newsradar.event_merges.schema import EventMergeFacts
 
 
 @pytest.fixture
@@ -113,13 +119,83 @@ def test_event_facts_keep_real_original_media_identity(session) -> None:
     event_id = _seed_event(
         session,
         canonical_url="https://example.com/story?id=secret",
-        original_url="https://www.reuters.com/technology/story-123?utm_source=x",
+        original_url="https://www.reuters.com/technology/story-123",
     )
 
     facts = load_event_facts(session, event_id)
 
     assert "www.reuters.com/technology/story-123" in facts.strong_identities
+    assert "example.com/story" not in facts.strong_identities
     assert "secret" not in repr(facts)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://youtube.com/watch?v=AbCdEf123_-",
+        "https://www.youtube.com/watch?v=AbCdEf123_-&feature=share",
+        "https://youtu.be/AbCdEf123_-?si=tracking",
+        "https://youtube.com/shorts/AbCdEf123_-?feature=share",
+        "https://youtube.com/live/AbCdEf123_-?si=tracking",
+        "https://youtube.com/embed/AbCdEf123_-?start=10",
+    ],
+)
+def test_official_youtube_video_urls_share_one_strong_identity(url: str) -> None:
+    assert strong_url_identity(url) == "youtube.com/watch/AbCdEf123_-"
+
+
+def test_different_youtube_video_ids_have_different_strong_identities() -> None:
+    first = strong_url_identity("https://www.youtube.com/watch?v=AbCdEf123_-")
+    second = strong_url_identity("https://www.youtube.com/watch?v=ZyXwVu987_-")
+
+    assert first == "youtube.com/watch/AbCdEf123_-"
+    assert second == "youtube.com/watch/ZyXwVu987_-"
+    assert first != second
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://youtube.com/watch",
+        "https://youtube.com/watch?v=AbCdEf123_-&v=ZyXwVu987_-",
+        "https://youtube.com/watch?v=invalid.value",
+        "https://youtube.com/watch?v=",
+        "https://youtube.com:8443/watch?v=AbCdEf123_-",
+        "https://youtube.example/watch?v=AbCdEf123_-",
+        "https://example.com/watch?id=AbCdEf123_-",
+        "https://example.com/story?token=SECRET-MARKER",
+    ],
+)
+def test_query_bearing_or_ambiguous_urls_are_not_strong(url: str) -> None:
+    identity = strong_url_identity(url)
+
+    assert identity is None
+    assert "SECRET-MARKER" not in repr(identity)
+
+
+def test_merge_fingerprint_uses_current_v2_rule_version() -> None:
+    left = EventMergeFacts(
+        event_id=1,
+        version_number=1,
+        visibility="current",
+        canonical_key="event-1",
+        algorithm_versions=("cluster-v3",),
+        raw_item_ids=(10,),
+        source_ids=("source-1",),
+        publishers=("Publisher",),
+        published_at=(),
+        safe_url_identities=(),
+        strong_identities=(),
+        object_entities=(),
+        actions=(),
+        evidence_roots=(),
+    )
+    right = left.model_copy(update={"event_id": 2, "canonical_key": "event-2"})
+
+    assert EVENT_MERGE_RULE_VERSION == "event-merge-v2"
+    assert merge_input_fingerprint(left, right) != merge_input_fingerprint(
+        left.model_copy(update={"canonical_key": "legacy-event-1"}), right
+    )
 
 
 def test_event_facts_sort_and_deduplicate_active_membership(session) -> None:

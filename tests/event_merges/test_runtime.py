@@ -17,7 +17,7 @@ NOW = datetime.now(UTC)
 def _scope() -> dict[str, object]:
     return {
         "actor": "test",
-        "algorithm_version": "event-merge-v1",
+        "algorithm_version": "event-merge-v2",
         "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
         "window_end": NOW.isoformat(),
         "idempotency_key": "event-merge-scan:test",

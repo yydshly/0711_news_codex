@@ -58,6 +58,47 @@ def test_subset_membership_is_never_automatic_legacy_retirement() -> None:
     assert draft is None or draft.candidate_type is MergeCandidateType.MANUAL_REVIEW
 
 
+def test_partial_membership_overlap_is_always_manual_even_with_strong_identity() -> None:
+    identity = ("publisher.test/story",)
+    left = _facts(event_id=1, raw_item_ids=(10,), strong_identities=identity)
+    right = _facts(
+        event_id=2,
+        raw_item_ids=(10, 11),
+        strong_identities=identity,
+        objects=("model:conflicting",),
+    )
+
+    draft = classify_pair(left, right, latest_snapshot_event_ids=frozenset())
+
+    assert draft is not None
+    assert draft.candidate_type is MergeCandidateType.MANUAL_REVIEW
+    assert draft.reason_codes == ("partial_membership_overlap",)
+    assert "部分" in draft.zh_reason
+    assert "人工" in draft.zh_next_action
+
+
+def test_exact_legacy_membership_precedes_partial_overlap_boundary() -> None:
+    identity = ("publisher.test/story",)
+    left = _facts(
+        event_id=1,
+        algorithms=("cluster-v2",),
+        raw_item_ids=(10, 11),
+        strong_identities=identity,
+    )
+    right = _facts(
+        event_id=2,
+        algorithms=("cluster-v3",),
+        raw_item_ids=(10, 11),
+        strong_identities=identity,
+    )
+
+    draft = classify_pair(left, right, latest_snapshot_event_ids=frozenset({2}))
+
+    assert draft is not None
+    assert draft.candidate_type is MergeCandidateType.LEGACY_IDENTITY
+    assert draft.reason_codes == ("exact_cross_algorithm_membership",)
+
+
 def test_legacy_identity_requires_latest_snapshot_to_reference_current_event() -> None:
     left = _facts(event_id=1, algorithms=("cluster-v2",), raw_item_ids=(10, 11))
     right = _facts(event_id=2, algorithms=("cluster-v3",), raw_item_ids=(10, 11))

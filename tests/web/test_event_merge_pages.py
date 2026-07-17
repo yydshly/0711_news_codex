@@ -137,6 +137,7 @@ def _seed_candidate(
     left_version: int = 1,
     right_version: int = 1,
     reason_codes: tuple[str, ...] | None = None,
+    algorithm_version: str = "event-merge-v2",
 ) -> EventMergeCandidateRecord:
     reason_codes = reason_codes or {
         "legacy_identity": ("exact_cross_algorithm_membership",),
@@ -151,7 +152,7 @@ def _seed_candidate(
         right_version_number=right_version,
         candidate_type=candidate_type,
         status=status,
-        algorithm_version="event-merge-v1",
+        algorithm_version=algorithm_version,
         input_fingerprint=(f"{candidate_id:x}" * 64)[:64],
         facts_snapshot={
             "left": _facts(left_id, left_version, (11,), ("github-openai-python",)),
@@ -566,6 +567,39 @@ def test_candidate_pages_label_identity_retirement_without_false_content_claim(
     assert "旧算法身份重复" in detail.text
     assert "跨来源内容已确认相同" not in detail.text
     assert "SECRET-MARKER" not in detail.text
+
+
+def test_partial_membership_reason_uses_centralized_chinese_copy(db_session) -> None:
+    _seed_candidate_catalog(db_session)
+    candidate = db_session.get(EventMergeCandidateRecord, 3)
+    assert candidate is not None
+    candidate.reason_codes = ["partial_membership_overlap"]
+    db_session.commit()
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    detail = EventMergeQueryService(db_session).get_candidate(3)
+
+    assert detail is not None
+    assert detail.algorithm_version == "event-merge-v2"
+    assert detail.reason_code == "partial_membership_overlap"
+    assert detail.zh_reason == "两个事件的原始条目部分重叠，但成员集合并不完全相同。"
+    assert detail.zh_next_action == "人工核对未重叠条目后，确认合并或保持分开。"
+
+
+def test_historical_v1_candidate_remains_readable(db_session) -> None:
+    _seed_candidate_catalog(db_session)
+    candidate = db_session.get(EventMergeCandidateRecord, 1)
+    assert candidate is not None
+    candidate.algorithm_version = "event-merge-v1"
+    db_session.commit()
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    detail = EventMergeQueryService(db_session).get_candidate(1)
+
+    assert detail is not None
+    assert detail.algorithm_version == "event-merge-v1"
 
 
 def test_candidate_detail_missing_is_404(db_session, monkeypatch) -> None:

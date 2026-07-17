@@ -58,6 +58,10 @@ _REASON_COPY: dict[str, tuple[str, str]] = {
         "两个事件共享同一个可验证的原始内容标识。",
         "复核原始媒体后应用确定性合并。",
     ),
+    "partial_membership_overlap": (
+        "两个事件的原始条目部分重叠，但成员集合并不完全相同。",
+        "人工核对未重叠条目后，确认合并或保持分开。",
+    ),
     "same_object_action_without_strong_identity": (
         "对象、动作和时间接近，但缺少可自动证明同一事件的强标识。",
         "人工核对两侧原始报道后确认合并或保持分开。",

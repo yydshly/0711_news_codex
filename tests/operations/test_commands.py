@@ -444,7 +444,7 @@ def test_enqueue_event_merge_scan_freezes_versions_window_and_identity() -> None
         assert record is not None
         assert record.operation_type == "event_merge_scan"
         assert record.requested_scope["actor"] == "cli"
-        assert record.requested_scope["algorithm_version"] == "event-merge-v1"
+        assert record.requested_scope["algorithm_version"] == "event-merge-v2"
         assert record.requested_scope["algorithm_versions"]["entities"] == "entities-v3"
         assert record.requested_scope["window_end"] == now.isoformat()
         assert record.requested_scope["deadline_at"] == (now + timedelta(seconds=30)).isoformat()

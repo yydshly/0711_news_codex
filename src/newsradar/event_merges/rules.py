@@ -30,6 +30,15 @@ def classify_pair(
             zh_reason="旧算法与当前算法事件包含完全相同的原始条目。",
             zh_next_action="保留当前算法事件，并把旧身份转入历史目录。",
         )
+    if _partial_membership_overlap(left, right):
+        return _draft(
+            MergeCandidateType.MANUAL_REVIEW,
+            left,
+            right,
+            reason_codes=("partial_membership_overlap",),
+            zh_reason="两个事件的原始条目部分重叠，但成员集合并不完全相同。",
+            zh_next_action="人工核对未重叠条目后，确认合并或保持分开。",
+        )
     if _conflicting_facts(left, right):
         return None
     if set(left.strong_identities) & set(right.strong_identities):
@@ -51,6 +60,12 @@ def classify_pair(
             zh_next_action="人工核对两侧原始报道后确认合并或保持分开。",
         )
     return None
+
+
+def _partial_membership_overlap(left: EventMergeFacts, right: EventMergeFacts) -> bool:
+    left_members = set(left.raw_item_ids)
+    right_members = set(right.raw_item_ids)
+    return bool(left_members & right_members) and left_members != right_members
 
 
 def _exact_cross_algorithm_identity(

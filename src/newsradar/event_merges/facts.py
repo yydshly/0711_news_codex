@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from hashlib import sha256
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, parse_qsl, urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,8 +24,13 @@ from newsradar.events.entities import extract_entities
 from newsradar.events.relevance import normalize_text
 from newsradar.events.schema import EntityType, RawItemText
 
-EVENT_MERGE_RULE_VERSION = "event-merge-v1"
+EVENT_MERGE_RULE_VERSION = "event-merge-v2"
 _INTERMEDIARY_HOSTS = frozenset({"news.google.com", "news.yahoo.com"})
+_YOUTUBE_HOSTS = frozenset(
+    {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
+)
+_YOUTUBE_SHORT_HOSTS = frozenset({"youtu.be", "www.youtu.be"})
+_YOUTUBE_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _KEY_NUMBER = re.compile(
     r"(?<![\w.])\d+(?:\.\d+)?(?:\s?(?:%|[BMKT]B?|million|billion))?(?!\w)",
     re.I,
@@ -59,10 +64,62 @@ def strong_url_identity(value: str | None) -> str | None:
         parsed = urlsplit(value)
     except ValueError:
         return None
-    if parsed.hostname and parsed.hostname.casefold() in _INTERMEDIARY_HOSTS:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return None
-    identity = safe_url_identity(value)
-    return identity
+    hostname = parsed.hostname.casefold()
+    if hostname in _INTERMEDIARY_HOSTS:
+        return None
+    if hostname in _YOUTUBE_HOSTS or hostname in _YOUTUBE_SHORT_HOSTS:
+        return _youtube_video_identity(parsed)
+    if parsed.query:
+        return None
+    return safe_url_identity(value)
+
+
+def _youtube_video_identity(parsed: SplitResult) -> str | None:
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    default_port = 443 if parsed.scheme == "https" else 80
+    if port not in {None, default_port}:
+        return None
+    hostname = parsed.hostname.casefold()
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if hostname in _YOUTUBE_SHORT_HOSTS:
+        video_id = _youtube_path_video_id(parsed.path, allowed_prefixes=())
+        if any(key == "v" for key, _ in query_pairs):
+            return None
+    elif parsed.path == "/watch":
+        video_ids = [query_value for key, query_value in query_pairs if key == "v"]
+        if len(video_ids) != 1:
+            return None
+        video_id = video_ids[0]
+    else:
+        video_id = _youtube_path_video_id(
+            parsed.path,
+            allowed_prefixes=("shorts", "live", "embed"),
+        )
+        if any(key == "v" for key, _ in query_pairs):
+            return None
+    if video_id is None or _YOUTUBE_VIDEO_ID.fullmatch(video_id) is None:
+        return None
+    return f"youtube.com/watch/{video_id}"
+
+
+def _youtube_path_video_id(
+    path: str, *, allowed_prefixes: tuple[str, ...]
+) -> str | None:
+    segments = path.split("/")
+    if allowed_prefixes:
+        if len(segments) != 3 or segments[0] or segments[1] not in allowed_prefixes:
+            return None
+        return segments[2]
+    if len(segments) != 2 or segments[0]:
+        return None
+    return segments[1]
 
 
 def load_event_facts(session: Session, event_id: int) -> EventMergeFacts:

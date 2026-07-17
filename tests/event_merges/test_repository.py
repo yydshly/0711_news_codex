@@ -197,7 +197,7 @@ def test_repository_recheck_rejects_changed_chain_identity(
             }
         )
     else:
-        changed = original.model_copy(update={"algorithm_version": "event-merge-v2"})
+        changed = original.model_copy(update={"algorithm_version": "event-merge-v1"})
 
     with pytest.raises(ValueError, match="event_merge_revision_chain_changed"):
         repository.create_revision(
