@@ -24,16 +24,17 @@
     <div><dt>来源</dt><dd>{{ side.source_ids|join('、') if side.source_ids else '未记录' }}</dd></div>
     <div><dt>发布方</dt><dd>{{ side.publishers|join('、') if side.publishers else '未记录' }}</dd></div>
     <div><dt>冻结发布时间</dt><dd>{% for published_at in side.published_at %}{{ published_at|format_datetime_zh }}{% if not loop.last %}、{% endif %}{% else %}未记录{% endfor %}</dd></div>
-    <div><dt>强身份标识</dt><dd>{{ side.strong_identities|join('、') if side.strong_identities else '未记录' }}</dd></div>
+    <div><dt>强身份标识</dt><dd>{{ side.strong_identities|join('、') if side.strong_identities else '未记录' }}{% if side.strong_identities_truncated %}<br><small>共 {{ side.strong_identity_count }} 条，仅显示前 {{ side.displayed_strong_identity_count }} 条。</small>{% endif %}</dd></div>
     <div><dt>对象</dt><dd>{{ side.object_entities|join('、') if side.object_entities else '未记录' }}</dd></div>
     <div><dt>动作</dt><dd>{{ side.actions|join('、') if side.actions else '未记录' }}</dd></div>
     <div><dt>关键数字</dt><dd>{{ side.key_numbers|join('、') if side.key_numbers else '未记录' }}</dd></div>
     <div><dt>证据根</dt><dd>{{ side.evidence_roots|join('、') if side.evidence_roots else '未记录或已脱敏' }}</dd></div>
   </dl>
   <h3>冻结成员 RawItem</h3>
+  <p>冻结成员共 {{ side.raw_item_count }} 条。{% if side.raw_items_truncated %}<strong>仅显示前 {{ side.displayed_raw_item_count }} 条。</strong>{% endif %}</p>
   <ul>
   {% for member in side.members %}
-    <li>RawItem #{{ member.raw_item_id }} · {{ member.source_id }} · {{ member.publisher }} · {% if member.origin_resolution_status == 'resolved' %}已解析原始媒体{% elif member.origin_resolution_status == 'unresolved' %}仍为聚合发现入口{% else %}归属状态未记录{% endif %}{% if member.published_at %} · {{ member.published_at|format_datetime_zh }}{% endif %}：{% if member.public_url %}<a href="{{ member.public_url }}" target="_blank" rel="noopener noreferrer">{{ member.title }}</a>{% else %}{{ member.title }}{% endif %}</li>
+    <li>RawItem #{{ member.raw_item_id }} · <a href="{{ member.current_item_href }}">查看当前 RawItem 页面</a> <small>当前 RawItem 页面，非候选冻结证据</small></li>
   {% else %}<li>冻结快照未找到可展示的成员。</li>{% endfor %}
   </ul>
   {% if side.safe_urls %}<p><strong>脱敏内容标识：</strong>{{ side.safe_urls|join('、') }}</p>{% endif %}
@@ -42,7 +43,7 @@
 
 <section class="panel" aria-labelledby="candidate-comparison-heading">
   <h2 id="candidate-comparison-heading">两侧比较</h2>
-  <p><strong>共同强身份标识：</strong>{{ candidate.shared_strong_identities|join('、') if candidate.shared_strong_identities else '无' }}</p>
+  <p><strong>共同强身份标识：</strong>{{ candidate.shared_strong_identities|join('、') if candidate.shared_strong_identities else '无' }}{% if candidate.shared_strong_identities_truncated %}（共 {{ candidate.shared_strong_identity_count }} 条，仅显示前 {{ candidate.displayed_shared_strong_identity_count }} 条）{% endif %}</p>
   <p><strong>共同对象：</strong>{{ candidate.shared_objects|join('、') if candidate.shared_objects else '无' }}</p>
   <p><strong>共同动作：</strong>{{ candidate.shared_actions|join('、') if candidate.shared_actions else '无' }}</p>
   <p><strong>最短发布时间距离：</strong>{% if candidate.time_distance_seconds is not none %}{{ candidate.time_distance_seconds }} 秒{% else %}无法计算{% endif %}</p>

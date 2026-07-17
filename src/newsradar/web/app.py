@@ -753,7 +753,7 @@ def create_app(
         except ValueError as error:
             logger.info(
                 "event merge scan request rejected",
-                extra={"error_code": str(error)[:120]},
+                extra={"error_type": type(error).__name__},
             )
             raise HTTPException(
                 status_code=422, detail="无法创建事件合并候选扫描任务。"
@@ -796,7 +796,7 @@ def create_app(
         except ValueError as error:
             logger.info(
                 "event merge decision rejected",
-                extra={"error_code": str(error)[:120]},
+                extra={"error_type": type(error).__name__},
             )
             raise HTTPException(
                 status_code=422, detail="无法创建候选处理任务。"

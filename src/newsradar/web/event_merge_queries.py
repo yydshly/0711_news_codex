@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, func, select, tuple_
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
@@ -19,6 +19,8 @@ from newsradar.db.models import (
 )
 
 _MAX_ROWS = 200
+_MAX_DISPLAYED_RAW_ITEMS = 500
+_MAX_DISPLAYED_IDENTITIES = 100
 _CANDIDATE_TYPES = frozenset(
     {"legacy_identity", "deterministic_merge", "manual_review"}
 )
@@ -29,6 +31,21 @@ _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(?:api[_-]?key|authorization|bearer|credential|password|secret|token)"
     r"\s*[:=]\s*[^\s,;]+"
+)
+_SENSITIVE_PATH_KEYS = frozenset(
+    {
+        "token",
+        "accesstoken",
+        "apikey",
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+        "authorization",
+        "bearer",
+        "cookie",
+        "session",
+    }
 )
 
 _REASON_COPY: dict[str, tuple[str, str]] = {
@@ -155,12 +172,7 @@ class EventMergeCandidateRow:
 @dataclass(frozen=True, slots=True)
 class EventMergeMemberRow:
     raw_item_id: int
-    title: str
-    source_id: str
-    publisher: str
-    published_at: datetime | None
-    public_url: str | None
-    origin_resolution_status: str
+    current_item_href: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +187,13 @@ class EventMergeEventSide:
     published_at: tuple[datetime, ...]
     safe_urls: tuple[str, ...]
     strong_identities: tuple[str, ...]
+    strong_identity_count: int
+    displayed_strong_identity_count: int
+    strong_identities_truncated: bool
     members: tuple[EventMergeMemberRow, ...]
+    raw_item_count: int
+    displayed_raw_item_count: int
+    raw_items_truncated: bool
     object_entities: tuple[str, ...]
     actions: tuple[str, ...]
     evidence_roots: tuple[str, ...]
@@ -195,6 +213,9 @@ class EventMergeCandidateDetail:
     left: EventMergeEventSide
     right: EventMergeEventSide
     shared_strong_identities: tuple[str, ...]
+    shared_strong_identity_count: int
+    displayed_shared_strong_identity_count: int
+    shared_strong_identities_truncated: bool
     shared_objects: tuple[str, ...]
     shared_actions: tuple[str, ...]
     time_distance_seconds: int | None
@@ -210,72 +231,139 @@ class EventMergeCandidateDetail:
     updated_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class _BuiltEventSide:
+    view: EventMergeEventSide
+    all_strong_identities: frozenset[str]
+
+
 class EventMergeQueryService:
     def __init__(self, session: Session):
         self.session = session
 
     def summary(self) -> EventMergeSummaryView:
-        current_ids = tuple(
-            self.session.scalars(
-                select(EventRecord.id).where(EventRecord.visibility == "current")
+        active_memberships = (
+            select(
+                EventItemRecord.event_id.label("event_id"),
+                EventItemRecord.raw_item_id.label("raw_item_id"),
+                RawItemRecord.source_id.label("source_id"),
             )
+            .join(EventRecord, EventRecord.id == EventItemRecord.event_id)
+            .join(RawItemRecord, RawItemRecord.id == EventItemRecord.raw_item_id)
+            .where(
+                EventRecord.visibility == "current",
+                EventItemRecord.added_version_number
+                <= EventRecord.current_version_number,
+                (
+                    EventItemRecord.removed_version_number.is_(None)
+                    | (
+                        EventItemRecord.removed_version_number
+                        > EventRecord.current_version_number
+                    )
+                ),
+            )
+            .subquery()
         )
-        members: dict[int, set[int]] = {event_id: set() for event_id in current_ids}
-        sources: dict[int, set[str]] = {event_id: set() for event_id in current_ids}
-        item_events: dict[int, set[int]] = {}
-        if current_ids:
-            rows = self.session.execute(
+        event_membership_stats = (
+            select(
+                active_memberships.c.event_id,
+                func.count(func.distinct(active_memberships.c.raw_item_id)).label(
+                    "member_count"
+                ),
+                func.count(func.distinct(active_memberships.c.source_id)).label(
+                    "source_count"
+                ),
+            )
+            .group_by(active_memberships.c.event_id)
+            .subquery()
+        )
+        current_event_count, single_member_count, cross_source_count = (
+            self.session.execute(
                 select(
-                    EventItemRecord.event_id,
-                    EventItemRecord.raw_item_id,
-                    RawItemRecord.source_id,
-                )
-                .join(EventRecord, EventRecord.id == EventItemRecord.event_id)
-                .join(RawItemRecord, RawItemRecord.id == EventItemRecord.raw_item_id)
-                .where(
-                    EventRecord.visibility == "current",
-                    EventItemRecord.added_version_number
-                    <= EventRecord.current_version_number,
-                    (
-                        EventItemRecord.removed_version_number.is_(None)
-                        | (
-                            EventItemRecord.removed_version_number
-                            > EventRecord.current_version_number
-                        )
+                    func.count(EventRecord.id),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (event_membership_stats.c.member_count == 1, 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (event_membership_stats.c.source_count > 1, 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
                     ),
                 )
-            )
-            for event_id, raw_item_id, source_id in rows:
-                members[event_id].add(raw_item_id)
-                sources[event_id].add(source_id)
-                item_events.setdefault(raw_item_id, set()).add(event_id)
+                .outerjoin(
+                    event_membership_stats,
+                    event_membership_stats.c.event_id == EventRecord.id,
+                )
+                .where(EventRecord.visibility == "current")
+            ).one()
+        )
+        repeated_current_raw_items = (
+            select(active_memberships.c.raw_item_id)
+            .group_by(active_memberships.c.raw_item_id)
+            .having(func.count(func.distinct(active_memberships.c.event_id)) > 1)
+            .subquery()
+        )
+        raw_items_in_multiple = self.session.scalar(
+            select(func.count()).select_from(repeated_current_raw_items)
+        )
 
-        pending_counts = {candidate_type: 0 for candidate_type in _CANDIDATE_TYPES}
-        state_counts = {status: 0 for status in _CANDIDATE_STATUSES}
-        for candidate_type, status in self.session.execute(
-            select(
-                EventMergeCandidateRecord.candidate_type,
-                EventMergeCandidateRecord.status,
+        def candidate_count(*conditions) -> object:
+            return func.coalesce(
+                func.sum(case((and_(*conditions), 1), else_=0)),
+                0,
             )
-        ):
-            if status in state_counts:
-                state_counts[status] += 1
-            if status == "pending" and candidate_type in pending_counts:
-                pending_counts[candidate_type] += 1
+
+        (
+            legacy_pending,
+            deterministic_pending,
+            manual_pending,
+            applied_count,
+            dismissed_count,
+            expired_count,
+            failed_count,
+        ) = self.session.execute(
+            select(
+                candidate_count(
+                    EventMergeCandidateRecord.status == "pending",
+                    EventMergeCandidateRecord.candidate_type == "legacy_identity",
+                ),
+                candidate_count(
+                    EventMergeCandidateRecord.status == "pending",
+                    EventMergeCandidateRecord.candidate_type
+                    == "deterministic_merge",
+                ),
+                candidate_count(
+                    EventMergeCandidateRecord.status == "pending",
+                    EventMergeCandidateRecord.candidate_type == "manual_review",
+                ),
+                candidate_count(EventMergeCandidateRecord.status == "applied"),
+                candidate_count(EventMergeCandidateRecord.status == "dismissed"),
+                candidate_count(EventMergeCandidateRecord.status == "expired"),
+                candidate_count(EventMergeCandidateRecord.status == "failed"),
+            )
+        ).one()
         return EventMergeSummaryView(
-            current_event_count=len(current_ids),
-            single_member_event_count=sum(len(value) == 1 for value in members.values()),
-            cross_source_event_count=sum(len(value) > 1 for value in sources.values()),
-            raw_items_in_multiple_current_events=sum(
-                len(event_ids) > 1 for event_ids in item_events.values()
-            ),
-            legacy_identity_pending_count=pending_counts["legacy_identity"],
-            deterministic_pending_count=pending_counts["deterministic_merge"],
-            manual_pending_count=pending_counts["manual_review"],
-            applied_count=state_counts["applied"],
-            dismissed_count=state_counts["dismissed"],
-            expired_count=state_counts["expired"],
-            failed_count=state_counts["failed"],
+            current_event_count=int(current_event_count),
+            single_member_event_count=int(single_member_count),
+            cross_source_event_count=int(cross_source_count),
+            raw_items_in_multiple_current_events=int(raw_items_in_multiple or 0),
+            legacy_identity_pending_count=int(legacy_pending),
+            deterministic_pending_count=int(deterministic_pending),
+            manual_pending_count=int(manual_pending),
+            applied_count=int(applied_count),
+            dismissed_count=int(dismissed_count),
+            expired_count=int(expired_count),
+            failed_count=int(failed_count),
         )
 
     def list_candidates(
@@ -303,9 +391,37 @@ class EventMergeQueryService:
                 (EventMergeCandidateRecord.left_event_id == event_id)
                 | (EventMergeCandidateRecord.right_event_id == event_id)
             )
-        records = self.session.scalars(
-            statement.order_by(EventMergeCandidateRecord.id.desc()).limit(bounded_limit)
+        records = tuple(
+            self.session.scalars(
+                statement.order_by(EventMergeCandidateRecord.id.desc()).limit(
+                    bounded_limit
+                )
+            )
         )
+        version_keys = {
+            key
+            for record in records
+            for key in (
+                (record.left_event_id, record.left_version_number),
+                (record.right_event_id, record.right_version_number),
+            )
+        }
+        version_titles: dict[tuple[int, int], str] = {}
+        if version_keys:
+            versions = self.session.scalars(
+                select(EventVersionRecord).where(
+                    tuple_(
+                        EventVersionRecord.event_id,
+                        EventVersionRecord.version_number,
+                    ).in_(version_keys)
+                )
+            )
+            version_titles = {
+                (version.event_id, version.version_number): (
+                    _safe_text(version.zh_title, 500) or "未记录标题"
+                )
+                for version in versions
+            }
         rows: list[EventMergeCandidateRow] = []
         for record in records:
             _, reason, next_action = _reason_projection(record.reason_codes)
@@ -321,13 +437,15 @@ class EventMergeQueryService:
                     status_label=_STATUS_LABELS.get(record.status, "未知状态"),
                     left_event_id=record.left_event_id,
                     left_version_number=record.left_version_number,
-                    left_title=self._version_title(
-                        record.left_event_id, record.left_version_number
+                    left_title=version_titles.get(
+                        (record.left_event_id, record.left_version_number),
+                        "未记录标题",
                     ),
                     right_event_id=record.right_event_id,
                     right_version_number=record.right_version_number,
-                    right_title=self._version_title(
-                        record.right_event_id, record.right_version_number
+                    right_title=version_titles.get(
+                        (record.right_event_id, record.right_version_number),
+                        "未记录标题",
                     ),
                     zh_reason=reason,
                     zh_next_action=next_action,
@@ -341,12 +459,23 @@ class EventMergeQueryService:
         if record is None:
             return None
         snapshot = record.facts_snapshot if isinstance(record.facts_snapshot, dict) else {}
-        left = self._side(
+        left_build = self._side(
             snapshot.get("left"), record.left_event_id, record.left_version_number
         )
-        right = self._side(
+        right_build = self._side(
             snapshot.get("right"), record.right_event_id, record.right_version_number
         )
+        left = left_build.view
+        right = right_build.view
+        all_shared_strong_identities = tuple(
+            sorted(
+                left_build.all_strong_identities
+                & right_build.all_strong_identities
+            )
+        )
+        displayed_shared_strong_identities = all_shared_strong_identities[
+            :_MAX_DISPLAYED_IDENTITIES
+        ]
         reason_code, reason, next_action = _reason_projection(record.reason_codes)
         return EventMergeCandidateDetail(
             candidate_id=record.id,
@@ -359,8 +488,14 @@ class EventMergeQueryService:
             algorithm_version=_safe_text(record.algorithm_version, 120),
             left=left,
             right=right,
-            shared_strong_identities=tuple(
-                sorted(set(left.strong_identities) & set(right.strong_identities))
+            shared_strong_identities=displayed_shared_strong_identities,
+            shared_strong_identity_count=len(all_shared_strong_identities),
+            displayed_shared_strong_identity_count=len(
+                displayed_shared_strong_identities
+            ),
+            shared_strong_identities_truncated=(
+                len(displayed_shared_strong_identities)
+                < len(all_shared_strong_identities)
             ),
             shared_objects=tuple(
                 sorted(set(left.object_entities) & set(right.object_entities))
@@ -381,21 +516,12 @@ class EventMergeQueryService:
             updated_at=record.updated_at,
         )
 
-    def _version_title(self, event_id: int, version_number: int) -> str:
-        version = self.session.scalar(
-            select(EventVersionRecord).where(
-                EventVersionRecord.event_id == event_id,
-                EventVersionRecord.version_number == version_number,
-            )
-        )
-        return _safe_text(version.zh_title if version else None, 500) or "未记录标题"
-
     def _side(
         self,
         raw_facts: object,
         event_id: int,
         version_number: int,
-    ) -> EventMergeEventSide:
+    ) -> _BuiltEventSide:
         facts = raw_facts if isinstance(raw_facts, dict) else {}
         version = self.session.scalar(
             select(EventVersionRecord).where(
@@ -403,40 +529,56 @@ class EventMergeQueryService:
                 EventVersionRecord.version_number == version_number,
             )
         )
-        raw_item_ids = _positive_ints(facts.get("raw_item_ids"))[:500]
-        raw_items = {
-            raw.id: raw
-            for raw in self.session.scalars(
-                select(RawItemRecord).where(RawItemRecord.id.in_(raw_item_ids))
-            )
-        } if raw_item_ids else {}
-        members = tuple(
-            _member(raw_items[raw_item_id])
-            for raw_item_id in raw_item_ids
-            if raw_item_id in raw_items
+        all_raw_item_ids = _positive_ints(facts.get("raw_item_ids"))
+        raw_item_ids = all_raw_item_ids[:_MAX_DISPLAYED_RAW_ITEMS]
+        all_strong_identities = _safe_identities(
+            facts.get("strong_identities"), limit=None
         )
-        return EventMergeEventSide(
-            event_id=event_id,
-            version_number=version_number,
-            visibility=(
-                facts.get("visibility")
-                if facts.get("visibility") in {"current", "legacy"}
-                else "unknown"
+        displayed_strong_identities = all_strong_identities[
+            :_MAX_DISPLAYED_IDENTITIES
+        ]
+        members = tuple(
+            EventMergeMemberRow(
+                raw_item_id=raw_item_id,
+                current_item_href=f"/items/{raw_item_id}",
+            )
+            for raw_item_id in raw_item_ids
+        )
+        return _BuiltEventSide(
+            view=EventMergeEventSide(
+                event_id=event_id,
+                version_number=version_number,
+                visibility=(
+                    facts.get("visibility")
+                    if facts.get("visibility") in {"current", "legacy"}
+                    else "unknown"
+                ),
+                title=_safe_text(version.zh_title if version else None, 500)
+                or "未记录标题",
+                summary=_safe_text(version.zh_summary if version else None, 2_000)
+                or "未记录摘要",
+                source_ids=_safe_strings(facts.get("source_ids"), 255),
+                publishers=_safe_strings(facts.get("publishers"), 255),
+                published_at=_datetimes(facts.get("published_at")),
+                safe_urls=_safe_identities(facts.get("safe_url_identities")),
+                strong_identities=displayed_strong_identities,
+                strong_identity_count=len(all_strong_identities),
+                displayed_strong_identity_count=len(
+                    displayed_strong_identities
+                ),
+                strong_identities_truncated=(
+                    len(displayed_strong_identities) < len(all_strong_identities)
+                ),
+                members=members,
+                raw_item_count=len(all_raw_item_ids),
+                displayed_raw_item_count=len(raw_item_ids),
+                raw_items_truncated=len(raw_item_ids) < len(all_raw_item_ids),
+                object_entities=_safe_strings(facts.get("object_entities"), 255),
+                actions=_safe_strings(facts.get("actions"), 255),
+                evidence_roots=_safe_identities(facts.get("evidence_roots")),
+                key_numbers=_safe_strings(facts.get("key_numbers"), 120),
             ),
-            title=_safe_text(version.zh_title if version else None, 500)
-            or "未记录标题",
-            summary=_safe_text(version.zh_summary if version else None, 2_000)
-            or "未记录摘要",
-            source_ids=_safe_strings(facts.get("source_ids"), 255),
-            publishers=_safe_strings(facts.get("publishers"), 255),
-            published_at=_datetimes(facts.get("published_at")),
-            safe_urls=_safe_identities(facts.get("safe_url_identities")),
-            strong_identities=_safe_identities(facts.get("strong_identities")),
-            members=members,
-            object_entities=_safe_strings(facts.get("object_entities"), 255),
-            actions=_safe_strings(facts.get("actions"), 255),
-            evidence_roots=_safe_identities(facts.get("evidence_roots")),
-            key_numbers=_safe_strings(facts.get("key_numbers"), 120),
+            all_strong_identities=frozenset(all_strong_identities),
         )
 
 
@@ -486,6 +628,7 @@ def _public_url(value: object) -> str | None:
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
+        or _path_has_sensitive_key(parsed.path)
     ):
         return None
     netloc = parsed.hostname.casefold()
@@ -504,20 +647,34 @@ def _safe_identity(value: object) -> str | None:
         return _public_url(value)
     if any(marker in value for marker in ("?", "#", "@")):
         return None
+    if _path_has_sensitive_key(value):
+        return None
     if _SECRET_ASSIGNMENT.search(value):
         return None
     return _safe_text(value, 1000) or None
 
 
-def _safe_identities(value: object) -> tuple[str, ...]:
+def _path_has_sensitive_key(value: str) -> bool:
+    for raw_segment in value.split("/"):
+        key = unquote(raw_segment).split("=", 1)[0]
+        normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
+        if normalized in _SENSITIVE_PATH_KEYS:
+            return True
+    return False
+
+
+def _safe_identities(
+    value: object, *, limit: int | None = _MAX_DISPLAYED_IDENTITIES
+) -> tuple[str, ...]:
     values = value if isinstance(value, (list, tuple)) else ()
-    return tuple(
+    identities = tuple(
         dict.fromkeys(
             identity
-            for item in values[:100]
+            for item in values
             if (identity := _safe_identity(item)) is not None
         )
     )
+    return identities if limit is None else identities[:limit]
 
 
 def _safe_strings(value: object, max_length: int) -> tuple[str, ...]:
@@ -561,22 +718,6 @@ def _datetimes(value: object) -> tuple[datetime, ...]:
             else parsed.astimezone(UTC)
         )
     return tuple(result)
-
-
-def _member(raw: RawItemRecord) -> EventMergeMemberRow:
-    return EventMergeMemberRow(
-        raw_item_id=raw.id,
-        title=_safe_text(raw.title, 500) or "未记录标题",
-        source_id=_safe_text(raw.source_id, 255),
-        publisher=_safe_text(raw.publisher_name, 255) or "未记录发布方",
-        published_at=raw.published_at,
-        public_url=_public_url(raw.original_url) or _public_url(raw.canonical_url),
-        origin_resolution_status=(
-            raw.origin_resolution_status
-            if raw.origin_resolution_status in {"resolved", "unresolved"}
-            else "unknown"
-        ),
-    )
 
 
 def _minimum_time_distance(

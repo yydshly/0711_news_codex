@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
@@ -231,7 +233,20 @@ def test_candidate_list_is_filtered_and_capped_at_200(db_session) -> None:
     rows = service.list_candidates("pending", "manual_review", limit=999)
 
     assert [row.candidate_id for row in rows] == [3]
-    assert len(service.list_candidates("pending", None, limit=999)) == 200
+    statements: list[str] = []
+    bind = db_session.get_bind()
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    sqlalchemy_event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        bounded_rows = service.list_candidates("pending", None, limit=999)
+    finally:
+        sqlalchemy_event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert len(bounded_rows) == 200
+    assert len(statements) <= 2
 
 
 def test_summary_includes_terminal_candidate_states(db_session) -> None:
@@ -264,6 +279,43 @@ def test_summary_includes_terminal_candidate_states(db_session) -> None:
     assert summary.failed_count == 1
 
 
+def test_summary_uses_fixed_aggregate_queries_instead_of_loading_catalog_rows(
+    db_session,
+) -> None:
+    _seed_candidate_catalog(db_session)
+    db_session.add_all(
+        EventRecord(
+            id=event_id,
+            canonical_key=f"large-summary-{event_id}",
+            visibility="current",
+            status="emerging",
+            current_version_number=0,
+        )
+        for event_id in range(100, 1_100)
+    )
+    db_session.commit()
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    statements: list[str] = []
+    bind = db_session.get_bind()
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.casefold())
+
+    sqlalchemy_event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        summary = EventMergeQueryService(db_session).summary()
+    finally:
+        sqlalchemy_event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert summary.current_event_count == 1_004
+    assert summary.single_member_event_count == 2
+    assert len(statements) <= 3
+    assert all("count(" in statement or "sum(" in statement for statement in statements)
+    assert any("group by" in statement for statement in statements)
+
+
 def test_candidate_detail_uses_snapshot_versions_and_redacts_sensitive_urls(
     db_session,
 ) -> None:
@@ -280,12 +332,139 @@ def test_candidate_detail_uses_snapshot_versions_and_redacts_sensitive_urls(
     assert detail.zh_reason == "旧算法与当前算法事件包含完全相同的原始条目。"
     assert detail.reason_code == "exact_cross_algorithm_membership"
     assert detail.shared_strong_identities == ("media.example/story",)
-    assert detail.left.members[0].origin_resolution_status == "resolved"
+    assert detail.left.members[0].raw_item_id == 11
     serialized = repr(detail)
     assert "SECRET-MARKER" not in serialized
     assert "token=" not in serialized.casefold()
     assert "password@" not in serialized.casefold()
     assert "#private" not in serialized.casefold()
+
+
+def test_candidate_detail_never_rehydrates_mutable_raw_item_fields(
+    db_session, monkeypatch
+) -> None:
+    _seed_candidate_catalog(db_session)
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+    monkeypatch.setattr("newsradar.web.app.token_urlsafe", lambda _length: "fixed-token")
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    before_model = EventMergeQueryService(db_session).get_candidate(1)
+    with TestClient(create_app()) as client:
+        before_html = client.get("/event-merge-candidates/1").text
+
+    raw = db_session.get(RawItemRecord, 11)
+    assert raw is not None
+    raw.source_id = "x-openai"
+    raw.title = "MUTATED-TITLE"
+    raw.publisher_name = "MUTATED-PUBLISHER"
+    raw.published_at = NOW + timedelta(days=30)
+    raw.original_url = "https://mutated.example/password/NEW-SECRET"
+    raw.canonical_url = "https://mutated.example/token/NEW-SECRET"
+    raw.origin_resolution_status = "unresolved"
+    db_session.commit()
+
+    after_model = EventMergeQueryService(db_session).get_candidate(1)
+    with TestClient(create_app()) as client:
+        after_html = client.get("/event-merge-candidates/1").text
+
+    assert before_model == after_model
+    assert repr(before_model) == repr(after_model)
+    assert before_html == after_html
+    assert "MUTATED" not in after_html
+    assert "NEW-SECRET" not in after_html
+    assert "当前 RawItem 页面，非候选冻结证据" in after_html
+
+
+def test_shared_strong_identity_is_computed_before_display_truncation(
+    db_session,
+) -> None:
+    _seed_candidate_catalog(db_session)
+    candidate = db_session.get(EventMergeCandidateRecord, 2)
+    assert candidate is not None
+    left = _facts(1, 1, (11,), ("github-openai-python",))
+    right = _facts(3, 1, (33,), ("search-ai",))
+    left["strong_identities"] = [f"left.example/story-{index}" for index in range(100)] + [
+        "shared.example/story"
+    ]
+    right["strong_identities"] = [
+        f"right.example/story-{index}" for index in range(100)
+    ] + ["shared.example/story"]
+    candidate.facts_snapshot = {"left": left, "right": right}
+    db_session.commit()
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    detail = EventMergeQueryService(db_session).get_candidate(2)
+
+    assert detail is not None
+    assert detail.shared_strong_identities == ("shared.example/story",)
+    assert detail.shared_strong_identity_count == 1
+    assert detail.displayed_shared_strong_identity_count == 1
+    assert not detail.shared_strong_identities_truncated
+    assert detail.left.strong_identity_count == 101
+    assert detail.left.displayed_strong_identity_count == 100
+    assert detail.left.strong_identities_truncated
+
+
+def test_raw_item_member_display_reports_total_and_truncation(
+    db_session, monkeypatch
+) -> None:
+    _seed_candidate_catalog(db_session)
+    candidate = db_session.get(EventMergeCandidateRecord, 1)
+    assert candidate is not None
+    snapshot = dict(candidate.facts_snapshot)
+    left = dict(snapshot["left"])
+    left["raw_item_ids"] = list(range(1_000, 1_501))
+    candidate.facts_snapshot = {**snapshot, "left": left}
+    db_session.commit()
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    detail = EventMergeQueryService(db_session).get_candidate(1)
+    with TestClient(create_app()) as client:
+        response = client.get("/event-merge-candidates/1")
+
+    assert detail is not None
+    assert detail.left.raw_item_count == 501
+    assert detail.left.displayed_raw_item_count == 500
+    assert detail.left.raw_items_truncated
+    assert len(detail.left.members) == 500
+    assert response.status_code == 200
+    assert "冻结成员共 501 条" in response.text
+    assert "仅显示前 500 条" in response.text
+
+
+@pytest.mark.parametrize("secret_key", ["token", "api_key", "credential", "password"])
+def test_candidate_projection_rejects_secret_shaped_url_paths(
+    db_session, monkeypatch, secret_key
+) -> None:
+    _seed_candidate_catalog(db_session)
+    candidate = db_session.get(EventMergeCandidateRecord, 2)
+    assert candidate is not None
+    snapshot = dict(candidate.facts_snapshot)
+    secret_url = f"https://media.example/{secret_key}/SECRET-MARKER/story"
+    for side_name in ("left", "right"):
+        side = dict(snapshot[side_name])
+        side["safe_url_identities"] = [secret_url]
+        side["strong_identities"] = [secret_url]
+        side["evidence_roots"] = [secret_url]
+        snapshot[side_name] = side
+    candidate.facts_snapshot = snapshot
+    db_session.commit()
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    detail = EventMergeQueryService(db_session).get_candidate(2)
+    with TestClient(create_app()) as client:
+        response = client.get("/event-merge-candidates/2")
+
+    assert detail is not None
+    assert "SECRET-MARKER" not in repr(detail)
+    assert secret_key not in repr(detail).casefold()
+    assert "SECRET-MARKER" not in response.text
 
 
 def test_unknown_reason_uses_bounded_generic_chinese_copy(db_session) -> None:
@@ -552,15 +731,20 @@ def test_candidate_page_handles_unknown_exception_without_echo(
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "expected_status"),
     [
-        OperationalError("INSERT secret", {}, RuntimeError("token=SECRET-MARKER")),
-        RuntimeError("password=SECRET-MARKER"),
+        (
+            OperationalError("INSERT secret", {}, RuntimeError("token=SECRET-MARKER")),
+            503,
+        ),
+        (RuntimeError("password=SECRET-MARKER"), 503),
+        (ValueError("token=SECRET-MARKER"), 422),
     ],
 )
 def test_candidate_post_failure_is_redacted(
-    db_session, monkeypatch, caplog, error
+    db_session, monkeypatch, caplog, error, expected_status
 ) -> None:
+    caplog.set_level(logging.INFO, logger="newsradar.web.app")
     _seed_candidate_catalog(db_session)
     monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
 
@@ -580,6 +764,36 @@ def test_candidate_post_failure_is_redacted(
             headers=_safe_headers(),
         )
 
-    assert response.status_code == 503
+    assert response.status_code == expected_status
     assert "SECRET-MARKER" not in response.text
     assert "SECRET-MARKER" not in caplog.text
+    assert all("SECRET-MARKER" not in repr(record.__dict__) for record in caplog.records)
+
+
+def test_candidate_scan_value_error_log_is_redacted(
+    db_session, monkeypatch, caplog
+) -> None:
+    caplog.set_level(logging.INFO, logger="newsradar.web.app")
+    _seed_candidate_catalog(db_session)
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    def fail_enqueue(*_args, **_kwargs):
+        raise ValueError("password=SECRET-MARKER")
+
+    monkeypatch.setattr(
+        "newsradar.web.app.OperationCommandService.enqueue_event_merge_scan",
+        fail_enqueue,
+    )
+
+    with TestClient(create_app()) as client:
+        page = client.get("/event-merge-candidates")
+        response = client.post(
+            "/event-merge-candidates/scan",
+            data={"action_token": _token(page.text)},
+            headers=_safe_headers(),
+        )
+
+    assert response.status_code == 422
+    assert "SECRET-MARKER" not in response.text
+    assert "SECRET-MARKER" not in caplog.text
+    assert all("SECRET-MARKER" not in repr(record.__dict__) for record in caplog.records)
