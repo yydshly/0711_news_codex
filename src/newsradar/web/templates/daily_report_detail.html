@@ -192,6 +192,14 @@
 {% block header %}<h1>{{ daily_report.report.report_date.isoformat() }} 中文日报</h1>{% endblock %}
 {% block content %}
 <div class="daily-report-page">
+<nav class="daily-report-jump-nav" aria-label="日报内容定位">
+  <a href="#decision-brief-heading">决策简报</a>
+  <a href="#overview-heading">情报全览</a>
+  <a href="#complete-report-heading">完整报告与证据</a>
+</nav>
+{% if daily_report.text_integrity.corrupted_review_count %}
+<p class="diagnostic-warning"><strong>检测到疑似编码损坏：</strong>本版有 {{ daily_report.text_integrity.corrupted_review_count }} 条人工审核记录包含连续问号。{% if daily_report.report.status == 'archived' %}请创建修订版后修正，当前历史版不应作为最终报告或重新生成音频。{% else %}请修正中文审核内容后再归档或生成音频。{% endif %}</p>
+{% endif %}
 <section class="panel daily-report-summary" aria-labelledby="daily-report-summary-heading">
   <div class="section-heading">
     <div><p class="eyebrow">本期内容口径</p><h2 id="daily-report-summary-heading">日报一眼看懂</h2></div>
@@ -317,6 +325,11 @@
   {% endif %}
 </section>
 
+<section class="daily-report-complete" aria-labelledby="complete-report-heading">
+  <div class="section-heading">
+    <div><p class="eyebrow">Full Report</p><h2 id="complete-report-heading">完整报告与证据</h2></div>
+    <span class="scope-label">固定快照与审核历史</span>
+  </div>
 <section class="panel" aria-labelledby="confirmed-report-heading">
   <h2 id="confirmed-report-heading">今日确认要闻</h2>
   {% for item in daily_report.confirmed %}
@@ -330,6 +343,7 @@
   {% for item in daily_report.emerging %}
   {{ render_item(item, '未命名线索', '暂无摘要') }}
   {% else %}<p>本版暂无未确认线索。</p>{% endfor %}
+</section>
 </section>
 </div>
 {% endblock %}

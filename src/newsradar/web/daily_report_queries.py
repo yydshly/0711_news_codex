@@ -12,6 +12,7 @@ from newsradar.daily_reports.intelligence import (
     build_decision_script,
     build_overview_script,
 )
+from newsradar.daily_reports.text_integrity import has_suspicious_question_run
 from newsradar.db.models import (
     DailyReportAudioArtifactRecord,
     DailyReportItemEditorialReviewRecord,
@@ -153,11 +154,17 @@ class DailyReportEditorialSummaryView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportTextIntegrityView:
+    corrupted_review_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
     decision_script: str
     editorial_summary: DailyReportEditorialSummaryView
+    text_integrity: DailyReportTextIntegrityView
     overview: DailyReportOverviewView
     audio: DailyReportAudioView
     supersedes_report_id: int | None
@@ -279,6 +286,7 @@ class DailyReportQueryService:
                 for row in views
             ),
         )
+        overview = self._overview(record)
         return DailyReportDetailView(
             report=self._summary(record, rows=rows),
             generation_summary=(
@@ -307,12 +315,32 @@ class DailyReportQueryService:
                 ),
                 unreviewed_count=sum(row.editorial_review is None for row in views),
             ),
-            overview=self._overview(record),
+            text_integrity=DailyReportTextIntegrityView(
+                corrupted_review_count=sum(
+                    self._review_has_suspicious_text(item.editorial_review)
+                    for item in (*views, *overview.items)
+                )
+            ),
+            overview=overview,
             audio=self._audio(record.id),
             supersedes_report_id=record.supersedes_report_id,
             archived_at=record.archived_at,
             confirmed=tuple(row for row in views if row.section == "confirmed"),
             emerging=tuple(row for row in views if row.section == "emerging"),
+        )
+
+    @staticmethod
+    def _review_has_suspicious_text(
+        review: DailyReportEditorialReviewView | None,
+    ) -> bool:
+        return review is not None and any(
+            has_suspicious_question_run(value)
+            for value in (
+                review.zh_title,
+                review.zh_summary,
+                review.review_recommendation,
+                review.evidence_assessment,
+            )
         )
 
     def _audio(self, report_id: int) -> DailyReportAudioView:

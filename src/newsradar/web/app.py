@@ -140,6 +140,10 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
         422,
         "中文证据评价不能为空且不能超过 2000 个字符。",
     ),
+    "daily_report_text_corrupted": (
+        422,
+        "检测到疑似编码损坏的连续问号，请修正中文内容后再继续。",
+    ),
     "invalid_daily_report_overview_duplicate_target": (
         422,
         "重复项必须关联同一日报中的另一条全览情报。",

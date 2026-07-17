@@ -19,6 +19,7 @@ from newsradar.daily_reports.schema import (
 )
 from newsradar.db.models import (
     DailyReportAudioArtifactRecord,
+    DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventRecord,
@@ -1008,6 +1009,56 @@ def test_overview_editorial_review_post_requires_token_and_writes_draft(
     saved_item = next(row for row in saved.overview.items if row.item_id == item.id)
     assert saved_item.editorial_review is not None
     assert saved_item.editorial_review.zh_title == "全览人工标题"
+
+
+def test_page_warns_about_corrupted_review_text_and_exposes_report_sections(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).overview_items(report.id)[0]
+    db_session.add(
+        DailyReportOverviewEditorialReviewRecord(
+            daily_report_overview_item_id=item.id,
+            revision=1,
+            decision="keep",
+            zh_title="中文标题",
+            zh_summary="中文概述。",
+            review_recommendation="????",
+            evidence_assessment="当前证据可供审核。",
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+    assert detail is not None
+    assert detail.text_integrity.corrupted_review_count == 1
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    page = client.get(f"/daily-reports/{report.id}")
+
+    assert page.status_code == 200
+    assert "检测到疑似编码损坏" in page.text
+    assert 'href="#decision-brief-heading"' in page.text
+    assert 'href="#overview-heading"' in page.text
+    assert 'href="#complete-report-heading"' in page.text
+    assert "完整报告与证据" in page.text
+
+
+def test_overview_editorial_review_post_returns_chinese_integrity_error(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).overview_items(report.id)[0]
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report.id}/overview-items/{item.id}/editorial-reviews",
+        data={"action_token": token, **OVERVIEW_EDITORIAL_FORM, "zh_summary": "????"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "检测到疑似编码损坏的连续问号，请修正中文内容后再继续。"
 
 
 def test_draft_page_renders_overview_summary_all_candidates_and_chinese_review_form(

@@ -375,6 +375,27 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 }
 .daily-report-page > * { min-width: 0; }
 .daily-report-page .panel { max-width: none; }
+.daily-report-jump-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+.daily-report-jump-nav a {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  overflow-wrap: anywhere;
+}
+.daily-report-complete {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+.daily-report-complete .event-card,
+.daily-report-complete .event-card li,
+.daily-report-complete .event-card p { overflow-wrap: anywhere; }
 .daily-report-summary { border-color: color-mix(in srgb, var(--info), var(--line) 55%); }
 .daily-report-metrics {
   display: grid;
