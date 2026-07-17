@@ -1,6 +1,11 @@
 from datetime import date
 
-from newsradar.daily_reports.intelligence import DecisionReportItem, build_decision_script
+from newsradar.daily_reports.intelligence import (
+    DecisionReportItem,
+    OverviewReportItem,
+    build_decision_script,
+    build_overview_script,
+)
 
 
 def test_decision_script_uses_audited_chinese_content_and_marks_pending_evidence() -> None:
@@ -59,3 +64,48 @@ def test_decision_script_excludes_removed_and_duplicate_items() -> None:
 
     assert "重复项标题" not in script
     assert "暂无可播报的已收录事件" in script
+
+
+def test_overview_script_groups_each_snapshot_event_once() -> None:
+    script = build_overview_script(
+        report_date=date(2026, 7, 17),
+        items=(
+            OverviewReportItem(
+                event_id=1,
+                status="confirmed",
+                display_tier="hotspot",
+                rank_score=91.0,
+                zh_title="已确认发布",
+                zh_summary="官方已公布。",
+                why_it_matters="影响产品路线。",
+                confirmation_summary="已有官方一手来源确认。",
+            ),
+            OverviewReportItem(
+                event_id=2,
+                status="emerging",
+                display_tier="hotspot",
+                rank_score=84.0,
+                zh_title="热点进展",
+                zh_summary="多家媒体正在跟进。",
+                why_it_matters="值得立即关注。",
+                confirmation_summary="仍待交叉确认。",
+            ),
+            OverviewReportItem(
+                event_id=3,
+                status="emerging",
+                display_tier="signal",
+                rank_score=72.0,
+                zh_title="新兴信号",
+                zh_summary="出现早期线索。",
+                why_it_matters="可能影响后续判断。",
+                confirmation_summary="仍需补充独立证据。",
+            ),
+        ),
+    )
+
+    assert "2026-07-17 News Codex 情报全览" in script
+    assert "已确认事件" in script
+    assert "热点关注" in script
+    assert "新兴信号" in script
+    assert script.count("已确认发布") == 1
+    assert "影响产品路线" in script

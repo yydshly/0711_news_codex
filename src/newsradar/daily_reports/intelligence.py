@@ -18,6 +18,18 @@ class DecisionReportItem:
     evidence_assessment: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class OverviewReportItem:
+    event_id: int
+    status: str
+    display_tier: str
+    rank_score: float
+    zh_title: str
+    zh_summary: str
+    why_it_matters: str
+    confirmation_summary: str
+
+
 def build_decision_script(
     *,
     report_date: date,
@@ -46,6 +58,53 @@ def build_decision_script(
         if assessment:
             lines.append(f"证据评价：{assessment}。")
     return "\n".join(lines)
+
+
+def build_overview_script(
+    *,
+    report_date: date,
+    items: Iterable[OverviewReportItem],
+) -> str:
+    lines = [f"{report_date.isoformat()} News Codex 情报全览。"]
+    grouped = {
+        "confirmed": [],
+        "hotspot": [],
+        "signal": [],
+    }
+    for item in items:
+        section = _overview_section(item)
+        if section is not None:
+            grouped[section].append(item)
+    if not any(grouped.values()):
+        return "\n".join((*lines, "暂无可播报的情报事件。"))
+    for section, heading in (
+        ("confirmed", "已确认事件"),
+        ("hotspot", "热点关注"),
+        ("signal", "新兴信号"),
+    ):
+        section_items = sorted(
+            grouped[section], key=lambda item: (-item.rank_score, item.event_id)
+        )
+        if not section_items:
+            continue
+        lines.append(heading)
+        for item in section_items:
+            lines.append(f"{item.zh_title}。{item.zh_summary}。")
+            if item.why_it_matters:
+                lines.append(f"关注理由：{item.why_it_matters}。")
+            if item.confirmation_summary:
+                lines.append(f"证据状态：{item.confirmation_summary}。")
+    return "\n".join(lines)
+
+
+def _overview_section(item: OverviewReportItem) -> str | None:
+    if item.status == "confirmed":
+        return "confirmed"
+    if item.display_tier == "hotspot":
+        return "hotspot"
+    if item.display_tier == "signal":
+        return "signal"
+    return None
 
 
 def _snapshot_text(snapshot: dict[str, object], key: str, fallback: str) -> str:

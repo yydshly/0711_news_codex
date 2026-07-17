@@ -8,14 +8,20 @@ from sqlalchemy.orm import Session
 
 from newsradar.daily_reports.intelligence import (
     DecisionReportItem,
+    OverviewReportItem,
     build_decision_script,
+    build_overview_script,
 )
 from newsradar.db.models import (
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
     DailyReportRecord,
 )
-from newsradar.events.operation_snapshots import latest_complete_event_snapshot
+from newsradar.events.operation_snapshots import (
+    event_snapshot_by_id,
+    latest_complete_event_snapshot,
+)
+from newsradar.web.event_queries import EventQueryService
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,10 +63,33 @@ class DailyReportItemView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportOverviewItemView:
+    event_id: int
+    status: str
+    display_tier: str
+    rank_score: float
+    zh_title: str
+    zh_summary: str
+    why_it_matters: str
+    confirmation_summary: str
+    detail_href: str
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportOverviewView:
+    items: tuple[DailyReportOverviewItemView, ...]
+    confirmed: tuple[DailyReportOverviewItemView, ...]
+    hotspots: tuple[DailyReportOverviewItemView, ...]
+    signals: tuple[DailyReportOverviewItemView, ...]
+    script: str
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
     decision_script: str
+    overview: DailyReportOverviewView
     supersedes_report_id: int | None
     archived_at: datetime | None
     confirmed: tuple[DailyReportItemView, ...]
@@ -188,10 +217,82 @@ class DailyReportQueryService:
                 else {}
             ),
             decision_script=decision_script,
+            overview=self._overview(record),
             supersedes_report_id=record.supersedes_report_id,
             archived_at=record.archived_at,
             confirmed=tuple(row for row in views if row.section == "confirmed"),
             emerging=tuple(row for row in views if row.section == "emerging"),
+        )
+
+    def _overview(self, record: DailyReportRecord) -> DailyReportOverviewView:
+        snapshot = event_snapshot_by_id(
+            self.session,
+            record.source_operation_id,
+            now=record.generated_at,
+        )
+        if snapshot is None:
+            return self._overview_view(record.report_date, ())
+        events = EventQueryService(self.session)
+        items: list[DailyReportOverviewItemView] = []
+        for event in events._operation_rows(snapshot):
+            if event.status != "confirmed" and event.display_tier not in {
+                "hotspot",
+                "signal",
+            }:
+                continue
+            items.append(
+                DailyReportOverviewItemView(
+                    event_id=event.event_id,
+                    status=event.status,
+                    display_tier=event.display_tier,
+                    rank_score=event.rank_score,
+                    zh_title=event.zh_title,
+                    zh_summary=event.zh_summary,
+                    why_it_matters=event.why_it_matters,
+                    confirmation_summary=event.confirmation_summary,
+                    detail_href=event.detail_href,
+                )
+            )
+        ordered = tuple(sorted(items, key=lambda item: (-item.rank_score, item.event_id)))
+        return self._overview_view(record.report_date, ordered)
+
+    @staticmethod
+    def _overview_view(
+        report_date: date,
+        items: tuple[DailyReportOverviewItemView, ...],
+    ) -> DailyReportOverviewView:
+        confirmed = tuple(item for item in items if item.status == "confirmed")
+        hotspots = tuple(
+            item
+            for item in items
+            if item.status != "confirmed" and item.display_tier == "hotspot"
+        )
+        signals = tuple(
+            item
+            for item in items
+            if item.status != "confirmed" and item.display_tier == "signal"
+        )
+        return DailyReportOverviewView(
+            items=items,
+            confirmed=confirmed,
+            hotspots=hotspots,
+            signals=signals,
+            script=build_overview_script(
+                report_date=report_date,
+                items=(
+                    OverviewReportItem(
+                        event_id=item.event_id,
+                        status=item.status,
+                        display_tier=item.display_tier,
+                        rank_score=item.rank_score,
+                        zh_title=item.zh_title,
+                        zh_summary=item.zh_summary,
+                        why_it_matters=item.why_it_matters,
+                        confirmation_summary=item.confirmation_summary,
+                    )
+                    for item in items
+                ),
+            ),
         )
 
     def has_complete_event_snapshot(self, *, now: datetime | None = None) -> bool:

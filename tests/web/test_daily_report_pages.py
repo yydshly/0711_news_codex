@@ -18,11 +18,13 @@ from newsradar.daily_reports.schema import (
 from newsradar.db.models import (
     DailyReportRecord,
     EventRecord,
+    EventScoreRecord,
     EventVersionRecord,
     OperationRunRecord,
 )
 from newsradar.web.app import create_app
 from newsradar.web.daily_report_queries import DailyReportQueryService
+from tests.web.test_event_queries import _event, _pipeline_snapshot
 
 NOW = datetime(2026, 7, 16, 4, tzinfo=UTC)
 
@@ -264,6 +266,104 @@ def test_daily_report_detail_projects_and_renders_decision_brief(
     assert response.status_code == 200
     assert "今日决策简报" in response.text
     assert REVIEW_NEEDS_EVIDENCE.zh_title in response.text
+
+
+def test_daily_report_detail_overview_uses_bound_operation_snapshot_versions(
+    db_session: Session,
+) -> None:
+    confirmed = _event(
+        db_session,
+        event_id=8301,
+        status="confirmed",
+        title="快照已确认事件",
+        occurred_at=NOW - timedelta(hours=1),
+        display_tier="audit_only",
+    )
+    hotspot = _event(
+        db_session,
+        event_id=8302,
+        status="emerging",
+        title="快照热点事件",
+        occurred_at=NOW - timedelta(hours=2),
+        display_tier="hotspot",
+    )
+    signal = _event(
+        db_session,
+        event_id=8303,
+        status="emerging",
+        title="快照信号事件",
+        occurred_at=NOW - timedelta(hours=3),
+        display_tier="signal",
+    )
+    _event(
+        db_session,
+        event_id=8304,
+        status="emerging",
+        title="不应展示的审计事件",
+        occurred_at=NOW - timedelta(hours=4),
+        display_tier="audit_only",
+    )
+    operation = _pipeline_snapshot(
+        db_session,
+        refs=[(8301, 1), (8302, 1), (8303, 1), (8304, 1)],
+        now=NOW,
+    )
+    report = DailyReportRepository(db_session, utcnow=lambda: NOW).create_draft(
+        DailyReportDraft(
+            report_date=NOW.date(),
+            window_hours=24,
+            window_start=NOW - timedelta(hours=24),
+            window_end=NOW,
+            source_operation_id=operation.id,
+            generation_summary={},
+            items=(),
+        )
+    )
+    version = db_session.scalar(
+        select(EventVersionRecord).where(
+            EventVersionRecord.event_id == confirmed.id,
+            EventVersionRecord.version_number == 1,
+        )
+    )
+    assert version is not None
+    db_session.add(
+        EventVersionRecord(
+            event_id=confirmed.id,
+            version_number=2,
+            zh_title="可变当前事件标题",
+            zh_summary="不应进入全览。",
+            payload={**version.payload, "status": "rejected"},
+            created_at=NOW + timedelta(minutes=1),
+        )
+    )
+    db_session.add(
+        EventScoreRecord(
+            event_id=confirmed.id,
+            version_number=2,
+            heat=1,
+            breakdown={},
+            created_at=NOW + timedelta(minutes=1),
+        )
+    )
+    confirmed.current_version_number = 2
+    confirmed.status = "rejected"
+    confirmed.display_tier = "audit_only"
+    db_session.commit()
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    assert [item.event_id for item in detail.overview.items] == [
+        confirmed.id,
+        hotspot.id,
+        signal.id,
+    ]
+    assert [item.event_id for item in detail.overview.confirmed] == [confirmed.id]
+    assert [item.event_id for item in detail.overview.hotspots] == [hotspot.id]
+    assert [item.event_id for item in detail.overview.signals] == [signal.id]
+    assert "快照已确认事件" in detail.overview.script
+    assert "可变当前事件标题" not in detail.overview.script
+    assert "不应展示的审计事件" not in detail.overview.script
 
 
 def test_detail_projects_empty_editorial_review_fields_for_unreviewed_item(
