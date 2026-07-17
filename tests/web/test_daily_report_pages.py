@@ -211,6 +211,26 @@ def seed_two_daily_reports(
     )
 
 
+def review_overview_for_audio(session: Session, report_id: int) -> None:
+    repository = DailyReportRepository(session, utcnow=lambda: NOW)
+    for index, item in enumerate(repository.overview_items(report_id)):
+        repository.save_overview_editorial_review(
+            report_id,
+            item.id,
+            DailyReportOverviewEditorialReviewDraft.create(
+                decision="keep" if index == 0 else "needs_evidence",
+                zh_title=f"已审核全览标题 {index + 1}",
+                zh_summary=f"已审核全览概述 {index + 1}",
+                review_recommendation="继续关注并核验后续。",
+                evidence_assessment=(
+                    "已有可靠公开证据。"
+                    if index == 0
+                    else "尚待进一步确认第一方来源。"
+                ),
+            ),
+        )
+
+
 def test_daily_report_list_explains_generation_is_read_only(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -366,6 +386,7 @@ def test_archived_daily_report_renders_audio_actions_and_latest_player(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     report = seed_daily_report(db_session)
+    review_overview_for_audio(db_session, report.id)
     DailyReportRepository(db_session, utcnow=lambda: NOW).archive(report.id)
     report_id = report.id
     artifact = DailyReportAudioArtifactRecord(
@@ -413,6 +434,73 @@ def test_archived_daily_report_renders_audio_actions_and_latest_player(
         "daily_report_id": report_id,
         "rendition": "overview",
     }
+
+
+def test_overview_audio_enqueue_requires_all_candidates_reviewed(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    DailyReportRepository(db_session, utcnow=lambda: NOW).archive(report_id)
+
+    with pytest.raises(ValueError, match="daily_report_overview_review_incomplete"):
+        OperationCommandService(db_session).enqueue_daily_report_audio(
+            report_id=report_id,
+            rendition="overview",
+            trigger="test",
+        )
+
+
+def test_overview_audio_enqueue_rejects_fully_reviewed_report_with_no_included_items(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    for item in repository.overview_items(report_id):
+        repository.save_overview_editorial_review(
+            report_id,
+            item.id,
+            DailyReportOverviewEditorialReviewDraft.create(
+                decision="exclude",
+                zh_title="排除全览标题",
+                zh_summary="排除全览概述",
+                review_recommendation="不进入全览",
+                evidence_assessment="当前证据无法验证。",
+            ),
+        )
+    repository.archive(report_id)
+
+    with pytest.raises(
+        ValueError, match="daily_report_overview_has_no_included_items"
+    ):
+        OperationCommandService(db_session).enqueue_daily_report_audio(
+            report_id=report_id,
+            rendition="overview",
+            trigger="test",
+        )
+
+
+def test_overview_audio_enqueue_accepts_completed_review_and_decision_is_unaffected(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    review_overview_for_audio(db_session, report_id)
+    DailyReportRepository(db_session, utcnow=lambda: NOW).archive(report_id)
+
+    overview_operation = OperationCommandService(db_session).enqueue_daily_report_audio(
+        report_id=report_id,
+        rendition="overview",
+        trigger="test",
+    )
+    decision_operation = OperationCommandService(db_session).enqueue_daily_report_audio(
+        report_id=report_id,
+        rendition="decision",
+        trigger="test",
+    )
+
+    assert overview_operation != decision_operation
 
 
 def test_archiving_daily_report_automatically_queues_decision_audio(

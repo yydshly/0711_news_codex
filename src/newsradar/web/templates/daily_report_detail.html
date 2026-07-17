@@ -272,6 +272,10 @@
   {% endif %}
   {% if overview_operation_status %}
   <p><strong>语音任务{{ '正在生成' if overview_operation_status == 'running' else '已排队' }}</strong>，完成后刷新本页播放。</p>
+  {% elif daily_report.overview.legacy_unreviewed or daily_report.overview.summary.unreviewed_count %}
+  <p><strong>暂不能生成全览语音：</strong>请先在草稿修订版中完成全部候选审核。</p>
+  {% elif daily_report.overview.summary.included_count == 0 %}
+  <p><strong>暂不能生成全览语音：</strong>当前没有“保留”或“需补证”条目。</p>
   {% else %}
   <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/audio/overview">
     <input type="hidden" name="action_token" value="{{ action_token }}">

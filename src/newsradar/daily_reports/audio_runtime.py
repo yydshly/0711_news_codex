@@ -14,6 +14,7 @@ from newsradar.daily_reports.audio_client import (
     SpeechSynthesisResult,
 )
 from newsradar.daily_reports.audio_schema import DailyReportAudioRequest
+from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.db.models import DailyReportAudioArtifactRecord, DailyReportRecord
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
@@ -71,6 +72,25 @@ class DailyReportAudioHandler:
                     "仅已归档的日报可以生成语音。",
                     retryable=False,
                 )
+            if request.rendition == "overview":
+                readiness = DailyReportRepository(session).overview_audio_readiness(
+                    report.id
+                )
+                if (
+                    readiness.total_count == 0
+                    or readiness.reviewed_count != readiness.total_count
+                ):
+                    return self._result(
+                        "daily_report_overview_review_incomplete",
+                        "情报全览仍有未审核条目，暂不能生成全览语音。",
+                        retryable=False,
+                    )
+                if readiness.included_count == 0:
+                    return self._result(
+                        "daily_report_overview_has_no_included_items",
+                        "情报全览没有可播报的保留或需补证条目。",
+                        retryable=False,
+                    )
             detail = DailyReportQueryService(session).detail(report.id)
             if detail is None:
                 return self._result("daily_report_not_found", "日报不存在。", retryable=False)

@@ -135,6 +135,19 @@ class OperationCommandService:
             raise ValueError("daily_report_not_found")
         if report.status != "archived":
             raise ValueError("daily_report_must_be_archived_for_audio")
+        if rendition == "overview":
+            from newsradar.daily_reports.repository import DailyReportRepository
+
+            readiness = DailyReportRepository(self.session).overview_audio_readiness(
+                report_id
+            )
+            if (
+                readiness.total_count == 0
+                or readiness.reviewed_count != readiness.total_count
+            ):
+                raise ValueError("daily_report_overview_review_incomplete")
+            if readiness.included_count == 0:
+                raise ValueError("daily_report_overview_has_no_included_items")
         active = next(
             (
                 record

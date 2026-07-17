@@ -15,7 +15,10 @@ from newsradar.db.models import Base, DailyReportAudioArtifactRecord
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
 from newsradar.operations.worker import OperationCancelled
-from tests.web.test_daily_report_pages import seed_daily_report
+from tests.web.test_daily_report_pages import (
+    review_overview_for_audio,
+    seed_daily_report,
+)
 
 
 @pytest.fixture
@@ -75,6 +78,7 @@ def test_audio_handler_uses_overview_script_for_overview_rendition(
     db_session, tmp_path: Path
 ) -> None:
     report = seed_daily_report(db_session)
+    review_overview_for_audio(db_session, report.id)
     DailyReportRepository(db_session).archive(report.id)
     scripts: list[str] = []
 
@@ -89,6 +93,32 @@ def test_audio_handler_uses_overview_script_for_overview_rendition(
     assert result.status is OperationStatus.SUCCEEDED
     assert scripts and "News Codex 情报全览" in scripts[0]
     assert "News Codex 决策日报" not in scripts[0]
+    assert "已审核全览标题 1" in scripts[0]
+    assert "已审核全览标题 2" in scripts[0]
+
+
+def test_audio_handler_rejects_unreviewed_overview_before_synthesis(
+    db_session, tmp_path: Path
+) -> None:
+    report = seed_daily_report(db_session)
+    DailyReportRepository(db_session).archive(report.id)
+    synthesized: list[str] = []
+
+    result = DailyReportAudioHandler(
+        lambda: db_session,
+        audio_root=tmp_path,
+        synthesize=lambda script: (
+            synthesized.append(script)
+            or SpeechSynthesisResult(b"ID3", None, None, len(script))
+        ),
+    )(_lease(report.id, "overview"), lambda _boundary: None)
+
+    assert result.status is OperationStatus.FAILED
+    assert result.error_code == "daily_report_overview_review_incomplete"
+    assert result.error_message == "情报全览仍有未审核条目，暂不能生成全览语音。"
+    assert result.retryable is False
+    assert synthesized == []
+    assert db_session.scalar(select(DailyReportAudioArtifactRecord)) is None
 
 
 def test_audio_handler_records_safe_chinese_failure_for_missing_tts_configuration(
