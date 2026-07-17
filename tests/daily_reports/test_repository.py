@@ -13,11 +13,14 @@ from newsradar.daily_reports.schema import (
     DailyReportDraft,
     DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
+    DailyReportOverviewEditorialReviewDraft,
+    DailyReportOverviewItemDraft,
     ReportSection,
 )
 from newsradar.db.models import (
     Base,
     DailyReportItemRecord,
+    DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventRecord,
     OperationRunRecord,
@@ -38,6 +41,21 @@ REVIEW_DUPLICATE = DailyReportEditorialReviewDraft.create(
     zh_summary="重复概述",
     review_recommendation="与已收录条目合并去重",
     evidence_assessment="指向同一原始发布事实。",
+)
+
+OVERVIEW_KEEP = DailyReportOverviewEditorialReviewDraft.create(
+    decision="keep",
+    zh_title="全览人工标题",
+    zh_summary="全览人工中文概述",
+    review_recommendation="继续跟踪第一方后续",
+    evidence_assessment="已有第一方公开证据。",
+)
+OVERVIEW_NEEDS_EVIDENCE = DailyReportOverviewEditorialReviewDraft.create(
+    decision="needs_evidence",
+    zh_title="全览待补证标题",
+    zh_summary="全览待补证概述",
+    review_recommendation="寻找第二条独立证据",
+    evidence_assessment="目前只有单一来源。",
 )
 
 
@@ -101,6 +119,23 @@ def _draft(session: Session, *, report_date: date = date(2026, 7, 16)) -> DailyR
                 (base_event_id + 1, "confirmed", 1),
                 (base_event_id + 2, "emerging", 1),
                 (base_event_id + 3, "emerging", 2),
+            )
+        ),
+        overview_items=tuple(
+            DailyReportOverviewItemDraft(
+                event_id=event_id,
+                event_version_number=1,
+                position=position,
+                snapshot={"zh_title": f"全览事件 {event_id}", "status": status},
+                decision_event_id=event_id,
+            )
+            for position, (event_id, status) in enumerate(
+                (
+                    (base_event_id + 1, "confirmed"),
+                    (base_event_id + 2, "emerging"),
+                    (base_event_id + 3, "emerging"),
+                ),
+                start=1,
             )
         ),
     )
@@ -273,6 +308,113 @@ def test_save_editorial_review_rejects_foreign_item(db_session: Session) -> None
 
     with pytest.raises(LookupError, match="daily_report_item_not_found"):
         repository.save_editorial_review(left.id, foreign_item.id, REVIEW_KEEP)
+
+
+def test_save_overview_review_appends_history_preserves_snapshot_and_reports_readiness(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    report = repository.create_draft(_draft(db_session))
+    first_item, reviewed_item, _unreviewed_item = repository.overview_items(report.id)
+    before = dict(reviewed_item.snapshot)
+
+    first = repository.save_overview_editorial_review(
+        report.id, reviewed_item.id, OVERVIEW_KEEP
+    )
+    duplicate = DailyReportOverviewEditorialReviewDraft.create(
+        decision="duplicate",
+        zh_title="重复全览标题",
+        zh_summary="与主条目相同",
+        review_recommendation="合并到主条目",
+        evidence_assessment="原始 URL 和发布时间相同。",
+        duplicate_of_overview_item_id=first_item.id,
+    )
+    second = repository.save_overview_editorial_review(
+        report.id, reviewed_item.id, duplicate
+    )
+    repository.save_overview_editorial_review(
+        report.id, first_item.id, OVERVIEW_NEEDS_EVIDENCE
+    )
+
+    assert (first.revision, second.revision) == (1, 2)
+    assert [
+        row.decision for row in repository.overview_editorial_reviews(reviewed_item.id)
+    ] == ["keep", "duplicate"]
+    assert db_session.get(DailyReportOverviewItemRecord, reviewed_item.id).snapshot == before
+    readiness = repository.overview_audio_readiness(report.id)
+    assert readiness.total_count == 3
+    assert readiness.reviewed_count == 2
+    assert readiness.included_count == 1
+
+
+def test_save_overview_review_rejects_foreign_self_and_archived_targets(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    left = repository.create_draft(_draft(db_session, report_date=date(2026, 7, 16)))
+    right = repository.create_draft(_draft(db_session, report_date=date(2026, 7, 17)))
+    left_item, left_target, _ = repository.overview_items(left.id)
+    foreign_target = repository.overview_items(right.id)[0]
+
+    for target, code in (
+        (left_item.id, "invalid_daily_report_overview_duplicate_self"),
+        (foreign_target.id, "invalid_daily_report_overview_duplicate_target"),
+    ):
+        draft = DailyReportOverviewEditorialReviewDraft.create(
+            decision="duplicate",
+            zh_title="重复标题",
+            zh_summary="重复概述",
+            review_recommendation="合并",
+            evidence_assessment="相同事实",
+            duplicate_of_overview_item_id=target,
+        )
+        with pytest.raises(ValueError, match=code):
+            repository.save_overview_editorial_review(left.id, left_item.id, draft)
+
+    foreign_item = repository.overview_items(right.id)[1]
+    with pytest.raises(LookupError, match="daily_report_overview_item_not_found"):
+        repository.save_overview_editorial_review(left.id, foreign_item.id, OVERVIEW_KEEP)
+
+    repository.archive(left.id)
+    with pytest.raises(ValueError, match="daily_report_archived"):
+        repository.save_overview_editorial_review(left.id, left_target.id, OVERVIEW_KEEP)
+
+
+def test_revise_copies_latest_overview_review_and_remaps_duplicate_target(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = repository.create_draft(_draft(db_session))
+    target, duplicate_item, _ = repository.overview_items(original.id)
+    repository.save_overview_editorial_review(
+        original.id, duplicate_item.id, OVERVIEW_KEEP
+    )
+    latest = repository.save_overview_editorial_review(
+        original.id,
+        duplicate_item.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="duplicate",
+            zh_title="最新重复标题",
+            zh_summary="最新重复概述",
+            review_recommendation="与主事件合并",
+            evidence_assessment="相同第一方链接。",
+            duplicate_of_overview_item_id=target.id,
+        ),
+    )
+    repository.archive(original.id)
+
+    revision = repository.revise(original.id)
+    copied_by_event = {
+        item.event_id: item for item in repository.overview_items(revision.id)
+    }
+    copied_item = copied_by_event[duplicate_item.event_id]
+    copied_review = repository.overview_editorial_reviews(copied_item.id)[0]
+
+    assert copied_review.revision == 1
+    assert copied_review.decision == "duplicate"
+    assert copied_review.zh_title == "最新重复标题"
+    assert copied_review.copied_from_editorial_review_id == latest.id
+    assert copied_review.duplicate_of_overview_item_id == copied_by_event[target.event_id].id
 
 
 def test_revise_copies_only_latest_editorial_review_without_mutating_history(

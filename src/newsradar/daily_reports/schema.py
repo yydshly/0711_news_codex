@@ -62,6 +62,61 @@ class DailyReportOverviewItemDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportOverviewEditorialReviewDraft:
+    decision: EditorialDecision
+    zh_title: str
+    zh_summary: str
+    review_recommendation: str
+    evidence_assessment: str
+    duplicate_of_overview_item_id: int | None
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        decision: str,
+        zh_title: str,
+        zh_summary: str,
+        review_recommendation: str,
+        evidence_assessment: str,
+        duplicate_of_overview_item_id: int | str | None = None,
+    ) -> DailyReportOverviewEditorialReviewDraft:
+        try:
+            parsed_decision = EditorialDecision(decision)
+        except (TypeError, ValueError) as error:
+            raise ValueError("invalid_daily_report_editorial_decision") from error
+        duplicate_target = _overview_duplicate_target(duplicate_of_overview_item_id)
+        if (
+            parsed_decision is EditorialDecision.DUPLICATE
+            and duplicate_target is None
+        ) or (
+            parsed_decision is not EditorialDecision.DUPLICATE
+            and duplicate_target is not None
+        ):
+            raise ValueError("invalid_daily_report_overview_duplicate_target")
+        return cls(
+            decision=parsed_decision,
+            zh_title=_editorial_text(
+                zh_title, 240, "invalid_daily_report_editorial_title"
+            ),
+            zh_summary=_editorial_text(
+                zh_summary, 4000, "invalid_daily_report_editorial_summary"
+            ),
+            review_recommendation=_editorial_text(
+                review_recommendation,
+                2000,
+                "invalid_daily_report_editorial_recommendation",
+            ),
+            evidence_assessment=_editorial_text(
+                evidence_assessment,
+                2000,
+                "invalid_daily_report_editorial_evidence_assessment",
+            ),
+            duplicate_of_overview_item_id=duplicate_target,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportEditorialReviewDraft:
     decision: EditorialDecision
     zh_title: str
@@ -96,6 +151,25 @@ class DailyReportEditorialReviewDraft:
                 evidence_assessment, 2000, "invalid_daily_report_editorial_evidence_assessment"
             ),
         )
+
+
+def _overview_duplicate_target(value: int | str | None) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("invalid_daily_report_overview_duplicate_target")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned.isascii() or not cleaned.isdecimal():
+            raise ValueError("invalid_daily_report_overview_duplicate_target")
+        parsed = int(cleaned)
+    else:
+        raise ValueError("invalid_daily_report_overview_duplicate_target")
+    if parsed <= 0:
+        raise ValueError("invalid_daily_report_overview_duplicate_target")
+    return parsed
 
 
 @dataclass(frozen=True, slots=True)

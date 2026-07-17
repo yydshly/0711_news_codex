@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from sqlalchemy import case, func, select, text
@@ -12,6 +13,7 @@ from newsradar.daily_reports.schema import (
     DailyReportDraft,
     DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
+    DailyReportOverviewEditorialReviewDraft,
     DailyReportOverviewItemDraft,
     EditorialDecision,
     ReportSection,
@@ -21,11 +23,19 @@ from newsradar.daily_reports.schema import (
 from newsradar.db.models import (
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
+    DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
     DailyReportRecord,
 )
 
 MAX_REVISION_ATTEMPTS = 3
+
+
+@dataclass(frozen=True, slots=True)
+class OverviewAudioReadiness:
+    total_count: int
+    reviewed_count: int
+    included_count: int
 
 
 class DailyReportRepository:
@@ -149,6 +159,98 @@ class DailyReportRepository:
                 )
                 .execution_options(populate_existing=True)
             )
+        )
+
+    def save_overview_editorial_review(
+        self,
+        report_id: int,
+        item_id: int,
+        draft: DailyReportOverviewEditorialReviewDraft,
+    ) -> DailyReportOverviewEditorialReviewRecord:
+        self._draft_report(report_id)
+        item = self._owned_overview_item(report_id, item_id)
+        duplicate_target_id = draft.duplicate_of_overview_item_id
+        if duplicate_target_id == item.id:
+            self.session.rollback()
+            raise ValueError("invalid_daily_report_overview_duplicate_self")
+        if duplicate_target_id is not None:
+            target = self.session.scalar(
+                select(DailyReportOverviewItemRecord).where(
+                    DailyReportOverviewItemRecord.id == duplicate_target_id,
+                    DailyReportOverviewItemRecord.daily_report_id == report_id,
+                )
+            )
+            if target is None:
+                self.session.rollback()
+                raise ValueError("invalid_daily_report_overview_duplicate_target")
+        revision = int(
+            self.session.scalar(
+                select(func.max(DailyReportOverviewEditorialReviewRecord.revision)).where(
+                    DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id
+                    == item.id
+                )
+            )
+            or 0
+        ) + 1
+        review = DailyReportOverviewEditorialReviewRecord(
+            daily_report_overview_item_id=item.id,
+            revision=revision,
+            decision=draft.decision.value,
+            zh_title=draft.zh_title,
+            zh_summary=draft.zh_summary,
+            review_recommendation=draft.review_recommendation,
+            evidence_assessment=draft.evidence_assessment,
+            duplicate_of_overview_item_id=duplicate_target_id,
+            created_at=self._utcnow(),
+        )
+        self.session.add(review)
+        self.session.commit()
+        return review
+
+    def overview_editorial_reviews(
+        self, item_id: int
+    ) -> tuple[DailyReportOverviewEditorialReviewRecord, ...]:
+        return tuple(
+            self.session.scalars(
+                select(DailyReportOverviewEditorialReviewRecord)
+                .where(
+                    DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id
+                    == item_id
+                )
+                .order_by(
+                    DailyReportOverviewEditorialReviewRecord.revision,
+                    DailyReportOverviewEditorialReviewRecord.id,
+                )
+            )
+        )
+
+    def overview_audio_readiness(self, report_id: int) -> OverviewAudioReadiness:
+        items = self.overview_items(report_id)
+        if not items:
+            return OverviewAudioReadiness(0, 0, 0)
+        latest: dict[int, DailyReportOverviewEditorialReviewRecord] = {}
+        for review in self.session.scalars(
+            select(DailyReportOverviewEditorialReviewRecord)
+            .where(
+                DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id.in_(
+                    tuple(item.id for item in items)
+                )
+            )
+            .order_by(
+                DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id,
+                DailyReportOverviewEditorialReviewRecord.revision.desc(),
+                DailyReportOverviewEditorialReviewRecord.id.desc(),
+            )
+        ):
+            latest.setdefault(review.daily_report_overview_item_id, review)
+        return OverviewAudioReadiness(
+            total_count=len(items),
+            reviewed_count=len(latest),
+            included_count=sum(
+                review.decision
+                in {EditorialDecision.KEEP.value, EditorialDecision.NEEDS_EVIDENCE.value}
+                for review in latest.values()
+            ),
         )
 
     def set_included(
@@ -322,6 +424,52 @@ class DailyReportRepository:
                     created_at=self._utcnow(),
                 )
             )
+        original_overview_by_event = {
+            (row.event_id, row.event_version_number): row
+            for row in self.overview_items(original.id)
+        }
+        revision_overview_by_event = {
+            (row.event_id, row.event_version_number): row
+            for row in self.overview_items(revision.id)
+        }
+        for event_key, original_item in original_overview_by_event.items():
+            revision_item = revision_overview_by_event.get(event_key)
+            if revision_item is None:
+                continue
+            latest_review = self._latest_overview_editorial_review(original_item.id)
+            if (
+                latest_review is None
+                or self._latest_overview_editorial_review(revision_item.id) is not None
+            ):
+                continue
+            duplicate_target_id = None
+            if latest_review.duplicate_of_overview_item_id is not None:
+                original_target = self.session.get(
+                    DailyReportOverviewItemRecord,
+                    latest_review.duplicate_of_overview_item_id,
+                )
+                if original_target is None:
+                    raise ValueError("invalid_daily_report_overview_duplicate_target")
+                revision_target = revision_overview_by_event.get(
+                    (original_target.event_id, original_target.event_version_number)
+                )
+                if revision_target is None:
+                    raise ValueError("invalid_daily_report_overview_duplicate_target")
+                duplicate_target_id = revision_target.id
+            self.session.add(
+                DailyReportOverviewEditorialReviewRecord(
+                    daily_report_overview_item_id=revision_item.id,
+                    revision=1,
+                    decision=latest_review.decision,
+                    zh_title=latest_review.zh_title,
+                    zh_summary=latest_review.zh_summary,
+                    review_recommendation=latest_review.review_recommendation,
+                    evidence_assessment=latest_review.evidence_assessment,
+                    duplicate_of_overview_item_id=duplicate_target_id,
+                    copied_from_editorial_review_id=latest_review.id,
+                    created_at=self._utcnow(),
+                )
+            )
         self.session.commit()
         return revision
 
@@ -360,6 +508,20 @@ class DailyReportRepository:
             raise LookupError("daily_report_item_not_found")
         return item
 
+    def _owned_overview_item(
+        self, report_id: int, item_id: int
+    ) -> DailyReportOverviewItemRecord:
+        item = self.session.scalar(
+            select(DailyReportOverviewItemRecord).where(
+                DailyReportOverviewItemRecord.id == item_id,
+                DailyReportOverviewItemRecord.daily_report_id == report_id,
+            )
+        )
+        if item is None:
+            self.session.rollback()
+            raise LookupError("daily_report_overview_item_not_found")
+        return item
+
     def _latest_editorial_review(
         self, item_id: int
     ) -> DailyReportItemEditorialReviewRecord | None:
@@ -369,6 +531,21 @@ class DailyReportRepository:
             .order_by(
                 DailyReportItemEditorialReviewRecord.revision.desc(),
                 DailyReportItemEditorialReviewRecord.id.desc(),
+            )
+        )
+
+    def _latest_overview_editorial_review(
+        self, item_id: int
+    ) -> DailyReportOverviewEditorialReviewRecord | None:
+        return self.session.scalar(
+            select(DailyReportOverviewEditorialReviewRecord)
+            .where(
+                DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id
+                == item_id
+            )
+            .order_by(
+                DailyReportOverviewEditorialReviewRecord.revision.desc(),
+                DailyReportOverviewEditorialReviewRecord.id.desc(),
             )
         )
 

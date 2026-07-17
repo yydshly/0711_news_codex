@@ -3,6 +3,7 @@ import pytest
 from newsradar.daily_reports.schema import (
     ALLOWED_WINDOW_HOURS,
     DailyReportEditorialReviewDraft,
+    DailyReportOverviewEditorialReviewDraft,
     EditorialDecision,
     ReportSection,
     ReportStatus,
@@ -50,3 +51,46 @@ def test_editorial_review_draft_trims_and_rejects_invalid_text() -> None:
             review_recommendation="建议",
             evidence_assessment="评估",
         )
+
+
+@pytest.mark.parametrize("decision", ("keep", "needs_evidence", "exclude"))
+def test_overview_editorial_review_accepts_non_duplicate_decisions(
+    decision: str,
+) -> None:
+    review = DailyReportOverviewEditorialReviewDraft.create(
+        decision=decision,
+        zh_title=" 标题 ",
+        zh_summary=" 概述 ",
+        review_recommendation=" 建议 ",
+        evidence_assessment=" 评估 ",
+        duplicate_of_overview_item_id="",
+    )
+
+    assert review.decision is EditorialDecision(decision)
+    assert review.zh_title == "标题"
+    assert review.duplicate_of_overview_item_id is None
+
+
+def test_overview_editorial_review_requires_duplicate_target_only_for_duplicate() -> None:
+    duplicate = DailyReportOverviewEditorialReviewDraft.create(
+        decision="duplicate",
+        zh_title="重复标题",
+        zh_summary="重复概述",
+        review_recommendation="合并",
+        evidence_assessment="相同原始事实",
+        duplicate_of_overview_item_id="12",
+    )
+    assert duplicate.duplicate_of_overview_item_id == 12
+
+    for decision, target in (("duplicate", ""), ("keep", "12")):
+        with pytest.raises(
+            ValueError, match="invalid_daily_report_overview_duplicate_target"
+        ):
+            DailyReportOverviewEditorialReviewDraft.create(
+                decision=decision,
+                zh_title="标题",
+                zh_summary="概述",
+                review_recommendation="建议",
+                evidence_assessment="评估",
+                duplicate_of_overview_item_id=target,
+            )
