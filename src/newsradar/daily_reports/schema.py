@@ -5,6 +5,8 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
+from newsradar.daily_reports.text_integrity import ensure_editorial_text_integrity
+
 ALLOWED_WINDOW_HOURS = frozenset({24, 48, 72})
 MAX_ITEMS_PER_SECTION = 20
 REPORT_TIMEZONE = "Asia/Shanghai"
@@ -39,6 +41,7 @@ def _editorial_text(value: str, maximum_length: int, error_code: str) -> str:
     cleaned = value.strip()
     if not cleaned or len(cleaned) > maximum_length:
         raise ValueError(error_code)
+    ensure_editorial_text_integrity(cleaned)
     return cleaned
 
 
