@@ -467,6 +467,71 @@ def test_candidate_projection_rejects_secret_shaped_url_paths(
     assert "SECRET-MARKER" not in response.text
 
 
+@pytest.mark.parametrize(
+    "secret_path",
+    [
+        "token:SECRET-MARKER/story",
+        "API_KEY=SECRET-MARKER/story",
+        "%2574oken/SECRET-MARKER/story",
+        "%252574oken/SECRET-MARKER/story",
+    ],
+)
+def test_candidate_projection_rejects_assigned_or_recursively_encoded_secret_paths(
+    db_session, monkeypatch, secret_path
+) -> None:
+    _seed_candidate_catalog(db_session)
+    candidate = db_session.get(EventMergeCandidateRecord, 2)
+    assert candidate is not None
+    snapshot = dict(candidate.facts_snapshot)
+    secret_url = f"https://media.example/{secret_path}"
+    for side_name in ("left", "right"):
+        side = dict(snapshot[side_name])
+        side["safe_url_identities"] = [secret_url]
+        side["strong_identities"] = [secret_url]
+        side["evidence_roots"] = [secret_url]
+        snapshot[side_name] = side
+    candidate.facts_snapshot = snapshot
+    db_session.commit()
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    detail = EventMergeQueryService(db_session).get_candidate(2)
+    with TestClient(create_app()) as client:
+        response = client.get("/event-merge-candidates/2")
+
+    assert detail is not None
+    assert "SECRET-MARKER" not in repr(detail)
+    assert "SECRET-MARKER" not in response.text
+
+
+def test_candidate_projection_keeps_non_sensitive_tokenization_path(
+    db_session, monkeypatch
+) -> None:
+    _seed_candidate_catalog(db_session)
+    candidate = db_session.get(EventMergeCandidateRecord, 2)
+    assert candidate is not None
+    snapshot = dict(candidate.facts_snapshot)
+    public_url = "https://media.example/news/tokenization-story"
+    for side_name in ("left", "right"):
+        side = dict(snapshot[side_name])
+        side["safe_url_identities"] = [public_url]
+        snapshot[side_name] = side
+    candidate.facts_snapshot = snapshot
+    db_session.commit()
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    from newsradar.web.event_merge_queries import EventMergeQueryService
+
+    detail = EventMergeQueryService(db_session).get_candidate(2)
+    with TestClient(create_app()) as client:
+        response = client.get("/event-merge-candidates/2")
+
+    assert detail is not None
+    assert detail.left.safe_urls == (public_url,)
+    assert "tokenization-story" in response.text
+
+
 def test_unknown_reason_uses_bounded_generic_chinese_copy(db_session) -> None:
     _seed_candidate_catalog(db_session)
     candidate = db_session.get(EventMergeCandidateRecord, 3)

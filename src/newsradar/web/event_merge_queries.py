@@ -47,6 +47,7 @@ _SENSITIVE_PATH_KEYS = frozenset(
         "session",
     }
 )
+_MAX_PATH_UNQUOTE_ROUNDS = 4
 
 _REASON_COPY: dict[str, tuple[str, str]] = {
     "exact_cross_algorithm_membership": (
@@ -655,8 +656,30 @@ def _safe_identity(value: object) -> str | None:
 
 
 def _path_has_sensitive_key(value: str) -> bool:
+    current = value
+    for _ in range(_MAX_PATH_UNQUOTE_ROUNDS):
+        if _decoded_path_has_sensitive_key(current):
+            return True
+        try:
+            decoded = unquote(current, errors="strict")
+        except (UnicodeDecodeError, ValueError):
+            return True
+        if decoded == current:
+            return False
+        current = decoded
+
+    if _decoded_path_has_sensitive_key(current):
+        return True
+    try:
+        decoded = unquote(current, errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return True
+    return decoded != current
+
+
+def _decoded_path_has_sensitive_key(value: str) -> bool:
     for raw_segment in value.split("/"):
-        key = unquote(raw_segment).split("=", 1)[0]
+        key = re.split(r"[:=]", raw_segment, maxsplit=1)[0]
         normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
         if normalized in _SENSITIVE_PATH_KEYS:
             return True
