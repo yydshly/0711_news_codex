@@ -29,6 +29,77 @@ _SENSITIVE_PATH_KEYS = frozenset(
         "session",
     }
 )
+_NON_CONTENT_ROOTS = frozenset(
+    {
+        "api",
+        "aggregate",
+        "aggregator",
+        "archive",
+        "archives",
+        "atom",
+        "author",
+        "authors",
+        "categories",
+        "category",
+        "feed",
+        "feeds",
+        "list",
+        "listing",
+        "rss",
+        "search",
+        "sitemap",
+        "tag",
+        "tags",
+        "topic",
+        "topics",
+    }
+)
+_NON_CONTENT_LEAVES = frozenset(
+    {
+        "all",
+        "archive",
+        "archives",
+        "articles",
+        "atom",
+        "atom.xml",
+        "blog",
+        "browse",
+        "categories",
+        "category",
+        "directory",
+        "feed",
+        "feeds",
+        "home",
+        "index",
+        "index.html",
+        "items",
+        "latest",
+        "list",
+        "listing",
+        "news",
+        "overview",
+        "posts",
+        "press",
+        "releases",
+        "results",
+        "rss",
+        "rss.xml",
+        "stories",
+        "tags",
+        "topics",
+        "updates",
+        "latest-news",
+        "news-list",
+        "news-releases",
+        "press-releases",
+    }
+)
+_CONTENT_CONTAINER_SEGMENTS = frozenset(
+    {"article", "articles", "post", "posts", "release", "releases", "story", "stories"}
+)
+_CONTENT_PREFIXES = ("article", "item", "post", "release", "story")
+_NON_CONTENT_SUFFIXES = (".atom", ".json", ".rss", ".xml")
+_NON_CONTENT_SLUG_SUFFIXES = ("-archive", "-feed", "-index", "-list", "-listing")
 
 
 def parse_safe_http_url(value: str | None) -> SplitResult | None:
@@ -95,6 +166,68 @@ def path_has_sensitive_key(value: str) -> bool:
     except (UnicodeDecodeError, ValueError):
         return True
     return decoded != current
+
+
+def path_is_content_identity(value: str) -> bool:
+    decoded = _bounded_decoded_path(value)
+    if decoded is None or any(separator in decoded for separator in ("?", "&", ";")):
+        return False
+    segments = tuple(segment.casefold() for segment in decoded.split("/") if segment)
+    if not segments:
+        return False
+    if segments[0] in _NON_CONTENT_ROOTS:
+        return False
+    if any(
+        segment == "page" and index + 1 < len(segments) and segments[index + 1].isdigit()
+        for index, segment in enumerate(segments)
+    ):
+        return False
+    leaf = segments[-1]
+    if leaf in _NON_CONTENT_LEAVES or leaf.endswith(
+        (*_NON_CONTENT_SUFFIXES, *_NON_CONTENT_SLUG_SUFFIXES)
+    ):
+        return False
+    if _is_date_archive(segments):
+        return False
+    if _content_shaped_leaf(leaf):
+        return True
+    return len(segments) > 1 and segments[-2] in _CONTENT_CONTAINER_SEGMENTS
+
+
+def _bounded_decoded_path(value: str) -> str | None:
+    current = value
+    for _ in range(MAX_PATH_UNQUOTE_ROUNDS):
+        if _INVALID_PERCENT_ESCAPE.search(current) or not url_text_is_safe(current):
+            return None
+        try:
+            decoded = unquote(current, errors="strict")
+        except (UnicodeDecodeError, ValueError):
+            return None
+        if decoded == current:
+            return current
+        current = decoded
+    try:
+        decoded = unquote(current, errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return current if decoded == current else None
+
+
+def _is_date_archive(segments: tuple[str, ...]) -> bool:
+    for index, segment in enumerate(segments):
+        if len(segment) == 4 and segment.isdigit() and 1900 <= int(segment) <= 2100:
+            tail = segments[index:]
+            return len(tail) <= 3 and all(part.isdigit() for part in tail)
+    return False
+
+
+def _content_shaped_leaf(value: str) -> bool:
+    return (
+        value.startswith(_CONTENT_PREFIXES)
+        or "-" in value
+        or any(character.isdigit() for character in value)
+        or value.endswith((".htm", ".html"))
+    )
 
 
 def _decoded_path_is_unsafe(value: str) -> bool:

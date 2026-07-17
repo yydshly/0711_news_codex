@@ -235,6 +235,49 @@ def test_ipv6_host_and_ipv6_with_port_do_not_collapse() -> None:
     assert strong_url_identity(host_only) != strong_url_identity(host_with_port)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/",
+        "https://example.com/news",
+        "https://example.com/blog/",
+        "https://example.com/feed",
+        "https://example.com/rss.xml",
+        "https://example.com/category/ai",
+        "https://example.com/topics/models",
+        "https://example.com/search/results",
+        "https://example.com/news/page/2",
+        "https://example.com/news/2026/07",
+        "https://example.com/api/v1/items",
+        "https://example.com/aggregator/latest",
+        "https://example.com/press-releases",
+        "https://example.com/latest-news",
+        "https://example.com/news-list",
+    ],
+)
+def test_non_content_collection_urls_are_safe_for_display_but_never_strong(
+    url: str,
+) -> None:
+    assert safe_url_identity(url) is not None
+    assert strong_url_identity(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/story",
+        "https://example.com/news/orion-model-launch",
+        "https://example.com/releases/gpt-5",
+        "https://example.com/press-releases/gpt-5",
+        "https://example.com/technology/story-123",
+        "https://example.com/2026/07/orion-launch",
+        "https://github.com/org/repo/releases/tag/v1.2.3",
+    ],
+)
+def test_content_article_and_release_urls_remain_strong(url: str) -> None:
+    assert strong_url_identity(url) == url
+
+
 def test_url_identities_reject_overlong_input_and_output_instead_of_truncating() -> None:
     overlong_inputs = (
         "https://example.com/" + "a" * 4_100,

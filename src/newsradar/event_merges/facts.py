@@ -28,6 +28,7 @@ from newsradar.url_safety import (
     bounded_url_identity,
     normalized_http_netloc,
     parse_safe_http_url,
+    path_is_content_identity,
 )
 
 EVENT_MERGE_RULE_VERSION = "event-merge-v2"
@@ -64,7 +65,7 @@ def strong_url_identity(value: str | None) -> str | None:
         return None
     if hostname in _YOUTUBE_HOSTS or hostname in _YOUTUBE_SHORT_HOSTS:
         return _youtube_video_identity(parsed)
-    if parsed.query:
+    if parsed.query or not path_is_content_identity(parsed.path):
         return None
     return bounded_url_identity(
         urlunsplit(

@@ -1070,6 +1070,35 @@ def test_scan_does_not_compare_unindexed_unrelated_events(session: Session, monk
     assert compared == []
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://publisher.test/",
+        "https://publisher.test/news",
+        "https://publisher.test/feed",
+        "https://publisher.test/category/ai",
+        "https://publisher.test/news/page/2",
+        "https://publisher.test/aggregator/latest",
+    ],
+)
+def test_scan_never_creates_deterministic_candidate_from_collection_url(
+    session: Session,
+    url: str,
+) -> None:
+    _seed_event(session, 1, 11, url=url, title="First independent bulletin")
+    _seed_event(session, 2, 22, url=url, title="Second unrelated analysis")
+    _seed_scan_operation(session)
+    session.commit()
+
+    result = EventMergeService(session).scan(50, lambda _: None)
+
+    assert result.candidate_type_counts.get("deterministic_merge", 0) == 0
+    assert all(
+        candidate.candidate_type != "deterministic_merge"
+        for candidate in session.scalars(select(EventMergeCandidateRecord))
+    )
+
+
 def test_scan_expires_pending_candidate_when_referenced_version_is_stale(
     session: Session,
 ) -> None:
