@@ -224,6 +224,17 @@ def test_general_strong_identity_preserves_scheme() -> None:
     assert safe_url_identity("https://example.com/story") == "example.com/story"
 
 
+def test_ipv6_host_and_ipv6_with_port_do_not_collapse() -> None:
+    host_only = "https://[2001:db8::1:8443]/story"
+    host_with_port = "https://[2001:db8::1]:8443/story"
+
+    assert safe_url_identity(host_only) == "[2001:db8::1:8443]/story"
+    assert safe_url_identity(host_with_port) == "[2001:db8::1]:8443/story"
+    assert strong_url_identity(host_only) == "https://[2001:db8::1:8443]/story"
+    assert strong_url_identity(host_with_port) == "https://[2001:db8::1]:8443/story"
+    assert strong_url_identity(host_only) != strong_url_identity(host_with_port)
+
+
 def test_url_identities_reject_overlong_input_and_output_instead_of_truncating() -> None:
     overlong_inputs = (
         "https://example.com/" + "a" * 4_100,
@@ -246,6 +257,10 @@ def test_url_identities_reject_overlong_input_and_output_instead_of_truncating()
         "/api_key=SECRET-MARKER/story",
         "/credential:SECRET-MARKER/story",
         "/%2574oken/SECRET-MARKER/story",
+        "/news%3Ftoken=SECRET-MARKER",
+        "/news%253Ftoken=SECRET-MARKER",
+        "/token;SECRET-MARKER/story",
+        "/news%3Fapi_key=SECRET-MARKER",
     ],
 )
 def test_url_identities_reject_sensitive_plain_and_encoded_paths(path: str) -> None:
@@ -262,8 +277,8 @@ def test_url_identities_reject_sensitive_plain_and_encoded_paths(path: str) -> N
 def test_event_facts_never_persist_sensitive_path_marker(session) -> None:
     event_id = _seed_event(
         session,
-        canonical_url="https://example.com/%2574oken/SECRET-MARKER/story",
-        original_url="https://example.com/api_key=SECRET-MARKER/story",
+        canonical_url="https://example.com/news%253Ftoken=SECRET-MARKER",
+        original_url="https://example.com/news%3Fapi_key=SECRET-MARKER",
     )
 
     facts = load_event_facts(session, event_id)

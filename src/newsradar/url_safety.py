@@ -13,6 +13,7 @@ MAX_URL_QUERY_FIELDS = 32
 MAX_PATH_UNQUOTE_ROUNDS = 4
 
 _INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_PATH_TOKEN_SEPARATOR = re.compile(r"[/?&;]+")
 _SENSITIVE_PATH_KEYS = frozenset(
     {
         "token",
@@ -56,14 +57,21 @@ def bounded_url_identity(value: str) -> str | None:
     return value
 
 
-def url_text_is_safe(
-    value: str, *, max_length: int = MAX_URL_INPUT_LENGTH
-) -> bool:
-    return bool(value) and len(value) <= max_length and not any(
-        character == "\\"
-        or character.isspace()
-        or unicodedata.category(character) == "Cc"
-        for character in value
+def normalized_http_netloc(parsed: SplitResult) -> str:
+    hostname = parsed.hostname.casefold()
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"{host}{port}"
+
+
+def url_text_is_safe(value: str, *, max_length: int = MAX_URL_INPUT_LENGTH) -> bool:
+    return (
+        bool(value)
+        and len(value) <= max_length
+        and not any(
+            character == "\\" or character.isspace() or unicodedata.category(character) == "Cc"
+            for character in value
+        )
     )
 
 
@@ -92,7 +100,7 @@ def path_has_sensitive_key(value: str) -> bool:
 def _decoded_path_is_unsafe(value: str) -> bool:
     if _INVALID_PERCENT_ESCAPE.search(value) or not url_text_is_safe(value):
         return True
-    for raw_segment in value.split("/"):
+    for raw_segment in _PATH_TOKEN_SEPARATOR.split(value):
         key = re.split(r"[:=]", raw_segment, maxsplit=1)[0]
         normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
         if normalized in _SENSITIVE_PATH_KEYS:

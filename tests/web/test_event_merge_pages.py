@@ -77,8 +77,7 @@ def _seed_event(
                         "?token=SECRET-MARKER#private"
                     ),
                     original_url=(
-                        f"https://media.example/story/{raw_item_id}"
-                        "?api_key=SECRET-MARKER#private"
+                        f"https://media.example/story/{raw_item_id}?api_key=SECRET-MARKER#private"
                     ),
                     payload={},
                     title=f"原始报道 {raw_item_id}",
@@ -139,11 +138,14 @@ def _seed_candidate(
     reason_codes: tuple[str, ...] | None = None,
     algorithm_version: str = "event-merge-v2",
 ) -> EventMergeCandidateRecord:
-    reason_codes = reason_codes or {
-        "legacy_identity": ("exact_cross_algorithm_membership",),
-        "deterministic_merge": ("same_strong_identity",),
-        "manual_review": ("same_object_action_without_strong_identity",),
-    }[candidate_type]
+    reason_codes = (
+        reason_codes
+        or {
+            "legacy_identity": ("exact_cross_algorithm_membership",),
+            "deterministic_merge": ("same_strong_identity",),
+            "manual_review": ("same_object_action_without_strong_identity",),
+        }[candidate_type]
+    )
     record = EventMergeCandidateRecord(
         id=candidate_id,
         left_event_id=left_id,
@@ -252,22 +254,14 @@ def test_candidate_list_is_filtered_and_capped_at_200(db_session) -> None:
 
 def test_summary_includes_terminal_candidate_states(db_session) -> None:
     _seed_candidate_catalog(db_session)
-    _seed_candidate(
-        db_session, 4, "deterministic_merge", status="applied", left_id=1, right_id=4
-    )
-    _seed_candidate(
-        db_session, 5, "manual_review", status="dismissed", left_id=2, right_id=4
-    )
-    _seed_candidate(
-        db_session, 6, "manual_review", status="expired", left_id=3, right_id=4
-    )
+    _seed_candidate(db_session, 4, "deterministic_merge", status="applied", left_id=1, right_id=4)
+    _seed_candidate(db_session, 5, "manual_review", status="dismissed", left_id=2, right_id=4)
+    _seed_candidate(db_session, 6, "manual_review", status="expired", left_id=3, right_id=4)
     _seed_event(db_session, 5, ())
     legacy = db_session.get(EventRecord, 5)
     assert legacy is not None
     legacy.visibility = "legacy"
-    _seed_candidate(
-        db_session, 7, "manual_review", status="failed", left_id=1, right_id=5
-    )
+    _seed_candidate(db_session, 7, "manual_review", status="failed", left_id=1, right_id=5)
     db_session.commit()
 
     from newsradar.web.event_merge_queries import EventMergeQueryService
@@ -341,9 +335,7 @@ def test_candidate_detail_uses_snapshot_versions_and_redacts_sensitive_urls(
     assert "#private" not in serialized.casefold()
 
 
-def test_candidate_detail_never_rehydrates_mutable_raw_item_fields(
-    db_session, monkeypatch
-) -> None:
+def test_candidate_detail_never_rehydrates_mutable_raw_item_fields(db_session, monkeypatch) -> None:
     _seed_candidate_catalog(db_session)
     monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
     monkeypatch.setattr("newsradar.web.app.token_urlsafe", lambda _length: "fixed-token")
@@ -388,9 +380,9 @@ def test_shared_strong_identity_is_computed_before_display_truncation(
     left["strong_identities"] = [f"left.example/story-{index}" for index in range(100)] + [
         "shared.example/story"
     ]
-    right["strong_identities"] = [
-        f"right.example/story-{index}" for index in range(100)
-    ] + ["shared.example/story"]
+    right["strong_identities"] = [f"right.example/story-{index}" for index in range(100)] + [
+        "shared.example/story"
+    ]
     candidate.facts_snapshot = {"left": left, "right": right}
     db_session.commit()
 
@@ -408,9 +400,7 @@ def test_shared_strong_identity_is_computed_before_display_truncation(
     assert detail.left.strong_identities_truncated
 
 
-def test_raw_item_member_display_reports_total_and_truncation(
-    db_session, monkeypatch
-) -> None:
+def test_raw_item_member_display_reports_total_and_truncation(db_session, monkeypatch) -> None:
     _seed_candidate_catalog(db_session)
     candidate = db_session.get(EventMergeCandidateRecord, 1)
     assert candidate is not None
@@ -475,6 +465,10 @@ def test_candidate_projection_rejects_secret_shaped_url_paths(
         "API_KEY=SECRET-MARKER/story",
         "%2574oken/SECRET-MARKER/story",
         "%252574oken/SECRET-MARKER/story",
+        "news%3Ftoken=SECRET-MARKER",
+        "news%253Ftoken=SECRET-MARKER",
+        "token;SECRET-MARKER/story",
+        "news%3Fapi_key=SECRET-MARKER",
     ],
 )
 def test_candidate_projection_rejects_assigned_or_recursively_encoded_secret_paths(
@@ -504,6 +498,14 @@ def test_candidate_projection_rejects_assigned_or_recursively_encoded_secret_pat
     assert detail is not None
     assert "SECRET-MARKER" not in repr(detail)
     assert "SECRET-MARKER" not in response.text
+
+
+def test_web_public_url_preserves_ipv6_brackets_and_rejects_userinfo() -> None:
+    from newsradar.web.event_merge_queries import _public_url
+
+    assert _public_url("https://[2001:db8::1:8443]/story") == ("https://[2001:db8::1:8443]/story")
+    assert _public_url("https://[2001:db8::1]:8443/story") == ("https://[2001:db8::1]:8443/story")
+    assert _public_url("https://user:password@[2001:db8::1]/story") is None
 
 
 def test_candidate_projection_keeps_non_sensitive_tokenization_path(
@@ -636,9 +638,7 @@ def test_candidate_detail_only_renders_actions_valid_for_type_and_state(
     assert "/event-merge-candidates/1/recheck" not in inactive.text
 
 
-def test_malformed_candidate_snapshot_is_isolated_from_list_page(
-    db_session, monkeypatch
-) -> None:
+def test_malformed_candidate_snapshot_is_isolated_from_list_page(db_session, monkeypatch) -> None:
     _seed_candidate_catalog(db_session)
     malformed = db_session.get(EventMergeCandidateRecord, 2)
     assert malformed is not None
@@ -744,9 +744,7 @@ def test_candidate_decision_rejects_missing_or_invalid_actions(
 
 
 @pytest.mark.parametrize("status", ["expired", "applied"])
-def test_candidate_decision_rejects_non_pending_candidate(
-    db_session, monkeypatch, status
-) -> None:
+def test_candidate_decision_rejects_non_pending_candidate(db_session, monkeypatch, status) -> None:
     _seed_candidate_catalog(db_session)
     candidate = db_session.get(EventMergeCandidateRecord, 1)
     assert candidate is not None
@@ -766,9 +764,7 @@ def test_candidate_decision_rejects_non_pending_candidate(
     assert db_session.query(OperationRunRecord).count() == 1
 
 
-def test_candidate_action_rejects_unsafe_origin_and_reused_token(
-    db_session, monkeypatch
-) -> None:
+def test_candidate_action_rejects_unsafe_origin_and_reused_token(db_session, monkeypatch) -> None:
     _seed_candidate_catalog(db_session)
     monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
 
@@ -812,9 +808,7 @@ def test_candidate_page_handles_database_unavailable_without_raw_error(
     assert "SECRET-MARKER" not in response.text
 
 
-def test_candidate_page_handles_unknown_exception_without_echo(
-    monkeypatch, caplog
-) -> None:
+def test_candidate_page_handles_unknown_exception_without_echo(monkeypatch, caplog) -> None:
     class BrokenService:
         def __init__(self, _session) -> None:
             raise RuntimeError("token=SECRET-MARKER")
@@ -869,9 +863,7 @@ def test_candidate_post_failure_is_redacted(
     assert all("SECRET-MARKER" not in repr(record.__dict__) for record in caplog.records)
 
 
-def test_candidate_scan_value_error_log_is_redacted(
-    db_session, monkeypatch, caplog
-) -> None:
+def test_candidate_scan_value_error_log_is_redacted(db_session, monkeypatch, caplog) -> None:
     caplog.set_level(logging.INFO, logger="newsradar.web.app")
     _seed_candidate_catalog(db_session)
     monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)

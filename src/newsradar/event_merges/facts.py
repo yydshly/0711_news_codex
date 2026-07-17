@@ -26,14 +26,13 @@ from newsradar.events.schema import EntityType, RawItemText
 from newsradar.url_safety import (
     MAX_URL_QUERY_FIELDS,
     bounded_url_identity,
+    normalized_http_netloc,
     parse_safe_http_url,
 )
 
 EVENT_MERGE_RULE_VERSION = "event-merge-v2"
 _INTERMEDIARY_HOSTS = frozenset({"news.google.com", "news.yahoo.com"})
-_YOUTUBE_HOSTS = frozenset(
-    {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
-)
+_YOUTUBE_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"})
 _YOUTUBE_SHORT_HOSTS = frozenset({"youtu.be", "www.youtu.be"})
 _YOUTUBE_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _KEY_NUMBER = re.compile(
@@ -53,7 +52,7 @@ def safe_url_identity(value: str | None) -> str | None:
     parsed = parse_safe_http_url(value)
     if parsed is None:
         return None
-    return bounded_url_identity(f"{_netloc(parsed)}{parsed.path or '/'}")
+    return bounded_url_identity(f"{normalized_http_netloc(parsed)}{parsed.path or '/'}")
 
 
 def strong_url_identity(value: str | None) -> str | None:
@@ -68,7 +67,15 @@ def strong_url_identity(value: str | None) -> str | None:
     if parsed.query:
         return None
     return bounded_url_identity(
-        urlunsplit((parsed.scheme, _netloc(parsed), parsed.path or "/", "", ""))
+        urlunsplit(
+            (
+                parsed.scheme,
+                normalized_http_netloc(parsed),
+                parsed.path or "/",
+                "",
+                "",
+            )
+        )
     )
 
 
@@ -114,14 +121,7 @@ def _youtube_video_identity(parsed: SplitResult) -> str | None:
     return f"youtube.com/watch/{video_id}"
 
 
-def _netloc(parsed: SplitResult) -> str:
-    port = f":{parsed.port}" if parsed.port is not None else ""
-    return f"{parsed.hostname.casefold()}{port}"
-
-
-def _youtube_path_video_id(
-    path: str, *, allowed_prefixes: tuple[str, ...]
-) -> str | None:
+def _youtube_path_video_id(path: str, *, allowed_prefixes: tuple[str, ...]) -> str | None:
     segments = path.split("/")
     if allowed_prefixes:
         if len(segments) != 3 or segments[0] or segments[1] not in allowed_prefixes:
@@ -199,8 +199,7 @@ def load_event_facts(session: Session, event_id: int) -> EventMergeFacts:
         if action := clustering_action(normalized):
             actions.add(action)
         key_numbers.update(
-            " ".join(match.group().casefold().split())
-            for match in _KEY_NUMBER.finditer(normalized)
+            " ".join(match.group().casefold().split()) for match in _KEY_NUMBER.finditer(normalized)
         )
     return EventMergeFacts(
         event_id=event.id,

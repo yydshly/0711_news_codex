@@ -20,6 +20,7 @@ from newsradar.db.models import (
 from newsradar.url_safety import (
     MAX_URL_IDENTITY_LENGTH,
     bounded_url_identity,
+    normalized_http_netloc,
     parse_safe_http_url,
     path_has_sensitive_key,
     url_text_is_safe,
@@ -28,9 +29,7 @@ from newsradar.url_safety import (
 _MAX_ROWS = 200
 _MAX_DISPLAYED_RAW_ITEMS = 500
 _MAX_DISPLAYED_IDENTITIES = 100
-_CANDIDATE_TYPES = frozenset(
-    {"legacy_identity", "deterministic_merge", "manual_review"}
-)
+_CANDIDATE_TYPES = frozenset({"legacy_identity", "deterministic_merge", "manual_review"})
 _CANDIDATE_STATUSES = frozenset(
     {"pending", "confirmed", "dismissed", "applied", "expired", "failed"}
 )
@@ -247,14 +246,10 @@ class EventMergeQueryService:
             .join(RawItemRecord, RawItemRecord.id == EventItemRecord.raw_item_id)
             .where(
                 EventRecord.visibility == "current",
-                EventItemRecord.added_version_number
-                <= EventRecord.current_version_number,
+                EventItemRecord.added_version_number <= EventRecord.current_version_number,
                 (
                     EventItemRecord.removed_version_number.is_(None)
-                    | (
-                        EventItemRecord.removed_version_number
-                        > EventRecord.current_version_number
-                    )
+                    | (EventItemRecord.removed_version_number > EventRecord.current_version_number)
                 ),
             )
             .subquery()
@@ -262,46 +257,40 @@ class EventMergeQueryService:
         event_membership_stats = (
             select(
                 active_memberships.c.event_id,
-                func.count(func.distinct(active_memberships.c.raw_item_id)).label(
-                    "member_count"
-                ),
-                func.count(func.distinct(active_memberships.c.source_id)).label(
-                    "source_count"
-                ),
+                func.count(func.distinct(active_memberships.c.raw_item_id)).label("member_count"),
+                func.count(func.distinct(active_memberships.c.source_id)).label("source_count"),
             )
             .group_by(active_memberships.c.event_id)
             .subquery()
         )
-        current_event_count, single_member_count, cross_source_count = (
-            self.session.execute(
-                select(
-                    func.count(EventRecord.id),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (event_membership_stats.c.member_count == 1, 1),
-                                else_=0,
-                            )
-                        ),
-                        0,
+        current_event_count, single_member_count, cross_source_count = self.session.execute(
+            select(
+                func.count(EventRecord.id),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (event_membership_stats.c.member_count == 1, 1),
+                            else_=0,
+                        )
                     ),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (event_membership_stats.c.source_count > 1, 1),
-                                else_=0,
-                            )
-                        ),
-                        0,
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (event_membership_stats.c.source_count > 1, 1),
+                            else_=0,
+                        )
                     ),
-                )
-                .outerjoin(
-                    event_membership_stats,
-                    event_membership_stats.c.event_id == EventRecord.id,
-                )
-                .where(EventRecord.visibility == "current")
-            ).one()
-        )
+                    0,
+                ),
+            )
+            .outerjoin(
+                event_membership_stats,
+                event_membership_stats.c.event_id == EventRecord.id,
+            )
+            .where(EventRecord.visibility == "current")
+        ).one()
         repeated_current_raw_items = (
             select(active_memberships.c.raw_item_id)
             .group_by(active_memberships.c.raw_item_id)
@@ -334,8 +323,7 @@ class EventMergeQueryService:
                 ),
                 candidate_count(
                     EventMergeCandidateRecord.status == "pending",
-                    EventMergeCandidateRecord.candidate_type
-                    == "deterministic_merge",
+                    EventMergeCandidateRecord.candidate_type == "deterministic_merge",
                 ),
                 candidate_count(
                     EventMergeCandidateRecord.status == "pending",
@@ -376,9 +364,7 @@ class EventMergeQueryService:
         elif status:
             return ()
         if candidate_type in _CANDIDATE_TYPES:
-            statement = statement.where(
-                EventMergeCandidateRecord.candidate_type == candidate_type
-            )
+            statement = statement.where(EventMergeCandidateRecord.candidate_type == candidate_type)
         elif candidate_type:
             return ()
         if event_id is not None:
@@ -388,9 +374,7 @@ class EventMergeQueryService:
             )
         records = tuple(
             self.session.scalars(
-                statement.order_by(EventMergeCandidateRecord.id.desc()).limit(
-                    bounded_limit
-                )
+                statement.order_by(EventMergeCandidateRecord.id.desc()).limit(bounded_limit)
             )
         )
         version_keys = {
@@ -425,9 +409,7 @@ class EventMergeQueryService:
                     candidate_id=record.id,
                     revision=record.revision,
                     candidate_type=record.candidate_type,
-                    candidate_type_label=_TYPE_LABELS.get(
-                        record.candidate_type, "未知候选类型"
-                    ),
+                    candidate_type_label=_TYPE_LABELS.get(record.candidate_type, "未知候选类型"),
                     status=record.status,
                     status_label=_STATUS_LABELS.get(record.status, "未知状态"),
                     left_event_id=record.left_event_id,
@@ -463,10 +445,7 @@ class EventMergeQueryService:
         left = left_build.view
         right = right_build.view
         all_shared_strong_identities = tuple(
-            sorted(
-                left_build.all_strong_identities
-                & right_build.all_strong_identities
-            )
+            sorted(left_build.all_strong_identities & right_build.all_strong_identities)
         )
         displayed_shared_strong_identities = all_shared_strong_identities[
             :_MAX_DISPLAYED_IDENTITIES
@@ -485,20 +464,13 @@ class EventMergeQueryService:
             right=right,
             shared_strong_identities=displayed_shared_strong_identities,
             shared_strong_identity_count=len(all_shared_strong_identities),
-            displayed_shared_strong_identity_count=len(
-                displayed_shared_strong_identities
-            ),
+            displayed_shared_strong_identity_count=len(displayed_shared_strong_identities),
             shared_strong_identities_truncated=(
-                len(displayed_shared_strong_identities)
-                < len(all_shared_strong_identities)
+                len(displayed_shared_strong_identities) < len(all_shared_strong_identities)
             ),
-            shared_objects=tuple(
-                sorted(set(left.object_entities) & set(right.object_entities))
-            ),
+            shared_objects=tuple(sorted(set(left.object_entities) & set(right.object_entities))),
             shared_actions=tuple(sorted(set(left.actions) & set(right.actions))),
-            time_distance_seconds=_minimum_time_distance(
-                left.published_at, right.published_at
-            ),
+            time_distance_seconds=_minimum_time_distance(left.published_at, right.published_at),
             conflicts=_conflicts(left, right),
             reason_code=reason_code,
             zh_reason=reason,
@@ -526,12 +498,8 @@ class EventMergeQueryService:
         )
         all_raw_item_ids = _positive_ints(facts.get("raw_item_ids"))
         raw_item_ids = all_raw_item_ids[:_MAX_DISPLAYED_RAW_ITEMS]
-        all_strong_identities = _safe_identities(
-            facts.get("strong_identities"), limit=None
-        )
-        displayed_strong_identities = all_strong_identities[
-            :_MAX_DISPLAYED_IDENTITIES
-        ]
+        all_strong_identities = _safe_identities(facts.get("strong_identities"), limit=None)
+        displayed_strong_identities = all_strong_identities[:_MAX_DISPLAYED_IDENTITIES]
         members = tuple(
             EventMergeMemberRow(
                 raw_item_id=raw_item_id,
@@ -548,19 +516,15 @@ class EventMergeQueryService:
                     if facts.get("visibility") in {"current", "legacy"}
                     else "unknown"
                 ),
-                title=_safe_text(version.zh_title if version else None, 500)
-                or "未记录标题",
-                summary=_safe_text(version.zh_summary if version else None, 2_000)
-                or "未记录摘要",
+                title=_safe_text(version.zh_title if version else None, 500) or "未记录标题",
+                summary=_safe_text(version.zh_summary if version else None, 2_000) or "未记录摘要",
                 source_ids=_safe_strings(facts.get("source_ids"), 255),
                 publishers=_safe_strings(facts.get("publishers"), 255),
                 published_at=_datetimes(facts.get("published_at")),
                 safe_urls=_safe_identities(facts.get("safe_url_identities")),
                 strong_identities=displayed_strong_identities,
                 strong_identity_count=len(all_strong_identities),
-                displayed_strong_identity_count=len(
-                    displayed_strong_identities
-                ),
+                displayed_strong_identity_count=len(displayed_strong_identities),
                 strong_identities_truncated=(
                     len(displayed_strong_identities) < len(all_strong_identities)
                 ),
@@ -617,11 +581,16 @@ def _public_url(value: object) -> str | None:
     parsed = parse_safe_http_url(value)
     if parsed is None:
         return None
-    netloc = parsed.hostname.casefold()
-    if parsed.port is not None:
-        netloc += f":{parsed.port}"
     return bounded_url_identity(
-        urlunsplit((parsed.scheme, netloc, parsed.path or "/", "", ""))
+        urlunsplit(
+            (
+                parsed.scheme,
+                normalized_http_netloc(parsed),
+                parsed.path or "/",
+                "",
+                "",
+            )
+        )
     )
 
 
@@ -646,11 +615,7 @@ def _safe_identities(
 ) -> tuple[str, ...]:
     values = value if isinstance(value, (list, tuple)) else ()
     identities = tuple(
-        dict.fromkeys(
-            identity
-            for item in values
-            if (identity := _safe_identity(item)) is not None
-        )
+        dict.fromkeys(identity for item in values if (identity := _safe_identity(item)) is not None)
     )
     return identities if limit is None else identities[:limit]
 
@@ -658,11 +623,7 @@ def _safe_identities(
 def _safe_strings(value: object, max_length: int) -> tuple[str, ...]:
     values = value if isinstance(value, (list, tuple)) else ()
     return tuple(
-        dict.fromkeys(
-            text
-            for item in values[:500]
-            if (text := _safe_text(item, max_length))
-        )
+        dict.fromkeys(text for item in values[:500] if (text := _safe_text(item, max_length)))
     )
 
 
@@ -691,24 +652,18 @@ def _datetimes(value: object) -> tuple[datetime, ...]:
         else:
             continue
         result.append(
-            parsed.replace(tzinfo=UTC)
-            if parsed.tzinfo is None
-            else parsed.astimezone(UTC)
+            parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
         )
     return tuple(result)
 
 
-def _minimum_time_distance(
-    left: tuple[datetime, ...], right: tuple[datetime, ...]
-) -> int | None:
+def _minimum_time_distance(left: tuple[datetime, ...], right: tuple[datetime, ...]) -> int | None:
     if not left or not right:
         return None
     return int(min(abs((first - second).total_seconds()) for first in left for second in right))
 
 
-def _conflicts(
-    left: EventMergeEventSide, right: EventMergeEventSide
-) -> tuple[str, ...]:
+def _conflicts(left: EventMergeEventSide, right: EventMergeEventSide) -> tuple[str, ...]:
     conflicts: list[str] = []
     for left_values, right_values, label in (
         (left.object_entities, right.object_entities, "对象不一致"),

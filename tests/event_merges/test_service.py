@@ -62,12 +62,8 @@ def _pair_facts(event_id: int) -> EventMergeFacts:
 
 
 def test_candidate_still_safe_requires_the_original_candidate_type() -> None:
-    left = _pair_facts(1).model_copy(
-        update={"strong_identities": ("publisher.test/story",)}
-    )
-    right = _pair_facts(2).model_copy(
-        update={"strong_identities": ("publisher.test/story",)}
-    )
+    left = _pair_facts(1).model_copy(update={"strong_identities": ("publisher.test/story",)})
+    right = _pair_facts(2).model_copy(update={"strong_identities": ("publisher.test/story",)})
 
     assert candidate_still_safe(
         MergeCandidateType.DETERMINISTIC_MERGE,
@@ -119,8 +115,7 @@ def test_legacy_identity_revalidation_requires_exact_cross_algorithm_membership(
     )
 
 
-def test_survivor_selection_uses_snapshot_then_algorithm_then_lower_id(
-) -> None:
+def test_survivor_selection_uses_snapshot_then_algorithm_then_lower_id() -> None:
     legacy = _pair_facts(3).model_copy(update={"algorithm_versions": ("cluster-v2",)})
     current = _pair_facts(9)
     service = EventMergeService(SimpleNamespace())
@@ -296,9 +291,7 @@ def _seed_legacy_candidate(session: Session) -> EventMergeCandidateRecord:
     _seed_merge_operation(session)
     _seed_quality(session, 11)
     legacy_cluster = session.scalar(
-        select(EventCandidateRecord).where(
-            EventCandidateRecord.candidate_key == "event-1"
-        )
+        select(EventCandidateRecord).where(EventCandidateRecord.candidate_key == "event-1")
     )
     current_membership = session.scalar(
         select(EventItemRecord).where(
@@ -310,9 +303,7 @@ def _seed_legacy_candidate(session: Session) -> EventMergeCandidateRecord:
     assert current_membership is not None
     legacy_cluster.algorithm_version = "cluster-v2"
     session.delete(current_membership)
-    session.add(
-        EventItemRecord(event_id=2, raw_item_id=11, added_version_number=1)
-    )
+    session.add(EventItemRecord(event_id=2, raw_item_id=11, added_version_number=1))
     session.commit()
     draft = classify_pair(
         load_event_facts(session, 1),
@@ -417,14 +408,17 @@ def test_apply_recomputes_survivor_and_retires_absorbed_event(session: Session) 
             )
         )
     ) == {11, 22}
-    assert tuple(
-        session.scalars(
-            select(EventItemRecord.raw_item_id).where(
-                EventItemRecord.event_id == 2,
-                EventItemRecord.removed_version_number.is_(None),
+    assert (
+        tuple(
+            session.scalars(
+                select(EventItemRecord.raw_item_id).where(
+                    EventItemRecord.event_id == 2,
+                    EventItemRecord.removed_version_number.is_(None),
+                )
             )
         )
-    ) == ()
+        == ()
+    )
     session.refresh(candidate)
     assert candidate.status == "applied"
     assert candidate.applied_operation_id == 51
@@ -515,9 +509,7 @@ def test_apply_revalidates_membership_after_claim(session: Session, monkeypatch)
     original_claim = EventRepository.claim_event
     changed = False
 
-    def change_membership_before_first_claim(
-        repository, event_id, operation_id, lease_until
-    ):
+    def change_membership_before_first_claim(repository, event_id, operation_id, lease_until):
         nonlocal changed
         if not changed:
             changed = True
@@ -530,9 +522,7 @@ def test_apply_revalidates_membership_after_claim(session: Session, monkeypatch)
             )
         return original_claim(repository, event_id, operation_id, lease_until)
 
-    monkeypatch.setattr(
-        EventRepository, "claim_event", change_membership_before_first_claim
-    )
+    monkeypatch.setattr(EventRepository, "claim_event", change_membership_before_first_claim)
 
     result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
 
@@ -788,18 +778,24 @@ def test_apply_keeps_archived_daily_report_snapshot_byte_equivalent(
 
     assert persisted_item is not None
     assert persisted_version is not None
-    assert dumps(
-        persisted_item.snapshot,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode() == before_snapshot
-    assert dumps(
-        persisted_version.payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode() == before_version
+    assert (
+        dumps(
+            persisted_item.snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        == before_snapshot
+    )
+    assert (
+        dumps(
+            persisted_version.payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        == before_version
+    )
 
 
 def test_dismissed_candidate_cannot_be_applied(session: Session) -> None:
@@ -1100,9 +1096,7 @@ def test_scan_expires_pending_candidate_when_referenced_version_is_stale(
     assert result.status_counts == {"expired": 1, "pending": 1}
 
 
-def test_scan_isolates_one_candidate_integrity_failure(
-    session: Session, monkeypatch
-) -> None:
+def test_scan_isolates_one_candidate_integrity_failure(session: Session, monkeypatch) -> None:
     shared = "https://www.reuters.com/technology/orion-1"
     for event_id in (1, 2, 3):
         _seed_event(session, event_id, event_id * 10, url=shared)
@@ -1118,9 +1112,7 @@ def test_scan_isolates_one_candidate_integrity_failure(
             raise IntegrityError("candidate", {}, Exception("bounded failure"))
         return original(self, draft, generated_operation_id)
 
-    monkeypatch.setattr(
-        EventMergeCandidateRepository, "upsert_candidate", fail_first
-    )
+    monkeypatch.setattr(EventMergeCandidateRepository, "upsert_candidate", fail_first)
 
     result = EventMergeService(session).scan(50, lambda _: None)
 
@@ -1222,11 +1214,7 @@ def test_scan_redacts_untrusted_evidence_roots_before_candidate_snapshot(
     _seed_event(session, 1, 11, url=shared)
     _seed_event(session, 2, 22, url=shared)
     malicious_evidence = [
-        {
-            "root_evidence_key": (
-                "https://user:password@example.com/story?token=secret#private"
-            )
-        },
+        {"root_evidence_key": ("https://user:password@example.com/story?token=secret#private")},
         {"root_evidence_key": "publisher:reuters"},
         {"root_evidence_key": "authorization:Bearer-secret"},
         {"root_evidence_key": "user:pass@example.com/private"},
