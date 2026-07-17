@@ -55,7 +55,55 @@ def test_audio_artifact_migration_creates_append_only_daily_report_table(
         "ck_daily_report_audio_artifact_rendition",
         "ck_daily_report_audio_artifact_status",
     } <= checks
-    assert "ix_daily_report_audio_artifacts_report_rendition" in {
-        index["name"]
+
+    foreign_keys = {
+        tuple(foreign_key["constrained_columns"]): foreign_key
+        for foreign_key in inspector.get_foreign_keys("daily_report_audio_artifacts")
+    }
+    assert foreign_keys[("daily_report_id",)]["referred_table"] == "daily_reports"
+    assert foreign_keys[("daily_report_id",)]["options"]["ondelete"] == "CASCADE"
+    assert foreign_keys[("operation_run_id",)]["referred_table"] == "operation_runs"
+    assert foreign_keys[("operation_run_id",)]["options"]["ondelete"] == "RESTRICT"
+
+    indexes = {
+        index["name"]: index["column_names"]
         for index in inspector.get_indexes("daily_report_audio_artifacts")
     }
+    assert indexes["ix_daily_report_audio_artifacts_report_rendition"] == [
+        "daily_report_id",
+        "rendition",
+        "created_at",
+    ]
+
+    columns_by_name = {
+        column["name"]: column
+        for column in inspector.get_columns("daily_report_audio_artifacts")
+    }
+    required_columns = {
+        "daily_report_id",
+        "rendition",
+        "status",
+        "script",
+        "script_sha256",
+        "model",
+        "voice_id",
+        "audio_format",
+        "sample_rate",
+        "bitrate",
+        "channel",
+        "created_at",
+        "updated_at",
+    }
+    assert all(not columns_by_name[name]["nullable"] for name in required_columns)
+    assert {
+        "rendition": 16,
+        "status": 16,
+        "script_sha256": 64,
+        "model": 64,
+        "voice_id": 120,
+        "relative_audio_path": 512,
+    }.items() <= {
+        name: columns_by_name[name]["type"].length
+        for name in columns_by_name
+        if getattr(columns_by_name[name]["type"], "length", None) is not None
+    }.items()
