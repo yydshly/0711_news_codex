@@ -13,9 +13,11 @@ from newsradar.daily_reports.intelligence import (
     build_overview_script,
 )
 from newsradar.db.models import (
+    DailyReportAudioArtifactRecord,
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
     DailyReportRecord,
+    OperationRunRecord,
 )
 from newsradar.events.operation_snapshots import (
     event_snapshot_by_id,
@@ -85,11 +87,30 @@ class DailyReportOverviewView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportAudioArtifactView:
+    artifact_id: int
+    rendition: str
+    status: str
+    error_code: str | None
+    error_message: str | None
+    duration_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportAudioView:
+    decision: DailyReportAudioArtifactView | None
+    overview: DailyReportAudioArtifactView | None
+    decision_operation_status: str | None
+    overview_operation_status: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
     decision_script: str
     overview: DailyReportOverviewView
+    audio: DailyReportAudioView
     supersedes_report_id: int | None
     archived_at: datetime | None
     confirmed: tuple[DailyReportItemView, ...]
@@ -218,10 +239,58 @@ class DailyReportQueryService:
             ),
             decision_script=decision_script,
             overview=self._overview(record),
+            audio=self._audio(record.id),
             supersedes_report_id=record.supersedes_report_id,
             archived_at=record.archived_at,
             confirmed=tuple(row for row in views if row.section == "confirmed"),
             emerging=tuple(row for row in views if row.section == "emerging"),
+        )
+
+    def _audio(self, report_id: int) -> DailyReportAudioView:
+        records = self.session.scalars(
+            select(DailyReportAudioArtifactRecord)
+            .where(DailyReportAudioArtifactRecord.daily_report_id == report_id)
+            .order_by(
+                DailyReportAudioArtifactRecord.created_at.desc(),
+                DailyReportAudioArtifactRecord.id.desc(),
+            )
+        )
+        latest: dict[str, DailyReportAudioArtifactView] = {}
+        for record in records:
+            if record.rendition in latest:
+                continue
+            latest[record.rendition] = DailyReportAudioArtifactView(
+                artifact_id=record.id,
+                rendition=record.rendition,
+                status=record.status,
+                error_code=record.error_code,
+                error_message=record.error_message,
+                duration_ms=record.audio_duration_ms,
+            )
+        active: dict[str, str] = {}
+        for record in self.session.scalars(
+            select(OperationRunRecord)
+            .where(
+                OperationRunRecord.operation_type == "daily_report_audio",
+                OperationRunRecord.status.in_(("queued", "running")),
+            )
+            .order_by(OperationRunRecord.id.desc())
+        ):
+            if not isinstance(record.requested_scope, dict):
+                continue
+            rendition = record.requested_scope.get("rendition")
+            if (
+                record.requested_scope.get("daily_report_id") != report_id
+                or rendition not in {"decision", "overview"}
+                or rendition in active
+            ):
+                continue
+            active[rendition] = record.status
+        return DailyReportAudioView(
+            decision=latest.get("decision"),
+            overview=latest.get("overview"),
+            decision_operation_status=active.get("decision"),
+            overview_operation_status=active.get("overview"),
         )
 
     def _overview(self, record: DailyReportRecord) -> DailyReportOverviewView:

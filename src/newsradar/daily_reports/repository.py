@@ -202,11 +202,14 @@ class DailyReportRepository:
         self.session.commit()
         return self.items(report_id)
 
-    def archive(self, report_id: int) -> DailyReportRecord:
+    def archive(self, report_id: int, *, commit: bool = True) -> DailyReportRecord:
         report = self._draft_report(report_id)
         report.status = ReportStatus.ARCHIVED.value
         report.archived_at = self._utcnow()
-        self.session.commit()
+        if commit:
+            self.session.commit()
+        else:
+            self.session.flush()
         return report
 
     def revise(self, report_id: int) -> DailyReportRecord:

@@ -127,6 +127,7 @@ def configure_logging(root: Path | str = ".") -> logging.Logger:
     path = Path(root) / ".local" / "logs" / "newsradar.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("newsradar")
+    logger.disabled = False
     logger.setLevel(logging.INFO)
     logger.propagate = False
     for handler in list(logger.handlers):

@@ -70,6 +70,53 @@
   <h2 id="decision-brief-heading">今日决策简报</h2>
   <p>以下内容只基于本日报固定快照和人工审核结论；待补证事项不可视为已确认事实。</p>
   <div class="decision-script">{{ daily_report.decision_script }}</div>
+  {% if daily_report.report.status == 'archived' %}
+  {% set decision_audio = daily_report.audio.decision %}
+  {% set decision_operation_status = daily_report.audio.decision_operation_status %}
+  {% if decision_audio and decision_audio.status == 'succeeded' %}
+  <audio controls preload="none" src="/daily-reports/{{ daily_report.report.report_id }}/audio-artifacts/{{ decision_audio.artifact_id }}">您的浏览器不支持音频播放。</audio>
+  {% elif decision_audio and decision_audio.status == 'failed' %}
+  <p><strong>语音生成失败：</strong>{{ decision_audio.error_message }}（{{ decision_audio.error_code }}）</p>
+  {% endif %}
+  {% if decision_operation_status %}
+  <p><strong>语音任务{{ '正在生成' if decision_operation_status == 'running' else '已排队' }}</strong>，完成后刷新本页播放。</p>
+  {% else %}
+  <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/audio/decision">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">{{ '重新生成决策版语音' if decision_audio else '生成决策版语音' }}</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="panel" aria-labelledby="overview-heading">
+  <p class="eyebrow">Intelligence Overview</p>
+  <h2 id="overview-heading">情报全览</h2>
+  <p>来自本日报绑定的事件运行快照；不会因之后的事件更新而改变。</p>
+  <div class="decision-script">{{ daily_report.overview.script }}</div>
+  {% if daily_report.report.status == 'archived' %}
+  {% set overview_audio = daily_report.audio.overview %}
+  {% set overview_operation_status = daily_report.audio.overview_operation_status %}
+  {% if overview_audio and overview_audio.status == 'succeeded' %}
+  <audio controls preload="none" src="/daily-reports/{{ daily_report.report.report_id }}/audio-artifacts/{{ overview_audio.artifact_id }}">您的浏览器不支持音频播放。</audio>
+  {% elif overview_audio and overview_audio.status == 'failed' %}
+  <p><strong>语音生成失败：</strong>{{ overview_audio.error_message }}（{{ overview_audio.error_code }}）</p>
+  {% endif %}
+  {% if overview_operation_status %}
+  <p><strong>语音任务{{ '正在生成' if overview_operation_status == 'running' else '已排队' }}</strong>，完成后刷新本页播放。</p>
+  {% else %}
+  <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/audio/overview">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">{{ '重新生成全览版语音' if overview_audio else '生成全览版语音' }}</button>
+  </form>
+  {% endif %}
+  {% endif %}
+  <h3>确认 {{ daily_report.overview.confirmed|length }} 条 · 热点 {{ daily_report.overview.hotspots|length }} 条 · 信号 {{ daily_report.overview.signals|length }} 条</h3>
+  <ul>
+    {% for item in daily_report.overview.items %}
+    <li><a href="{{ item.detail_href }}">{{ item.zh_title }}</a> · {{ item.zh_summary }}</li>
+    {% else %}<li>本快照暂无可展示的确认、热点或信号事件。</li>{% endfor %}
+  </ul>
 </section>
 
 <section class="panel" aria-labelledby="daily-report-meta-heading">

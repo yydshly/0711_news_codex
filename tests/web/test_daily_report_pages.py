@@ -16,12 +16,14 @@ from newsradar.daily_reports.schema import (
     ReportSection,
 )
 from newsradar.db.models import (
+    DailyReportAudioArtifactRecord,
     DailyReportRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
     OperationRunRecord,
 )
+from newsradar.operations.commands import OperationCommandService
 from newsradar.web.app import create_app
 from newsradar.web.daily_report_queries import DailyReportQueryService
 from tests.web.test_event_queries import _event, _pipeline_snapshot
@@ -266,6 +268,177 @@ def test_daily_report_detail_projects_and_renders_decision_brief(
     assert response.status_code == 200
     assert "今日决策简报" in response.text
     assert REVIEW_NEEDS_EVIDENCE.zh_title in response.text
+
+
+def test_archived_daily_report_renders_audio_actions_and_latest_player(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    DailyReportRepository(db_session, utcnow=lambda: NOW).archive(report.id)
+    report_id = report.id
+    artifact = DailyReportAudioArtifactRecord(
+        daily_report_id=report_id,
+        rendition="decision",
+        status="succeeded",
+        script="固定决策文稿",
+        script_sha256="a" * 64,
+        model="speech-2.8-hd",
+        voice_id="male-qn-qingse",
+        audio_format="mp3",
+        sample_rate=32000,
+        bitrate=128000,
+        channel=1,
+        relative_audio_path=f"{report_id}/existing.mp3",
+        audio_sha256="b" * 64,
+    )
+    db_session.add(artifact)
+    db_session.commit()
+    artifact_id = artifact.id
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    page = client.get(f"/daily-reports/{report_id}")
+
+    assert page.status_code == 200
+    assert f'action="/daily-reports/{report_id}/audio/decision"' in page.text
+    assert f'action="/daily-reports/{report_id}/audio/overview"' in page.text
+    assert f'src="/daily-reports/{report_id}/audio-artifacts/{artifact_id}"' in page.text
+    assert "生成失败" not in page.text
+
+    response = client.post(
+        f"/daily-reports/{report_id}/audio/overview",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    operation = db_session.scalar(
+        select(OperationRunRecord)
+        .where(OperationRunRecord.operation_type == "daily_report_audio")
+        .order_by(OperationRunRecord.id.desc())
+    )
+    assert operation is not None
+    assert operation.requested_scope == {
+        "daily_report_id": report_id,
+        "rendition": "overview",
+    }
+
+
+def test_archiving_daily_report_automatically_queues_decision_audio(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/archive",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    operation = db_session.scalar(
+        select(OperationRunRecord)
+        .where(OperationRunRecord.operation_type == "daily_report_audio")
+        .order_by(OperationRunRecord.id.desc())
+    )
+    assert operation is not None
+    assert operation.requested_scope == {
+        "daily_report_id": report_id,
+        "rendition": "decision",
+    }
+
+
+def test_daily_report_audio_enqueue_reuses_active_operation_and_page_explains_queue(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    DailyReportRepository(db_session, utcnow=lambda: NOW).archive(report_id)
+
+    first = OperationCommandService(db_session).enqueue_daily_report_audio(
+        report_id=report_id, rendition="decision", trigger="test"
+    )
+    second = OperationCommandService(db_session).enqueue_daily_report_audio(
+        report_id=report_id, rendition="decision", trigger="test"
+    )
+
+    assert first == second
+    assert db_session.scalars(
+        select(OperationRunRecord).where(
+            OperationRunRecord.operation_type == "daily_report_audio"
+        )
+    ).all() == [db_session.get(OperationRunRecord, first)]
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    page = client.get(f"/daily-reports/{report_id}")
+    assert "语音任务已排队" in page.text
+    assert f'action="/daily-reports/{report_id}/audio/decision"' not in page.text
+
+
+def test_archive_rolls_back_when_automatic_audio_enqueue_fails(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+
+    def fail_enqueue(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr("newsradar.operations.repository.OperationRepository.enqueue", fail_enqueue)
+
+    with pytest.raises(RuntimeError, match="queue unavailable"):
+        OperationCommandService(db_session).archive_and_enqueue_daily_report_audio(
+            report_id=report_id, trigger="test"
+        )
+
+    restored = db_session.get(DailyReportRecord, report_id)
+    assert restored is not None
+    assert restored.status == "draft"
+
+
+def test_daily_report_audio_artifact_route_serves_only_matching_safe_file(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    DailyReportRepository(db_session, utcnow=lambda: NOW).archive(report_id)
+    artifact = DailyReportAudioArtifactRecord(
+        daily_report_id=report_id,
+        rendition="decision",
+        status="succeeded",
+        script="固定决策文稿",
+        script_sha256="a" * 64,
+        model="speech-2.8-hd",
+        voice_id="male-qn-qingse",
+        audio_format="mp3",
+        sample_rate=32000,
+        bitrate=128000,
+        channel=1,
+        relative_audio_path=f"{report_id}/ready.mp3",
+        audio_sha256="b" * 64,
+    )
+    db_session.add(artifact)
+    db_session.commit()
+    artifact_id = artifact.id
+    path = tmp_path / str(report_id) / "ready.mp3"
+    path.parent.mkdir()
+    path.write_bytes(b"ID3-safe-audio")
+    monkeypatch.setattr("newsradar.web.app._DAILY_REPORT_AUDIO_ROOT", tmp_path)
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}/audio-artifacts/{artifact_id}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/mpeg"
+    assert response.content == b"ID3-safe-audio"
+
+    stored = db_session.get(DailyReportAudioArtifactRecord, artifact_id)
+    assert stored is not None
+    stored.relative_audio_path = "../escape.mp3"
+    db_session.commit()
+    rejected = client.get(f"/daily-reports/{report_id}/audio-artifacts/{artifact_id}")
+    assert rejected.status_code == 404
 
 
 def test_daily_report_detail_overview_uses_bound_operation_snapshot_versions(

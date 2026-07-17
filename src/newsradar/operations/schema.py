@@ -17,6 +17,7 @@ class OperationType(StrEnum):
     EVENT_MERGE = "event_merge"
     EVENT_SPLIT = "event_split"
     EVENT_EXCLUDE = "event_exclude"
+    DAILY_REPORT_AUDIO = "daily_report_audio"
 
 
 class OperationStatus(StrEnum):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from newsradar.operations.logging import configure_logging, redact, redact_value
 from newsradar.operations.repository import OperationRepository
@@ -75,6 +76,20 @@ def test_jsonl_redacts_sensitive_extra_field_values(tmp_path: object) -> None:
     )
     assert payload["password"] == "[REDACTED]"
     assert payload["api_key"] == "[REDACTED]"
+
+
+def test_configure_logging_restores_its_own_info_output_when_globally_disabled(
+    tmp_path: object,
+) -> None:
+    logging.getLogger("newsradar").disabled = True
+    try:
+        logger = configure_logging(tmp_path)  # type: ignore[arg-type]
+        logger.info("operation complete", extra={"correlation_id": "op-1"})
+        for handler in logger.handlers:
+            handler.flush()
+        assert (tmp_path / ".local" / "logs" / "newsradar.log").read_text().splitlines()  # type: ignore[operator]
+    finally:
+        logging.getLogger("newsradar").disabled = False
 
 
 def test_jsonl_redacts_database_url_extra_field(tmp_path: object) -> None:

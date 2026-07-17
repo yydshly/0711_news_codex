@@ -11,6 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
+    DailyReportRecord,
     OperationRunRecord,
     SourceRemediationBatchRecord,
     SourceRemediationMemberRecord,
@@ -88,6 +89,87 @@ class OperationCommandService:
         )
         self.session.commit()
         return record.id
+
+    def enqueue_daily_report_audio(
+        self, *, report_id: int, rendition: str, trigger: str
+    ) -> int:
+        self._validate_daily_report_audio_request(report_id, rendition)
+        if self.session.in_transaction():
+            self.session.commit()
+        with self.session.begin():
+            return self._enqueue_daily_report_audio(
+                report_id=report_id,
+                rendition=rendition,
+                trigger=trigger,
+            )
+
+    def archive_and_enqueue_daily_report_audio(self, *, report_id: int, trigger: str) -> int:
+        # Keep the daily-report package out of this module's import path. The
+        # CLI remains usable in minimal installations without optional web
+        # and research dependencies.
+        from newsradar.daily_reports.repository import DailyReportRepository
+
+        if isinstance(report_id, bool) or not isinstance(report_id, int) or report_id <= 0:
+            raise ValueError("invalid_daily_report_audio_report_id")
+        if self.session.in_transaction():
+            self.session.commit()
+        with self.session.begin():
+            DailyReportRepository(self.session, utcnow=self._utcnow).archive(
+                report_id, commit=False
+            )
+            return self._enqueue_daily_report_audio(
+                report_id=report_id,
+                rendition="decision",
+                trigger=trigger,
+            )
+
+    def _enqueue_daily_report_audio(
+        self, *, report_id: int, rendition: str, trigger: str
+    ) -> int:
+        report = self.session.scalar(
+            select(DailyReportRecord)
+            .where(DailyReportRecord.id == report_id)
+            .with_for_update()
+        )
+        if report is None:
+            raise ValueError("daily_report_not_found")
+        if report.status != "archived":
+            raise ValueError("daily_report_must_be_archived_for_audio")
+        active = next(
+            (
+                record
+                for record in self.session.scalars(
+                    select(OperationRunRecord)
+                    .where(
+                        OperationRunRecord.operation_type
+                        == OperationType.DAILY_REPORT_AUDIO.value,
+                        OperationRunRecord.status.in_(
+                            [OperationStatus.QUEUED.value, OperationStatus.RUNNING.value]
+                        ),
+                    )
+                    .order_by(OperationRunRecord.id.desc())
+                )
+                if isinstance(record.requested_scope, dict)
+                and record.requested_scope.get("daily_report_id") == report_id
+                and record.requested_scope.get("rendition") == rendition
+            ),
+            None,
+        )
+        if active is not None:
+            return active.id
+        return OperationRepository(self.session).enqueue(
+            OperationType.DAILY_REPORT_AUDIO,
+            {"daily_report_id": report_id, "rendition": rendition},
+            trigger=trigger,
+            in_transaction=True,
+        ).id
+
+    @staticmethod
+    def _validate_daily_report_audio_request(report_id: int, rendition: str) -> None:
+        if isinstance(report_id, bool) or not isinstance(report_id, int) or report_id <= 0:
+            raise ValueError("invalid_daily_report_audio_report_id")
+        if rendition not in {"decision", "overview"}:
+            raise ValueError("invalid_daily_report_audio_rendition")
 
     def enqueue_source_remediation(
         self,

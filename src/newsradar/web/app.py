@@ -10,7 +10,7 @@ from typing import Annotated, Literal, TypeVar
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import select_autoescape
 from sqlalchemy import select
@@ -21,7 +21,11 @@ from starlette.templating import Jinja2Templates
 from newsradar.credentials import SettingsCredentials
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import DailyReportEditorialReviewDraft
-from newsradar.db.models import OperationRunRecord, SourceDefinitionRecord
+from newsradar.db.models import (
+    DailyReportAudioArtifactRecord,
+    OperationRunRecord,
+    SourceDefinitionRecord,
+)
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
@@ -57,6 +61,7 @@ CatalogFactory = Callable[[], CatalogSnapshot]
 _WEB_ROOT = Path(__file__).resolve().parent
 logger = logging.getLogger(__name__)
 _UNDEFINED_TABLE_SQLSTATE = "42P01"
+_DAILY_REPORT_AUDIO_ROOT = Path(".local/daily-report-audio")
 
 ProviderCategory = Literal[
     "social_community",
@@ -198,6 +203,14 @@ def _daily_report_revision_conflict(error: RuntimeError) -> HTTPException:
     if str(error) != "daily_report_revision_conflict":
         raise error
     return _daily_report_http_error(error, default_status=409)
+
+
+def _daily_report_audio_path(relative_path: str) -> Path | None:
+    root = _DAILY_REPORT_AUDIO_ROOT.resolve()
+    target = (root / relative_path).resolve()
+    if root not in target.parents:
+        return None
+    return target
 
 
 def _source_wave_plan():
@@ -679,7 +692,10 @@ def create_app(
         _values = await require_safe_action(request)
         try:
             with create_session() as session:
-                DailyReportRepository(session).archive(report_id)
+                OperationCommandService(session).archive_and_enqueue_daily_report_audio(
+                    report_id=report_id,
+                    trigger="daily_report_archive",
+                )
         except LookupError as error:
             raise _daily_report_http_error(error, default_status=404) from error
         except ValueError as error:
@@ -687,6 +703,42 @@ def create_app(
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.post("/daily-reports/{report_id}/audio/{rendition}")
+    async def enqueue_daily_report_audio(
+        request: Request, report_id: int, rendition: str
+    ) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                OperationCommandService(session).enqueue_daily_report_audio(
+                    report_id=report_id, rendition=rendition, trigger="web"
+                )
+        except ValueError as error:
+            raise _daily_report_http_error(error, default_status=422) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.get("/daily-reports/{report_id}/audio-artifacts/{artifact_id}")
+    def daily_report_audio_artifact(report_id: int, artifact_id: int) -> FileResponse:
+        with create_session() as session:
+            artifact = session.get(DailyReportAudioArtifactRecord, artifact_id)
+            if (
+                artifact is None
+                or artifact.daily_report_id != report_id
+                or artifact.status != "succeeded"
+                or not artifact.relative_audio_path
+            ):
+                raise HTTPException(status_code=404, detail="音频文件不存在或尚未生成。")
+            target = _daily_report_audio_path(artifact.relative_audio_path)
+        if target is None or not target.is_file():
+            raise HTTPException(status_code=404, detail="音频文件不存在或尚未生成。")
+        return FileResponse(
+            target,
+            media_type="audio/mpeg",
+            filename=f"daily-report-{report_id}.mp3",
+        )
 
     @app.post("/daily-reports/{report_id}/revise")
     async def revise_daily_report(request: Request, report_id: int) -> RedirectResponse:

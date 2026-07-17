@@ -28,6 +28,7 @@ def test_operation_enums_match_the_runtime_contract() -> None:
         "event_merge",
         "event_split",
         "event_exclude",
+        "daily_report_audio",
     }
     assert {member.value for member in ErrorCategory} == {
         "validation",

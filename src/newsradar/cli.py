@@ -634,6 +634,8 @@ def run_worker(
     """Consume durable operations; network work only occurs in this process."""
     sources = load_source_tree(root)
     providers = load_provider_tree(provider_root)
+    from newsradar.daily_reports.audio_runtime import DailyReportAudioHandler
+
     handler = OperationRouter(
         {
             "fetch": FetchOperationHandler.production(sources),
@@ -649,6 +651,7 @@ def run_worker(
             "event_merge": EventMergeOperationHandler.production(create_session),
             "event_split": EventOperationHandler.production(create_session),
             "event_exclude": EventOperationHandler.production(create_session),
+            "daily_report_audio": DailyReportAudioHandler(create_session),
         }
     )
     settings = get_settings()
