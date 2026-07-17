@@ -13,10 +13,13 @@ from newsradar.daily_reports.schema import (
     DailyReportDraft,
     DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
+    DailyReportOverviewEditorialReviewDraft,
+    DailyReportOverviewItemDraft,
     ReportSection,
 )
 from newsradar.db.models import (
     DailyReportAudioArtifactRecord,
+    DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventRecord,
     EventScoreRecord,
@@ -153,6 +156,46 @@ def seed_daily_report(
                         "confirmation_summary": "仍需第一方来源确认",
                         "limitations": ["发布时间仍待复核"],
                     },
+                ),
+            ),
+            overview_items=(
+                DailyReportOverviewItemDraft(
+                    event_id=operation_id * 10 + 1,
+                    event_version_number=1,
+                    position=1,
+                    snapshot={
+                        "zh_title": "确认事件",
+                        "zh_summary": "确认摘要",
+                        "why_it_matters": "确认影响",
+                        "status": "confirmed",
+                        "unconfirmed": False,
+                        "display_tier": "hotspot",
+                        "rank_score": 90.0,
+                        "independent_root_count": 2,
+                        "confirmation_summary": "两条独立证据已交叉确认",
+                        "limitations": ["仅覆盖公开资料"],
+                        "evidence": [],
+                    },
+                    decision_event_id=operation_id * 10 + 1,
+                ),
+                DailyReportOverviewItemDraft(
+                    event_id=operation_id * 10 + 2,
+                    event_version_number=1,
+                    position=2,
+                    snapshot={
+                        "zh_title": "线索事件",
+                        "zh_summary": "线索摘要",
+                        "why_it_matters": "线索影响",
+                        "status": "emerging",
+                        "unconfirmed": True,
+                        "display_tier": "signal",
+                        "rank_score": 80.0,
+                        "independent_root_count": 1,
+                        "confirmation_summary": "仍需第一方来源确认",
+                        "limitations": ["发布时间仍待复核"],
+                        "evidence": [],
+                    },
+                    decision_event_id=operation_id * 10 + 2,
                 ),
             ),
         )
@@ -585,7 +628,8 @@ def test_daily_report_detail_overview_uses_bound_operation_snapshot_versions(
     assert [item.event_id for item in detail.overview.confirmed] == [confirmed.id]
     assert [item.event_id for item in detail.overview.hotspots] == [hotspot.id]
     assert [item.event_id for item in detail.overview.signals] == [signal.id]
-    assert "快照已确认事件" in detail.overview.script
+    assert detail.overview.legacy_unreviewed is True
+    assert "快照已确认事件" not in detail.overview.script
     assert "可变当前事件标题" not in detail.overview.script
     assert "不应展示的审计事件" not in detail.overview.script
 
@@ -597,6 +641,111 @@ def test_daily_report_detail_overview_uses_bound_operation_snapshot_versions(
     assert "新兴信号（1）" in response.text
     assert response.text.count('class="overview-item-card') == 3
     assert "<summary>查看全览版播报稿</summary>" in response.text
+
+
+def test_detail_projects_all_overview_candidates_but_scripts_only_reviewed_included(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original_items = repository.overview_items(report.id)
+    for offset in range(3):
+        event_id = report.source_operation_id * 10 + 3 + offset
+        db_session.add(
+            EventRecord(
+                id=event_id,
+                canonical_key=f"web-overview-extra-{event_id}",
+                status="emerging",
+                current_version_number=1,
+                occurred_at=NOW,
+            )
+        )
+        db_session.flush()
+        db_session.add(
+            DailyReportOverviewItemRecord(
+                daily_report_id=report.id,
+                event_id=event_id,
+                event_version_number=1,
+                position=3 + offset,
+                snapshot={
+                    "zh_title": f"额外事件 {offset + 1}",
+                    "zh_summary": "额外事件概述",
+                    "why_it_matters": "用于审核投影测试",
+                    "status": "emerging",
+                    "display_tier": "signal",
+                    "rank_score": 70.0 - offset,
+                    "confirmation_summary": "尚待核验",
+                    "evidence": [],
+                    "limitations": [],
+                },
+            )
+        )
+    db_session.commit()
+    items = repository.overview_items(report.id)
+
+    repository.save_overview_editorial_review(
+        report.id,
+        items[0].id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="keep",
+            zh_title="人工保留标题",
+            zh_summary="人工保留概述",
+            review_recommendation="继续关注",
+            evidence_assessment="已有可靠公开证据。",
+        ),
+    )
+    repository.save_overview_editorial_review(
+        report.id,
+        items[1].id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="needs_evidence",
+            zh_title="人工待补证标题",
+            zh_summary="人工待补证概述",
+            review_recommendation="寻找第一方来源",
+            evidence_assessment="目前只有单一来源。",
+        ),
+    )
+    repository.save_overview_editorial_review(
+        report.id,
+        items[2].id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="exclude",
+            zh_title="人工排除标题",
+            zh_summary="人工排除概述",
+            review_recommendation="不纳入全览",
+            evidence_assessment="无法验证原始事实。",
+        ),
+    )
+    repository.save_overview_editorial_review(
+        report.id,
+        items[3].id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="duplicate",
+            zh_title="人工重复标题",
+            zh_summary="人工重复概述",
+            review_recommendation="合并到保留事件",
+            evidence_assessment="原始事实一致。",
+            duplicate_of_overview_item_id=items[0].id,
+        ),
+    )
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    assert len(original_items) == 2
+    assert len(detail.overview.items) == 5
+    assert detail.overview.summary.total_count == 5
+    assert detail.overview.summary.included_count == 2
+    assert detail.overview.summary.needs_evidence_count == 1
+    assert detail.overview.summary.excluded_count == 1
+    assert detail.overview.summary.duplicate_count == 1
+    assert detail.overview.summary.unreviewed_count == 1
+    assert "人工保留标题" in detail.overview.script
+    assert "尚待进一步确认：人工待补证标题" in detail.overview.script
+    assert "人工排除标题" not in detail.overview.script
+    assert "人工重复标题" not in detail.overview.script
+    assert "额外事件 3" not in detail.overview.script
+    assert detail.overview.items[3].duplicate_of_overview_item_id == items[0].id
 
 
 def test_detail_projects_empty_editorial_review_fields_for_unreviewed_item(

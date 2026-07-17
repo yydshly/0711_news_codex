@@ -79,6 +79,7 @@ def test_overview_script_groups_each_snapshot_event_once() -> None:
                 zh_summary="官方已公布。",
                 why_it_matters="影响产品路线。",
                 confirmation_summary="已有官方一手来源确认。",
+                decision="keep",
             ),
             OverviewReportItem(
                 event_id=2,
@@ -89,6 +90,7 @@ def test_overview_script_groups_each_snapshot_event_once() -> None:
                 zh_summary="多家媒体正在跟进。",
                 why_it_matters="值得立即关注。",
                 confirmation_summary="仍待交叉确认。",
+                decision="keep",
             ),
             OverviewReportItem(
                 event_id=3,
@@ -99,6 +101,7 @@ def test_overview_script_groups_each_snapshot_event_once() -> None:
                 zh_summary="出现早期线索。",
                 why_it_matters="可能影响后续判断。",
                 confirmation_summary="仍需补充独立证据。",
+                decision="keep",
             ),
         ),
     )
@@ -109,3 +112,39 @@ def test_overview_script_groups_each_snapshot_event_once() -> None:
     assert "新兴信号" in script
     assert script.count("已确认发布") == 1
     assert "影响产品路线" in script
+
+
+def test_overview_script_only_speaks_reviewed_included_items_and_marks_risk() -> None:
+    def item(event_id: int, title: str, decision: str | None) -> OverviewReportItem:
+        return OverviewReportItem(
+            event_id=event_id,
+            status="emerging",
+            display_tier="signal",
+            rank_score=80 - event_id,
+            decision=decision,
+            zh_title=title,
+            zh_summary=f"{title}概述",
+            why_it_matters="影响后续判断。",
+            confirmation_summary="当前证据状态。",
+            recommendation="继续核验。",
+            evidence_assessment="目前只有聚合来源。",
+        )
+
+    script = build_overview_script(
+        report_date=date(2026, 7, 17),
+        items=(
+            item(1, "保留事件", "keep"),
+            item(2, "待补证事件", "needs_evidence"),
+            item(3, "排除事件", "exclude"),
+            item(4, "重复事件", "duplicate"),
+            item(5, "未审核事件", None),
+        ),
+    )
+
+    assert "保留事件" in script
+    assert "尚待进一步确认：待补证事件" in script
+    assert "证据评价：目前只有聚合来源" in script
+    assert "行动建议：继续核验" in script
+    assert all(
+        title not in script for title in ("排除事件", "重复事件", "未审核事件")
+    )

@@ -28,6 +28,9 @@ class OverviewReportItem:
     zh_summary: str
     why_it_matters: str
     confirmation_summary: str
+    decision: str | None = None
+    recommendation: str | None = None
+    evidence_assessment: str | None = None
 
 
 def build_decision_script(
@@ -72,6 +75,8 @@ def build_overview_script(
         "signal": [],
     }
     for item in items:
+        if item.decision not in {"keep", "needs_evidence"}:
+            continue
         section = _overview_section(item)
         if section is not None:
             grouped[section].append(item)
@@ -89,11 +94,18 @@ def build_overview_script(
             continue
         lines.append(heading)
         for item in section_items:
-            lines.append(f"{item.zh_title}。{item.zh_summary}。")
+            prefix = "尚待进一步确认：" if item.decision == "needs_evidence" else ""
+            lines.append(f"{prefix}{item.zh_title}。{item.zh_summary}。")
             if item.why_it_matters:
                 lines.append(f"关注理由：{item.why_it_matters}。")
             if item.confirmation_summary:
                 lines.append(f"证据状态：{item.confirmation_summary}。")
+            recommendation = _text(item.recommendation)
+            if recommendation:
+                lines.append(f"行动建议：{recommendation}。")
+            assessment = _text(item.evidence_assessment)
+            if assessment:
+                lines.append(f"证据评价：{assessment}。")
     return "\n".join(lines)
 
 

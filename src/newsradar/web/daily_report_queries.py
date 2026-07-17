@@ -16,6 +16,8 @@ from newsradar.db.models import (
     DailyReportAudioArtifactRecord,
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
+    DailyReportOverviewEditorialReviewRecord,
+    DailyReportOverviewItemRecord,
     DailyReportRecord,
     OperationRunRecord,
 )
@@ -24,6 +26,18 @@ from newsradar.events.operation_snapshots import (
     latest_complete_event_snapshot,
 )
 from newsradar.web.event_queries import EventQueryService
+
+
+def _snapshot_string(snapshot: dict[str, object], key: str, fallback: str) -> str:
+    value = snapshot.get(key)
+    return value.strip() if isinstance(value, str) and value.strip() else fallback
+
+
+def _snapshot_float(snapshot: dict[str, object], key: str) -> float:
+    value = snapshot.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +80,10 @@ class DailyReportItemView:
 
 @dataclass(frozen=True, slots=True)
 class DailyReportOverviewItemView:
+    item_id: int | None
     event_id: int
+    event_version_number: int
+    position: int
     status: str
     display_tier: str
     rank_score: float
@@ -75,6 +92,21 @@ class DailyReportOverviewItemView:
     why_it_matters: str
     confirmation_summary: str
     detail_href: str
+    snapshot: dict[str, object]
+    editorial_review: DailyReportEditorialReviewView | None
+    editorial_history: tuple[DailyReportEditorialReviewView, ...]
+    duplicate_of_overview_item_id: int | None
+    included_in_decision: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportOverviewEditorialSummaryView:
+    total_count: int
+    included_count: int
+    needs_evidence_count: int
+    excluded_count: int
+    duplicate_count: int
+    unreviewed_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +116,8 @@ class DailyReportOverviewView:
     hotspots: tuple[DailyReportOverviewItemView, ...]
     signals: tuple[DailyReportOverviewItemView, ...]
     script: str
+    summary: DailyReportOverviewEditorialSummaryView
+    legacy_unreviewed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,16 +359,112 @@ class DailyReportQueryService:
         )
 
     def _overview(self, record: DailyReportRecord) -> DailyReportOverviewView:
+        persisted = tuple(
+            self.session.scalars(
+                select(DailyReportOverviewItemRecord)
+                .where(DailyReportOverviewItemRecord.daily_report_id == record.id)
+                .order_by(
+                    DailyReportOverviewItemRecord.position,
+                    DailyReportOverviewItemRecord.id,
+                )
+            )
+        )
+        if persisted:
+            histories: dict[int, list[DailyReportEditorialReviewView]] = {}
+            duplicate_targets: dict[int, int | None] = {}
+            for review in self.session.scalars(
+                select(DailyReportOverviewEditorialReviewRecord)
+                .where(
+                    DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id.in_(
+                        tuple(item.id for item in persisted)
+                    )
+                )
+                .order_by(
+                    DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id,
+                    DailyReportOverviewEditorialReviewRecord.revision,
+                    DailyReportOverviewEditorialReviewRecord.id,
+                )
+            ):
+                view = DailyReportEditorialReviewView(
+                    review_id=review.id,
+                    revision=review.revision,
+                    decision=review.decision,
+                    zh_title=review.zh_title,
+                    zh_summary=review.zh_summary,
+                    review_recommendation=review.review_recommendation,
+                    evidence_assessment=review.evidence_assessment,
+                    created_at=review.created_at,
+                )
+                histories.setdefault(review.daily_report_overview_item_id, []).append(view)
+                duplicate_targets[review.daily_report_overview_item_id] = (
+                    review.duplicate_of_overview_item_id
+                )
+            items: list[DailyReportOverviewItemView] = []
+            for row in persisted:
+                snapshot = dict(row.snapshot) if isinstance(row.snapshot, dict) else {}
+                history = tuple(histories.get(row.id, ()))
+                latest = history[-1] if history else None
+                items.append(
+                    DailyReportOverviewItemView(
+                        item_id=row.id,
+                        event_id=row.event_id,
+                        event_version_number=row.event_version_number,
+                        position=row.position,
+                        status=_snapshot_string(snapshot, "status", "emerging"),
+                        display_tier=_snapshot_string(
+                            snapshot, "display_tier", "audit_only"
+                        ),
+                        rank_score=_snapshot_float(snapshot, "rank_score"),
+                        zh_title=(
+                            latest.zh_title
+                            if latest
+                            else _snapshot_string(snapshot, "zh_title", "未命名事件")
+                        ),
+                        zh_summary=(
+                            latest.zh_summary
+                            if latest
+                            else _snapshot_string(snapshot, "zh_summary", "暂无中文概述")
+                        ),
+                        why_it_matters=_snapshot_string(
+                            snapshot, "why_it_matters", ""
+                        ),
+                        confirmation_summary=_snapshot_string(
+                            snapshot, "confirmation_summary", ""
+                        ),
+                        detail_href=(
+                            f"/events/{row.event_id}?operation_id="
+                            f"{record.source_operation_id}&version={row.event_version_number}"
+                        ),
+                        snapshot=snapshot,
+                        editorial_review=latest,
+                        editorial_history=history,
+                        duplicate_of_overview_item_id=(
+                            duplicate_targets.get(row.id) if latest else None
+                        ),
+                        included_in_decision=row.decision_item_id is not None,
+                    )
+                )
+            return self._overview_view(
+                record.report_date,
+                tuple(items),
+                legacy_unreviewed=False,
+            )
+
         snapshot = event_snapshot_by_id(
             self.session,
             record.source_operation_id,
             now=record.generated_at,
         )
         if snapshot is None:
-            return self._overview_view(record.report_date, ())
+            return self._overview_view(
+                record.report_date, (), legacy_unreviewed=True
+            )
         events = EventQueryService(self.session)
+        version_by_event = {
+            ref.event_id: ref.version_number for ref in snapshot.event_versions
+        }
         items: list[DailyReportOverviewItemView] = []
-        for event in events._operation_rows(snapshot):
+        for position, event in enumerate(events._operation_rows(snapshot), start=1):
             if event.status != "confirmed" and event.display_tier not in {
                 "hotspot",
                 "signal",
@@ -342,7 +472,10 @@ class DailyReportQueryService:
                 continue
             items.append(
                 DailyReportOverviewItemView(
+                    item_id=None,
                     event_id=event.event_id,
+                    event_version_number=version_by_event[event.event_id],
+                    position=position,
                     status=event.status,
                     display_tier=event.display_tier,
                     rank_score=event.rank_score,
@@ -351,15 +484,34 @@ class DailyReportQueryService:
                     why_it_matters=event.why_it_matters,
                     confirmation_summary=event.confirmation_summary,
                     detail_href=event.detail_href,
+                    snapshot={
+                        "zh_title": event.zh_title,
+                        "zh_summary": event.zh_summary,
+                        "why_it_matters": event.why_it_matters,
+                        "status": event.status,
+                        "display_tier": event.display_tier,
+                        "rank_score": event.rank_score,
+                        "confirmation_summary": event.confirmation_summary,
+                        "evidence": [],
+                        "limitations": [],
+                    },
+                    editorial_review=None,
+                    editorial_history=(),
+                    duplicate_of_overview_item_id=None,
+                    included_in_decision=False,
                 )
             )
         ordered = tuple(sorted(items, key=lambda item: (-item.rank_score, item.event_id)))
-        return self._overview_view(record.report_date, ordered)
+        return self._overview_view(
+            record.report_date, ordered, legacy_unreviewed=True
+        )
 
     @staticmethod
     def _overview_view(
         report_date: date,
         items: tuple[DailyReportOverviewItemView, ...],
+        *,
+        legacy_unreviewed: bool,
     ) -> DailyReportOverviewView:
         confirmed = tuple(item for item in items if item.status == "confirmed")
         hotspots = tuple(
@@ -389,10 +541,50 @@ class DailyReportQueryService:
                         zh_summary=item.zh_summary,
                         why_it_matters=item.why_it_matters,
                         confirmation_summary=item.confirmation_summary,
+                        decision=(
+                            item.editorial_review.decision
+                            if item.editorial_review
+                            else None
+                        ),
+                        recommendation=(
+                            item.editorial_review.review_recommendation
+                            if item.editorial_review
+                            else None
+                        ),
+                        evidence_assessment=(
+                            item.editorial_review.evidence_assessment
+                            if item.editorial_review
+                            else None
+                        ),
                     )
                     for item in items
                 ),
             ),
+            summary=DailyReportOverviewEditorialSummaryView(
+                total_count=len(items),
+                included_count=sum(
+                    item.editorial_review is not None
+                    and item.editorial_review.decision in {"keep", "needs_evidence"}
+                    for item in items
+                ),
+                needs_evidence_count=sum(
+                    item.editorial_review is not None
+                    and item.editorial_review.decision == "needs_evidence"
+                    for item in items
+                ),
+                excluded_count=sum(
+                    item.editorial_review is not None
+                    and item.editorial_review.decision == "exclude"
+                    for item in items
+                ),
+                duplicate_count=sum(
+                    item.editorial_review is not None
+                    and item.editorial_review.decision == "duplicate"
+                    for item in items
+                ),
+                unreviewed_count=sum(item.editorial_review is None for item in items),
+            ),
+            legacy_unreviewed=legacy_unreviewed,
         )
 
     def has_complete_event_snapshot(self, *, now: datetime | None = None) -> bool:
