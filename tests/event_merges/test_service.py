@@ -6,9 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+import newsradar.event_merges.service as merge_service_module
 from newsradar.db.models import (
     Base,
     DailyReportItemRecord,
@@ -805,6 +807,86 @@ def test_dismissed_candidate_cannot_be_applied(session: Session) -> None:
 
     with pytest.raises(ValueError, match="event_merge_candidate_not_applicable"):
         EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+
+def test_raw_item_lock_statement_uses_stable_order_for_postgresql() -> None:
+    statement = EventRepository._raw_item_lock_statement((22, 11))
+
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "ORDER BY raw_items.id" in compiled
+    assert compiled.endswith("FOR UPDATE")
+
+
+def test_apply_locks_all_raw_members_and_never_rereads_them_for_publication(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _seed_candidate(session)
+    locked_ids: list[tuple[int, ...]] = []
+    original_lock = EventRepository.lock_raw_items
+
+    def capture_lock(
+        repository: EventRepository, raw_item_ids: tuple[int, ...]
+    ) -> tuple[RawItemRecord, ...]:
+        locked_ids.append(raw_item_ids)
+        return original_lock(repository, raw_item_ids)
+
+    def fail_reread(*_args, **_kwargs):
+        pytest.fail("publication reread mutable RawItem rows", pytrace=False)
+
+    monkeypatch.setattr(EventRepository, "lock_raw_items", capture_lock)
+    monkeypatch.setattr(
+        merge_service_module,
+        "_event_cluster_items",
+        fail_reread,
+        raising=False,
+    )
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result.status == "succeeded"
+    assert locked_ids == [(11, 22)]
+
+
+def test_apply_builds_facts_and_cluster_items_from_same_locked_rows(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _seed_candidate(session)
+    fact_row_objects: dict[int, tuple[int, ...]] = {}
+    cluster_row_objects: tuple[int, ...] = ()
+    original_facts = merge_service_module.build_event_facts_from_rows
+    original_items = merge_service_module._cluster_items_from_rows
+
+    def capture_facts(session, event, rows):
+        fact_row_objects[event.id] = tuple(id(raw) for raw, _source in rows)
+        return original_facts(session, event, rows)
+
+    def capture_items(rows):
+        nonlocal cluster_row_objects
+        cluster_row_objects = tuple(id(raw) for raw, _source in rows)
+        return original_items(rows)
+
+    monkeypatch.setattr(
+        merge_service_module,
+        "build_event_facts_from_rows",
+        capture_facts,
+    )
+    monkeypatch.setattr(
+        merge_service_module,
+        "_cluster_items_from_rows",
+        capture_items,
+    )
+
+    result = EventMergeService(session).apply(candidate.id, 51, lambda _: None)
+
+    assert result.status == "succeeded"
+    assert cluster_row_objects == tuple(
+        row_object
+        for event_id in sorted(fact_row_objects)
+        for row_object in fact_row_objects[event_id]
+    )
 
 
 def test_confirm_rejects_non_manual_candidate(session: Session) -> None:

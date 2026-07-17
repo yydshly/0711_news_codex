@@ -7,13 +7,20 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import EventMergeCandidateRecord, EventRecord
+from newsradar.db.models import (
+    EventItemRecord,
+    EventMergeCandidateRecord,
+    EventRecord,
+    RawItemRecord,
+    SourceDefinitionRecord,
+)
 from newsradar.event_merges.facts import (
     EVENT_MERGE_RULE_VERSION,
+    build_event_facts_from_rows,
     load_event_facts,
     merge_input_fingerprint,
 )
@@ -29,8 +36,8 @@ from newsradar.events.operation_snapshots import latest_complete_event_snapshot
 from newsradar.events.pipeline import build_candidate_score_input, load_operation_window_end
 from newsradar.events.publishing import EventPublisher
 from newsradar.events.repository import EventRepository
-from newsradar.events.runtime import _enrichment, _event_cluster_items, _snapshot
-from newsradar.events.schema import CandidateCluster, EventCategory, EventVisibility
+from newsradar.events.runtime import _cluster_items_from_rows, _enrichment, _snapshot
+from newsradar.events.schema import CandidateCluster, ClusterItem, EventCategory, EventVisibility
 
 _TIME_BUCKET_SECONDS = 48 * 60 * 60
 MAX_PAIR_BUCKET_FANOUT = 500
@@ -196,11 +203,31 @@ class EventMergeService:
                         locked_record.result_summary
                     )
                 else:
-                    current_left = load_event_facts(
-                        self.session, locked_record.left_event_id
+                    locked_rows = self._lock_raw_item_rows(locked_events)
+                    events_by_id = {event.id: event for event in locked_events}
+                    current_left = build_event_facts_from_rows(
+                        self.session,
+                        events_by_id[locked_record.left_event_id],
+                        locked_rows[locked_record.left_event_id],
                     )
-                    current_right = load_event_facts(
-                        self.session, locked_record.right_event_id
+                    current_right = build_event_facts_from_rows(
+                        self.session,
+                        events_by_id[locked_record.right_event_id],
+                        locked_rows[locked_record.right_event_id],
+                    )
+                    locked_items_by_id = {
+                        item.raw_item_id: item
+                        for item in _cluster_items_from_rows(
+                            tuple(
+                                row
+                                for event_id in event_ids
+                                for row in locked_rows[event_id]
+                            )
+                        )
+                    }
+                    locked_items = tuple(
+                        locked_items_by_id[item_id]
+                        for item_id in sorted(locked_items_by_id)
                     )
                     snapshot = latest_complete_event_snapshot(self.session)
                     latest_snapshot_ids = (
@@ -229,6 +256,7 @@ class EventMergeService:
                                 right=current_right,
                                 operation_id=operation_id,
                                 latest_snapshot_event_ids=latest_snapshot_ids,
+                                items=locked_items,
                             )
                             checkpoint("after_event_merge_mutation")
                             repository.mark_applied(
@@ -249,6 +277,72 @@ class EventMergeService:
                         event_id, operation_id
                     )
             raise
+
+    def _lock_raw_item_rows(
+        self,
+        locked_events: tuple[EventRecord, ...],
+    ) -> dict[
+        int,
+        tuple[tuple[RawItemRecord, SourceDefinitionRecord], ...],
+    ]:
+        membership_conditions = tuple(
+            and_(
+                EventItemRecord.event_id == event.id,
+                EventItemRecord.added_version_number
+                <= event.current_version_number,
+                or_(
+                    EventItemRecord.removed_version_number.is_(None),
+                    EventItemRecord.removed_version_number
+                    > event.current_version_number,
+                ),
+            )
+            for event in locked_events
+        )
+        membership_rows = self.session.execute(
+            select(EventItemRecord.event_id, EventItemRecord.raw_item_id)
+            .where(or_(*membership_conditions))
+            .order_by(EventItemRecord.event_id, EventItemRecord.raw_item_id)
+            .with_for_update()
+        ).all()
+        member_ids_by_event = {event.id: [] for event in locked_events}
+        for event_id, raw_item_id in membership_rows:
+            member_ids_by_event[event_id].append(raw_item_id)
+        raw_item_ids = tuple(
+            sorted(
+                {
+                    raw_item_id
+                    for member_ids in member_ids_by_event.values()
+                    for raw_item_id in member_ids
+                }
+            )
+        )
+        locked_raw_items = EventRepository(self.session).lock_raw_items(
+            raw_item_ids
+        )
+        if tuple(raw.id for raw in locked_raw_items) != raw_item_ids:
+            raise LookupError("event_merge_raw_item_not_found")
+        source_ids = tuple(sorted({raw.source_id for raw in locked_raw_items}))
+        sources = tuple(
+            self.session.scalars(
+                select(SourceDefinitionRecord)
+                .where(SourceDefinitionRecord.id.in_(source_ids))
+                .order_by(SourceDefinitionRecord.id)
+            )
+        )
+        if tuple(source.id for source in sources) != source_ids:
+            raise LookupError("event_merge_source_not_found")
+        raw_items_by_id = {raw.id: raw for raw in locked_raw_items}
+        sources_by_id = {source.id: source for source in sources}
+        return {
+            event.id: tuple(
+                (
+                    raw_items_by_id[raw_item_id],
+                    sources_by_id[raw_items_by_id[raw_item_id].source_id],
+                )
+                for raw_item_id in member_ids_by_event[event.id]
+            )
+            for event in locked_events
+        }
 
     @staticmethod
     def _locked_revalidation_error(
@@ -320,6 +414,7 @@ class EventMergeService:
         right: EventMergeFacts,
         operation_id: int,
         latest_snapshot_event_ids: frozenset[int],
+        items: tuple[ClusterItem, ...],
     ) -> MergeApplyResult:
         survivor_facts, legacy_facts = self._select_survivor(
             record,
@@ -331,12 +426,6 @@ class EventMergeService:
         legacy = self.session.get(EventRecord, legacy_facts.event_id)
         if survivor is None or legacy is None:
             raise LookupError("event_merge_event_not_found")
-        items_by_id = {
-            item.raw_item_id: item
-            for event_id in (left.event_id, right.event_id)
-            for item in _event_cluster_items(self.session, event_id)
-        }
-        items = tuple(items_by_id[item_id] for item_id in sorted(items_by_id))
         current = EventRepository(self.session).get_current_event(survivor.id)
         title = (
             current.zh_title
@@ -352,7 +441,7 @@ class EventMergeService:
             title=title,
             category=EventCategory(survivor.category) if survivor.category else None,
             items=items,
-            raw_item_ids=tuple(sorted(items_by_id)),
+            raw_item_ids=tuple(item.raw_item_id for item in items),
             reasons=("event_merge_revalidated",),
             occurred_at=occurred_at,
         )

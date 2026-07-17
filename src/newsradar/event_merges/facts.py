@@ -137,14 +137,6 @@ def load_event_facts(session: Session, event_id: int) -> EventMergeFacts:
     event = session.get(EventRecord, event_id)
     if event is None or event.current_version_number <= 0:
         raise LookupError(f"event_merge_event_not_found:{event_id}")
-    version = session.scalar(
-        select(EventVersionRecord).where(
-            EventVersionRecord.event_id == event.id,
-            EventVersionRecord.version_number == event.current_version_number,
-        )
-    )
-    if version is None or not isinstance(version.payload, dict):
-        raise ValueError(f"event_merge_current_version_missing:{event_id}")
     rows = session.execute(
         select(RawItemRecord, SourceDefinitionRecord)
         .join(
@@ -162,6 +154,26 @@ def load_event_facts(session: Session, event_id: int) -> EventMergeFacts:
         )
         .order_by(RawItemRecord.id)
     ).all()
+    return build_event_facts_from_rows(
+        session,
+        event,
+        tuple((raw, source) for raw, source in rows),
+    )
+
+
+def build_event_facts_from_rows(
+    session: Session,
+    event: EventRecord,
+    rows: tuple[tuple[RawItemRecord, SourceDefinitionRecord], ...],
+) -> EventMergeFacts:
+    version = session.scalar(
+        select(EventVersionRecord).where(
+            EventVersionRecord.event_id == event.id,
+            EventVersionRecord.version_number == event.current_version_number,
+        )
+    )
+    if version is None or not isinstance(version.payload, dict):
+        raise ValueError(f"event_merge_current_version_missing:{event.id}")
     algorithms = tuple(
         sorted(
             set(

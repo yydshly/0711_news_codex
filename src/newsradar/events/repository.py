@@ -638,6 +638,29 @@ class EventRepository:
             )
         )
 
+    @staticmethod
+    def _raw_item_lock_statement(raw_item_ids: tuple[int, ...]):
+        ordered_ids = tuple(sorted(set(raw_item_ids)))
+        return (
+            select(RawItemRecord)
+            .where(RawItemRecord.id.in_(ordered_ids))
+            .order_by(RawItemRecord.id)
+            .with_for_update()
+        )
+
+    def lock_raw_items(
+        self, raw_item_ids: tuple[int, ...]
+    ) -> tuple[RawItemRecord, ...]:
+        if not raw_item_ids:
+            return ()
+        return tuple(
+            self.session.scalars(
+                self._raw_item_lock_statement(raw_item_ids).execution_options(
+                    populate_existing=True
+                )
+            )
+        )
+
     def _insert(self, record_type):
         assert self.session.bind is not None
         if self.session.bind.dialect.name == "postgresql":

@@ -572,6 +572,14 @@ def _event_cluster_items(session: Session, event_id: int) -> tuple[ClusterItem, 
         )
         .order_by(RawItemRecord.id)
     ).all()
+    return _cluster_items_from_rows(
+        tuple((raw, source) for raw, source in rows)
+    )
+
+
+def _cluster_items_from_rows(
+    rows: tuple[tuple[RawItemRecord, SourceDefinitionRecord], ...],
+) -> tuple[ClusterItem, ...]:
     return tuple(
         ClusterItem(
             raw_item_id=raw.id,
