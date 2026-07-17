@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -14,6 +14,7 @@ from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.service import _public_url
 from newsradar.db.models import (
     Base,
+    DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventItemRecord,
     EventRecord,
@@ -316,6 +317,75 @@ def test_generate_freezes_confirmed_and_emerging_in_separate_sections(
         else report.window_end.astimezone(UTC)
     )
     assert stored_window_end == SEEDED_WINDOW_END
+
+
+def test_generate_persists_every_displayable_operation_event_for_overview(
+    db_session: Session,
+) -> None:
+    seed_complete_snapshot(db_session)
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+    rows = DailyReportRepository(db_session).overview_items(report.id)
+
+    assert [row.event_id for row in rows] == [101, 102, 201, 202, 302]
+    assert [row.position for row in rows] == list(range(1, 6))
+    assert all(set(row.snapshot) == EXPECTED_SNAPSHOT_KEYS for row in rows)
+    assert {
+        row.event_id for row in rows if row.decision_item_id is not None
+    } == {101, 102, 201, 202}
+    assert report.generation_summary["overview_count"] == 5
+
+
+def test_generate_skips_invalid_overview_only_event_without_blocking_report(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_complete_snapshot(db_session)
+    original = EventQueryService.get_operation_event
+
+    def missing_overview_detail(self, event_id, *args, **kwargs):
+        if event_id == 302:
+            return None
+        return original(self, event_id, *args, **kwargs)
+
+    monkeypatch.setattr(EventQueryService, "get_operation_event", missing_overview_detail)
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+
+    assert [
+        row.event_id for row in DailyReportRepository(db_session).overview_items(report.id)
+    ] == [101, 102, 201, 202]
+    assert report.generation_summary["skipped_invalid_overview_event"] == 1
+    assert len(DailyReportRepository(db_session).items(report.id)) == 4
+
+
+def test_revise_materializes_overview_for_legacy_archived_report(
+    db_session: Session,
+) -> None:
+    seed_complete_snapshot(db_session)
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = service.generate(24, now=NOW)
+    db_session.execute(
+        delete(DailyReportOverviewItemRecord).where(
+            DailyReportOverviewItemRecord.daily_report_id == original.id
+        )
+    )
+    db_session.commit()
+    repository.archive(original.id)
+
+    revision = service.revise(original.id)
+
+    assert repository.overview_items(original.id) == ()
+    copied = repository.overview_items(revision.id)
+    assert [row.event_id for row in copied] == [101, 102, 201, 202, 302]
+    assert [row.snapshot["zh_title"] for row in copied] == [
+        "事件 101",
+        "事件 102",
+        "事件 201",
+        "事件 202",
+        "事件 302",
+    ]
 
 
 def test_generate_sanitizes_evidence_and_never_calls_network_or_model(

@@ -53,6 +53,15 @@ class DailyReportItemDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportOverviewItemDraft:
+    event_id: int
+    event_version_number: int
+    position: int
+    snapshot: dict[str, Any]
+    decision_event_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportEditorialReviewDraft:
     decision: EditorialDecision
     zh_title: str
@@ -98,4 +107,5 @@ class DailyReportDraft:
     source_operation_id: int
     generation_summary: dict[str, Any]
     items: tuple[DailyReportItemDraft, ...]
+    overview_items: tuple[DailyReportOverviewItemDraft, ...] = ()
     supersedes_report_id: int | None = None

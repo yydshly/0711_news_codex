@@ -12,6 +12,7 @@ from newsradar.daily_reports.schema import (
     DailyReportDraft,
     DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
+    DailyReportOverviewItemDraft,
     EditorialDecision,
     ReportSection,
     ReportStatus,
@@ -20,6 +21,7 @@ from newsradar.daily_reports.schema import (
 from newsradar.db.models import (
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
+    DailyReportOverviewItemRecord,
     DailyReportRecord,
 )
 
@@ -70,7 +72,7 @@ class DailyReportRepository:
             try:
                 self.session.add(report)
                 self.session.flush()
-                self.session.add_all(
+                decision_items = [
                     DailyReportItemRecord(
                         daily_report_id=report.id,
                         event_id=item.event_id,
@@ -81,6 +83,29 @@ class DailyReportRepository:
                         snapshot=item.snapshot,
                     )
                     for item in draft.items
+                ]
+                self.session.add_all(decision_items)
+                self.session.flush()
+                decision_by_event = {
+                    (item.event_id, item.event_version_number): item
+                    for item in decision_items
+                }
+                self.session.add_all(
+                    DailyReportOverviewItemRecord(
+                        daily_report_id=report.id,
+                        event_id=item.event_id,
+                        event_version_number=item.event_version_number,
+                        position=item.position,
+                        snapshot=item.snapshot,
+                        decision_item_id=(
+                            decision_by_event[
+                                (item.decision_event_id, item.event_version_number)
+                            ].id
+                            if item.decision_event_id is not None
+                            else None
+                        ),
+                    )
+                    for item in draft.overview_items
                 )
                 self.session.commit()
                 return report
@@ -110,6 +135,21 @@ class DailyReportRepository:
             .execution_options(populate_existing=True)
         )
         return tuple(records)
+
+    def overview_items(
+        self, report_id: int
+    ) -> tuple[DailyReportOverviewItemRecord, ...]:
+        return tuple(
+            self.session.scalars(
+                select(DailyReportOverviewItemRecord)
+                .where(DailyReportOverviewItemRecord.daily_report_id == report_id)
+                .order_by(
+                    DailyReportOverviewItemRecord.position,
+                    DailyReportOverviewItemRecord.id,
+                )
+                .execution_options(populate_existing=True)
+            )
+        )
 
     def set_included(
         self,
@@ -212,12 +252,34 @@ class DailyReportRepository:
             self.session.flush()
         return report
 
-    def revise(self, report_id: int) -> DailyReportRecord:
+    def revise(
+        self,
+        report_id: int,
+        *,
+        legacy_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
+    ) -> DailyReportRecord:
         original = self.session.get(DailyReportRecord, report_id)
         if original is None:
             raise LookupError("daily_report_not_found")
         if original.status != ReportStatus.ARCHIVED.value:
             raise ValueError("daily_report_must_be_archived")
+        original_overview_items = self.overview_items(original.id)
+        overview_items = (
+            tuple(
+                DailyReportOverviewItemDraft(
+                    event_id=row.event_id,
+                    event_version_number=row.event_version_number,
+                    position=row.position,
+                    snapshot=dict(row.snapshot),
+                    decision_event_id=(
+                        row.event_id if row.decision_item_id is not None else None
+                    ),
+                )
+                for row in original_overview_items
+            )
+            if original_overview_items
+            else legacy_overview_items
+        )
         revision = self.create_draft(
             DailyReportDraft(
                 report_date=original.report_date,
@@ -238,6 +300,7 @@ class DailyReportRepository:
                     )
                     for row in self.items(original.id)
                 ),
+                overview_items=overview_items,
             )
         )
         for original_item, revision_item in zip(

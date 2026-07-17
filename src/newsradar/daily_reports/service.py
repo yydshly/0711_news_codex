@@ -16,6 +16,7 @@ from newsradar.daily_reports.schema import (
     REPORT_TIMEZONE,
     DailyReportDraft,
     DailyReportItemDraft,
+    DailyReportOverviewItemDraft,
     ReportSection,
     validate_window_hours,
 )
@@ -223,7 +224,13 @@ class DailyReportService:
         version_by_event = {
             ref.event_id: ref.version_number for ref in snapshot.event_versions
         }
+        overview_drafts, skipped_invalid_overview = self._overview_drafts(
+            snapshot,
+            checked_at=checked_at,
+        )
+        overview_by_event = {item.event_id: item for item in overview_drafts}
         drafts: list[DailyReportItemDraft] = []
+        decision_event_ids: set[int] = set()
         skipped_invalid = 0
         for section in (ReportSection.CONFIRMED, ReportSection.EMERGING):
             section_position = 0
@@ -231,38 +238,32 @@ class DailyReportService:
                 if section_position >= MAX_ITEMS_PER_SECTION:
                     break
                 version_number = version_by_event.get(row.event_id)
-                try:
-                    detail = (
-                        self._events.get_operation_event(
-                            row.event_id,
-                            page.snapshot.operation_id,
-                            version_number,
-                            now=checked_at,
-                        )
-                        if version_number is not None
-                        else None
-                    )
-                except ValueError:
-                    skipped_invalid += 1
-                    continue
-                if detail is None:
-                    skipped_invalid += 1
-                    continue
-                try:
-                    item_snapshot = _item_snapshot(detail, section)
-                except _InvalidEventSnapshot:
+                overview_item = overview_by_event.get(row.event_id)
+                if overview_item is None or version_number is None:
                     skipped_invalid += 1
                     continue
                 section_position += 1
+                decision_event_ids.add(row.event_id)
                 drafts.append(
                     DailyReportItemDraft(
                         event_id=row.event_id,
                         event_version_number=version_number,
                         section=section,
                         position=section_position,
-                        snapshot=item_snapshot,
+                        snapshot=dict(overview_item.snapshot),
                     )
                 )
+
+        overview_drafts = tuple(
+            DailyReportOverviewItemDraft(
+                event_id=item.event_id,
+                event_version_number=item.event_version_number,
+                position=item.position,
+                snapshot=item.snapshot,
+                decision_event_id=(item.event_id if item.event_id in decision_event_ids else None),
+            )
+            for item in overview_drafts
+        )
 
         window_end = page.snapshot.window_end
         report_date = window_end.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
@@ -281,14 +282,96 @@ class DailyReportService:
                         item.section is ReportSection.EMERGING for item in drafts
                     ),
                     "skipped_invalid_event": skipped_invalid,
+                    "skipped_invalid_overview_event": skipped_invalid_overview,
                     "skipped_missing_time": skipped_missing_time,
+                    "overview_count": len(overview_drafts),
                     "minimax_degraded": any(
                         item.snapshot["enrichment_origin"] != "model" for item in drafts
                     ),
                 },
                 items=tuple(drafts),
+                overview_items=overview_drafts,
             )
         )
 
     def revise(self, report_id: int) -> DailyReportRecord:
-        return self._reports.revise(report_id)
+        original = self.session.get(DailyReportRecord, report_id)
+        if original is None:
+            raise LookupError("daily_report_not_found")
+        legacy_overview_items: tuple[DailyReportOverviewItemDraft, ...] = ()
+        if not self._reports.overview_items(report_id):
+            snapshot = event_snapshot_by_id(
+                self.session,
+                original.source_operation_id,
+                now=original.generated_at,
+            )
+            if snapshot is None:
+                raise ValueError("complete_event_snapshot_required")
+            materialized, _skipped = self._overview_drafts(
+                snapshot,
+                checked_at=original.generated_at,
+            )
+            decision_event_ids = {row.event_id for row in self._reports.items(report_id)}
+            legacy_overview_items = tuple(
+                DailyReportOverviewItemDraft(
+                    event_id=item.event_id,
+                    event_version_number=item.event_version_number,
+                    position=item.position,
+                    snapshot=item.snapshot,
+                    decision_event_id=(
+                        item.event_id if item.event_id in decision_event_ids else None
+                    ),
+                )
+                for item in materialized
+            )
+        return self._reports.revise(
+            report_id,
+            legacy_overview_items=legacy_overview_items,
+        )
+
+    def _overview_drafts(
+        self,
+        snapshot: OperationSnapshotRef,
+        *,
+        checked_at: datetime,
+    ) -> tuple[tuple[DailyReportOverviewItemDraft, ...], int]:
+        drafts: list[DailyReportOverviewItemDraft] = []
+        skipped_invalid = 0
+        version_by_event = {
+            ref.event_id: ref.version_number for ref in snapshot.event_versions
+        }
+        for row in self._events._operation_rows(snapshot):
+            if row.status != "confirmed" and row.display_tier not in {"hotspot", "signal"}:
+                continue
+            version_number = version_by_event[row.event_id]
+            try:
+                detail = self._events.get_operation_event(
+                    row.event_id,
+                    snapshot.operation_id,
+                    version_number,
+                    now=checked_at,
+                )
+            except ValueError:
+                detail = None
+            if detail is None:
+                skipped_invalid += 1
+                continue
+            section = (
+                ReportSection.CONFIRMED
+                if row.status == "confirmed"
+                else ReportSection.EMERGING
+            )
+            try:
+                item_snapshot = _item_snapshot(detail, section)
+            except _InvalidEventSnapshot:
+                skipped_invalid += 1
+                continue
+            drafts.append(
+                DailyReportOverviewItemDraft(
+                    event_id=row.event_id,
+                    event_version_number=version_number,
+                    position=len(drafts) + 1,
+                    snapshot=item_snapshot,
+                )
+            )
+        return tuple(drafts), skipped_invalid
