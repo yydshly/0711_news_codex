@@ -10,15 +10,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable, Iterator
+import re
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from threading import Event, Lock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import Engine, create_engine, func, select
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.exc import ArgumentError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
@@ -44,7 +46,22 @@ from newsradar.events.repository import EventRepository
 
 _RUN_POSTGRES_ENV = "NEWSRADAR_RUN_POSTGRES_ACCEPTANCE"
 _TEST_POSTGRES_URL_ENV = "NEWSRADAR_TEST_POSTGRES_URL"
+_TEST_SCHEMA_PATTERN = re.compile(r"newsradar_merge_test_[0-9a-f]{32}")
 NOW = datetime(2026, 7, 16, 4, tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class PostgreSQLHarness:
+    engine: Engine
+    schema_name: str
+
+    def __call__(self) -> Session:
+        return Session(self.engine)
+
+
+def _safe_fail(code: str, error: BaseException | None = None) -> None:
+    suffix = f":{error.__class__.__name__}" if error is not None else ""
+    raise pytest.fail.Exception(f"{code}{suffix}", pytrace=False) from None
 
 
 def _explicit_test_postgres_url_or_skip() -> str:
@@ -55,92 +72,129 @@ def _explicit_test_postgres_url_or_skip() -> str:
         pytest.skip(f"set dedicated {_TEST_POSTGRES_URL_ENV}; project DATABASE_URL is ignored")
     try:
         parsed = make_url(raw_url)
-    except ArgumentError:
-        pytest.skip(f"{_TEST_POSTGRES_URL_ENV} is not a valid database URL")
+    except ArgumentError as error:
+        _safe_fail("test_postgres_url_invalid", error)
     database_name = parsed.database or ""
     if parsed.get_backend_name() != "postgresql" or "test" not in database_name.casefold():
-        pytest.skip(
-            f"{_TEST_POSTGRES_URL_ENV} must target a PostgreSQL database whose name contains test"
-        )
+        _safe_fail("test_postgres_database_not_safe")
     return raw_url
+
+
+def _assert_test_connection(
+    connection: Connection,
+    *,
+    expected_schema: str | None = None,
+) -> None:
+    server_database = connection.scalar(select(func.current_database()))
+    if not isinstance(server_database, str) or "test" not in server_database.casefold():
+        _safe_fail("test_postgres_server_database_not_safe")
+    if expected_schema is not None:
+        current_schema = connection.scalar(select(func.current_schema()))
+        if current_schema != expected_schema:
+            _safe_fail("test_postgres_schema_not_isolated")
 
 
 def test_postgres_acceptance_never_falls_back_to_project_database_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(_RUN_POSTGRES_ENV, raising=False)
+    monkeypatch.setenv(
+        _TEST_POSTGRES_URL_ENV,
+        "postgresql://ignored:ignored@invalid/newsradar_test",
+    )
+    with pytest.raises(pytest.skip.Exception, match=_RUN_POSTGRES_ENV):
+        _explicit_test_postgres_url_or_skip()
+
     monkeypatch.setenv(_RUN_POSTGRES_ENV, "1")
     monkeypatch.delenv(_TEST_POSTGRES_URL_ENV, raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql://ignored:ignored@invalid/project")
-
     with pytest.raises(pytest.skip.Exception, match=_TEST_POSTGRES_URL_ENV):
+        _explicit_test_postgres_url_or_skip()
+
+    monkeypatch.setenv(_TEST_POSTGRES_URL_ENV, "://")
+    with pytest.raises(pytest.fail.Exception, match="test_postgres_url_invalid"):
+        _explicit_test_postgres_url_or_skip()
+
+    monkeypatch.setenv(
+        _TEST_POSTGRES_URL_ENV,
+        "postgresql://ignored:ignored@invalid/project",
+    )
+    with pytest.raises(pytest.fail.Exception, match="test_postgres_database_not_safe"):
         _explicit_test_postgres_url_or_skip()
 
 
 @pytest.fixture(scope="module")
-def postgres_engine() -> Iterator[Engine]:
+def postgres_engine() -> Iterator[PostgreSQLHarness]:
     raw_url = _explicit_test_postgres_url_or_skip()
     schema_name = f"newsradar_merge_test_{uuid4().hex}"
-    admin_engine = create_engine(
-        raw_url,
-        pool_pre_ping=True,
-        connect_args={"connect_timeout": 3},
-    )
+    if _TEST_SCHEMA_PATTERN.fullmatch(schema_name) is None:
+        _safe_fail("test_postgres_schema_name_invalid")
+    try:
+        admin_engine = create_engine(
+            raw_url,
+            pool_pre_ping=True,
+            connect_args={"connect_timeout": 3},
+        )
+    except Exception as error:
+        _safe_fail("test_postgres_engine_create_failed", error)
     schema_created = False
     isolated_engine: Engine | None = None
     try:
         try:
             with admin_engine.begin() as connection:
-                server_database = connection.scalar(select(func.current_database()))
-                if not isinstance(server_database, str) or "test" not in server_database.casefold():
-                    pytest.skip("configured PostgreSQL server database is not marked as a test")
+                _assert_test_connection(connection)
                 connection.execute(CreateSchema(schema_name))
                 schema_created = True
         except SQLAlchemyError as error:
-            pytest.skip(f"dedicated test PostgreSQL is unavailable: {error.__class__.__name__}")
+            _safe_fail("test_postgres_schema_create_failed", error)
 
-        isolated_engine = create_engine(
-            raw_url,
-            pool_pre_ping=True,
-            connect_args={
-                "connect_timeout": 3,
-                "options": f"-csearch_path={schema_name}",
-            },
-        )
+        try:
+            isolated_engine = create_engine(
+                raw_url,
+                pool_pre_ping=True,
+                connect_args={
+                    "connect_timeout": 3,
+                    "options": f"-csearch_path={schema_name}",
+                },
+            )
+        except Exception as error:
+            _safe_fail("test_postgres_isolated_engine_failed", error)
 
         try:
             Base.metadata.create_all(isolated_engine)
             with isolated_engine.connect() as connection:
-                assert connection.scalar(select(func.current_schema())) == schema_name
+                _assert_test_connection(connection, expected_schema=schema_name)
         except SQLAlchemyError as error:
-            pytest.skip(
-                f"isolated PostgreSQL schema could not be prepared: {error.__class__.__name__}"
-            )
-        yield isolated_engine
+            _safe_fail("test_postgres_schema_prepare_failed", error)
+        yield PostgreSQLHarness(isolated_engine, schema_name)
     finally:
         if isolated_engine is not None:
             isolated_engine.dispose()
         if schema_created:
             try:
                 with admin_engine.begin() as connection:
+                    _assert_test_connection(connection)
                     connection.execute(DropSchema(schema_name, cascade=True))
             except SQLAlchemyError as error:
-                pytest.fail(
-                    f"isolated PostgreSQL test schema cleanup failed: {error.__class__.__name__}",
-                    pytrace=False,
-                )
+                _safe_fail("test_postgres_schema_cleanup_failed", error)
         admin_engine.dispose()
 
 
 @pytest.fixture
 def postgres_session_factory(
-    postgres_engine: Engine,
-) -> Iterator[Callable[[], Session]]:
-    yield lambda: Session(postgres_engine)
+    postgres_engine: PostgreSQLHarness,
+) -> Iterator[PostgreSQLHarness]:
+    yield postgres_engine
+    preparer = postgres_engine.engine.dialect.identifier_preparer
+    quoted_schema = preparer.quote_schema(postgres_engine.schema_name)
     table_names = ", ".join(
-        postgres_engine.dialect.identifier_preparer.quote(table.name)
-        for table in Base.metadata.tables.values()
+        f"{quoted_schema}.{preparer.quote(table.name)}" for table in Base.metadata.tables.values()
     )
-    with postgres_engine.begin() as connection:
+    with postgres_engine.engine.begin() as connection:
+        _assert_test_connection(
+            connection,
+            expected_schema=postgres_engine.schema_name,
+        )
         connection.exec_driver_sql(f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE")
 
 
@@ -297,24 +351,53 @@ def _json_default(value: object) -> str:
     return str(value)
 
 
-def _state_hash(
+def _database_state_hash(
     session: Session,
-    *models: type[Base],
-    excluded_columns: dict[type[Base], frozenset[str]] | None = None,
+    *,
+    included_table_names: frozenset[str] | None = None,
+    allowed_table_names: frozenset[str] = frozenset(),
+    excluded_columns: dict[str, frozenset[str]] | None = None,
 ) -> str:
     payload: dict[str, list[list[object]]] = {}
     excluded = excluded_columns or {}
-    for model in models:
+    for table in sorted(Base.metadata.tables.values(), key=lambda item: item.name):
+        if included_table_names is not None and table.name not in included_table_names:
+            continue
+        if table.name in allowed_table_names:
+            continue
         columns = tuple(
             column
-            for column in model.__table__.columns
-            if column.name not in excluded.get(model, frozenset())
+            for column in table.columns
+            if column.name not in excluded.get(table.name, frozenset())
         )
-        primary_key = tuple(model.__table__.primary_key.columns)
+        primary_key = tuple(table.primary_key.columns)
+        if not primary_key:
+            _safe_fail(f"test_state_table_missing_primary_key:{table.name}")
         rows = session.execute(select(*columns).order_by(*primary_key)).all()
-        payload[model.__tablename__] = [list(row) for row in rows]
+        payload[table.name] = [list(row) for row in rows]
     serialized = json.dumps(
         payload,
+        default=_json_default,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _record_state_hash(
+    session: Session,
+    model: type[Base],
+    record_id: int,
+) -> str:
+    table = model.__table__
+    columns = tuple(table.columns)
+    primary_key = tuple(table.primary_key.columns)
+    if len(primary_key) != 1:
+        _safe_fail(f"test_state_record_primary_key_invalid:{table.name}")
+    row = session.execute(select(*columns).where(primary_key[0] == record_id)).one()
+    serialized = json.dumps(
+        list(row),
         default=_json_default,
         ensure_ascii=False,
         sort_keys=True,
@@ -337,6 +420,20 @@ def _assert_no_event_leases(session: Session) -> None:
     )
 
 
+def _assert_pool_recheckout_stays_in_isolated_schema(
+    harness: PostgreSQLHarness,
+) -> None:
+    observed: list[str | None] = []
+    for _ in range(2):
+        with harness.engine.connect() as connection:
+            _assert_test_connection(
+                connection,
+                expected_schema=harness.schema_name,
+            )
+            observed.append(connection.scalar(select(func.current_schema())))
+    assert observed == [harness.schema_name, harness.schema_name]
+
+
 def _draft_from_record(
     record: EventMergeCandidateRecord,
     *,
@@ -355,9 +452,10 @@ def _draft_from_record(
 
 
 def test_postgres_concurrent_apply_is_ordered_and_idempotent(
-    postgres_session_factory: Callable[[], Session],
+    postgres_session_factory: PostgreSQLHarness,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _assert_pool_recheckout_stays_in_isolated_schema(postgres_session_factory)
     with postgres_session_factory() as setup:
         candidate_id = _seed_candidate(setup).id
         before_survivor_versions = setup.scalar(
@@ -440,7 +538,7 @@ def test_postgres_concurrent_apply_is_ordered_and_idempotent(
 
 
 def test_postgres_partial_root_unique_and_recheck_reuse_one_revision(
-    postgres_session_factory: Callable[[], Session],
+    postgres_session_factory: PostgreSQLHarness,
 ) -> None:
     with postgres_session_factory() as session:
         candidate = _seed_candidate(session)
@@ -464,7 +562,15 @@ def test_postgres_partial_root_unique_and_recheck_reuse_one_revision(
         replacement = EventMergeService(session).review(candidate.id, "recheck", 51)
         retried = EventMergeService(session).review(candidate.id, "recheck", 51)
 
+        session.refresh(candidate)
         assert replacement.id == retried.id
+        assert candidate.status == "expired"
+        assert "event_merge_recheck_requested" in candidate.reason_codes
+        assert candidate.result_summary == {
+            "recheck_outcome": "revision",
+            "recheck_candidate_id": replacement.id,
+        }
+        assert replacement.status == "pending"
         assert replacement.revision == 2
         assert replacement.supersedes_candidate_id == candidate.id
         assert (
@@ -480,7 +586,8 @@ def test_postgres_partial_root_unique_and_recheck_reuse_one_revision(
 
 
 def test_postgres_stale_candidate_is_fenced_without_publication(
-    postgres_session_factory: Callable[[], Session],
+    postgres_session_factory: PostgreSQLHarness,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with postgres_session_factory() as session:
         candidate = _seed_candidate(session)
@@ -497,6 +604,15 @@ def test_postgres_stale_candidate_is_fenced_without_publication(
         session.commit()
         before_version_count = session.scalar(select(func.count()).select_from(EventVersionRecord))
 
+        def reject_publication(*_args, **_kwargs):
+            pytest.fail("stale candidate reached publication", pytrace=False)
+
+        monkeypatch.setattr(
+            EventMergeService,
+            "_publish_revalidated_pair",
+            reject_publication,
+        )
+
         result = EventMergeService(session).apply(candidate.id, 51, lambda _boundary: None)
 
         session.expire_all()
@@ -511,19 +627,15 @@ def test_postgres_stale_candidate_is_fenced_without_publication(
 
 
 def test_postgres_failed_second_publication_rolls_back_first(
-    postgres_session_factory: Callable[[], Session],
+    postgres_session_factory: PostgreSQLHarness,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with postgres_session_factory() as session:
         candidate = _seed_candidate(session)
-        before = _state_hash(
+        before = _database_state_hash(
             session,
-            EventRecord,
-            EventVersionRecord,
-            EventItemRecord,
-            EventMergeCandidateRecord,
             excluded_columns={
-                EventRecord: frozenset({"lease_operation_id", "lease_expires_at", "updated_at"})
+                "events": frozenset({"lease_operation_id", "lease_expires_at", "updated_at"})
             },
         )
 
@@ -545,14 +657,10 @@ def test_postgres_failed_second_publication_rolls_back_first(
         session.expire_all()
         assert publication_count == 2
         assert (
-            _state_hash(
+            _database_state_hash(
                 session,
-                EventRecord,
-                EventVersionRecord,
-                EventItemRecord,
-                EventMergeCandidateRecord,
                 excluded_columns={
-                    EventRecord: frozenset({"lease_operation_id", "lease_expires_at", "updated_at"})
+                    "events": frozenset({"lease_operation_id", "lease_expires_at", "updated_at"})
                 },
             )
             == before
@@ -562,12 +670,15 @@ def test_postgres_failed_second_publication_rolls_back_first(
 
 
 def test_postgres_apply_preserves_archived_daily_report_bytes(
-    postgres_session_factory: Callable[[], Session],
+    postgres_session_factory: PostgreSQLHarness,
 ) -> None:
     with postgres_session_factory() as session:
         candidate = _seed_candidate(session)
         report_item = _seed_archived_report(session)
-        before = _state_hash(session, DailyReportRecord, DailyReportItemRecord)
+        before = _database_state_hash(
+            session,
+            included_table_names=frozenset({"daily_reports", "daily_report_items"}),
+        )
         original_version = session.scalar(
             select(EventVersionRecord).where(
                 EventVersionRecord.event_id == 1,
@@ -575,24 +686,37 @@ def test_postgres_apply_preserves_archived_daily_report_bytes(
             )
         )
         assert original_version is not None
-        original_version_payload = json.dumps(
-            original_version.payload,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
+        original_version_state = _record_state_hash(
+            session,
+            EventVersionRecord,
+            original_version.id,
+        )
+        raw_item_state = _database_state_hash(
+            session,
+            included_table_names=frozenset({"raw_items"}),
+        )
 
         result = EventMergeService(session).apply(candidate.id, 51, lambda _boundary: None)
 
         session.expire_all()
         assert result.status == "succeeded"
-        assert _state_hash(session, DailyReportRecord, DailyReportItemRecord) == before
         assert (
-            json.dumps(
-                session.get(EventVersionRecord, original_version.id).payload,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-            == original_version_payload
+            _database_state_hash(
+                session,
+                included_table_names=frozenset({"daily_reports", "daily_report_items"}),
+            )
+            == before
+        )
+        assert (
+            _record_state_hash(session, EventVersionRecord, original_version.id)
+            == original_version_state
+        )
+        assert (
+            _database_state_hash(
+                session,
+                included_table_names=frozenset({"raw_items"}),
+            )
+            == raw_item_state
         )
         assert session.get(DailyReportItemRecord, report_item.id).snapshot == {
             "event_id": 1,
@@ -603,7 +727,7 @@ def test_postgres_apply_preserves_archived_daily_report_bytes(
 
 
 def test_postgres_scan_only_mutates_candidate_and_audit_state(
-    postgres_session_factory: Callable[[], Session],
+    postgres_session_factory: PostgreSQLHarness,
 ) -> None:
     with postgres_session_factory() as session:
         shared_url = "https://www.reuters.com/technology/orion-model"
@@ -619,21 +743,30 @@ def test_postgres_scan_only_mutates_candidate_and_audit_state(
         _seed_operation(session, 50, "event_merge_scan")
         session.commit()
         _seed_archived_report(session)
-        protected = (
-            EventRecord,
-            EventVersionRecord,
-            EventItemRecord,
-            RawItemRecord,
-            SourceDefinitionRecord,
-            DailyReportRecord,
-            DailyReportItemRecord,
+        allowed_scan_tables = frozenset(
+            {
+                "event_merge_candidates",
+                "operation_runs",
+                "operation_attempts",
+                "operation_events",
+                "workers",
+            }
         )
-        before = _state_hash(session, *protected)
+        before = _database_state_hash(
+            session,
+            allowed_table_names=allowed_scan_tables,
+        )
 
         result = EventMergeService(session).scan(50, lambda _boundary: None)
 
         session.expire_all()
         assert result.candidate_type_counts == {"deterministic_merge": 1}
         assert session.scalar(select(func.count()).select_from(EventMergeCandidateRecord)) == 1
-        assert _state_hash(session, *protected) == before
+        assert (
+            _database_state_hash(
+                session,
+                allowed_table_names=allowed_scan_tables,
+            )
+            == before
+        )
         _assert_no_event_leases(session)
