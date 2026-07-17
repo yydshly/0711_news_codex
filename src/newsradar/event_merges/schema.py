@@ -45,7 +45,7 @@ class MergeCandidateDraft(BaseModel):
     left: EventMergeFacts
     right: EventMergeFacts
     candidate_type: MergeCandidateType
-    algorithm_version: str = "event-merge-v2"
+    algorithm_version: str = "event-merge-v3"
     input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     reason_codes: tuple[str, ...]
     zh_reason: str = Field(min_length=1, max_length=1000)

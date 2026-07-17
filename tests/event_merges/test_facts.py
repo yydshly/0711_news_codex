@@ -214,24 +214,24 @@ def test_different_userinfo_urls_are_rejected_instead_of_colliding() -> None:
 
 
 def test_general_strong_identity_preserves_scheme() -> None:
-    http = strong_url_identity("http://example.com/story")
-    https = strong_url_identity("https://example.com/story")
+    http = strong_url_identity("http://example.com/story/orion")
+    https = strong_url_identity("https://example.com/story/orion")
 
-    assert http == "http://example.com/story"
-    assert https == "https://example.com/story"
+    assert http == "http://example.com/story/orion"
+    assert https == "https://example.com/story/orion"
     assert http != https
-    assert safe_url_identity("http://example.com/story") == "example.com/story"
-    assert safe_url_identity("https://example.com/story") == "example.com/story"
+    assert safe_url_identity("http://example.com/story/orion") == "example.com/story/orion"
+    assert safe_url_identity("https://example.com/story/orion") == "example.com/story/orion"
 
 
 def test_ipv6_host_and_ipv6_with_port_do_not_collapse() -> None:
-    host_only = "https://[2001:db8::1:8443]/story"
-    host_with_port = "https://[2001:db8::1]:8443/story"
+    host_only = "https://[2001:db8::1:8443]/story/orion"
+    host_with_port = "https://[2001:db8::1]:8443/story/orion"
 
-    assert safe_url_identity(host_only) == "[2001:db8::1:8443]/story"
-    assert safe_url_identity(host_with_port) == "[2001:db8::1]:8443/story"
-    assert strong_url_identity(host_only) == "https://[2001:db8::1:8443]/story"
-    assert strong_url_identity(host_with_port) == "https://[2001:db8::1]:8443/story"
+    assert safe_url_identity(host_only) == "[2001:db8::1:8443]/story/orion"
+    assert safe_url_identity(host_with_port) == "[2001:db8::1]:8443/story/orion"
+    assert strong_url_identity(host_only) == "https://[2001:db8::1:8443]/story/orion"
+    assert strong_url_identity(host_with_port) == "https://[2001:db8::1]:8443/story/orion"
     assert strong_url_identity(host_only) != strong_url_identity(host_with_port)
 
 
@@ -253,6 +253,28 @@ def test_ipv6_host_and_ipv6_with_port_do_not_collapse() -> None:
         "https://example.com/press-releases",
         "https://example.com/latest-news",
         "https://example.com/news-list",
+        "https://example.com/story",
+        "https://example.com/article",
+        "https://example.com/post",
+        "https://example.com/release",
+        "https://example.com/news/search/orion-model-launch",
+        "https://example.com/news/tag/orion-model-launch",
+        "https://example.com/news/tags/orion-model-launch",
+        "https://example.com/news/category/orion-model-launch",
+        "https://example.com/news/topic/orion-model-launch",
+        "https://example.com/news/feed/orion-model-launch",
+        "https://example.com/news/api/orion-model-launch",
+        "https://example.com/news/list/orion-model-launch",
+        "https://example.com/news/page/orion-model-launch",
+        "https://example.com/news/archive/orion-model-launch",
+        "https://example.com/storytelling",
+        "https://example.com/articlehub",
+        "https://example.com/postbox",
+        "https://example.com/releasecandidate",
+        "https://example.com/itemized",
+        "https://example.com/org/repo/releases/tag/v1.2.3",
+        "https://github.com/search/repositories/releases/tag/v1.2.3",
+        "https://github.com/org/api/releases/tag/v1.2.3",
     ],
 )
 def test_non_content_collection_urls_are_safe_for_display_but_never_strong(
@@ -265,7 +287,10 @@ def test_non_content_collection_urls_are_safe_for_display_but_never_strong(
 @pytest.mark.parametrize(
     "url",
     [
-        "https://example.com/story",
+        "https://example.com/story/orion",
+        "https://example.com/article/orion",
+        "https://example.com/post/orion",
+        "https://example.com/release/orion",
         "https://example.com/news/orion-model-launch",
         "https://example.com/releases/gpt-5",
         "https://example.com/press-releases/gpt-5",
@@ -331,7 +356,7 @@ def test_event_facts_never_persist_sensitive_path_marker(session) -> None:
     assert "SECRET-MARKER" not in repr(facts)
 
 
-def test_merge_fingerprint_uses_current_v2_rule_version() -> None:
+def test_merge_fingerprint_uses_current_v3_rule_version() -> None:
     left = EventMergeFacts(
         event_id=1,
         version_number=1,
@@ -350,7 +375,7 @@ def test_merge_fingerprint_uses_current_v2_rule_version() -> None:
     )
     right = left.model_copy(update={"event_id": 2, "canonical_key": "event-2"})
 
-    assert EVENT_MERGE_RULE_VERSION == "event-merge-v2"
+    assert EVENT_MERGE_RULE_VERSION == "event-merge-v3"
     assert merge_input_fingerprint(left, right) != merge_input_fingerprint(
         left.model_copy(update={"canonical_key": "legacy-event-1"}), right
     )
@@ -359,8 +384,8 @@ def test_merge_fingerprint_uses_current_v2_rule_version() -> None:
 def test_event_facts_sort_and_deduplicate_active_membership(session) -> None:
     event_id = _seed_event(
         session,
-        canonical_url="https://example.com/story",
-        original_url="https://www.reuters.com/story",
+        canonical_url="https://example.com/story/orion",
+        original_url="https://www.reuters.com/story/orion",
     )
     session.add(
         EventItemRecord(

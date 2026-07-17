@@ -56,11 +56,9 @@ def test_merge_candidate_draft_normalizes_event_order() -> None:
     assert (draft.left.version_number, draft.right.version_number) == (4, 2)
 
 
-def test_merge_candidate_draft_defaults_to_current_v2_and_reads_historical_v1() -> None:
-    assert merge_draft().algorithm_version == "event-merge-v2"
-    assert merge_draft(algorithm_version="event-merge-v1").algorithm_version == (
-        "event-merge-v1"
-    )
+def test_merge_candidate_draft_defaults_to_current_v3_and_reads_historical_v1() -> None:
+    assert merge_draft().algorithm_version == "event-merge-v3"
+    assert merge_draft(algorithm_version="event-merge-v1").algorithm_version == ("event-merge-v1")
 
 
 def test_merge_candidate_draft_requires_distinct_events() -> None:

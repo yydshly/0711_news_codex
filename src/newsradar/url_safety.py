@@ -97,7 +97,8 @@ _NON_CONTENT_LEAVES = frozenset(
 _CONTENT_CONTAINER_SEGMENTS = frozenset(
     {"article", "articles", "post", "posts", "release", "releases", "story", "stories"}
 )
-_CONTENT_PREFIXES = ("article", "item", "post", "release", "story")
+_NON_CONTENT_SEGMENTS = _NON_CONTENT_ROOTS | {"page"}
+_GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
 _NON_CONTENT_SUFFIXES = (".atom", ".json", ".rss", ".xml")
 _NON_CONTENT_SLUG_SUFFIXES = ("-archive", "-feed", "-index", "-list", "-listing")
 
@@ -168,23 +169,31 @@ def path_has_sensitive_key(value: str) -> bool:
     return decoded != current
 
 
-def path_is_content_identity(value: str) -> bool:
+def path_is_content_identity(value: str, *, hostname: str | None = None) -> bool:
     decoded = _bounded_decoded_path(value)
     if decoded is None or any(separator in decoded for separator in ("?", "&", ";")):
         return False
     segments = tuple(segment.casefold() for segment in decoded.split("/") if segment)
     if not segments:
         return False
-    if segments[0] in _NON_CONTENT_ROOTS:
-        return False
-    if any(
-        segment == "page" and index + 1 < len(segments) and segments[index + 1].isdigit()
+    blocked_segments = tuple(
+        (index, segment)
         for index, segment in enumerate(segments)
-    ):
+        if segment in _NON_CONTENT_SEGMENTS
+    )
+    github_release_tag = (
+        hostname is not None
+        and hostname.casefold() in _GITHUB_HOSTS
+        and len(segments) == 5
+        and segments[2:4] == ("releases", "tag")
+    )
+    if blocked_segments and not (github_release_tag and blocked_segments == ((3, "tag"),)):
         return False
     leaf = segments[-1]
-    if leaf in _NON_CONTENT_LEAVES or leaf.endswith(
-        (*_NON_CONTENT_SUFFIXES, *_NON_CONTENT_SLUG_SUFFIXES)
+    if (
+        leaf in _CONTENT_CONTAINER_SEGMENTS
+        or leaf in _NON_CONTENT_LEAVES
+        or leaf.endswith((*_NON_CONTENT_SUFFIXES, *_NON_CONTENT_SLUG_SUFFIXES))
     ):
         return False
     if _is_date_archive(segments):
@@ -223,8 +232,7 @@ def _is_date_archive(segments: tuple[str, ...]) -> bool:
 
 def _content_shaped_leaf(value: str) -> bool:
     return (
-        value.startswith(_CONTENT_PREFIXES)
-        or "-" in value
+        "-" in value
         or any(character.isdigit() for character in value)
         or value.endswith((".htm", ".html"))
     )

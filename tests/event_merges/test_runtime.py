@@ -17,7 +17,7 @@ NOW = datetime.now(UTC)
 def _scope() -> dict[str, object]:
     return {
         "actor": "test",
-        "algorithm_version": "event-merge-v2",
+        "algorithm_version": "event-merge-v3",
         "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
         "window_end": NOW.isoformat(),
         "idempotency_key": "event-merge-scan:test",
@@ -40,9 +40,7 @@ def test_runtime_validates_scope_before_opening_session() -> None:
         lambda: (_ for _ in ()).throw(AssertionError("session must not open"))
     )
 
-    result = handler(
-        OperationLease(1, 1, 1, "worker", {}, "event_merge_scan"), lambda _: None
-    )
+    result = handler(OperationLease(1, 1, 1, "worker", {}, "event_merge_scan"), lambda _: None)
 
     assert result.status is OperationStatus.FAILED
     assert result.error_code == "invalid_event_merge_scan_scope"
@@ -172,9 +170,7 @@ def test_merge_runtime_applies_candidate_decisions(
             legacy_version_number=2,
         )
 
-    monkeypatch.setattr(
-        "newsradar.event_merges.runtime.EventMergeService.apply", apply
-    )
+    monkeypatch.setattr("newsradar.event_merges.runtime.EventMergeService.apply", apply)
 
     result = EventMergeOperationHandler.production(lambda: session)(
         OperationLease(5, 51, 1, "worker", _decision_scope(decision), "event_merge"),
@@ -263,9 +259,7 @@ def test_merge_runtime_maps_expired_revalidation_to_terminal_failure(
     session = type("Session", (), {"close": lambda self: None})()
     monkeypatch.setattr(
         "newsradar.event_merges.runtime.EventMergeService.apply",
-        lambda *args, **kwargs: MergeApplyResult.expired(
-            7, "event_merge_version_changed"
-        ),
+        lambda *args, **kwargs: MergeApplyResult.expired(7, "event_merge_version_changed"),
     )
 
     result = EventMergeOperationHandler.production(lambda: session)(
@@ -304,9 +298,7 @@ def test_merge_runtime_propagates_candidate_cancellation(
         checkpoint("inside_apply")
         raise AssertionError("checkpoint must cancel")
 
-    monkeypatch.setattr(
-        "newsradar.event_merges.runtime.EventMergeService.apply", apply
-    )
+    monkeypatch.setattr("newsradar.event_merges.runtime.EventMergeService.apply", apply)
 
     with pytest.raises(OperationCancelled) as caught:
         EventMergeOperationHandler.production(lambda: session)(
@@ -370,9 +362,7 @@ def test_one_candidate_failure_does_not_poison_next_operation(
             legacy_version_number=2,
         )
 
-    monkeypatch.setattr(
-        "newsradar.event_merges.runtime.EventMergeService.apply", apply
-    )
+    monkeypatch.setattr("newsradar.event_merges.runtime.EventMergeService.apply", apply)
     handler = EventMergeOperationHandler.production(lambda: sessions.pop(0))
 
     failed = handler(

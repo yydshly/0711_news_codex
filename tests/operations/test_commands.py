@@ -80,7 +80,7 @@ def test_enqueue_wave_freezes_plan_atomically() -> None:
             "algorithm_versions": {
                 "relevance": "relevance-v2",
                 "newsworthiness": "newsworthiness-v2",
-            "entities": "entities-v3",
+                "entities": "entities-v3",
                 "cluster": "cluster-v3",
                 "score": "score-v2",
             },
@@ -444,7 +444,7 @@ def test_enqueue_event_merge_scan_freezes_versions_window_and_identity() -> None
         assert record is not None
         assert record.operation_type == "event_merge_scan"
         assert record.requested_scope["actor"] == "cli"
-        assert record.requested_scope["algorithm_version"] == "event-merge-v2"
+        assert record.requested_scope["algorithm_version"] == "event-merge-v3"
         assert record.requested_scope["algorithm_versions"]["entities"] == "entities-v3"
         assert record.requested_scope["window_end"] == now.isoformat()
         assert record.requested_scope["deadline_at"] == (now + timedelta(seconds=30)).isoformat()
@@ -474,9 +474,7 @@ def test_confirm_command_freezes_candidate_id_and_deadline() -> None:
         assert operation.requested_scope["candidate_id"] == 7
         assert operation.requested_scope["decision"] == "confirm"
         assert operation.requested_scope["actor"] == "web"
-        assert operation.requested_scope["deadline_at"] == (
-            now + timedelta(seconds=30)
-        ).isoformat()
+        assert operation.requested_scope["deadline_at"] == (now + timedelta(seconds=30)).isoformat()
         assert operation.requested_scope["idempotency_key"].startswith(
             "event-merge-decision:confirm:7:"
         )
@@ -540,7 +538,7 @@ def test_v2_pipeline_request_does_not_reuse_v1_hour_identity() -> None:
         assert new.requested_scope["algorithm_versions"] == {
             "relevance": "relevance-v2",
             "newsworthiness": "newsworthiness-v2",
-                "entities": "entities-v3",
+            "entities": "entities-v3",
             "cluster": "cluster-v3",
             "score": "score-v2",
         }

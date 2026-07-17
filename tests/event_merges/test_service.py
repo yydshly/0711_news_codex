@@ -271,8 +271,8 @@ def _seed_candidate(
     *,
     left_id: int = 1,
     right_id: int = 2,
-    left_url: str = "https://publisher.test/story",
-    right_url: str = "https://publisher.test/story",
+    left_url: str = "https://publisher.test/story/orion",
+    right_url: str = "https://publisher.test/story/orion",
 ) -> EventMergeCandidateRecord:
     _seed_event(session, left_id, 11, url=left_url)
     _seed_event(session, right_id, 22, url=right_url)
@@ -1161,6 +1161,19 @@ def test_scan_does_not_compare_unindexed_unrelated_events(session: Session, monk
         "https://publisher.test/category/ai",
         "https://publisher.test/news/page/2",
         "https://publisher.test/aggregator/latest",
+        "https://publisher.test/story",
+        "https://publisher.test/article",
+        "https://publisher.test/post",
+        "https://publisher.test/release",
+        "https://publisher.test/news/search/orion-model-launch",
+        "https://publisher.test/news/tag/orion-model-launch",
+        "https://publisher.test/news/category/orion-model-launch",
+        "https://publisher.test/news/topic/orion-model-launch",
+        "https://publisher.test/news/feed/orion-model-launch",
+        "https://publisher.test/news/api/orion-model-launch",
+        "https://publisher.test/news/list/orion-model-launch",
+        "https://publisher.test/news/page/orion-model-launch",
+        "https://publisher.test/news/archive/orion-model-launch",
     ],
 )
 def test_scan_never_creates_deterministic_candidate_from_collection_url(
@@ -1205,6 +1218,54 @@ def test_scan_expires_pending_candidate_when_referenced_version_is_stale(
     assert stale.status == "expired"
     assert "referenced_version_no_longer_current" in stale.reason_codes
     assert result.status_counts == {"expired": 1, "pending": 1}
+
+
+def test_scan_expires_old_pending_algorithm_and_creates_new_v3_root(
+    session: Session,
+) -> None:
+    shared = "https://publisher.test/story/orion-model-launch"
+    _seed_event(session, 1, 11, url=shared)
+    _seed_event(session, 2, 22, url=shared)
+    _seed_scan_operation(session)
+    session.commit()
+    draft = classify_pair(
+        load_event_facts(session, 1),
+        load_event_facts(session, 2),
+        frozenset(),
+    )
+    assert draft is not None
+    repository = EventMergeCandidateRepository(session)
+    old_pending = repository.upsert_candidate(
+        draft.model_copy(update={"algorithm_version": "event-merge-v2"}),
+        50,
+    )
+    dismissed = repository.upsert_candidate(
+        draft.model_copy(update={"algorithm_version": "event-merge-v1"}),
+        50,
+    )
+    dismissed.status = "dismissed"
+    applied = repository.upsert_candidate(
+        draft.model_copy(update={"algorithm_version": "event-merge-v0"}),
+        50,
+    )
+    applied.status = "applied"
+    session.commit()
+
+    result = EventMergeService(session).scan(50, lambda _: None)
+
+    candidates = {
+        candidate.algorithm_version: candidate
+        for candidate in session.scalars(select(EventMergeCandidateRecord))
+    }
+    session.refresh(old_pending)
+    assert old_pending.status == "expired"
+    assert "event_merge_algorithm_changed" in old_pending.reason_codes
+    assert candidates["event-merge-v1"].status == "dismissed"
+    assert candidates["event-merge-v0"].status == "applied"
+    assert candidates["event-merge-v3"].status == "pending"
+    assert candidates["event-merge-v3"].supersedes_candidate_id is None
+    assert result.candidate_type_counts == {"deterministic_merge": 1}
+    assert result.status_counts == {"pending": 1}
 
 
 def test_scan_isolates_one_candidate_integrity_failure(session: Session, monkeypatch) -> None:

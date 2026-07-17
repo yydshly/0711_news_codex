@@ -136,7 +136,7 @@ def _seed_candidate(
     left_version: int = 1,
     right_version: int = 1,
     reason_codes: tuple[str, ...] | None = None,
-    algorithm_version: str = "event-merge-v2",
+    algorithm_version: str = "event-merge-v3",
 ) -> EventMergeCandidateRecord:
     reason_codes = (
         reason_codes
@@ -583,7 +583,7 @@ def test_partial_membership_reason_uses_centralized_chinese_copy(db_session) -> 
     detail = EventMergeQueryService(db_session).get_candidate(3)
 
     assert detail is not None
-    assert detail.algorithm_version == "event-merge-v2"
+    assert detail.algorithm_version == "event-merge-v3"
     assert detail.reason_code == "partial_membership_overlap"
     assert detail.zh_reason == "两个事件的原始条目部分重叠，但成员集合并不完全相同。"
     assert detail.zh_next_action == "人工核对未重叠条目后，确认合并或保持分开。"

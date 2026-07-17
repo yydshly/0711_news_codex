@@ -90,9 +90,7 @@ class MergeScanResult:
             "current_event_count": self.current_event_count,
             "single_member_event_count": self.single_member_event_count,
             "cross_source_event_count": self.cross_source_event_count,
-            "overlapping_current_membership_count": (
-                self.overlapping_current_membership_count
-            ),
+            "overlapping_current_membership_count": (self.overlapping_current_membership_count),
             "pair_count": self.pair_count,
         }
 
@@ -129,9 +127,7 @@ class EventMergeService:
                 right = load_event_facts(self.session, record.right_event_id)
                 latest = latest_complete_event_snapshot(self.session)
                 latest_ids = (
-                    frozenset(
-                        reference.event_id for reference in latest.event_versions
-                    )
+                    frozenset(reference.event_id for reference in latest.event_versions)
                     if latest is not None
                     else frozenset()
                 )
@@ -183,9 +179,7 @@ class EventMergeService:
             event_repository = EventRepository(self.session)
             lease_until = datetime.now(UTC) + timedelta(minutes=5)
             for event_id in event_ids:
-                if not event_repository.claim_event(
-                    event_id, operation_id, lease_until
-                ):
+                if not event_repository.claim_event(event_id, operation_id, lease_until):
                     raise EventMergeLeaseUnavailable(event_id)
                 claimed_ids.append(event_id)
             self.session.commit()
@@ -199,9 +193,7 @@ class EventMergeService:
                 if tuple(event.id for event in locked_events) != event_ids:
                     raise LookupError("event_merge_event_not_found")
                 if locked_record.status == MergeCandidateStatus.APPLIED.value:
-                    result = MergeApplyResult.model_validate(
-                        locked_record.result_summary
-                    )
+                    result = MergeApplyResult.model_validate(locked_record.result_summary)
                 else:
                     locked_rows = self._lock_raw_item_rows(locked_events)
                     events_by_id = {event.id: event for event in locked_events}
@@ -218,23 +210,15 @@ class EventMergeService:
                     locked_items_by_id = {
                         item.raw_item_id: item
                         for item in _cluster_items_from_rows(
-                            tuple(
-                                row
-                                for event_id in event_ids
-                                for row in locked_rows[event_id]
-                            )
+                            tuple(row for event_id in event_ids for row in locked_rows[event_id])
                         )
                     }
                     locked_items = tuple(
-                        locked_items_by_id[item_id]
-                        for item_id in sorted(locked_items_by_id)
+                        locked_items_by_id[item_id] for item_id in sorted(locked_items_by_id)
                     )
                     snapshot = latest_complete_event_snapshot(self.session)
                     latest_snapshot_ids = (
-                        frozenset(
-                            reference.event_id
-                            for reference in snapshot.event_versions
-                        )
+                        frozenset(reference.event_id for reference in snapshot.event_versions)
                         if snapshot is not None
                         else frozenset()
                     )
@@ -265,17 +249,13 @@ class EventMergeService:
                                 result.model_dump(mode="json"),
                             )
                 for event_id in reversed(claimed_ids):
-                    EventRepository(self.session).release_event(
-                        event_id, operation_id
-                    )
+                    EventRepository(self.session).release_event(event_id, operation_id)
             return result
         except Exception:
             self.session.rollback()
             with self.session.begin():
                 for event_id in reversed(claimed_ids):
-                    EventRepository(self.session).release_event(
-                        event_id, operation_id
-                    )
+                    EventRepository(self.session).release_event(event_id, operation_id)
             raise
 
     def _lock_raw_item_rows(
@@ -288,12 +268,10 @@ class EventMergeService:
         membership_conditions = tuple(
             and_(
                 EventItemRecord.event_id == event.id,
-                EventItemRecord.added_version_number
-                <= event.current_version_number,
+                EventItemRecord.added_version_number <= event.current_version_number,
                 or_(
                     EventItemRecord.removed_version_number.is_(None),
-                    EventItemRecord.removed_version_number
-                    > event.current_version_number,
+                    EventItemRecord.removed_version_number > event.current_version_number,
                 ),
             )
             for event in locked_events
@@ -316,9 +294,7 @@ class EventMergeService:
                 }
             )
         )
-        locked_raw_items = EventRepository(self.session).lock_raw_items(
-            raw_item_ids
-        )
+        locked_raw_items = EventRepository(self.session).lock_raw_items(raw_item_ids)
         if tuple(raw.id for raw in locked_raw_items) != raw_item_ids:
             raise LookupError("event_merge_raw_item_not_found")
         source_ids = tuple(sorted({raw.source_id for raw in locked_raw_items}))
@@ -365,9 +341,7 @@ class EventMergeService:
                 MergeCandidateType.LEGACY_IDENTITY.value,
                 MergeCandidateType.DETERMINISTIC_MERGE.value,
             }:
-                raise ValueError(
-                    "event_merge_candidate_type_not_directly_applicable"
-                )
+                raise ValueError("event_merge_candidate_type_not_directly_applicable")
         elif record.candidate_type != MergeCandidateType.MANUAL_REVIEW.value:
             raise ValueError("event_merge_confirmation_type_mismatch")
         elif record.reviewed_operation_id != operation_id:
@@ -382,12 +356,8 @@ class EventMergeService:
         ):
             return "event_merge_version_changed"
         try:
-            frozen_left = EventMergeFacts.model_validate(
-                record.facts_snapshot["left"]
-            )
-            frozen_right = EventMergeFacts.model_validate(
-                record.facts_snapshot["right"]
-            )
+            frozen_left = EventMergeFacts.model_validate(record.facts_snapshot["left"])
+            frozen_right = EventMergeFacts.model_validate(record.facts_snapshot["right"])
         except (KeyError, TypeError, ValueError):
             return "event_merge_membership_changed"
         if (
@@ -459,16 +429,20 @@ class EventMergeService:
             safe_enrichment = _enrichment(EventRepository(self.session), survivor)
         except (TypeError, ValueError):
             safe_enrichment = None
-        published = EventPublisher(EventRepository(self.session)).assemble_snapshot(
-            candidate,
-            score_input=score_input,
-            enrichment=safe_enrichment,
-            snapshot_at=snapshot_at,
-        ).model_copy(
-            update={
-                "event_id": survivor.id,
-                "canonical_key": survivor.canonical_key,
-            }
+        published = (
+            EventPublisher(EventRepository(self.session))
+            .assemble_snapshot(
+                candidate,
+                score_input=score_input,
+                enrichment=safe_enrichment,
+                snapshot_at=snapshot_at,
+            )
+            .model_copy(
+                update={
+                    "event_id": survivor.id,
+                    "canonical_key": survivor.canonical_key,
+                }
+            )
         )
         survivor_record = EventRepository(self.session).publish_complete_event(
             published,
@@ -504,17 +478,13 @@ class EventMergeService:
             if (left.event_id in latest_snapshot_event_ids) != (
                 right.event_id in latest_snapshot_event_ids
             ):
-                survivor = (
-                    left if left.event_id in latest_snapshot_event_ids else right
-                )
+                survivor = left if left.event_id in latest_snapshot_event_ids else right
                 return survivor, right if survivor is left else left
         current_cluster = "cluster-v3"
         if (current_cluster in left.algorithm_versions) != (
             current_cluster in right.algorithm_versions
         ):
-            survivor = (
-                left if current_cluster in left.algorithm_versions else right
-            )
+            survivor = left if current_cluster in left.algorithm_versions else right
             return survivor, right if survivor is left else left
         survivor = min((left, right), key=lambda facts: facts.event_id)
         return survivor, right if survivor is left else left
@@ -532,9 +502,9 @@ class EventMergeService:
             )
         )
         snapshot = latest_complete_event_snapshot(self.session)
-        latest_snapshot_event_ids = frozenset(
-            ref.event_id for ref in snapshot.event_versions
-        ) if snapshot else frozenset()
+        latest_snapshot_event_ids = (
+            frozenset(ref.event_id for ref in snapshot.event_versions) if snapshot else frozenset()
+        )
         self.session.commit()
 
         failures: Counter[str] = Counter()
@@ -553,9 +523,7 @@ class EventMergeService:
         overlapping_memberships = _overlapping_current_memberships(facts_values)
         candidate_types: Counter[str] = Counter()
         pair_count = 0
-        for left_id, right_id in _iter_bounded_event_pairs(
-            facts_values, checkpoint, failures
-        ):
+        for left_id, right_id in _iter_bounded_event_pairs(facts_values, checkpoint, failures):
             pair_count += 1
             checkpoint(f"event_merge_pair:{left_id}:{right_id}")
             left = facts_by_id[left_id]
@@ -587,8 +555,7 @@ class EventMergeService:
         status_counts = Counter(
             self.session.scalars(
                 select(EventMergeCandidateRecord.status).where(
-                    EventMergeCandidateRecord.algorithm_version
-                    == EVENT_MERGE_RULE_VERSION
+                    EventMergeCandidateRecord.algorithm_version == EVENT_MERGE_RULE_VERSION
                 )
             )
         )
@@ -598,12 +565,8 @@ class EventMergeService:
             status_counts=dict(sorted(status_counts.items())),
             failure_reasons=dict(sorted(failures.items())),
             current_event_count=len(event_ids),
-            single_member_event_count=sum(
-                len(facts.raw_item_ids) == 1 for facts in facts_values
-            ),
-            cross_source_event_count=sum(
-                len(facts.source_ids) > 1 for facts in facts_values
-            ),
+            single_member_event_count=sum(len(facts.raw_item_ids) == 1 for facts in facts_values),
+            cross_source_event_count=sum(len(facts.source_ids) > 1 for facts in facts_values),
             overlapping_current_membership_count=overlapping_memberships,
             pair_count=pair_count,
         )
@@ -614,33 +577,30 @@ class EventMergeService:
         checkpoint: Callable[[str], None],
     ) -> None:
         current_versions = dict(
-            self.session.execute(
-                select(EventRecord.id, EventRecord.current_version_number)
-            ).all()
+            self.session.execute(select(EventRecord.id, EventRecord.current_version_number)).all()
         )
         pending = tuple(
             self.session.scalars(
-                select(EventMergeCandidateRecord).where(
-                    EventMergeCandidateRecord.algorithm_version
-                    == EVENT_MERGE_RULE_VERSION,
-                    EventMergeCandidateRecord.status == "pending",
-                )
+                select(EventMergeCandidateRecord)
+                .where(EventMergeCandidateRecord.status == "pending")
+                .order_by(EventMergeCandidateRecord.id)
             )
         )
         self.session.commit()
         for record in pending:
-            if (
+            if record.algorithm_version != EVENT_MERGE_RULE_VERSION:
+                reason_code = "event_merge_algorithm_changed"
+            elif (
                 current_versions.get(record.left_event_id) == record.left_version_number
-                and current_versions.get(record.right_event_id)
-                == record.right_version_number
+                and current_versions.get(record.right_event_id) == record.right_version_number
             ):
                 continue
+            else:
+                reason_code = "referenced_version_no_longer_current"
             checkpoint(f"event_merge_expire:{record.id}")
             try:
                 with self.session.begin_nested():
-                    EventMergeCandidateRepository(self.session).mark_expired(
-                        record.id, "referenced_version_no_longer_current"
-                    )
+                    EventMergeCandidateRepository(self.session).mark_expired(record.id, reason_code)
                 self.session.commit()
             except Exception:
                 self.session.rollback()
@@ -682,9 +642,7 @@ def _iter_bounded_event_pairs(
         for key, members in sorted(strong_index.items())
     )
     for (entity, bucket), members in sorted(object_time_index.items()):
-        buckets.append(
-            (f"object_time:{entity}:{bucket}", tuple(sorted(set(members))), None)
-        )
+        buckets.append((f"object_time:{entity}:{bucket}", tuple(sorted(set(members))), None))
         adjacent = object_time_index.get((entity, bucket + 1))
         if adjacent:
             buckets.append(
