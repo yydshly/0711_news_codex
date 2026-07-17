@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     DailyReportDraft,
+    DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
     ReportSection,
 )
@@ -23,6 +24,21 @@ from newsradar.db.models import (
 )
 
 NOW = datetime(2026, 7, 16, 4, tzinfo=UTC)
+
+REVIEW_KEEP = DailyReportEditorialReviewDraft.create(
+    decision="keep",
+    zh_title="人工标题",
+    zh_summary="人工中文概述",
+    review_recommendation="建议保留并继续补证",
+    evidence_assessment="已有公开证据，仍需补充独立来源。",
+)
+REVIEW_DUPLICATE = DailyReportEditorialReviewDraft.create(
+    decision="duplicate",
+    zh_title="重复标题",
+    zh_summary="重复概述",
+    review_recommendation="与已收录条目合并去重",
+    evidence_assessment="指向同一原始发布事实。",
+)
 
 
 @pytest.fixture
@@ -215,6 +231,75 @@ def test_draft_can_toggle_and_move_only_inside_its_section(db_session: Session) 
         first_signal.event_id,
     ]
     assert next(row for row in rows if row.id == first_signal.id).included is False
+
+
+def test_save_editorial_review_appends_history_syncs_inclusion_and_preserves_snapshot(
+    db_session: Session,
+) -> None:
+    report = DailyReportRepository(db_session, utcnow=lambda: NOW).create_draft(
+        _draft(db_session)
+    )
+    item = DailyReportRepository(db_session).items(report.id)[1]
+    before = dict(item.snapshot)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+
+    first = repository.save_editorial_review(report.id, item.id, REVIEW_KEEP)
+    second = repository.save_editorial_review(report.id, item.id, REVIEW_DUPLICATE)
+
+    assert (first.revision, second.revision) == (1, 2)
+    assert [row.decision for row in repository.editorial_reviews(item.id)] == [
+        "keep",
+        "duplicate",
+    ]
+    assert db_session.get(DailyReportItemRecord, item.id).included is False
+    assert db_session.get(DailyReportItemRecord, item.id).snapshot == before
+
+
+def test_save_editorial_review_rejects_archived_report(db_session: Session) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    report = repository.create_draft(_draft(db_session))
+    item = repository.items(report.id)[0]
+    repository.archive(report.id)
+
+    with pytest.raises(ValueError, match="daily_report_archived"):
+        repository.save_editorial_review(report.id, item.id, REVIEW_KEEP)
+
+
+def test_save_editorial_review_rejects_foreign_item(db_session: Session) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    left = repository.create_draft(_draft(db_session, report_date=date(2026, 7, 16)))
+    right = repository.create_draft(_draft(db_session, report_date=date(2026, 7, 17)))
+    foreign_item = repository.items(right.id)[0]
+
+    with pytest.raises(LookupError, match="daily_report_item_not_found"):
+        repository.save_editorial_review(left.id, foreign_item.id, REVIEW_KEEP)
+
+
+def test_revise_copies_only_latest_editorial_review_without_mutating_history(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = repository.create_draft(_draft(db_session))
+    original_item = repository.items(original.id)[1]
+    first = repository.save_editorial_review(original.id, original_item.id, REVIEW_KEEP)
+    latest = repository.save_editorial_review(original.id, original_item.id, REVIEW_DUPLICATE)
+    repository.archive(original.id)
+
+    revision = repository.revise(original.id)
+    copied_item = next(
+        item for item in repository.items(revision.id) if item.event_id == original_item.event_id
+    )
+    copied_reviews = repository.editorial_reviews(copied_item.id)
+
+    assert [(row.id, row.revision) for row in repository.editorial_reviews(original_item.id)] == [
+        (first.id, 1),
+        (latest.id, 2),
+    ]
+    assert len(copied_reviews) == 1
+    assert copied_reviews[0].revision == 1
+    assert copied_reviews[0].decision == latest.decision
+    assert copied_reviews[0].zh_title == latest.zh_title
+    assert copied_reviews[0].copied_from_editorial_review_id == latest.id
 
 
 def test_archived_report_rejects_mutation_and_revision_copies_snapshots(

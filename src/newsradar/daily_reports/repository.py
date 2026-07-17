@@ -10,12 +10,18 @@ from sqlalchemy.orm import Session
 from newsradar.daily_reports.schema import (
     REPORT_TIMEZONE,
     DailyReportDraft,
+    DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
+    EditorialDecision,
     ReportSection,
     ReportStatus,
     validate_window_hours,
 )
-from newsradar.db.models import DailyReportItemRecord, DailyReportRecord
+from newsradar.db.models import (
+    DailyReportItemEditorialReviewRecord,
+    DailyReportItemRecord,
+    DailyReportRecord,
+)
 
 MAX_REVISION_ATTEMPTS = 3
 
@@ -118,6 +124,54 @@ class DailyReportRepository:
         self.session.commit()
         return item
 
+    def save_editorial_review(
+        self,
+        report_id: int,
+        item_id: int,
+        draft: DailyReportEditorialReviewDraft,
+    ) -> DailyReportItemEditorialReviewRecord:
+        self._draft_report(report_id)
+        item = self._owned_item(report_id, item_id)
+        revision = int(
+            self.session.scalar(
+                select(func.max(DailyReportItemEditorialReviewRecord.revision)).where(
+                    DailyReportItemEditorialReviewRecord.daily_report_item_id == item.id
+                )
+            )
+            or 0
+        ) + 1
+        review = DailyReportItemEditorialReviewRecord(
+            daily_report_item_id=item.id,
+            revision=revision,
+            decision=draft.decision.value,
+            zh_title=draft.zh_title,
+            zh_summary=draft.zh_summary,
+            review_recommendation=draft.review_recommendation,
+            evidence_assessment=draft.evidence_assessment,
+            created_at=self._utcnow(),
+        )
+        item.included = draft.decision in {
+            EditorialDecision.KEEP,
+            EditorialDecision.NEEDS_EVIDENCE,
+        }
+        self.session.add(review)
+        self.session.commit()
+        return review
+
+    def editorial_reviews(
+        self, item_id: int
+    ) -> tuple[DailyReportItemEditorialReviewRecord, ...]:
+        return tuple(
+            self.session.scalars(
+                select(DailyReportItemEditorialReviewRecord)
+                .where(DailyReportItemEditorialReviewRecord.daily_report_item_id == item_id)
+                .order_by(
+                    DailyReportItemEditorialReviewRecord.revision,
+                    DailyReportItemEditorialReviewRecord.id,
+                )
+            )
+        )
+
     def move_item(
         self,
         report_id: int,
@@ -161,7 +215,7 @@ class DailyReportRepository:
             raise LookupError("daily_report_not_found")
         if original.status != ReportStatus.ARCHIVED.value:
             raise ValueError("daily_report_must_be_archived")
-        return self.create_draft(
+        revision = self.create_draft(
             DailyReportDraft(
                 report_date=original.report_date,
                 window_hours=original.window_hours,
@@ -183,6 +237,27 @@ class DailyReportRepository:
                 ),
             )
         )
+        for original_item, revision_item in zip(
+            self.items(original.id), self.items(revision.id), strict=True
+        ):
+            latest_review = self._latest_editorial_review(original_item.id)
+            if latest_review is None or self._latest_editorial_review(revision_item.id) is not None:
+                continue
+            self.session.add(
+                DailyReportItemEditorialReviewRecord(
+                    daily_report_item_id=revision_item.id,
+                    revision=1,
+                    decision=latest_review.decision,
+                    zh_title=latest_review.zh_title,
+                    zh_summary=latest_review.zh_summary,
+                    review_recommendation=latest_review.review_recommendation,
+                    evidence_assessment=latest_review.evidence_assessment,
+                    copied_from_editorial_review_id=latest_review.id,
+                    created_at=self._utcnow(),
+                )
+            )
+        self.session.commit()
+        return revision
 
     def _lock_revision(self, report_date: date, window_hours: int) -> None:
         if self.session.get_bind().dialect.name != "postgresql":
@@ -218,6 +293,18 @@ class DailyReportRepository:
             self.session.rollback()
             raise LookupError("daily_report_item_not_found")
         return item
+
+    def _latest_editorial_review(
+        self, item_id: int
+    ) -> DailyReportItemEditorialReviewRecord | None:
+        return self.session.scalar(
+            select(DailyReportItemEditorialReviewRecord)
+            .where(DailyReportItemEditorialReviewRecord.daily_report_item_id == item_id)
+            .order_by(
+                DailyReportItemEditorialReviewRecord.revision.desc(),
+                DailyReportItemEditorialReviewRecord.id.desc(),
+            )
+        )
 
     def _matching_report(self, draft: DailyReportDraft) -> DailyReportRecord | None:
         if draft.supersedes_report_id is not None:
