@@ -77,6 +77,32 @@ uv run newsradar worker --forever
 uv run newsradar fetch hackernews-top --root sources --no-wait
 ```
 
+## Windows 桌面应用
+
+日常可以在终端以前台方式运行完整服务：
+
+```powershell
+uv run newsradar serve --host 127.0.0.1 --port 8767
+```
+
+也可以启动桌面窗口：
+
+```powershell
+uv run newsradar desktop run --port 8767
+```
+
+桌面窗口默认显示日报页；点击窗口关闭按钮只会**隐藏到右下角**，不会停止抓取或日报任务。右下角托盘菜单可显示或隐藏窗口，并可启动、停止桌面应用自己启动的本地服务，选择“退出 News Codex”才会退出窗口。若 `8767` 端口已经有你手工启动的 `serve` 服务，桌面应用只会连接它，退出时绝不会停止该外部服务。
+
+如需在登录 Windows 后自动打开桌面窗口，可由你主动执行：
+
+```powershell
+uv run newsradar desktop autostart-enable
+uv run newsradar desktop autostart-status
+uv run newsradar desktop autostart-disable
+```
+
+桌面应用不会执行数据库迁移，也不会把凭据写入开机启动项。自动日报的启用、暂停、立即运行与运行记录仍在网页“自动日报”页中控制。
+
 If only `web` is running, fetch requests remain queued until a Worker starts. `db repair` repairs
 only deterministic partial local states; it never deletes `.local/postgres` or its logs.
 

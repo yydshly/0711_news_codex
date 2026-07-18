@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock
@@ -14,6 +16,48 @@ from .test_provider_schema import valid_provider
 from .test_source_schema import valid_source
 
 runner = CliRunner()
+
+
+def test_cli_lists_desktop_commands() -> None:
+    result = runner.invoke(app, ["desktop", "--help"])
+
+    assert result.exit_code == 0
+    assert "autostart-status" in result.stdout
+
+
+def test_desktop_autostart_command_fixes_project_working_directory(tmp_path) -> None:
+    from newsradar import cli
+
+    project_root = tmp_path / "desktop project"
+    project_root.mkdir()
+    inner_command = subprocess.list2cmdline(
+        [sys.executable, "-c", "import os; print(os.getcwd())"]
+    )
+    command = cli._command_with_project_directory(project_root, inner_command)
+
+    result = subprocess.run(command, shell=False, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0
+    assert Path(result.stdout.strip()) == project_root
+
+
+def test_desktop_autostart_command_uses_project_directory_without_secrets() -> None:
+    from newsradar import cli
+
+    command = cli._desktop_autostart_command()
+
+    assert "cmd.exe" in command
+    assert "cd /d" in command
+    assert str(Path(cli.__file__).resolve().parents[2]) in command
+    assert "desktop run" in command
+    assert "DATABASE_URL" not in command
+
+
+def test_readme_documents_desktop_runtime_controls() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "newsradar desktop run" in readme
+    assert "隐藏到右下角" in readme
 
 
 def test_waves_commands_validate_and_plan_without_database_or_network(monkeypatch) -> None:
