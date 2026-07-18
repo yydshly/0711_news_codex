@@ -9,6 +9,7 @@ import pytest
 from newsradar.daily_reports.chinese_enrichment import (
     DailyReportChineseCandidate,
     DailyReportChineseEnricher,
+    _safe_context,
     candidate_key,
 )
 from newsradar.settings import Settings
@@ -324,7 +325,6 @@ def test_prompt_omits_adversarial_url_like_tokens_but_preserves_prose() -> None:
         "203.0.113.4",
     ):
         assert leaked not in prompt
-    assert "Useful prose" in prompt
     assert "surrounding non-URL prose must survive" in prompt
 
 
@@ -337,13 +337,17 @@ def test_prompt_omits_complete_ipv6_and_one_character_scheme_tokens() -> None:
             ),
             "zh_summary": (
                 "Keep beta //[2001:db8::2]/protocol-path plus "
-                "x://private-host/one-char-secret and keep gamma"
+                "x://private-host/a,secret-fragment and keep gamma"
             ),
             "publisher_names": [
                 "Keep delta [2001:db8::3]/bracketed-bare-path",
                 "Keep epsilon 2001:db8::4/unbracketed-bare-path",
             ],
-            "confirmation_summary": "Ordinary surrounding prose remains intact.",
+            "confirmation_summary": (
+                "Remove ::1/private-fragment and "
+                "::ffff:192.0.2.128/mapped-ipv6-path"
+            ),
+            "limitations": ["Ordinary surrounding prose remains intact."],
         }
     )
 
@@ -355,13 +359,61 @@ def test_prompt_omits_complete_ipv6_and_one_character_scheme_tokens() -> None:
         "protocol-path",
         "x:",
         "private-host",
-        "one-char-secret",
+        "secret-fragment",
         "bracketed-bare-path",
         "unbracketed-bare-path",
+        "private-fragment",
+        "ffff:192.0.2.128",
+        "mapped-ipv6-path",
     ):
         assert leaked not in prompt
-    for prose in ("Keep alpha", "keep omega", "Keep beta", "keep gamma", "Keep delta"):
-        assert prose in prompt
+    assert "Ordinary surrounding prose remains intact" in prompt
+    assert '"event_key": "11:2"' in prompt
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Release note: ordinary prose with a non-URL colon remains.",
+        "模型版本 M2.7 已完成更新，普通文本应当保留。",
+    ],
+)
+def test_safe_context_preserves_clean_non_url_prose(prose: str) -> None:
+    row = candidate()
+    row.snapshot.update(
+        {
+            "zh_title": prose,
+            "zh_summary": "Clean ordinary summary without network locations.",
+            "publisher_names": ["Clean Publisher"],
+            "confirmation_summary": "Clean confirmation prose.",
+            "limitations": ["Clean limitation prose."],
+        }
+    )
+
+    assert prose in DailyReportChineseEnricher._prompt(row)
+
+
+@pytest.mark.parametrize(
+    "contaminated",
+    [
+        "https://[2001:db8::1]/secret",
+        "//[2001:db8::2]/path",
+        "x://private-host/a,secret-fragment",
+        "[2001:db8::3]/bare-path",
+        "2001:db8::4/bare-path",
+        "::1/private-fragment",
+        "::ffff:192.0.2.128/path",
+        "www.example.test/path",
+        "example.test/path",
+        "mailto:desk@example.test",
+        "desk@example.test",
+        "192.0.2.5/private-path",
+    ],
+)
+def test_safe_context_omits_entire_url_contaminated_fragment(
+    contaminated: str,
+) -> None:
+    assert _safe_context(f"ordinary prefix {contaminated} ordinary suffix") == "[omitted]"
 
 
 @pytest.mark.parametrize(

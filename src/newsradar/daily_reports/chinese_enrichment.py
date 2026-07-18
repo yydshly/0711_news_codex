@@ -21,15 +21,18 @@ from newsradar.settings import Settings
 _CJK = re.compile(r"[\u3400-\u9fff]")
 _LATIN = re.compile(r"[A-Za-z]")
 _KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
-_URL_LIKE = re.compile(
+_URL_LIKE_FEATURE = re.compile(
     r"""
-    (?<![\w])(?:[a-z][a-z0-9+.-]*:(?://)?|//)[^\s"'<> ,}]+
-    |(?<![\w])\[[0-9a-f:.]*:[0-9a-f:.]*\](?::\d{1,5})?(?:/[^\s"'<> ,}]*)?
-    |(?<![\w:])(?=[0-9a-f:]*:[0-9a-f:]*:)[0-9a-f]+(?::[0-9a-f]*){2,}(?:/[^\s"'<> ,}]*)?
-    |(?<![\w])www\.[^\s"'<> ,}]+
+    (?<![\w])[a-z][a-z0-9+.-]*:(?=\S)
+    |://
+    |(?<!:)//(?=\[?[a-z0-9])
+    |(?<![\w])www\.
     |(?<![\w.+-])[\w.+-]+@(?:[a-z0-9-]+\.)+[a-z]{2,63}
-    |\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/[^\s"'<>()[\]{},]*)?
-    |\b(?:[a-z0-9-]+\.)+[a-z]{2,63}(?::\d{1,5})?(?:/[^\s"'<>()[\]{},]*)?
+    |\b(?:\d{1,3}\.){3}\d{1,3}\b
+    |\[[0-9a-f:.]*:[0-9a-f:.]*\]
+    |(?<![\w:])::(?=[0-9a-f:.])
+    |(?<![\w:])(?=[0-9a-f:.]*:[0-9a-f:.]*:)[0-9a-f:.]+
+    |\b(?:[a-z0-9-]+\.)+[a-z]{2,63}\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -280,8 +283,8 @@ def _snapshot_text(snapshot: dict[str, object], key: str, fallback: str) -> str:
 
 def _safe_context(value: object) -> str:
     rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    cleaned = " ".join(_URL_LIKE.sub("[omitted]", rendered).split())
-    return cleaned[:_MAX_CONTEXT]
+    bounded = " ".join(rendered.split())[:_MAX_CONTEXT]
+    return "[omitted]" if _URL_LIKE_FEATURE.search(bounded) else bounded
 
 
 def _is_meaningful_simplified_chinese(result: _ChineseResponse) -> bool:
