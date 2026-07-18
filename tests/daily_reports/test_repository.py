@@ -9,6 +9,13 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from newsradar.ai.minimax import ModelUsage
+from newsradar.daily_reports.autopilot import build_decision_review, build_overview_review
+from newsradar.daily_reports.chinese_enrichment import (
+    DailyReportChineseCandidate,
+    DailyReportChineseCopy,
+    DailyReportChineseResult,
+)
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     DailyReportDraft,
@@ -156,6 +163,38 @@ def _file_engine(tmp_path: Path):
     return engine
 
 
+def _seed_report_with_shared_event(
+    db_session: Session,
+) -> tuple[DailyReportRecord, DailyReportRepository]:
+    draft = _draft(db_session)
+    draft = replace(draft, items=draft.items[:1], overview_items=draft.overview_items[:1])
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    return repository.create_draft(draft), repository
+
+
+def _model_result_for(candidate: DailyReportChineseCandidate) -> DailyReportChineseResult:
+    return DailyReportChineseResult(
+        candidate=candidate,
+        copy=DailyReportChineseCopy(
+            zh_title="模型中文标题",
+            zh_summary="模型生成的中文文章概述。",
+        ),
+        origin="model",
+        error_code=None,
+        model="MiniMax-M2.7-highspeed",
+        usages=(
+            ModelUsage(
+                purpose="daily_report_chinese_enrichment",
+                model="MiniMax-M2.7-highspeed",
+                input_tokens=20,
+                output_tokens=10,
+                latency_ms=12.5,
+                outcome="success",
+            ),
+        ),
+    )
+
+
 def _review_audio_package(
     repository: DailyReportRepository,
     report_id: int,
@@ -167,6 +206,65 @@ def _review_audio_package(
         repository.save_editorial_review(report_id, item.id, decision_review)
     for item in repository.overview_items(report_id):
         repository.save_overview_editorial_review(report_id, item.id, overview_review)
+
+
+def test_candidates_deduplicate_decision_and_overview_event(db_session: Session) -> None:
+    report, repository = _seed_report_with_shared_event(db_session)
+    decision_item = repository.items(report.id)[0]
+    overview_item = repository.overview_items(report.id)[0]
+
+    rows = repository.chinese_enrichment_candidates(report.id)
+
+    assert len(rows) == 1
+    assert rows[0].decision_item_id == decision_item.id
+    assert rows[0].overview_item_id == overview_item.id
+
+
+def test_automatic_review_save_is_atomic_audited_and_idempotent(
+    db_session: Session,
+) -> None:
+    report, repository = _seed_report_with_shared_event(db_session)
+    decision_item = repository.items(report.id)[0]
+    overview_item = repository.overview_items(report.id)[0]
+    result = _model_result_for(repository.chinese_enrichment_candidates(report.id)[0])
+
+    assert repository.save_automatic_chinese_reviews(
+        report.id,
+        result,
+        build_decision_review(
+            result.candidate.snapshot,
+            zh_title=result.copy.zh_title,
+            zh_summary=result.copy.zh_summary,
+        ),
+        build_overview_review(
+            result.candidate.snapshot,
+            zh_title=result.copy.zh_title,
+            zh_summary=result.copy.zh_summary,
+        ),
+        candidate_total=1,
+        model_budget=60,
+    ) is True
+    assert repository.save_automatic_chinese_reviews(
+        report.id,
+        result,
+        build_decision_review(result.candidate.snapshot),
+        build_overview_review(result.candidate.snapshot),
+        candidate_total=1,
+        model_budget=60,
+    ) is False
+
+    assert len(repository.editorial_reviews(decision_item.id)) == 1
+    assert len(repository.overview_editorial_reviews(overview_item.id)) == 1
+    summary = db_session.get(DailyReportRecord, report.id).generation_summary[
+        "daily_chinese_enrichment"
+    ]
+    assert summary["candidate_total"] == 1
+    assert summary["model_success"] == 1
+    assert summary["rule_fallback"] == 0
+    assert summary["items"][result.candidate.key]["origin"] == "model"
+    assert summary["model_usage_ids"]
+    assert "模型中文标题" not in str(summary)
+    assert repository.completed_chinese_enrichment_keys(report.id) == {result.candidate.key}
 
 
 @pytest.mark.parametrize(

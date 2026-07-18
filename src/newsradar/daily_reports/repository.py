@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 
 from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from newsradar.daily_reports.chinese_enrichment import (
+    DailyReportChineseCandidate,
+    DailyReportChineseResult,
+    candidate_key,
+)
 from newsradar.daily_reports.schema import (
     REPORT_TIMEZONE,
     DailyReportDraft,
@@ -27,6 +33,7 @@ from newsradar.db.models import (
     DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
     DailyReportRecord,
+    ModelUsageRecord,
 )
 
 MAX_REVISION_ATTEMPTS = 3
@@ -162,11 +169,62 @@ class DailyReportRepository:
             )
         )
 
+    def chinese_enrichment_candidates(
+        self, report_id: int
+    ) -> tuple[DailyReportChineseCandidate, ...]:
+        rows: dict[str, DailyReportChineseCandidate] = {}
+        for item in self.items(report_id):
+            row = DailyReportChineseCandidate(
+                event_id=item.event_id,
+                event_version_number=item.event_version_number,
+                snapshot=dict(item.snapshot),
+                decision_item_id=item.id,
+                overview_item_id=None,
+            )
+            rows[row.key] = row
+        for item in self.overview_items(report_id):
+            key = candidate_key(item.event_id, item.event_version_number)
+            existing = rows.get(key)
+            rows[key] = (
+                replace(existing, overview_item_id=item.id)
+                if existing is not None
+                else DailyReportChineseCandidate(
+                    event_id=item.event_id,
+                    event_version_number=item.event_version_number,
+                    snapshot=dict(item.snapshot),
+                    decision_item_id=None,
+                    overview_item_id=item.id,
+                )
+            )
+        return tuple(rows.values())
+
+    def completed_chinese_enrichment_keys(self, report_id: int) -> frozenset[str]:
+        report = self._draft_report(report_id)
+        summary = (
+            report.generation_summary
+            if isinstance(report.generation_summary, dict)
+            else {}
+        )
+        audit = summary.get("daily_chinese_enrichment")
+        items = audit.get("items") if isinstance(audit, dict) else None
+        candidates = {row.key: row for row in self.chinese_enrichment_candidates(report_id)}
+        if not isinstance(items, dict):
+            return frozenset()
+        return frozenset(
+            key
+            for key in items
+            if isinstance(key, str)
+            and key in candidates
+            and self._automatic_reviews_complete(candidates[key])
+        )
+
     def save_overview_editorial_review(
         self,
         report_id: int,
         item_id: int,
         draft: DailyReportOverviewEditorialReviewDraft,
+        *,
+        commit: bool = True,
     ) -> DailyReportOverviewEditorialReviewRecord:
         self._draft_report(report_id)
         item = self._owned_overview_item(report_id, item_id)
@@ -205,7 +263,10 @@ class DailyReportRepository:
             created_at=self._utcnow(),
         )
         self.session.add(review)
-        self.session.commit()
+        if commit:
+            self.session.commit()
+        else:
+            self.session.flush()
         return review
 
     def overview_editorial_reviews(
@@ -306,6 +367,8 @@ class DailyReportRepository:
         report_id: int,
         item_id: int,
         draft: DailyReportEditorialReviewDraft,
+        *,
+        commit: bool = True,
     ) -> DailyReportItemEditorialReviewRecord:
         self._draft_report(report_id)
         item = self._owned_item(report_id, item_id)
@@ -332,8 +395,76 @@ class DailyReportRepository:
             EditorialDecision.NEEDS_EVIDENCE,
         }
         self.session.add(review)
-        self.session.commit()
+        if commit:
+            self.session.commit()
+        else:
+            self.session.flush()
         return review
+
+    def save_automatic_chinese_reviews(
+        self,
+        report_id: int,
+        result: DailyReportChineseResult,
+        decision_draft: DailyReportEditorialReviewDraft | None,
+        overview_draft: DailyReportOverviewEditorialReviewDraft | None,
+        *,
+        candidate_total: int,
+        model_budget: int,
+    ) -> bool:
+        report = self._draft_report(report_id)
+        summary = dict(report.generation_summary)
+        audit = dict(summary.get("daily_chinese_enrichment") or {})
+        item_audits = dict(audit.get("items") or {})
+        if (
+            result.candidate.key in item_audits
+            and self._automatic_reviews_complete(result.candidate)
+        ):
+            return False
+
+        usage_ids: list[int] = []
+        for usage in result.usages:
+            record = ModelUsageRecord(
+                purpose=usage.purpose,
+                model=usage.model,
+                input_tokens=max(0, usage.input_tokens),
+                output_tokens=max(0, usage.output_tokens),
+                latency_ms=usage.latency_ms,
+                outcome=usage.outcome,
+                error=usage.error[:1000] if usage.error else None,
+            )
+            self.session.add(record)
+            self.session.flush()
+            usage_ids.append(record.id)
+
+        if decision_draft is not None and result.candidate.decision_item_id is not None:
+            self.save_editorial_review(
+                report_id,
+                result.candidate.decision_item_id,
+                decision_draft,
+                commit=False,
+            )
+        if overview_draft is not None and result.candidate.overview_item_id is not None:
+            self.save_overview_editorial_review(
+                report_id,
+                result.candidate.overview_item_id,
+                overview_draft,
+                commit=False,
+            )
+
+        item_audits[result.candidate.key] = {
+            "origin": result.origin,
+            "error_code": result.error_code,
+            "model": result.model,
+            "model_usage_ids": usage_ids,
+        }
+        summary["daily_chinese_enrichment"] = rebuild_chinese_enrichment_summary(
+            item_audits,
+            candidate_total=candidate_total,
+            model_budget=model_budget,
+        )
+        report.generation_summary = summary
+        self.session.commit()
+        return True
 
     def editorial_reviews(
         self, item_id: int
@@ -605,6 +736,17 @@ class DailyReportRepository:
             )
         )
 
+    def _automatic_reviews_complete(self, row: DailyReportChineseCandidate) -> bool:
+        decision_complete = (
+            row.decision_item_id is None
+            or self._latest_editorial_review(row.decision_item_id) is not None
+        )
+        overview_complete = (
+            row.overview_item_id is None
+            or self._latest_overview_editorial_review(row.overview_item_id) is not None
+        )
+        return decision_complete and overview_complete
+
     def _matching_report(self, draft: DailyReportDraft) -> DailyReportRecord | None:
         if draft.supersedes_report_id is not None:
             return self.session.scalar(
@@ -647,3 +789,41 @@ class DailyReportRepository:
                 "daily_reports.supersedes_report_id",
             )
         )
+
+
+def rebuild_chinese_enrichment_summary(
+    items: dict[str, dict[str, object]],
+    *,
+    candidate_total: int,
+    model_budget: int,
+) -> dict[str, object]:
+    origins = Counter(
+        row.get("origin") for row in items.values() if isinstance(row, dict)
+    )
+    errors = Counter(
+        row.get("error_code")
+        for row in items.values()
+        if isinstance(row, dict) and isinstance(row.get("error_code"), str)
+    )
+    usage_ids = sorted(
+        {
+            usage_id
+            for row in items.values()
+            if isinstance(row, dict)
+            for usage_id in row.get("model_usage_ids", [])
+            if isinstance(usage_id, int)
+            and not isinstance(usage_id, bool)
+            and usage_id > 0
+        }
+    )
+    return {
+        "candidate_total": candidate_total,
+        "model_budget": model_budget,
+        "processed": len(items),
+        "model_success": origins["model"],
+        "rule_fallback": origins["rule_fallback"],
+        "budget_fallback": origins["budget_limit"],
+        "error_counts": dict(sorted(errors.items())),
+        "model_usage_ids": usage_ids,
+        "items": items,
+    }

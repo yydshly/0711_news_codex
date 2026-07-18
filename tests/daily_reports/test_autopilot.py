@@ -65,6 +65,24 @@ def test_rule_decision_review_preserves_confirmed_snapshot_without_claiming_new_
     assert review.zh_summary == "已有公开证据。"
 
 
+def test_model_copy_cannot_change_rule_decision() -> None:
+    review = build_decision_review(
+        {
+            "status": "emerging",
+            "independent_root_count": 0,
+            "zh_title": "English",
+            "zh_summary": "English summary",
+        },
+        zh_title="模型中文标题",
+        zh_summary="模型只负责中文表达。",
+    )
+
+    assert review.decision.value == "needs_evidence"
+    assert review.zh_title == "模型中文标题"
+    assert review.zh_summary == "模型只负责中文表达。"
+    assert review.review_recommendation != ""
+
+
 def test_catalog_plan_round_trip_is_secret_free_and_tamper_evident() -> None:
     plan = CatalogRefreshPlan.from_members(
         [

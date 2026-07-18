@@ -188,12 +188,17 @@ def _deserialize_wave_member(value: object) -> WaveMemberSnapshot:
     )
 
 
-def build_decision_review(snapshot: dict[str, object]) -> DailyReportEditorialReviewDraft:
+def build_decision_review(
+    snapshot: dict[str, object],
+    *,
+    zh_title: str | None = None,
+    zh_summary: str | None = None,
+) -> DailyReportEditorialReviewDraft:
     title, summary, recommendation, assessment, decision = _review_values(snapshot)
     return DailyReportEditorialReviewDraft.create(
         decision=decision,
-        zh_title=title,
-        zh_summary=summary,
+        zh_title=zh_title or title,
+        zh_summary=zh_summary or summary,
         review_recommendation=recommendation,
         evidence_assessment=assessment,
     )
@@ -201,12 +206,15 @@ def build_decision_review(snapshot: dict[str, object]) -> DailyReportEditorialRe
 
 def build_overview_review(
     snapshot: dict[str, object],
+    *,
+    zh_title: str | None = None,
+    zh_summary: str | None = None,
 ) -> DailyReportOverviewEditorialReviewDraft:
     title, summary, recommendation, assessment, decision = _review_values(snapshot)
     return DailyReportOverviewEditorialReviewDraft.create(
         decision=decision,
-        zh_title=title,
-        zh_summary=summary,
+        zh_title=zh_title or title,
+        zh_summary=zh_summary or summary,
         review_recommendation=recommendation,
         evidence_assessment=assessment,
     )
