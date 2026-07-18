@@ -508,6 +508,33 @@ class DailyAutopilotRunRecord(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DailyAutomationConfigRecord(Base):
+    __tablename__ = "daily_automation_config"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_daily_automation_singleton"),
+        CheckConstraint("window_hours = 24", name="ck_daily_automation_window"),
+        CheckConstraint(
+            "resource_profile IN ('standard', 'power_saver')",
+            name="ck_daily_automation_resource_profile",
+        ),
+        Index("ix_daily_automation_next_run", "enabled", "next_run_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    daily_time: Mapped[str] = mapped_column(String(5), nullable=False)
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    resource_profile: Mapped[str] = mapped_column(String(16), nullable=False)
+    last_scheduled_date: Mapped[date | None] = mapped_column(Date)
+    last_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("daily_autopilot_runs.id", ondelete="SET NULL")
+    )
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SourceCatalogRefreshMemberRecord(Base):
     __tablename__ = "source_catalog_refresh_members"
     __table_args__ = (
@@ -875,6 +902,8 @@ class DailyReportRecord(Base):
             "report_date", "window_hours", "revision", name="uq_daily_report_revision"
         ),
         Index("ix_daily_reports_date_status", "report_date", "status"),
+        Index("ix_daily_reports_deleted_purge", "deleted_at", "purge_after"),
+        Index("ix_daily_reports_pinned_date", "pinned_at", "report_date"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -894,6 +923,9 @@ class DailyReportRecord(Base):
     generation_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DailyReportItemRecord(Base):

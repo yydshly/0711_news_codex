@@ -7,7 +7,11 @@ from alembic.config import Config
 from sqlalchemy import TEXT, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from newsradar.db.models import DailyAutopilotRunRecord, EventMergeCandidateRecord
+from newsradar.db.models import (
+    DailyAutomationConfigRecord,
+    DailyAutopilotRunRecord,
+    EventMergeCandidateRecord,
+)
 
 
 def _sqlite_url(path: Path) -> str:
@@ -74,6 +78,79 @@ def test_daily_autopilot_migration_round_trips_with_expected_columns(tmp_path: P
     command.downgrade(config, "20260717_0027")
     with engine.connect() as connection:
         assert "daily_autopilot_runs" not in inspect(connection).get_table_names()
+
+
+def test_daily_automation_retention_migration_round_trips_with_expected_schema(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-automation-retention.db")
+    _upgrade(database_url, "20260718_0028")
+    engine = create_engine(database_url)
+
+    _upgrade(database_url, "20260718_0029")
+
+    expected_config_columns = {
+        "id",
+        "enabled",
+        "timezone",
+        "daily_time",
+        "window_hours",
+        "resource_profile",
+        "last_scheduled_date",
+        "last_run_id",
+        "next_run_at",
+        "created_at",
+        "updated_at",
+    }
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert "daily_automation_config" in inspector.get_table_names()
+        assert {
+            column["name"]
+            for column in inspector.get_columns("daily_automation_config")
+        } == expected_config_columns
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("daily_automation_config")
+        } == {
+            "ck_daily_automation_singleton",
+            "ck_daily_automation_window",
+            "ck_daily_automation_resource_profile",
+        }
+        assert {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("daily_automation_config")
+        } == {"ix_daily_automation_next_run": ("enabled", "next_run_at")}
+        report_columns = {
+            column["name"]: column
+            for column in inspector.get_columns("daily_reports")
+        }
+        assert {"pinned_at", "deleted_at", "purge_after"} <= set(report_columns)
+        assert all(
+            report_columns[name]["nullable"]
+            for name in ("pinned_at", "deleted_at", "purge_after")
+        )
+        assert {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("daily_reports")
+        }.items() >= {
+            "ix_daily_reports_deleted_purge": ("deleted_at", "purge_after"),
+            "ix_daily_reports_pinned_date": ("pinned_at", "report_date"),
+        }.items()
+        config_count = connection.execute(
+            text("SELECT count(*) FROM daily_automation_config")
+        ).scalar_one()
+        assert config_count == 0
+    assert set(DailyAutomationConfigRecord.__table__.columns.keys()) == expected_config_columns
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.downgrade(config, "20260718_0028")
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert "daily_automation_config" not in inspector.get_table_names()
+        report_columns = {column["name"] for column in inspector.get_columns("daily_reports")}
+        assert not {"pinned_at", "deleted_at", "purge_after"} & report_columns
 
 
 def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
