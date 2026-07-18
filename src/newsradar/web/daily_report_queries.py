@@ -75,6 +75,7 @@ class DailyReportChineseOriginView:
 _DAILY_MODEL_ENRICHMENT_REASON = (
     "本条中文标题和概述已完成日报增强；确认状态、证据与收录范围仍以固定快照为准。"
 )
+_STALE_RULE_FALLBACK_REASON = "已按可追溯规则汇总；中文增强暂不可用。"
 _STALE_MODEL_UNAVAILABLE_LIMITATION = "中文模型不可用，当前使用规则回退"
 
 
@@ -85,7 +86,8 @@ def _display_snapshot(
     display = dict(snapshot)
     if chinese_origin is None or chinese_origin.origin != "model":
         return display
-    display["why_it_matters"] = _DAILY_MODEL_ENRICHMENT_REASON
+    if display.get("why_it_matters") == _STALE_RULE_FALLBACK_REASON:
+        display["why_it_matters"] = _DAILY_MODEL_ENRICHMENT_REASON
     limitations = display.get("limitations")
     if isinstance(limitations, list):
         display["limitations"] = [

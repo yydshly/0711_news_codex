@@ -365,6 +365,60 @@ def test_model_enrichment_projection_replaces_stale_event_fallback_copy(
     assert "发布时间仍待复核" in response.text
 
 
+def test_model_enrichment_projection_preserves_event_specific_reason(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session)
+    model_item = repository.items(report.id)[0]
+    model_overview = repository.overview_items(report.id)[0]
+    event_specific_reason = "该事件会直接影响开发者部署节奏。"
+    stale_limitation = "中文模型不可用，当前使用规则回退"
+    retained_limitation = "仅覆盖公开资料"
+    model_item.snapshot = {
+        **model_item.snapshot,
+        "why_it_matters": event_specific_reason,
+        "limitations": [stale_limitation, retained_limitation],
+    }
+    model_overview.snapshot = {
+        **model_overview.snapshot,
+        "why_it_matters": event_specific_reason,
+        "limitations": [stale_limitation, retained_limitation],
+    }
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 1,
+            "processed": 1,
+            "model_success": 1,
+            "rule_fallback": 0,
+            "budget_fallback": 0,
+            "error_counts": {},
+            "items": {
+                f"{model_item.event_id}:{model_item.event_version_number}": {
+                    "origin": "model",
+                    "error_code": None,
+                }
+            },
+        },
+    }
+    db_session.commit()
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    assert detail.confirmed[0].snapshot["why_it_matters"] == event_specific_reason
+    assert detail.confirmed[0].snapshot["limitations"] == [retained_limitation]
+    assert detail.overview.items[0].why_it_matters == event_specific_reason
+    assert detail.overview.items[0].snapshot["limitations"] == [retained_limitation]
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report.id}")
+    assert response.status_code == 200
+    assert event_specific_reason in response.text
+    assert "本条中文标题和概述已完成日报增强" not in response.text
+
+
 def seed_daily_report(
     session: Session,
     *,
