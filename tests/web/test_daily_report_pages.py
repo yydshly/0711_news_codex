@@ -260,6 +260,111 @@ def test_detail_matches_chinese_audit_by_event_id_and_version(
     assert view.emerging[0].chinese_origin.label_zh == "MiniMax"
 
 
+def test_model_enrichment_projection_replaces_stale_event_fallback_copy(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session)
+    model_item, fallback_item = repository.items(report.id)
+    model_overview, fallback_overview = repository.overview_items(report.id)
+    stale_reason = "已按可追溯规则汇总；中文增强暂不可用。"
+    stale_limitation = "中文模型不可用，当前使用规则回退"
+    retained_limitation = "仅覆盖公开资料"
+    model_item.snapshot = {
+        **model_item.snapshot,
+        "why_it_matters": stale_reason,
+        "limitations": [stale_limitation, retained_limitation],
+    }
+    model_overview.snapshot = {
+        **model_overview.snapshot,
+        "why_it_matters": stale_reason,
+        "limitations": [stale_limitation, retained_limitation],
+    }
+    fallback_item.snapshot = {
+        **fallback_item.snapshot,
+        "why_it_matters": "规则回退原因必须保留",
+        "limitations": [stale_limitation, "发布时间仍待复核"],
+    }
+    fallback_overview.snapshot = {
+        **fallback_overview.snapshot,
+        "why_it_matters": "规则回退原因必须保留",
+        "limitations": [stale_limitation, "发布时间仍待复核"],
+    }
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 2,
+            "processed": 2,
+            "model_success": 1,
+            "rule_fallback": 1,
+            "budget_fallback": 0,
+            "error_counts": {"no_api_key": 1},
+            "items": {
+                f"{model_item.event_id}:{model_item.event_version_number}": {
+                    "origin": "model",
+                    "error_code": None,
+                },
+                f"{fallback_item.event_id}:{fallback_item.event_version_number}": {
+                    "origin": "rule_fallback",
+                    "error_code": "no_api_key",
+                },
+            },
+        },
+    }
+    repository.save_editorial_review(
+        report.id,
+        model_item.id,
+        DailyReportEditorialReviewDraft.create(
+            decision="keep",
+            zh_title="模型中文标题",
+            zh_summary="模型中文文章概述。",
+            review_recommendation="继续核验公开材料。",
+            evidence_assessment="确认状态和证据未由模型改变。",
+        ),
+    )
+    repository.save_overview_editorial_review(
+        report.id,
+        model_overview.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="keep",
+            zh_title="模型中文标题",
+            zh_summary="模型中文文章概述。",
+            review_recommendation="继续核验公开材料。",
+            evidence_assessment="确认状态和证据未由模型改变。",
+        ),
+    )
+    db_session.commit()
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    model_view = detail.confirmed[0]
+    fallback_view = detail.emerging[0]
+    assert model_view.snapshot["why_it_matters"] == (
+        "本条中文标题和概述已完成日报增强；确认状态、证据与收录范围仍以固定快照为准。"
+    )
+    assert model_view.snapshot["limitations"] == [retained_limitation]
+    assert fallback_view.snapshot["why_it_matters"] == "规则回退原因必须保留"
+    assert fallback_view.snapshot["limitations"] == [
+        stale_limitation,
+        "发布时间仍待复核",
+    ]
+    model_overview_view = detail.overview.items[0]
+    assert model_overview_view.why_it_matters == model_view.snapshot["why_it_matters"]
+    assert model_overview_view.snapshot["limitations"] == [retained_limitation]
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report.id}")
+
+    assert response.status_code == 200
+    assert "模型中文标题" in response.text
+    assert "中文增强：MiniMax" in response.text
+    assert stale_reason not in response.text
+    assert "规则回退原因必须保留" in response.text
+    assert retained_limitation in response.text
+    assert "发布时间仍待复核" in response.text
+
+
 def seed_daily_report(
     session: Session,
     *,

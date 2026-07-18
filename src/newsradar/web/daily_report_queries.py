@@ -72,6 +72,36 @@ class DailyReportChineseOriginView:
     label_zh: str
 
 
+_DAILY_MODEL_ENRICHMENT_REASON = (
+    "本条中文标题和概述已完成日报增强；确认状态、证据与收录范围仍以固定快照为准。"
+)
+_STALE_MODEL_UNAVAILABLE_LIMITATION = "中文模型不可用，当前使用规则回退"
+
+
+def _display_snapshot(
+    snapshot: dict[str, object],
+    chinese_origin: DailyReportChineseOriginView | None,
+) -> dict[str, object]:
+    display = dict(snapshot)
+    if chinese_origin is None or chinese_origin.origin != "model":
+        return display
+    display["why_it_matters"] = _DAILY_MODEL_ENRICHMENT_REASON
+    limitations = display.get("limitations")
+    if isinstance(limitations, list):
+        display["limitations"] = [
+            limitation
+            for limitation in limitations
+            if limitation != _STALE_MODEL_UNAVAILABLE_LIMITATION
+        ]
+    elif isinstance(limitations, tuple):
+        display["limitations"] = tuple(
+            limitation
+            for limitation in limitations
+            if limitation != _STALE_MODEL_UNAVAILABLE_LIMITATION
+        )
+    return display
+
+
 @dataclass(frozen=True, slots=True)
 class DailyReportChineseEnrichmentView:
     candidate_total: int
@@ -372,18 +402,24 @@ class DailyReportQueryService:
                 section=row.section,
                 position=row.position,
                 included=row.included,
-                snapshot=dict(row.snapshot) if isinstance(row.snapshot, dict) else {},
+                snapshot=_display_snapshot(
+                    dict(row.snapshot) if isinstance(row.snapshot, dict) else {},
+                    chinese_origin,
+                ),
                 editorial_review=(
                     review_history_by_item[row.id][-1]
                     if row.id in review_history_by_item
                     else None
                 ),
                 editorial_history=review_history_by_item.get(row.id, ()),
-                chinese_origin=chinese_origins.get(
+                chinese_origin=chinese_origin,
+            )
+            for row in rows
+            for chinese_origin in (
+                chinese_origins.get(
                     candidate_key(row.event_id, row.event_version_number)
                 ),
             )
-            for row in rows
         )
         decision_script = build_decision_script(
             report_date=record.report_date,
@@ -563,6 +599,10 @@ class DailyReportQueryService:
             items: list[DailyReportOverviewItemView] = []
             for row in persisted:
                 snapshot = dict(row.snapshot) if isinstance(row.snapshot, dict) else {}
+                chinese_origin = chinese_origins.get(
+                    candidate_key(row.event_id, row.event_version_number)
+                )
+                snapshot = _display_snapshot(snapshot, chinese_origin)
                 history = tuple(histories.get(row.id, ()))
                 latest = history[-1] if history else None
                 items.append(
@@ -603,9 +643,7 @@ class DailyReportQueryService:
                             duplicate_targets.get(row.id) if latest else None
                         ),
                         included_in_decision=row.decision_item_id is not None,
-                        chinese_origin=chinese_origins.get(
-                            candidate_key(row.event_id, row.event_version_number)
-                        ),
+                        chinese_origin=chinese_origin,
                     )
                 )
             return self._overview_view(
@@ -634,6 +672,23 @@ class DailyReportQueryService:
                 "signal",
             }:
                 continue
+            chinese_origin = chinese_origins.get(
+                candidate_key(event.event_id, version_by_event[event.event_id])
+            )
+            item_snapshot = _display_snapshot(
+                {
+                    "zh_title": event.zh_title,
+                    "zh_summary": event.zh_summary,
+                    "why_it_matters": event.why_it_matters,
+                    "status": event.status,
+                    "display_tier": event.display_tier,
+                    "rank_score": event.rank_score,
+                    "confirmation_summary": event.confirmation_summary,
+                    "evidence": [],
+                    "limitations": [],
+                },
+                chinese_origin,
+            )
             items.append(
                 DailyReportOverviewItemView(
                     item_id=None,
@@ -645,27 +700,17 @@ class DailyReportQueryService:
                     rank_score=event.rank_score,
                     zh_title=event.zh_title,
                     zh_summary=event.zh_summary,
-                    why_it_matters=event.why_it_matters,
-                    confirmation_summary=event.confirmation_summary,
+                    why_it_matters=_snapshot_string(item_snapshot, "why_it_matters", ""),
+                    confirmation_summary=_snapshot_string(
+                        item_snapshot, "confirmation_summary", ""
+                    ),
                     detail_href=event.detail_href,
-                    snapshot={
-                        "zh_title": event.zh_title,
-                        "zh_summary": event.zh_summary,
-                        "why_it_matters": event.why_it_matters,
-                        "status": event.status,
-                        "display_tier": event.display_tier,
-                        "rank_score": event.rank_score,
-                        "confirmation_summary": event.confirmation_summary,
-                        "evidence": [],
-                        "limitations": [],
-                    },
+                    snapshot=item_snapshot,
                     editorial_review=None,
                     editorial_history=(),
                     duplicate_of_overview_item_id=None,
                     included_in_decision=False,
-                    chinese_origin=chinese_origins.get(
-                        candidate_key(event.event_id, version_by_event[event.event_id])
-                    ),
+                    chinese_origin=chinese_origin,
                 )
             )
         ordered = tuple(sorted(items, key=lambda item: (-item.rank_score, item.event_id)))

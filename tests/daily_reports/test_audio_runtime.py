@@ -102,6 +102,78 @@ def test_audio_handler_uses_overview_script_for_overview_rendition(
     assert "已审核全览标题 2" in scripts[0]
 
 
+def test_overview_audio_omits_stale_model_unavailable_snapshot_copy(
+    db_session, tmp_path: Path
+) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session)
+    model_item, fallback_item = repository.items(report.id)
+    model_overview, fallback_overview = repository.overview_items(report.id)
+    stale_reason = "已按可追溯规则汇总；中文增强暂不可用。"
+    stale_limitation = "中文模型不可用，当前使用规则回退"
+    model_item.snapshot = {
+        **model_item.snapshot,
+        "why_it_matters": stale_reason,
+        "limitations": [stale_limitation],
+    }
+    model_overview.snapshot = {
+        **model_overview.snapshot,
+        "why_it_matters": stale_reason,
+        "limitations": [stale_limitation],
+    }
+    fallback_item.snapshot = {
+        **fallback_item.snapshot,
+        "why_it_matters": "规则回退原因必须保留",
+    }
+    fallback_overview.snapshot = {
+        **fallback_overview.snapshot,
+        "why_it_matters": "规则回退原因必须保留",
+    }
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 2,
+            "processed": 2,
+            "model_success": 1,
+            "rule_fallback": 1,
+            "budget_fallback": 0,
+            "error_counts": {"no_api_key": 1},
+            "items": {
+                f"{model_item.event_id}:{model_item.event_version_number}": {
+                    "origin": "model",
+                    "error_code": None,
+                },
+                f"{fallback_item.event_id}:{fallback_item.event_version_number}": {
+                    "origin": "rule_fallback",
+                    "error_code": "no_api_key",
+                },
+            },
+        },
+    }
+    db_session.commit()
+    review_overview_for_audio(db_session, report.id)
+    DailyReportRepository(db_session).archive(report.id)
+    scripts: list[str] = []
+
+    result = DailyReportAudioHandler(
+        lambda: db_session,
+        audio_root=tmp_path,
+        synthesize=lambda script: (
+            scripts.append(script) or SpeechSynthesisResult(b"ID3", None, None, len(script))
+        ),
+    )(_lease(report.id, "overview"), lambda _boundary: None)
+
+    assert result.status is OperationStatus.SUCCEEDED
+    assert scripts
+    assert stale_reason not in scripts[0]
+    assert stale_limitation not in scripts[0]
+    assert (
+        "本条中文标题和概述已完成日报增强；确认状态、证据与收录范围仍以固定快照为准。"
+        in scripts[0]
+    )
+    assert "规则回退原因必须保留" in scripts[0]
+
+
 def test_audio_handler_rejects_corrupted_script_before_synthesis(
     db_session, tmp_path: Path
 ) -> None:
