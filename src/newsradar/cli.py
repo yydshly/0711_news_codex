@@ -635,6 +635,7 @@ def run_worker(
     sources = load_source_tree(root)
     providers = load_provider_tree(provider_root)
     from newsradar.daily_reports.audio_runtime import DailyReportAudioHandler
+    from newsradar.daily_reports.autopilot_runtime import DailyAutopilotHandler
 
     handler = OperationRouter(
         {
@@ -652,6 +653,9 @@ def run_worker(
             "event_split": EventOperationHandler.production(create_session),
             "event_exclude": EventOperationHandler.production(create_session),
             "daily_report_audio": DailyReportAudioHandler(create_session),
+            "daily_autopilot": DailyAutopilotHandler.production(
+                sources, providers, create_session
+            ),
         }
     )
     settings = get_settings()
