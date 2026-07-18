@@ -310,6 +310,10 @@ uv run newsradar operations list
 `fetch --wait` and `events build --wait` retain terminal scalar state before their SQLAlchemy
 session closes, avoiding detached-instance failures while rendering terminal status.
 
+## 自动日报
+
+自动日报在精确事件快照生成后，会对最终进入决策简报或情报全览的唯一事件执行有界中文增强。同一事件在一份日报中最多调用一次文本模型，默认最多处理 60 个事件、并发不超过 2、单条总超时 45 秒；超额、未配置、超时、限流或返回无效时仅回退对应条目并显示中文原因。手动日报生成仍然只读，不会调用文本模型。MiniMax 只生成中文标题和中文文章概述，不能改变来源合法性、事件确认、证据根、收录范围或审核结论。
+
 ## Quality gates
 
 ```powershell
