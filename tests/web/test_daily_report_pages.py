@@ -100,6 +100,47 @@ def test_detail_projects_daily_chinese_enrichment_per_item(db_session: Session) 
     assert view.emerging[0].chinese_origin.label_zh == "规则回退（请求频率受限）"
 
 
+def test_detail_projects_partial_field_fallback_with_specific_reason(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = seed_daily_report(db_session)
+    confirmed, emerging = DailyReportRepository(db_session).items(report.id)
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 2,
+            "processed": 2,
+            "model_success": 1,
+            "partial_fallback": 1,
+            "rule_fallback": 0,
+            "budget_fallback": 0,
+            "error_counts": {"review_recommendation_non_chinese_output": 1},
+            "items": {
+                f"{confirmed.event_id}:1": {"origin": "model", "error_code": None},
+                f"{emerging.event_id}:1": {
+                    "origin": "model_partial",
+                    "error_code": "review_recommendation_non_chinese_output",
+                    "field_errors": ["review_recommendation_non_chinese_output"],
+                },
+            },
+        },
+    }
+    db_session.commit()
+
+    view = DailyReportQueryService(db_session).detail(report.id)
+
+    assert view is not None
+    assert view.chinese_enrichment.partial_fallback == 1
+    assert view.emerging[0].chinese_origin is not None
+    assert view.emerging[0].chinese_origin.label_zh == (
+        "MiniMax 部分成功（中文审核建议不是有效简体中文）"
+    )
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report.id}")
+    assert "部分字段回退 1 条" in response.text
+
+
 def test_daily_report_page_replaces_legacy_model_degraded_copy(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -176,6 +217,39 @@ def test_detail_normalizes_unknown_chinese_enrichment_error_code(
                 f"{item.event_id}:{item.event_version_number}": {
                     "origin": "rule_fallback",
                     "error_code": "untrusted",
+                }
+            },
+        },
+    }
+    db_session.commit()
+
+    view = DailyReportQueryService(db_session).detail(report.id)
+
+    assert view is not None
+    assert view.chinese_enrichment.recorded is False
+    assert view.confirmed[0].chinese_origin is None
+
+
+def test_detail_rejects_non_string_partial_field_errors_without_crashing(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[0]
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 1,
+            "processed": 1,
+            "model_success": 0,
+            "partial_fallback": 1,
+            "rule_fallback": 0,
+            "budget_fallback": 0,
+            "error_counts": {"zh_summary_non_chinese_output": 1},
+            "items": {
+                f"{item.event_id}:{item.event_version_number}": {
+                    "origin": "model_partial",
+                    "error_code": "zh_summary_non_chinese_output",
+                    "field_errors": [{"not": "a string"}],
                 }
             },
         },

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.daily_reports.chinese_enrichment import (
     DAILY_CHINESE_ERROR_LABELS,
+    DAILY_CHINESE_FIELD_ERROR_CODES,
     DAILY_CHINESE_SAFE_ERROR_CODES,
     candidate_key,
 )
@@ -79,7 +80,7 @@ def _display_snapshot(
     chinese_origin: DailyReportChineseOriginView | None,
 ) -> dict[str, object]:
     display = dict(snapshot)
-    if chinese_origin is None or chinese_origin.origin != "model":
+    if chinese_origin is None or chinese_origin.origin not in {"model", "model_partial"}:
         return display
     if display.get("why_it_matters") == _STALE_RULE_FALLBACK_REASON:
         display["why_it_matters"] = _DAILY_MODEL_ENRICHMENT_REASON
@@ -104,6 +105,7 @@ class DailyReportChineseEnrichmentView:
     candidate_total: int
     processed: int
     model_success: int
+    partial_fallback: int
     rule_fallback: int
     budget_fallback: int
     error_counts: dict[str, int]
@@ -132,11 +134,14 @@ def _chinese_enrichment_view(
     candidate_total = raw["candidate_total"]
     processed = raw["processed"]
     model_success = raw["model_success"]
+    partial_fallback = raw.get("partial_fallback", 0)
     rule_fallback = raw["rule_fallback"]
     budget_fallback = raw["budget_fallback"]
     if (
-        processed > candidate_total
-        or model_success + rule_fallback + budget_fallback != processed
+        not _is_non_negative_integer(partial_fallback)
+        or processed > candidate_total
+        or model_success + partial_fallback + rule_fallback + budget_fallback
+        != processed
     ):
         return _empty_chinese_enrichment_view()
     model_budget = raw.get("model_budget")
@@ -147,7 +152,8 @@ def _chinese_enrichment_view(
         ):
             return _empty_chinese_enrichment_view()
         if (
-            model_success + rule_fallback > min(candidate_total, model_budget)
+            model_success + partial_fallback + rule_fallback
+            > min(candidate_total, model_budget)
             or budget_fallback > max(candidate_total - model_budget, 0)
         ):
             return _empty_chinese_enrichment_view()
@@ -176,6 +182,24 @@ def _chinese_enrichment_view(
         error = value.get("error_code")
         if origin == "model" and error is None:
             origins[key] = DailyReportChineseOriginView("model", None, "MiniMax")
+            field_errors: tuple[str, ...] = ()
+        elif origin == "model_partial" and isinstance(error, str):
+            raw_field_errors = value.get("field_errors")
+            if not isinstance(raw_field_errors, list) or not raw_field_errors:
+                return _empty_chinese_enrichment_view()
+            field_errors = tuple(raw_field_errors)
+            if (
+                len(field_errors) > 4
+                or not all(isinstance(code, str) for code in field_errors)
+                or len(set(field_errors)) != len(field_errors)
+                or any(code not in DAILY_CHINESE_FIELD_ERROR_CODES for code in field_errors)
+                or error != field_errors[0]
+            ):
+                return _empty_chinese_enrichment_view()
+            labels = "、".join(DAILY_CHINESE_ERROR_LABELS[code] for code in field_errors)
+            origins[key] = DailyReportChineseOriginView(
+                "model_partial", error, f"MiniMax 部分成功（{labels}）"
+            )
         elif (
             origin == "rule_fallback"
             and isinstance(error, str)
@@ -186,19 +210,33 @@ def _chinese_enrichment_view(
             origins[key] = DailyReportChineseOriginView(
                 "rule_fallback", error, f"规则回退（{label}）"
             )
+            raw_field_errors = value.get("field_errors")
+            field_errors = (
+                tuple(raw_field_errors)
+                if isinstance(raw_field_errors, list)
+                and all(
+                    isinstance(code, str) and code in DAILY_CHINESE_FIELD_ERROR_CODES
+                    for code in raw_field_errors
+                )
+                else ()
+            )
         elif origin == "budget_limit" and error == "budget_limit":
             origins[key] = DailyReportChineseOriginView(
                 "budget_limit", "budget_limit", "安全上限回退（本期安全上限）"
             )
+            field_errors = ()
         else:
             return _empty_chinese_enrichment_view()
         derived_origins[origin] += 1
-        if isinstance(error, str):
+        if field_errors:
+            derived_errors.update(field_errors)
+        elif isinstance(error, str):
             derived_errors[error] += 1
     errors = dict(sorted(derived_errors.items()))
     if (
         len(raw_items) != processed
         or derived_origins["model"] != model_success
+        or derived_origins["model_partial"] != partial_fallback
         or derived_origins["rule_fallback"] != rule_fallback
         or derived_origins["budget_limit"] != budget_fallback
         or dict(sorted(raw_errors.items())) != errors
@@ -209,6 +247,7 @@ def _chinese_enrichment_view(
             candidate_total=candidate_total,
             processed=processed,
             model_success=model_success,
+            partial_fallback=partial_fallback,
             rule_fallback=rule_fallback,
             budget_fallback=budget_fallback,
             error_counts=errors,
@@ -222,7 +261,7 @@ def _chinese_enrichment_view(
 def _empty_chinese_enrichment_view() -> tuple[
     DailyReportChineseEnrichmentView, dict[str, DailyReportChineseOriginView]
 ]:
-    return DailyReportChineseEnrichmentView(0, 0, 0, 0, 0, {}, {}, False), {}
+    return DailyReportChineseEnrichmentView(0, 0, 0, 0, 0, 0, {}, {}, False), {}
 
 
 @dataclass(frozen=True, slots=True)

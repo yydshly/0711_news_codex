@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +49,38 @@ class DailyAutopilotRepository:
         self.session.add(run)
         self.session.flush()
         return run
+
+    def reusable_for_daily_wave(
+        self,
+        *,
+        daily_key: str,
+        local_date: date,
+        window_hours: int,
+        wave_digest: str,
+    ) -> DailyAutopilotRunRecord | None:
+        if not isinstance(daily_key, str) or not daily_key:
+            return None
+        rows = self.session.scalars(
+            select(DailyAutopilotRunRecord)
+            .where(DailyAutopilotRunRecord.status.in_(("queued", "running", "succeeded")))
+            .order_by(DailyAutopilotRunRecord.id.desc())
+        )
+        for row in rows:
+            scope = row.requested_scope if isinstance(row.requested_scope, dict) else {}
+            if scope.get("daily_key") == daily_key:
+                return row
+            wave_plan = scope.get("wave_plan")
+            created_at = row.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            if (
+                row.window_hours == window_hours
+                and isinstance(wave_plan, dict)
+                and wave_plan.get("digest") == wave_digest
+                and created_at.astimezone(ZoneInfo("Asia/Shanghai")).date() == local_date
+            ):
+                return row
+        return None
 
     def get(self, run_id: int) -> DailyAutopilotRunRecord:
         run = self.session.get(DailyAutopilotRunRecord, run_id)

@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from newsradar.daily_reports.autopilot import (
     DailyAutopilotStage,
     deserialize_wave_plan,
+    serialize_wave_plan,
 )
+from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     DailyReportDraft,
@@ -30,6 +32,7 @@ from newsradar.db.models import (
     SourceCatalogRefreshMemberRecord,
 )
 from newsradar.operations.commands import OperationCommandService
+from newsradar.operations.schema import OperationType
 from newsradar.settings import Settings
 from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
@@ -356,6 +359,97 @@ def test_enqueue_daily_autopilot_freezes_wave_plan_and_continuation() -> None:
             "daily_autopilot_run_id": run_id,
             "stage": "enqueue_content_wave",
         }
+
+
+def test_enqueue_daily_autopilot_reuses_same_daily_wave() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"), wave_member("b")),
+            window_hours=24,
+            trend_days=7,
+        )
+        service = OperationCommandService(
+            db,
+            utcnow=lambda: now,
+            settings=Settings(operation_timeout_seconds=30),
+        )
+
+        first_id = service.enqueue_daily_autopilot(plan=plan, trigger="web")
+        DailyAutopilotRepository(db, utcnow=lambda: now).transition(
+            first_id,
+            stage=DailyAutopilotStage.COMPLETED,
+            status="succeeded",
+        )
+        db.commit()
+        second_id = service.enqueue_daily_autopilot(plan=plan, trigger="web")
+
+        assert second_id == first_id
+        assert db.query(DailyAutopilotRunRecord).count() == 1
+        assert (
+            db.query(OperationRunRecord)
+            .filter_by(operation_type=OperationType.DAILY_AUTOPILOT.value)
+            .count()
+            == 1
+        )
+        run = db.get(DailyAutopilotRunRecord, first_id)
+        assert run is not None
+        assert run.requested_scope["daily_key"] == (
+            f"2026-07-18:24:{plan.digest}"
+        )
+
+
+def test_enqueue_daily_autopilot_allows_retry_after_failed_run() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"),),
+            window_hours=24,
+            trend_days=7,
+        )
+        service = OperationCommandService(db, utcnow=lambda: now)
+        first_id = service.enqueue_daily_autopilot(plan=plan, trigger="web")
+        DailyAutopilotRepository(db, utcnow=lambda: now).fail(
+            first_id, "temporary_failure", "临时失败"
+        )
+        db.commit()
+
+        second_id = service.enqueue_daily_autopilot(plan=plan, trigger="web")
+
+        assert second_id != first_id
+        assert db.query(DailyAutopilotRunRecord).count() == 2
+
+
+def test_enqueue_daily_autopilot_reuses_legacy_same_day_completed_run() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"),),
+            window_hours=24,
+            trend_days=7,
+        )
+        legacy = DailyAutopilotRepository(db, utcnow=lambda: now).create_run(
+            window_hours=24,
+            trigger="web",
+            requested_scope={"wave_plan": serialize_wave_plan(plan)},
+        )
+        DailyAutopilotRepository(db, utcnow=lambda: now).transition(
+            legacy.id,
+            stage=DailyAutopilotStage.COMPLETED,
+            status="succeeded",
+        )
+        db.commit()
+
+        reused_id = OperationCommandService(db, utcnow=lambda: now).enqueue_daily_autopilot(
+            plan=plan,
+            trigger="web",
+        )
+
+        assert reused_id == legacy.id
+        assert db.query(DailyAutopilotRunRecord).count() == 1
 
 
 @pytest.mark.parametrize(

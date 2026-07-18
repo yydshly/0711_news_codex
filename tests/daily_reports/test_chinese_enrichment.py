@@ -119,8 +119,13 @@ def test_non_chinese_model_output_falls_back_only_that_item() -> None:
             ).enrich_batch((candidate(11), candidate(12)))
 
     results = asyncio.run(run())
-    assert [row.origin for row in results] == ["rule_fallback", "rule_fallback"]
-    assert all(row.error_code == "non_chinese_output" for row in results)
+    assert [row.origin for row in results] == ["model_partial", "model_partial"]
+    assert all(row.error_code == "zh_title_non_chinese_output" for row in results)
+    assert all(
+        row.field_errors
+        == ("zh_title_non_chinese_output", "zh_summary_non_chinese_output")
+        for row in results
+    )
     assert results[0].copy.zh_title == "English source title"
 
 
@@ -159,6 +164,73 @@ def test_rule_fallback_explains_distinct_evidence_gaps() -> None:
     assert first.origin == second.origin == "rule_fallback"
     assert first.copy.review_recommendation != second.copy.review_recommendation
     assert first.copy.evidence_assessment != second.copy.evidence_assessment
+
+
+def test_model_copy_is_converted_to_simplified_chinese_before_validation(
+    monkeypatch,
+) -> None:
+    async def fake_structured(
+        self, purpose, model, prompt, response_type, fallback, timeout_seconds=None
+    ):
+        return response_type(
+            zh_title="產品正式發佈",
+            zh_summary="官方材料顯示，這項產品已經正式發佈並提供完整說明。",
+            review_recommendation="建議繼續追蹤正式上線後的影響與公開材料。",
+            evidence_assessment="現有公開材料可以支持目前的產品發佈資訊。",
+        )
+
+    monkeypatch.setattr(
+        "newsradar.daily_reports.chinese_enrichment.MiniMaxClient.structured",
+        fake_structured,
+    )
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            return await DailyReportChineseEnricher(
+                Settings(_env_file=None, minimax_api_key="secret"), http
+            ).enrich_batch((candidate(),))
+
+    result = asyncio.run(run())[0]
+
+    assert result.origin == "model"
+    assert result.error_code is None
+    assert result.copy.zh_title == "产品正式发布"
+    assert "建议继续追踪" in result.copy.review_recommendation
+
+
+def test_invalid_model_field_falls_back_without_discarding_valid_fields(
+    monkeypatch,
+) -> None:
+    async def fake_structured(
+        self, purpose, model, prompt, response_type, fallback, timeout_seconds=None
+    ):
+        return response_type(
+            zh_title="产品正式发布",
+            zh_summary="官方材料显示，该产品已经正式发布并提供完整说明。",
+            review_recommendation="Review this later",
+            evidence_assessment="现有公开材料可支持当前产品发布信息。",
+        )
+
+    monkeypatch.setattr(
+        "newsradar.daily_reports.chinese_enrichment.MiniMaxClient.structured",
+        fake_structured,
+    )
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            return await DailyReportChineseEnricher(
+                Settings(_env_file=None, minimax_api_key="secret"), http
+            ).enrich_batch((candidate(),))
+
+    result = asyncio.run(run())[0]
+
+    assert result.origin == "model_partial"
+    assert result.error_code == "review_recommendation_non_chinese_output"
+    assert result.field_errors == ("review_recommendation_non_chinese_output",)
+    assert result.copy.zh_title == "产品正式发布"
+    assert result.copy.zh_summary == "官方材料显示，该产品已经正式发布并提供完整说明。"
+    assert result.copy.review_recommendation != "Review this later"
+    assert result.copy.evidence_assessment == "现有公开材料可支持当前产品发布信息。"
 
 
 def test_timeout_falls_back_with_safe_code() -> None:
@@ -479,26 +551,29 @@ def test_safe_context_fails_closed_above_absolute_inspection_cap() -> None:
 
 
 @pytest.mark.parametrize(
-    ("zh_title", "zh_summary"),
+    ("zh_title", "zh_summary", "expected_error"),
     [
-        ("AI launch 新", "This is almost entirely English with only 中文 included."),
-        ("人工智慧產品正式發佈", "這項產品採用新模型，並為企業提供更完整的資料處理能力。"),
         (
-            "蘋果推出全新電腦",
-            "蘋果推出全新電腦，支援人工智能，效能顯著提升，帶來更佳使用經驗。",
+            "AI launch 新",
+            "This is almost entirely English with only 中文 included.",
+            "zh_title_non_chinese_output",
         ),
         (
-            "軟體開發工具獲得重大更新",
-            "這次更新改善網絡連線與資料處理，並為開發團隊帶來更穩定的使用體驗。",
+            "新しいAI製品を発表",
+            "この製品は企業向けの新しい機能を提供します。",
+            "zh_title_non_chinese_output",
         ),
-        ("新しいAI製品を発表", "この製品は企業向けの新しい機能を提供します。"),
-        ("新产品", "内容太短"),
-        ("新" * 81, "这是符合长度要求且包含充分中文信息的产品发布概述。"),
-        ("新产品正式发布", "中" * 801),
+        ("新产品", "内容太短", "zh_title_non_chinese_output"),
+        (
+            "新" * 81,
+            "这是符合长度要求且包含充分中文信息的产品发布概述。",
+            "zh_title_non_chinese_output",
+        ),
+        ("新产品正式发布", "中" * 801, "zh_summary_non_chinese_output"),
     ],
 )
-def test_invalid_or_non_simplified_model_copy_falls_back(
-    monkeypatch, zh_title: str, zh_summary: str
+def test_invalid_model_fields_fall_back_independently(
+    monkeypatch, zh_title: str, zh_summary: str, expected_error: str
 ) -> None:
     async def fake_structured(
         self, purpose, model, prompt, response_type, fallback, timeout_seconds=None
@@ -522,8 +597,9 @@ def test_invalid_or_non_simplified_model_copy_falls_back(
             ).enrich_batch((candidate(),))
 
     result = asyncio.run(run())[0]
-    assert result.origin == "rule_fallback"
-    assert result.error_code == "non_chinese_output"
+    assert result.origin == "model_partial"
+    assert result.error_code == expected_error
+    assert expected_error in result.field_errors
 
 
 @pytest.mark.parametrize(

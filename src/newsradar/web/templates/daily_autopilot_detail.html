@@ -61,9 +61,24 @@
   </ul>
   {% if autopilot.daily_report_id %}<p><a href="/daily-reports/{{ autopilot.daily_report_id }}">打开生成的中文日报</a></p>{% endif %}
   {% if autopilot.chinese_enrichment.recorded %}
-  <p class="metric-note">中文增强候选 {{ autopilot.chinese_enrichment.candidate_total }} · MiniMax 成功 {{ autopilot.chinese_enrichment.model_success }} · 规则回退 {{ autopilot.chinese_enrichment.rule_fallback }}{% if autopilot.chinese_enrichment.budget_fallback %} · 安全上限回退 {{ autopilot.chinese_enrichment.budget_fallback }}{% endif %}{% if autopilot.chinese_enrichment.candidate_total > autopilot.chinese_enrichment.processed %} · 待处理 {{ autopilot.chinese_enrichment.candidate_total - autopilot.chinese_enrichment.processed }}{% endif %}</p>
+  <p class="metric-note">中文增强候选 {{ autopilot.chinese_enrichment.candidate_total }} · MiniMax 完整成功 {{ autopilot.chinese_enrichment.model_success }}{% if autopilot.chinese_enrichment.partial_fallback %} · 部分字段回退 {{ autopilot.chinese_enrichment.partial_fallback }}{% endif %} · 整条规则回退 {{ autopilot.chinese_enrichment.rule_fallback }}{% if autopilot.chinese_enrichment.budget_fallback %} · 安全上限回退 {{ autopilot.chinese_enrichment.budget_fallback }}{% endif %}{% if autopilot.chinese_enrichment.candidate_total > autopilot.chinese_enrichment.processed %} · 待处理 {{ autopilot.chinese_enrichment.candidate_total - autopilot.chinese_enrichment.processed }}{% endif %}</p>
   {% if autopilot.chinese_enrichment.error_counts %}<p class="metric-note"><strong>主要回退原因：</strong>{% for code, count in autopilot.chinese_enrichment.error_counts.items() %}{{ autopilot.chinese_enrichment.error_labels[code] }} {{ count }} 条{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
   {% endif %}
+</section>
+
+<section class="panel" aria-labelledby="autopilot-coverage-heading">
+  <p class="eyebrow">从来源目标到两版日报</p>
+  <h2 id="autopilot-coverage-heading">日报覆盖漏斗</h2>
+  <p class="metric-note">“未进入全览”表示事件未形成可展示的完整条目，可能因为时间、字段或事件快照不完整；它不等于来源不可靠。</p>
+  <div class="metric-grid">
+    <article class="metric-card"><span>计划目标</span><strong>{{ autopilot.coverage.planned_targets if autopilot.coverage.planned_targets is not none else '—' }}</strong><small>本次冻结波次</small></article>
+    <article class="metric-card"><span>成功抓取</span><strong>{{ autopilot.coverage.fetch_succeeded if autopilot.coverage.fetch_succeeded is not none else '—' }}</strong><small>成功或无变化</small></article>
+    <article class="metric-card"><span>受阻目标</span><strong>{{ autopilot.coverage.blocked_targets if autopilot.coverage.blocked_targets is not none else '—' }}</strong><small>有中文原因可定位</small></article>
+    <article class="metric-card"><span>形成事件</span><strong>{{ autopilot.coverage.formed_events if autopilot.coverage.formed_events is not none else '—' }}</strong><small>完整事件清单</small></article>
+    <article class="metric-card"><span>进入决策简报</span><strong>{{ autopilot.coverage.decision_items if autopilot.coverage.decision_items is not none else '—' }}</strong><small>优先阅读条目</small></article>
+    <article class="metric-card"><span>进入情报全览</span><strong>{{ autopilot.coverage.overview_items if autopilot.coverage.overview_items is not none else '—' }}</strong><small>全量可展示条目</small></article>
+    <article class="metric-card"><span>未进入全览</span><strong>{{ autopilot.coverage.omitted_from_overview if autopilot.coverage.omitted_from_overview is not none else '—' }}</strong><small>缺少完整展示条件</small></article>
+  </div>
 </section>
 
 {% if autopilot.event_operation %}

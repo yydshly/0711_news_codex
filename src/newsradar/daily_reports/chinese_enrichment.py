@@ -56,6 +56,10 @@ DAILY_CHINESE_ERROR_LABELS = {
     "json_syntax_invalid": "返回内容不是有效 JSON",
     "no_api_key": "未配置文本模型",
     "non_chinese_output": "返回内容不是有效简体中文",
+    "zh_title_non_chinese_output": "中文标题不是有效简体中文",
+    "zh_summary_non_chinese_output": "中文概述不是有效简体中文",
+    "review_recommendation_non_chinese_output": "中文审核建议不是有效简体中文",
+    "evidence_assessment_non_chinese_output": "中文证据评价不是有效简体中文",
     "provider_business_error": "模型服务拒绝请求",
     "response_shape_invalid": "返回数据形状无效",
     "schema_validation_failed": "返回结构无效",
@@ -64,6 +68,14 @@ DAILY_CHINESE_ERROR_LABELS = {
     "unexpected_error": "内部异常",
 }
 DAILY_CHINESE_SAFE_ERROR_CODES = frozenset(DAILY_CHINESE_ERROR_LABELS)
+DAILY_CHINESE_FIELD_ERROR_CODES = frozenset(
+    {
+        "zh_title_non_chinese_output",
+        "zh_summary_non_chinese_output",
+        "review_recommendation_non_chinese_output",
+        "evidence_assessment_non_chinese_output",
+    }
+)
 
 assert SAFE_MODEL_ERROR_CODES <= DAILY_CHINESE_SAFE_ERROR_CODES
 
@@ -120,6 +132,7 @@ class DailyReportChineseResult:
     error_code: str | None
     model: str
     usages: tuple[ModelUsage, ...]
+    field_errors: tuple[str, ...] = ()
 
 
 class DailyReportChineseEnricher:
@@ -192,25 +205,23 @@ class DailyReportChineseEnricher:
                 usages,
                 snapshot_copy=snapshot_copy,
             )
-        if not _is_meaningful_simplified_chinese(result):
+        copy, field_errors = _validated_model_copy(result, snapshot_copy)
+        if len(field_errors) == 4:
             return self._fallback_result(
                 candidate,
-                "non_chinese_output",
+                field_errors[0],
                 usages,
-                snapshot_copy=snapshot_copy,
+                snapshot_copy=copy,
+                field_errors=field_errors,
             )
         return DailyReportChineseResult(
             candidate=candidate,
-            copy=DailyReportChineseCopy(
-                zh_title=result.zh_title,
-                zh_summary=result.zh_summary,
-                review_recommendation=result.review_recommendation,
-                evidence_assessment=result.evidence_assessment,
-            ),
-            origin="model",
-            error_code=None,
+            copy=copy,
+            origin="model_partial" if field_errors else "model",
+            error_code=field_errors[0] if field_errors else None,
             model=self.settings.minimax_fast_model,
             usages=tuple(usages),
+            field_errors=field_errors,
         )
 
     def _fallback_result(
@@ -220,6 +231,7 @@ class DailyReportChineseEnricher:
         usages: list[ModelUsage],
         *,
         snapshot_copy: DailyReportChineseCopy | None = None,
+        field_errors: tuple[str, ...] = (),
     ) -> DailyReportChineseResult:
         safe_error = (
             error_code
@@ -249,6 +261,7 @@ class DailyReportChineseEnricher:
             error_code=safe_error,
             model=self.settings.minimax_fast_model,
             usages=tuple(usages),
+            field_errors=field_errors,
         )
 
     @staticmethod
@@ -337,28 +350,31 @@ def _safe_context(value: object) -> str:
     return normalized[:_MAX_CONTEXT]
 
 
-def _is_meaningful_simplified_chinese(result: _ChineseResponse) -> bool:
-    return _is_meaningful_chinese_text(
-        result.zh_title,
-        minimum_length=_MIN_TITLE_LENGTH,
-        maximum_length=_MAX_TITLE_LENGTH,
-        minimum_han=3,
-    ) and _is_meaningful_chinese_text(
-        result.zh_summary,
-        minimum_length=_MIN_SUMMARY_LENGTH,
-        maximum_length=_MAX_SUMMARY_LENGTH,
-        minimum_han=8,
-    ) and _is_meaningful_chinese_text(
-        result.review_recommendation,
-        minimum_length=_MIN_SUMMARY_LENGTH,
-        maximum_length=_MAX_SUMMARY_LENGTH,
-        minimum_han=8,
-    ) and _is_meaningful_chinese_text(
-        result.evidence_assessment,
-        minimum_length=_MIN_SUMMARY_LENGTH,
-        maximum_length=_MAX_SUMMARY_LENGTH,
-        minimum_han=8,
+def _validated_model_copy(
+    result: _ChineseResponse,
+    fallback: DailyReportChineseCopy,
+) -> tuple[DailyReportChineseCopy, tuple[str, ...]]:
+    field_rules = (
+        ("zh_title", _MIN_TITLE_LENGTH, _MAX_TITLE_LENGTH, 3),
+        ("zh_summary", _MIN_SUMMARY_LENGTH, _MAX_SUMMARY_LENGTH, 8),
+        ("review_recommendation", _MIN_SUMMARY_LENGTH, _MAX_SUMMARY_LENGTH, 8),
+        ("evidence_assessment", _MIN_SUMMARY_LENGTH, _MAX_SUMMARY_LENGTH, 8),
     )
+    values: dict[str, str] = {}
+    errors: list[str] = []
+    for field, minimum_length, maximum_length, minimum_han in field_rules:
+        normalized = convert_chinese(getattr(result, field), "zh-cn")
+        if _is_meaningful_chinese_text(
+            normalized,
+            minimum_length=minimum_length,
+            maximum_length=maximum_length,
+            minimum_han=minimum_han,
+        ):
+            values[field] = normalized
+        else:
+            values[field] = getattr(fallback, field)
+            errors.append(f"{field}_non_chinese_output")
+    return DailyReportChineseCopy(**values), tuple(errors)
 
 
 def _is_meaningful_chinese_text(

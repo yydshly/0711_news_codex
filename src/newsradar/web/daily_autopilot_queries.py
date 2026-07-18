@@ -43,6 +43,17 @@ class DailyAutopilotSummaryView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyAutopilotCoverageView:
+    planned_targets: int | None
+    fetch_succeeded: int | None
+    blocked_targets: int | None
+    formed_events: int | None
+    decision_items: int | None
+    overview_items: int | None
+    omitted_from_overview: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class DailyAutopilotDetailView(DailyAutopilotSummaryView):
     error_code: str | None
     error_message: str | None
@@ -52,6 +63,7 @@ class DailyAutopilotDetailView(DailyAutopilotSummaryView):
     decision_audio_operation: DailyAutopilotOperationView | None
     overview_audio_operation: DailyAutopilotOperationView | None
     chinese_enrichment: DailyReportChineseEnrichmentView
+    coverage: DailyAutopilotCoverageView
     next_action_zh: str
 
 
@@ -76,6 +88,7 @@ class DailyAutopilotQueryService:
         decision_audio = self._operation(row.decision_audio_operation_id)
         overview_audio = self._operation(row.overview_audio_operation_id)
         chinese_enrichment = self._chinese_enrichment(row.daily_report_id)
+        coverage = self._coverage(row, event_operation)
         return DailyAutopilotDetailView(
             **asdict(self._summary(row)),
             error_code=row.error_code,
@@ -86,6 +99,7 @@ class DailyAutopilotQueryService:
             decision_audio_operation=decision_audio,
             overview_audio_operation=overview_audio,
             chinese_enrichment=chinese_enrichment,
+            coverage=coverage,
             next_action_zh=_next_action(row, event_operation),
         )
 
@@ -99,6 +113,54 @@ class DailyAutopilotQueryService:
             else {}
         )
         return _chinese_enrichment_view(summary)[0]
+
+    def _coverage(
+        self,
+        run: DailyAutopilotRunRecord,
+        event_operation: DailyAutopilotOperationView | None,
+    ) -> DailyAutopilotCoverageView:
+        metrics = event_operation.metrics if event_operation is not None else {}
+        planned = _safe_count(metrics.get("member_total"))
+        if planned is None and isinstance(run.requested_scope, dict):
+            wave_plan = run.requested_scope.get("wave_plan")
+            members = wave_plan.get("members") if isinstance(wave_plan, dict) else None
+            planned = len(members) if isinstance(members, list) else None
+        succeeded = _safe_count(metrics.get("fetch_succeeded"))
+        blocked = _safe_count(metrics.get("blocked"))
+        if blocked is None and planned is not None and succeeded is not None:
+            blocked = max(planned - succeeded, 0)
+        events = _safe_count(metrics.get("event_manifest_count"))
+
+        report = (
+            self.session.get(DailyReportRecord, run.daily_report_id)
+            if run.daily_report_id
+            else None
+        )
+        summary = (
+            report.generation_summary
+            if report is not None and isinstance(report.generation_summary, dict)
+            else {}
+        )
+        confirmed = _safe_count(summary.get("confirmed_count"))
+        emerging = _safe_count(summary.get("emerging_count"))
+        decision_items = (
+            confirmed + emerging if confirmed is not None and emerging is not None else None
+        )
+        overview_items = _safe_count(summary.get("overview_count"))
+        omitted = (
+            max(events - overview_items, 0)
+            if events is not None and overview_items is not None
+            else None
+        )
+        return DailyAutopilotCoverageView(
+            planned_targets=planned,
+            fetch_succeeded=succeeded,
+            blocked_targets=blocked,
+            formed_events=events,
+            decision_items=decision_items,
+            overview_items=overview_items,
+            omitted_from_overview=omitted,
+        )
 
     @staticmethod
     def _summary(row: DailyAutopilotRunRecord) -> DailyAutopilotSummaryView:
@@ -182,12 +244,12 @@ def _next_action(
         return "请先按上方中文诊断处理；修复后重新开始一次自动日报。"
     if summary.get("outcome") == "no_content":
         return "本次已完成真实抓取，但没有形成可收录事件；无需把目录探测结果补成新闻。"
+    if run.status == "succeeded":
+        return "自动日报已完成，可打开中文日报查看两版内容和音频。"
     if content is not None and content.status == "partial":
         return "部分目标受阻；已有真实内容和完整事件时会继续生成中文日报。"
     if run.stage in {"generate_report", "write_reviews"}:
         return "真实内容已就绪，正在生成并审核决策简报与情报全览。"
     if run.stage in {"archive_and_enqueue_audio", "wait_audio"}:
         return "两版报告已完成审核，正在生成决策版与全览版语音。"
-    if run.status == "succeeded":
-        return "自动日报已完成，可打开中文日报查看两版内容和音频。"
     return "任务会在 Worker 中继续推进；单个来源失败不会阻塞整批。"

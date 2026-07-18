@@ -6,6 +6,7 @@ from hashlib import sha256
 from json import dumps
 from time import monotonic, sleep
 from typing import TYPE_CHECKING, Literal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -361,10 +362,24 @@ class OperationCommandService:
             self.session.commit()
         with self.session.begin():
             self._lock_daily_autopilot_enqueue()
-            run = DailyAutopilotRepository(self.session, utcnow=self._utcnow).create_run(
+            repository = DailyAutopilotRepository(self.session, utcnow=self._utcnow)
+            local_date = self._utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
+            daily_key = f"{local_date.isoformat()}:{plan.window_hours}:{plan.digest}"
+            reusable = repository.reusable_for_daily_wave(
+                daily_key=daily_key,
+                local_date=local_date,
+                window_hours=plan.window_hours,
+                wave_digest=plan.digest,
+            )
+            if reusable is not None:
+                return reusable.id
+            run = repository.create_run(
                 window_hours=plan.window_hours,
                 trigger=trigger,
-                requested_scope={"wave_plan": serialize_wave_plan(plan)},
+                requested_scope={
+                    "wave_plan": serialize_wave_plan(plan),
+                    "daily_key": daily_key,
+                },
             )
             OperationRepository(self.session).enqueue(
                 OperationType.DAILY_AUTOPILOT,

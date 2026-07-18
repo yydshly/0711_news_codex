@@ -268,6 +268,46 @@ def test_automatic_review_save_is_atomic_audited_and_idempotent(
     assert repository.completed_chinese_enrichment_keys(report.id) == {result.candidate.key}
 
 
+def test_partial_model_result_persists_field_level_audit(db_session: Session) -> None:
+    report, repository = _seed_report_with_shared_event(db_session)
+    candidate = repository.chinese_enrichment_candidates(report.id)[0]
+    result = replace(
+        _model_result_for(candidate),
+        origin="model_partial",
+        error_code="review_recommendation_non_chinese_output",
+        field_errors=(
+            "review_recommendation_non_chinese_output",
+            "evidence_assessment_non_chinese_output",
+        ),
+    )
+
+    assert repository.save_automatic_chinese_reviews(
+        report.id,
+        result,
+        build_decision_review(candidate.snapshot),
+        build_overview_review(candidate.snapshot),
+        candidate_total=1,
+        model_budget=60,
+    ) is True
+
+    summary = db_session.get(DailyReportRecord, report.id).generation_summary[
+        "daily_chinese_enrichment"
+    ]
+    audit = summary["items"][candidate.key]
+    assert summary["model_success"] == 0
+    assert summary["partial_fallback"] == 1
+    assert summary["rule_fallback"] == 0
+    assert summary["error_counts"] == {
+        "evidence_assessment_non_chinese_output": 1,
+        "review_recommendation_non_chinese_output": 1,
+    }
+    assert audit["origin"] == "model_partial"
+    assert audit["field_errors"] == [
+        "review_recommendation_non_chinese_output",
+        "evidence_assessment_non_chinese_output",
+    ]
+
+
 def test_automatic_review_save_drops_untrusted_model_audit_metadata(
     db_session: Session,
 ) -> None:

@@ -135,8 +135,8 @@ def test_automatic_task_page_shows_linked_report_enrichment_metrics(
 
     assert response.status_code == 200
     assert "中文增强候选 2" in response.text
-    assert "MiniMax 成功 1" in response.text
-    assert "规则回退 1" in response.text
+    assert "MiniMax 完整成功 1" in response.text
+    assert "整条规则回退 1" in response.text
 
 
 def test_automatic_task_page_hides_inconsistent_enrichment_audit(
@@ -411,3 +411,100 @@ def test_content_wave_task_page_shows_real_collection_stage_and_counts(
     assert "决策版语音" in response.text and "succeeded" in response.text
     assert "情报全览语音" in response.text and "queued" in response.text
     assert "部分目标受阻" in response.text
+
+
+def test_content_wave_task_page_shows_daily_report_coverage_funnel(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = OperationRunRecord(
+        operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+        trigger="test",
+        status=OperationStatus.PARTIAL.value,
+        requested_scope={},
+        result_summary={
+            "member_total": 41,
+            "fetch_succeeded": 35,
+            "blocked": 6,
+            "event_manifest_count": 25,
+        },
+    )
+    db_session.add(child)
+    db_session.flush()
+    report = DailyReportRecord(
+        report_date=date(2026, 7, 18),
+        timezone="Asia/Shanghai",
+        window_hours=24,
+        window_start=datetime(2026, 7, 17, tzinfo=UTC),
+        window_end=datetime(2026, 7, 18, tzinfo=UTC),
+        source_operation_id=child.id,
+        status="draft",
+        revision=1,
+        generation_summary={
+            "confirmed_count": 4,
+            "emerging_count": 11,
+            "overview_count": 22,
+        },
+        generated_at=datetime(2026, 7, 18, tzinfo=UTC),
+    )
+    db_session.add(report)
+    db_session.flush()
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="web",
+        requested_scope={"wave_plan": serialize_wave_plan(_wave_plan(24))},
+    )
+    DailyAutopilotRepository(db_session).transition(
+        run.id,
+        stage=DailyAutopilotStage.WRITE_REVIEWS,
+        event_operation_id=child.id,
+        daily_report_id=report.id,
+    )
+    run_id = run.id
+    db_session.commit()
+    client, _token = _client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-autopilot/{run_id}")
+
+    assert response.status_code == 200
+    assert "日报覆盖漏斗" in response.text
+    assert "计划目标" in response.text and ">41<" in response.text
+    assert "成功抓取" in response.text and ">35<" in response.text
+    assert "受阻目标" in response.text and ">6<" in response.text
+    assert "形成事件" in response.text and ">25<" in response.text
+    assert "进入决策简报" in response.text and ">15<" in response.text
+    assert "进入情报全览" in response.text and ">22<" in response.text
+    assert "未进入全览" in response.text and ">3<" in response.text
+
+
+def test_completed_task_does_not_claim_that_partial_collection_is_still_running(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = OperationRunRecord(
+        operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+        trigger="test",
+        status=OperationStatus.PARTIAL.value,
+        requested_scope={},
+        result_summary={"member_total": 41, "fetch_succeeded": 34, "blocked": 7},
+    )
+    db_session.add(child)
+    db_session.flush()
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="web",
+        requested_scope={"wave_plan": serialize_wave_plan(_wave_plan(24))},
+    )
+    DailyAutopilotRepository(db_session).transition(
+        run.id,
+        stage=DailyAutopilotStage.COMPLETED,
+        status="succeeded",
+        event_operation_id=child.id,
+    )
+    run_id = run.id
+    db_session.commit()
+    client, _token = _client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-autopilot/{run_id}")
+
+    assert response.status_code == 200
+    assert "自动日报已完成" in response.text
+    assert "会继续生成中文日报" not in response.text

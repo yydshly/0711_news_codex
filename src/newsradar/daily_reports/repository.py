@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from newsradar.ai.minimax import bounded_token_count
 from newsradar.daily_reports.chinese_enrichment import (
+    DAILY_CHINESE_FIELD_ERROR_CODES,
     DAILY_CHINESE_SAFE_ERROR_CODES,
     DailyReportChineseCandidate,
     DailyReportChineseResult,
@@ -42,7 +43,9 @@ from newsradar.db.models import (
 
 MAX_REVISION_ATTEMPTS = 3
 _DAILY_CHINESE_ENRICHMENT_PURPOSE = "daily_report_chinese_enrichment"
-_SAFE_DAILY_CHINESE_ORIGINS = frozenset({"model", "rule_fallback", "budget_limit"})
+_SAFE_DAILY_CHINESE_ORIGINS = frozenset(
+    {"model", "model_partial", "rule_fallback", "budget_limit"}
+)
 _SAFE_DAILY_CHINESE_OUTCOMES = frozenset({"success", "fallback", "retry"})
 _SAFE_MODEL_NAME = re.compile(r"[A-Za-z0-9._-]{1,120}")
 _MAX_MODEL_LATENCY_MS = 300_000.0
@@ -463,6 +466,7 @@ class DailyReportRepository:
         item_audits[result.candidate.key] = {
             "origin": _safe_origin(result.origin),
             "error_code": _safe_error_code(result.error_code),
+            "field_errors": list(_safe_field_errors(result.field_errors)),
             "model": _safe_model_name(result.model),
             "model_usage_ids": usage_ids,
         }
@@ -809,11 +813,15 @@ def rebuild_chinese_enrichment_summary(
     origins = Counter(
         row.get("origin") for row in items.values() if isinstance(row, dict)
     )
-    errors = Counter(
-        row.get("error_code")
-        for row in items.values()
-        if isinstance(row, dict) and isinstance(row.get("error_code"), str)
-    )
+    errors: Counter[str] = Counter()
+    for row in items.values():
+        if not isinstance(row, dict):
+            continue
+        field_errors = _safe_field_errors(row.get("field_errors"))
+        if field_errors:
+            errors.update(field_errors)
+        elif isinstance(row.get("error_code"), str):
+            errors[row["error_code"]] += 1
     usage_ids = sorted(
         {
             usage_id
@@ -830,6 +838,7 @@ def rebuild_chinese_enrichment_summary(
         "model_budget": model_budget,
         "processed": len(items),
         "model_success": origins["model"],
+        "partial_fallback": origins["model_partial"],
         "rule_fallback": origins["rule_fallback"],
         "budget_fallback": origins["budget_limit"],
         "error_counts": dict(sorted(errors.items())),
@@ -850,6 +859,22 @@ def _safe_error_code(value: object) -> str | None:
         if isinstance(value, str) and value in DAILY_CHINESE_SAFE_ERROR_CODES
         else None
     )
+
+
+def _safe_field_errors(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    safe: list[str] = []
+    for item in value:
+        if (
+            isinstance(item, str)
+            and item in DAILY_CHINESE_FIELD_ERROR_CODES
+            and item not in safe
+        ):
+            safe.append(item)
+        if len(safe) == 4:
+            break
+    return tuple(safe)
 
 
 def _safe_model_name(value: object) -> str:
