@@ -237,6 +237,8 @@ def test_enqueue_wave_freezes_plan_atomically() -> None:
             "member_count": 2,
             "window_hours": 24,
             "trend_days": 7,
+            "global_concurrency": 8,
+            "provider_concurrency": 2,
             "window_end": now.isoformat(),
             "algorithm_versions": {
                 "relevance": "relevance-v2",
@@ -248,6 +250,23 @@ def test_enqueue_wave_freezes_plan_atomically() -> None:
             "deadline_at": "2026-07-16T12:00:30+00:00",
         }
         assert [row.source_id for row in WaveRepository(db).members(operation_id)] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("global_concurrency", "provider_concurrency"),
+    [(0, 2), (17, 2), (8, 0), (8, 9)],
+)
+def test_enqueue_wave_rejects_invalid_concurrency(
+    global_concurrency: int, provider_concurrency: int
+) -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="invalid_high_value_wave_concurrency"):
+            OperationCommandService(db).enqueue_high_value_wave(
+                plan=wave_plan(wave_member("a")),
+                trigger="web",
+                global_concurrency=global_concurrency,
+                provider_concurrency=provider_concurrency,
+            )
 
 
 def test_enqueue_wave_rejects_active_batch_and_rolls_back_member_failure(
@@ -398,6 +417,25 @@ def test_enqueue_daily_autopilot_reuses_same_daily_wave() -> None:
         assert run.requested_scope["daily_key"] == (
             f"2026-07-18:24:{plan.digest}"
         )
+
+
+def test_enqueue_daily_autopilot_result_reports_whether_the_run_was_created() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"),),
+            window_hours=24,
+            trend_days=7,
+        )
+        service = OperationCommandService(db, utcnow=lambda: now)
+
+        created = service.enqueue_daily_autopilot_result(plan=plan, trigger="schedule")
+        reused = service.enqueue_daily_autopilot_result(plan=plan, trigger="schedule")
+
+        assert created.created is True
+        assert reused == type(created)(run_id=created.run_id, created=False)
+        assert service.enqueue_daily_autopilot(plan=plan, trigger="schedule") == created.run_id
 
 
 def test_enqueue_daily_autopilot_allows_retry_after_failed_run() -> None:

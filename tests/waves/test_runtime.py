@@ -31,14 +31,25 @@ def _session() -> Session:
     return Session(engine)
 
 
-def _lease(operation_id: int, attempt_id: int = 1) -> OperationLease:
+def _lease(
+    operation_id: int, attempt_id: int = 1, requested_scope: dict[str, object] | None = None
+) -> OperationLease:
     return OperationLease(
-        operation_id, attempt_id, 1, "worker", {}, OperationType.HIGH_VALUE_NEWS_WAVE
+        operation_id,
+        attempt_id,
+        1,
+        "worker",
+        requested_scope or {},
+        OperationType.HIGH_VALUE_NEWS_WAVE,
     )
 
 
 def _freeze(
-    db: Session, *sources: SourceDefinition, fetchable: dict[str, bool] | None = None
+    db: Session,
+    *sources: SourceDefinition,
+    fetchable: dict[str, bool] | None = None,
+    global_concurrency: int = 8,
+    provider_concurrency: int = 2,
 ) -> int:
     operation = OperationRepository(db).enqueue(
         OperationType.HIGH_VALUE_NEWS_WAVE,
@@ -46,6 +57,8 @@ def _freeze(
             "window_hours": 24,
             "window_end": datetime.now(UTC).isoformat(),
             "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+            "global_concurrency": global_concurrency,
+            "provider_concurrency": provider_concurrency,
         },
     )
     for source in sources:
@@ -272,10 +285,21 @@ def test_deadline_finishes_members_without_entering_event_pipeline(monkeypatch) 
 
 
 @pytest.mark.parametrize(
-    ("source_count", "provider_count", "expected_limit"), [(7, 7, 6), (3, 1, 2)]
+    (
+        "source_count",
+        "provider_count",
+        "global_concurrency",
+        "provider_concurrency",
+        "expected_limit",
+    ),
+    [(7, 7, 8, 2, 7), (3, 1, 8, 1, 1)],
 )
 def test_wave_applies_global_and_provider_network_limits(
-    source_count: int, provider_count: int, expected_limit: int
+    source_count: int,
+    provider_count: int,
+    global_concurrency: int,
+    provider_concurrency: int,
+    expected_limit: int,
 ) -> None:
     from newsradar.waves.runtime import HighValueWaveHandler
 
@@ -305,15 +329,57 @@ def test_wave_applies_global_and_provider_network_limits(
         return SourceFetchSummary(source.id, FetchResult(outcome=FetchOutcome.SUCCEEDED))
 
     with Session(engine) as db:
-        operation_id = _freeze(db, *sources)
+        operation_id = _freeze(
+            db,
+            *sources,
+            global_concurrency=global_concurrency,
+            provider_concurrency=provider_concurrency,
+        )
         handler = HighValueWaveHandler(sources, lambda: Session(engine), execute)
-        thread = Thread(target=lambda: handler(_lease(operation_id), lambda _: None))
+        thread = Thread(
+            target=lambda: handler(
+                _lease(
+                    operation_id,
+                    requested_scope={
+                        "global_concurrency": global_concurrency,
+                        "provider_concurrency": provider_concurrency,
+                    },
+                ),
+                lambda _: None,
+            )
+        )
         thread.start()
         assert started.wait(1)
         assert maximum <= expected_limit
         release.set()
         thread.join(3)
         assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"global_concurrency": 0, "provider_concurrency": 2},
+        {"global_concurrency": 8, "provider_concurrency": 9},
+    ],
+)
+def test_wave_rejects_invalid_persisted_concurrency_before_starting_members(
+    scope: dict[str, int],
+) -> None:
+    from newsradar.waves.runtime import HighValueWaveHandler
+
+    source = _source("source")
+    with _session() as db:
+        operation_id = _freeze(db, source, **scope)
+        calls: list[str] = []
+
+        result = HighValueWaveHandler(
+            [source], lambda: db, lambda *args: calls.append("network")
+        )(_lease(operation_id, requested_scope=scope), lambda _: None)
+
+        assert result.status.value == "failed"
+        assert result.error_code == "invalid_wave_concurrency"
+        assert calls == []
 
 
 def test_rate_limit_and_member_error_do_not_block_other_wave_members() -> None:

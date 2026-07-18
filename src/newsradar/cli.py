@@ -90,6 +90,7 @@ from newsradar.sources.reporting import render_source_report
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
+from newsradar.waves.local_plan import build_local_wave_plan
 from newsradar.waves.planning import build_wave_plan
 from newsradar.waves.reporting import render_high_value_wave_report
 from newsradar.waves.runtime import HighValueWaveHandler
@@ -161,26 +162,6 @@ def plan_wave(
     )
 
 
-def _wave_plan_from_local_catalog(profile: Path, session):
-    """Build a frozen wave plan from reviewed local files and persisted probe state only."""
-    loaded = load_wave_profile(profile)
-    sources = load_source_tree(Path("sources"))
-    providers = load_provider_tree(Path("providers"))
-    ProviderRepository(session).sync(providers)
-    SourceRepository(session).sync(sources)
-    session.commit()
-    repository = SourceRepository(session)
-    source_ids = list(loaded.source_ids)
-    probes = repository.latest_probe_snapshots(source_ids)
-    return build_wave_plan(
-        loaded,
-        sources,
-        probes,
-        SettingsCredentials().configured_names(),
-        successful_fetch_access=repository.successful_fetch_access(source_ids),
-    )
-
-
 @waves_app.command("enqueue")
 def enqueue_wave(
     profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
@@ -188,7 +169,11 @@ def enqueue_wave(
     """Synchronize reviewed YAML and queue one frozen wave; this command never probes."""
     try:
         with create_session() as session:
-            plan = _wave_plan_from_local_catalog(profile, session)
+            plan = build_local_wave_plan(
+                session,
+                profile_path=profile,
+                window_hours=load_wave_profile(profile).window_hours,
+            )
             operation_id = OperationCommandService(session).enqueue_high_value_wave(
                 plan=plan, trigger="cli"
             )
@@ -205,7 +190,11 @@ def enqueue_due_wave(
     """Queue one due frozen wave only; this command never starts a worker or fetch."""
     try:
         with create_session() as session:
-            plan = _wave_plan_from_local_catalog(profile, session)
+            plan = build_local_wave_plan(
+                session,
+                profile_path=profile,
+                window_hours=load_wave_profile(profile).window_hours,
+            )
             result = enqueue_due(OperationCommandService(session), plan, now=datetime.now(UTC))
     except ValueError as exc:
         typer.echo(f"enqueue_due_failed: {exc}", err=True)

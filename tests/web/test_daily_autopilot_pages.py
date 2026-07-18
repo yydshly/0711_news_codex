@@ -268,8 +268,8 @@ def test_autopilot_post_queues_then_redirects_to_task_page(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "newsradar.web.app._high_value_wave_plan",
-        lambda _session, window_hours=None: _wave_plan(window_hours or 24),
+        "newsradar.web.app.build_local_wave_plan",
+        lambda _session, *, window_hours: _wave_plan(window_hours),
     )
     client, token = _client_with_token(db_session, monkeypatch)
 

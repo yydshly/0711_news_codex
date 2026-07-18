@@ -34,15 +34,12 @@ from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.repository import OperationRepository
-from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.settings import get_settings
 from newsradar.sources.catalog_refresh import build_catalog_refresh_plan
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
-from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
-from newsradar.waves.loader import load_wave_profile
-from newsradar.waves.planning import build_wave_plan
+from newsradar.waves.local_plan import build_local_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.daily_autopilot_queries import DailyAutopilotQueryService
 from newsradar.web.daily_report_queries import DailyReportQueryService
@@ -253,32 +250,6 @@ def _source_wave_plan():
         providers,
         latest={},
         configured_credentials=SettingsCredentials().configured_names(),
-    )
-
-
-def _high_value_wave_plan(session, window_hours: int | None = None):
-    """Synchronize reviewed local definitions then freeze one local-only WavePlan.
-
-    This boundary deliberately uses persisted probe history only.  It never creates an
-    HTTP client, reads a browser session, or invokes MiniMax.
-    """
-    profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
-    if window_hours is not None:
-        profile = profile.model_copy(update={"window_hours": window_hours})
-    sources = load_source_tree(Path("sources"))
-    providers = load_provider_tree(Path("providers"))
-    ProviderRepository(session).sync(providers)
-    SourceRepository(session).sync(sources)
-    session.commit()
-    repository = SourceRepository(session)
-    source_ids = list(profile.source_ids)
-    probes = repository.latest_probe_snapshots(source_ids)
-    return build_wave_plan(
-        profile,
-        sources,
-        probes,
-        SettingsCredentials().configured_names(),
-        successful_fetch_access=repository.successful_fetch_access(source_ids),
     )
 
 
@@ -650,7 +621,7 @@ def create_app(
                 raise ValueError("invalid_daily_report_window") from error
             with create_session() as session:
                 run_id = OperationCommandService(session).enqueue_daily_autopilot(
-                    plan=_high_value_wave_plan(session, window_hours),
+                    plan=build_local_wave_plan(session, window_hours=window_hours),
                     trigger="web",
                 )
         except ValueError as error:
@@ -1089,7 +1060,7 @@ def create_app(
         await require_safe_action(request)
         try:
             with create_session() as session:
-                plan = _high_value_wave_plan(session)
+                plan = build_local_wave_plan(session, window_hours=24)
                 operation_id = OperationCommandService(session).enqueue_high_value_wave(
                     plan=plan, trigger="web"
                 )

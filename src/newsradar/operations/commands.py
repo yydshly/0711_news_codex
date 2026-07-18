@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from json import dumps
@@ -31,6 +32,12 @@ from newsradar.waves.repository import WaveRepository
 
 if TYPE_CHECKING:
     from newsradar.daily_reports.autopilot import DailyAutopilotStage
+
+
+@dataclass(frozen=True, slots=True)
+class DailyAutopilotEnqueueResult:
+    run_id: int
+    created: bool
 
 
 class OperationCommandService:
@@ -354,43 +361,63 @@ class OperationCommandService:
         plan: WavePlan,
         trigger: str,
     ) -> int:
-        """Create one durable, resumable daily-report run and its first continuation."""
-        from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_wave_plan
-        from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
+        return self.enqueue_daily_autopilot_result(plan=plan, trigger=trigger).run_id
 
+    def enqueue_daily_autopilot_result(
+        self,
+        *,
+        plan: WavePlan,
+        trigger: str,
+        in_transaction: bool = False,
+    ) -> DailyAutopilotEnqueueResult:
+        """Create one durable, resumable daily-report run and its first continuation."""
+        if in_transaction:
+            return self._enqueue_daily_autopilot_result(plan=plan, trigger=trigger)
         if self.session.in_transaction():
             self.session.commit()
         with self.session.begin():
-            self._lock_daily_autopilot_enqueue()
-            repository = DailyAutopilotRepository(self.session, utcnow=self._utcnow)
-            local_date = self._utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
-            daily_key = f"{local_date.isoformat()}:{plan.window_hours}:{plan.digest}"
-            reusable = repository.reusable_for_daily_wave(
-                daily_key=daily_key,
-                local_date=local_date,
-                window_hours=plan.window_hours,
-                wave_digest=plan.digest,
-            )
-            if reusable is not None:
-                return reusable.id
-            run = repository.create_run(
-                window_hours=plan.window_hours,
-                trigger=trigger,
-                requested_scope={
-                    "wave_plan": serialize_wave_plan(plan),
-                    "daily_key": daily_key,
-                },
-            )
-            OperationRepository(self.session).enqueue(
-                OperationType.DAILY_AUTOPILOT,
-                {
-                    "daily_autopilot_run_id": run.id,
-                    "stage": DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value,
-                },
-                trigger=trigger,
-                in_transaction=True,
-            )
-            return run.id
+            return self._enqueue_daily_autopilot_result(plan=plan, trigger=trigger)
+
+    def _enqueue_daily_autopilot_result(
+        self,
+        *,
+        plan: WavePlan,
+        trigger: str,
+    ) -> DailyAutopilotEnqueueResult:
+        """Enqueue while the caller owns the surrounding transaction."""
+        from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_wave_plan
+        from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
+
+        self._lock_daily_autopilot_enqueue()
+        repository = DailyAutopilotRepository(self.session, utcnow=self._utcnow)
+        local_date = self._utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
+        daily_key = f"{local_date.isoformat()}:{plan.window_hours}:{plan.digest}"
+        reusable = repository.reusable_for_daily_wave(
+            daily_key=daily_key,
+            local_date=local_date,
+            window_hours=plan.window_hours,
+            wave_digest=plan.digest,
+        )
+        if reusable is not None:
+            return DailyAutopilotEnqueueResult(run_id=reusable.id, created=False)
+        run = repository.create_run(
+            window_hours=plan.window_hours,
+            trigger=trigger,
+            requested_scope={
+                "wave_plan": serialize_wave_plan(plan),
+                "daily_key": daily_key,
+            },
+        )
+        OperationRepository(self.session).enqueue(
+            OperationType.DAILY_AUTOPILOT,
+            {
+                "daily_autopilot_run_id": run.id,
+                "stage": DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value,
+            },
+            trigger=trigger,
+            in_transaction=True,
+        )
+        return DailyAutopilotEnqueueResult(run_id=run.id, created=True)
 
     def enqueue_daily_autopilot_continuation(
         self,
@@ -427,7 +454,16 @@ class OperationCommandService:
             retry_of_operation_id=operation_id,
         )
 
-    def enqueue_high_value_wave(self, *, plan: WavePlan, trigger: str) -> int:
+    def enqueue_high_value_wave(
+        self,
+        *,
+        plan: WavePlan,
+        trigger: str,
+        global_concurrency: int = 8,
+        provider_concurrency: int = 2,
+    ) -> int:
+        if not 1 <= global_concurrency <= 16 or not 1 <= provider_concurrency <= 8:
+            raise ValueError("invalid_high_value_wave_concurrency")
         if self.session.in_transaction():
             self.session.commit()
         window_end = self._utcnow()
@@ -444,6 +480,8 @@ class OperationCommandService:
                     "member_count": len(plan.members),
                     "window_hours": plan.window_hours,
                     "trend_days": plan.trend_days,
+                    "global_concurrency": global_concurrency,
+                    "provider_concurrency": provider_concurrency,
                     "window_end": window_end.isoformat(),
                     "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
                     "deadline_at": (
