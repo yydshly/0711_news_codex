@@ -13,14 +13,17 @@ report, external source, `.env`, or MiniMax call was used.
    DELETE guard still rejected the handler's child-first purge order. The handler now
    deletes and verifies the trashed archived parent first, then removes any residual owned
    rows for SQLite connections where foreign-key cascades are disabled. Ordinary archived
-   item INSERT/UPDATE/DELETE guards remain enforced. PostgreSQL's item function admits only
-   a nested FK-cascade DELETE (`pg_trigger_depth() > 1`) caused by the already-authorized
-   parent deletion; a direct item DELETE remains blocked.
-2. Audio unlink previously happened before any guarded database delete. Purge now captures
-   validated relative paths, performs all reference detachment, report deletion, residual
-   child cleanup, revision reparenting, `flush()`, and a report-absence query first. Only
-   then does it unlink audio before the surrounding transaction commits. A synthetic
-   database DELETE trigger proves a guard failure leaves the file and database rows intact.
+   item INSERT/UPDATE/DELETE guards remain enforced. PostgreSQL's report DELETE guard now
+   sets a transaction-local `newsradar.purge_report_id`; the item guard admits a DELETE only
+   when `OLD.daily_report_id` exactly matches that ID. The broad `pg_trigger_depth()` escape
+   is gone, so unrelated nested item deletion remains blocked.
+2. Audio unlink previously happened inside the database transaction, which meant an unlink
+   failure rolled the report deletion back and a later commit failure could occur after files
+   were already gone. Purge now validates and stages audio paths in a durable queue in the
+   same transaction as the report deletion, commits that transaction, and then unlinks each
+   file with a separate durable acknowledgement. A partial filesystem failure leaves only
+   unacknowledged paths for retry without restoring the report. A synthetic commit failure
+   proves no file operation starts before the database commit succeeds.
 3. The PostgreSQL report trigger fell through to `RETURN NEW` for non-archived DELETE,
    silently suppressing the deletion. Its DELETE branch now raises for draft/non-archived
    and non-trashed archived rows, and returns `OLD` only for a trashed archived row. The
@@ -33,7 +36,10 @@ report, external source, `.env`, or MiniMax call was used.
    parent while its current parent is archived and trashed; after that parent is deleted,
    it may move only to the recorded predecessor, after which the transition row is removed.
    This works for non-leaf children without colliding with either unique report index. Both
-   phases run in one transaction. SQLite and PostgreSQL transition-table triggers validate
+   phases run in one transaction. A deferred foreign key points every transition row at an
+   intentionally impossible-to-populate barrier table, so any transition left at commit is
+   rejected by the database. SQLite foreign-key enforcement is enabled on every production
+   connection. SQLite and PostgreSQL transition-table triggers validate
    that the temporary parent is the actual terminal descendant, block transition updates,
    and allow deletion only after the exact predecessor is restored and the deleted parent
    is absent. Unmarked, forged, or mismatched archived edits raise
@@ -90,13 +96,25 @@ transition could target an unrelated archived report. Both are GREEN with the gu
 transition-row protocol; `D` continues to supersede `C`, while `C` deterministically
 supersedes `A`.
 
+A final follow-up review added four RED regressions for the remaining protocol gaps. All
+four failed for their intended reasons before implementation: PostgreSQL still contained
+the broad trigger-depth bypass; a second audio unlink failure restored the report after the
+first file was already removed; an injected commit failure happened after both audio files
+were removed; and a valid phase-one transition could commit incomplete. They are GREEN with
+the exact transaction-local PostgreSQL signal, durable post-commit audio queue, and deferred
+must-clear transition barrier. A fifth barrier-arming attack test was RED before adding the
+barrier table's impossible check constraint and is now GREEN.
+
 ### GREEN
 
 - Purge/trigger group: `5 passed`.
 - Scheduled conflict, Worker continuation, and trash ordering group: `3 passed`.
 - Complete affected set (purge runtime, 0029 migration SQL/model tests, full migration
   suite, automation service, Worker CLI, retention): `70 passed`.
-- Full relevant gate: `493 tests collected`; all passed with exit code 0:
+- Initial full relevant gate: `493 tests collected`; all passed with exit code 0. After the
+  follow-up protocol regressions, the same gate collected `497` tests and passed. The final
+  expanded rerun included `tests/test_db_session.py` to verify production SQLite FK
+  enforcement: `500 tests collected`, all passed with exit code 0 in 135.4 seconds:
 
 ```text
 uv run --extra dev pytest \
@@ -108,6 +126,7 @@ uv run --extra dev pytest \
   tests/web/test_daily_report_pages.py \
   tests/web/test_daily_autopilot_pages.py \
   tests/test_cli.py \
+  tests/test_db_session.py \
   tests/test_migrations.py -q
 ```
 
@@ -126,10 +145,12 @@ remain untracked and excluded from the scoped commit.
 - `src/newsradar/daily_reports/automation_service.py`
 - `src/newsradar/daily_reports/purge_runtime.py`
 - `src/newsradar/db/models.py`
+- `src/newsradar/db/session.py`
 - `src/newsradar/web/daily_report_queries.py`
 - `tests/daily_reports/test_automation_migration.py`
 - `tests/daily_reports/test_automation_service.py`
 - `tests/daily_reports/test_purge_runtime.py`
 - `tests/daily_reports/test_retention.py`
+- `tests/test_db_session.py`
 - `tests/web/test_cli.py`
 - `docs/superpowers/plans/2026-07-18-daily-automation-final-fixes.md`

@@ -938,6 +938,45 @@ class DailyReportPurgeTransitionRecord(Base):
     deleted_parent_id: Mapped[int] = mapped_column(Integer, nullable=False)
     predecessor_report_id: Mapped[int | None] = mapped_column(Integer)
     temporary_parent_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    barrier_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "daily_report_purge_transition_barrier.id",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        nullable=False,
+        default=1,
+    )
+
+
+class DailyReportPurgeTransitionBarrierRecord(Base):
+    __tablename__ = "daily_report_purge_transition_barrier"
+    __table_args__ = (
+        CheckConstraint(
+            "id < 0 AND id > 0",
+            name="ck_daily_report_purge_transition_barrier_empty",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+
+class DailyReportAudioPurgeQueueRecord(Base):
+    __tablename__ = "daily_report_audio_purge_queue"
+    __table_args__ = (
+        UniqueConstraint(
+            "daily_report_id",
+            "relative_audio_path",
+            name="uq_daily_report_audio_purge_path",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    daily_report_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    relative_audio_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
 
 
 class DailyReportItemRecord(Base):

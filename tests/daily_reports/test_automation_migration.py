@@ -89,10 +89,14 @@ def test_automation_migration_round_trip_adds_then_removes_last_retention_date()
             for column in inspect(connection).get_columns("daily_automation_config")
         }
         assert "daily_report_purge_transitions" in inspect(connection).get_table_names()
+        assert "daily_report_purge_transition_barrier" in inspect(connection).get_table_names()
+        assert "daily_report_audio_purge_queue" in inspect(connection).get_table_names()
 
         migration.downgrade()
         assert "daily_automation_config" not in inspect(connection).get_table_names()
         assert "daily_report_purge_transitions" not in inspect(connection).get_table_names()
+        assert "daily_report_purge_transition_barrier" not in inspect(connection).get_table_names()
+        assert "daily_report_audio_purge_queue" not in inspect(connection).get_table_names()
 
 
 def test_postgresql_guard_sql_rejects_draft_delete_and_allows_only_purge_reparent() -> None:
@@ -139,4 +143,7 @@ def test_postgresql_guard_sql_rejects_draft_delete_and_allows_only_purge_reparen
     assert "WITH RECURSIVE descendants" in function_sql
     assert "TG_OP = 'UPDATE'" in function_sql
     assert "newsradar_guard_archived_daily_report_item" in function_sql
-    assert "TG_OP = 'DELETE' AND pg_trigger_depth() > 1" in function_sql
+    assert "pg_trigger_depth" not in function_sql
+    assert "set_config('newsradar.purge_report_id', OLD.id::text, true)" in function_sql
+    assert "current_setting('newsradar.purge_report_id', true)" in function_sql
+    assert "OLD.daily_report_id = purge_report_id" in function_sql

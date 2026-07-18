@@ -8,7 +8,7 @@ from stat import S_IFLNK
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, func, select, text, update
+from sqlalchemy import create_engine, event, func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -38,6 +38,11 @@ from tests.web.test_daily_report_pages import NOW, seed_daily_report
 
 def _factory(tmp_path: Path) -> sessionmaker[Session]:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'purge-test.sqlite3'}")
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _record) -> None:
+        connection.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 
@@ -47,7 +52,13 @@ def _migrated_factory(tmp_path: Path) -> sessionmaker[Session]:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")
-    return sessionmaker(create_engine(database_url), expire_on_commit=False)
+    engine = create_engine(database_url)
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _record) -> None:
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    return sessionmaker(engine, expire_on_commit=False)
 
 
 def _lease(*report_ids: int) -> OperationLease:
@@ -264,7 +275,100 @@ def test_purge_rejects_trashed_draft_before_audio_side_effects(tmp_path: Path) -
     assert audio_path.read_bytes() == b"synthetic-draft-audio"
 
 
-def test_unlink_failure_retains_report_and_is_retryable(
+def test_multiple_audio_cleanup_failure_keeps_durable_retry_without_restoring_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        _trash(db, report_id)
+        first = _audio(db, report_id, f"{report_id}/first.mp3")
+        second = _audio(db, report_id, f"{report_id}/second.mp3")
+        first_path = audio_root / first.relative_audio_path
+        second_path = audio_root / second.relative_audio_path
+        first_path.parent.mkdir(parents=True)
+        first_path.write_bytes(b"first")
+        second_path.write_bytes(b"second")
+
+    original_unlink = Path.unlink
+
+    def fail_second(path: Path, *args: object, **kwargs: object) -> None:
+        if path == second_path:
+            raise OSError("synthetic second unlink failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_second)
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert result.retryable is True
+        assert db.get(DailyReportRecord, report_id) is None
+        assert inspect(db.bind).has_table("daily_report_audio_purge_queue")
+        assert db.execute(
+            text(
+                "SELECT relative_audio_path FROM daily_report_audio_purge_queue "
+                "WHERE daily_report_id = :report_id"
+            ),
+            {"report_id": report_id},
+        ).scalars().all() == [second.relative_audio_path]
+    assert not first_path.exists()
+    assert second_path.read_bytes() == b"second"
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    retried = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+    with factory() as db:
+        assert retried.status is OperationStatus.SUCCEEDED
+        assert db.execute(
+            text(
+                "SELECT count(*) FROM daily_report_audio_purge_queue "
+                "WHERE daily_report_id = :report_id"
+            ),
+            {"report_id": report_id},
+        ).scalar_one() == 0
+    assert not second_path.exists()
+
+
+def test_database_commit_failure_occurs_before_any_audio_cleanup(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        _trash(db, report_id)
+        first = _audio(db, report_id, f"{report_id}/commit-first.mp3")
+        second = _audio(db, report_id, f"{report_id}/commit-second.mp3")
+        first_path = audio_root / first.relative_audio_path
+        second_path = audio_root / second.relative_audio_path
+        first_path.parent.mkdir(parents=True)
+        first_path.write_bytes(b"first")
+        second_path.write_bytes(b"second")
+
+    def fail_commit(_session: Session) -> None:
+        raise SQLAlchemyError("synthetic commit failure")
+
+    event.listen(factory.class_, "before_commit", fail_commit)
+    try:
+        result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+            _lease(report_id), lambda _boundary: None
+        )
+    finally:
+        event.remove(factory.class_, "before_commit", fail_commit)
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert db.get(DailyReportRecord, report_id) is not None
+    assert first_path.read_bytes() == b"first"
+    assert second_path.read_bytes() == b"second"
+
+
+def test_unlink_failure_keeps_committed_report_purge_and_is_retryable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     factory = _factory(tmp_path)
@@ -294,8 +398,8 @@ def test_unlink_failure_retains_report_and_is_retryable(
         assert failed.status is OperationStatus.FAILED
         assert failed.retryable is True
         assert failed.result_summary["failed"] == 1
-        assert db.get(DailyReportRecord, report_id) is not None
-        assert db.get(DailyReportAudioArtifactRecord, artifact.id) is not None
+        assert db.get(DailyReportRecord, report_id) is None
+        assert db.get(DailyReportAudioArtifactRecord, artifact.id) is None
     assert audio_path.exists()
 
     monkeypatch.setattr(Path, "unlink", original_unlink)
@@ -577,6 +681,51 @@ def test_migrated_guard_rejects_forged_archived_reparent_transition(
                 update(DailyReportRecord)
                 .where(DailyReportRecord.id == newer.id)
                 .values(supersedes_report_id=unrelated.id)
+            )
+            db.commit()
+
+
+def test_migrated_guard_rejects_committing_valid_incomplete_transition(
+    tmp_path: Path,
+) -> None:
+    factory = _migrated_factory(tmp_path)
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        original = seed_daily_report(db)
+        repository.archive(original.id)
+        middle = repository.revise(original.id)
+        repository.archive(middle.id)
+        newer = repository.revise(middle.id)
+        repository.archive(newer.id)
+        _trash(db, middle.id)
+
+        with pytest.raises(IntegrityError):
+            db.add(
+                DailyReportPurgeTransitionRecord(
+                    child_report_id=newer.id,
+                    deleted_parent_id=middle.id,
+                    predecessor_report_id=original.id,
+                    temporary_parent_id=newer.id,
+                )
+            )
+            db.flush()
+            db.execute(
+                update(DailyReportRecord)
+                .where(DailyReportRecord.id == newer.id)
+                .values(supersedes_report_id=newer.id)
+            )
+            db.commit()
+
+
+def test_migrated_transition_barrier_cannot_be_armed(tmp_path: Path) -> None:
+    factory = _migrated_factory(tmp_path)
+
+    with factory() as db:
+        with pytest.raises(IntegrityError):
+            db.execute(
+                text(
+                    "INSERT INTO daily_report_purge_transition_barrier (id) VALUES (1)"
+                )
             )
             db.commit()
 

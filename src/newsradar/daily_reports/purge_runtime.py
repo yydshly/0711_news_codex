@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from newsradar.db.models import (
     DailyAutopilotRunRecord,
     DailyReportAudioArtifactRecord,
+    DailyReportAudioPurgeQueueRecord,
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
     DailyReportOverviewEditorialReviewRecord,
@@ -125,54 +126,84 @@ class DailyReportPurgeHandler:
 
     def _purge_member(self, report_id: int, *, operation_id: int) -> MemberOutcome:
         try:
+            report_was_present = False
+            had_pending_audio = False
             with self._session_factory() as session, session.begin():
+                queued_audio_paths = set(
+                    session.scalars(
+                        select(DailyReportAudioPurgeQueueRecord.relative_audio_path).where(
+                            DailyReportAudioPurgeQueueRecord.daily_report_id == report_id
+                        )
+                    )
+                )
+                had_pending_audio = bool(queued_audio_paths)
                 report = session.scalar(
                     select(DailyReportRecord)
                     .where(DailyReportRecord.id == report_id)
                     .with_for_update()
                     .execution_options(populate_existing=True)
                 )
-                if report is None:
-                    return "missing"
-                if report.deleted_at is None:
-                    raise PurgeMemberError("daily_report_must_be_trashed_for_purge", False)
-                if report.status != "archived":
-                    raise PurgeMemberError("daily_report_must_be_archived_for_purge", False)
-                if self._has_active_work(
-                    session,
-                    report_id,
-                    current_operation_id=operation_id,
-                ):
-                    raise PurgeMemberError("daily_report_has_active_work", True)
+                if report is not None:
+                    report_was_present = True
+                    if report.deleted_at is None:
+                        raise PurgeMemberError(
+                            "daily_report_must_be_trashed_for_purge", False
+                        )
+                    if report.status != "archived":
+                        raise PurgeMemberError(
+                            "daily_report_must_be_archived_for_purge", False
+                        )
+                    if self._has_active_work(
+                        session,
+                        report_id,
+                        current_operation_id=operation_id,
+                    ):
+                        raise PurgeMemberError("daily_report_has_active_work", True)
 
-                artifacts = tuple(
-                    session.scalars(
-                        select(DailyReportAudioArtifactRecord).where(
-                            DailyReportAudioArtifactRecord.daily_report_id == report_id
+                    artifacts = tuple(
+                        session.scalars(
+                            select(DailyReportAudioArtifactRecord).where(
+                                DailyReportAudioArtifactRecord.daily_report_id
+                                == report_id
+                            )
                         )
                     )
-                )
-                audio_paths = tuple(
-                    artifact.relative_audio_path
-                    for artifact in artifacts
-                    if artifact.relative_audio_path is not None
-                )
-                predecessor_id = report.supersedes_report_id
-                reparent_report_ids = self._detach_external_references(session, report)
-                self._delete_owned_rows(session, report_id)
-                self._finish_revision_reparent(
-                    session,
-                    reparent_report_ids,
-                    predecessor_id=predecessor_id,
-                )
-                session.flush()
-                if session.scalar(
-                    select(DailyReportRecord.id).where(DailyReportRecord.id == report_id)
-                ) is not None:
-                    raise PurgeMemberError("daily_report_purge_persistence_failed", True)
-                for relative_audio_path in audio_paths:
-                    self._unlink_audio(relative_audio_path)
-            return "purged"
+                    audio_paths = tuple(
+                        artifact.relative_audio_path
+                        for artifact in artifacts
+                        if artifact.relative_audio_path is not None
+                    )
+                    for relative_audio_path in audio_paths:
+                        self._validate_audio_target(relative_audio_path)
+                        if relative_audio_path not in queued_audio_paths:
+                            session.add(
+                                DailyReportAudioPurgeQueueRecord(
+                                    daily_report_id=report_id,
+                                    relative_audio_path=relative_audio_path,
+                                )
+                            )
+                            queued_audio_paths.add(relative_audio_path)
+                    predecessor_id = report.supersedes_report_id
+                    reparent_report_ids = self._detach_external_references(session, report)
+                    self._delete_owned_rows(session, report_id)
+                    self._finish_revision_reparent(
+                        session,
+                        reparent_report_ids,
+                        predecessor_id=predecessor_id,
+                    )
+                    session.flush()
+                    if session.scalar(
+                        select(DailyReportRecord.id).where(
+                            DailyReportRecord.id == report_id
+                        )
+                    ) is not None:
+                        raise PurgeMemberError(
+                            "daily_report_purge_persistence_failed", True
+                        )
+            if report_was_present or had_pending_audio:
+                self._cleanup_staged_audio(report_id)
+                return "purged"
+            return "missing"
         except PurgeMemberError:
             raise
         except SQLAlchemyError as error:
@@ -252,7 +283,7 @@ class DailyReportPurgeHandler:
             raise OSError("daily_report_audio_path_outside_root")
         return target
 
-    def _unlink_audio(self, relative_audio_path: str) -> None:
+    def _validate_audio_target(self, relative_audio_path: str) -> Path:
         target = self._audio_target(relative_audio_path)
         current = self._audio_root
         for part in target.relative_to(self._audio_root).parts:
@@ -260,16 +291,46 @@ class DailyReportPurgeHandler:
             try:
                 path_stat = current.lstat()
             except FileNotFoundError:
-                return
+                return target
             reparse_point = bool(
                 (getattr(path_stat, "st_file_attributes", 0) or 0) & 0x400
             )
             if S_ISLNK(path_stat.st_mode) or reparse_point:
                 raise OSError("daily_report_audio_path_symlink")
+        return target
+
+    def _unlink_audio(self, relative_audio_path: str) -> None:
+        target = self._validate_audio_target(relative_audio_path)
         # Keep validation adjacent to unlink. The lexical target is never
         # resolved, so a final-component link introduced after lstat would be
         # unlinked as a link rather than followed to another report's file.
-        target.unlink()
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            return
+
+    def _cleanup_staged_audio(self, report_id: int) -> None:
+        with self._session_factory() as session:
+            queued_audio = tuple(
+                session.execute(
+                    select(
+                        DailyReportAudioPurgeQueueRecord.id,
+                        DailyReportAudioPurgeQueueRecord.relative_audio_path,
+                    )
+                    .where(
+                        DailyReportAudioPurgeQueueRecord.daily_report_id == report_id
+                    )
+                    .order_by(DailyReportAudioPurgeQueueRecord.id)
+                )
+            )
+        for queue_id, relative_audio_path in queued_audio:
+            self._unlink_audio(relative_audio_path)
+            with self._session_factory() as session, session.begin():
+                session.execute(
+                    delete(DailyReportAudioPurgeQueueRecord).where(
+                        DailyReportAudioPurgeQueueRecord.id == queue_id
+                    )
+                )
 
     @staticmethod
     def _detach_external_references(
@@ -342,6 +403,7 @@ class DailyReportPurgeHandler:
                         deleted_parent_id=report.id,
                         predecessor_report_id=report.supersedes_report_id,
                         temporary_parent_id=temporary_parent_id,
+                        barrier_id=1,
                     )
                 )
             session.flush()

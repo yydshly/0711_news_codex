@@ -13,7 +13,17 @@ def create_database_engine(settings: Settings | None = None) -> Engine:
     if not resolved.database_url:
         raise RuntimeError("DATABASE_URL is required for database operations")
     engine = create_engine(resolved.database_url, pool_pre_ping=True)
-    if engine.dialect.name == "postgresql":
+    if engine.dialect.name == "sqlite":
+
+        def enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+
+        event.listen(engine, "connect", enable_sqlite_foreign_keys)
+    elif engine.dialect.name == "postgresql":
 
         def set_lock_timeout(dbapi_connection, _connection_record) -> None:
             cursor = dbapi_connection.cursor()

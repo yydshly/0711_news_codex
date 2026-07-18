@@ -50,6 +50,14 @@ def upgrade() -> None:
         "ix_daily_reports_pinned_date", "daily_reports", ["pinned_at", "report_date"]
     )
     op.create_table(
+        "daily_report_purge_transition_barrier",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.CheckConstraint(
+            "id < 0 AND id > 0",
+            name="ck_daily_report_purge_transition_barrier_empty",
+        ),
+    )
+    op.create_table(
         "daily_report_purge_transitions",
         sa.Column(
             "child_report_id",
@@ -60,13 +68,37 @@ def upgrade() -> None:
         sa.Column("deleted_parent_id", sa.Integer(), nullable=False),
         sa.Column("predecessor_report_id", sa.Integer()),
         sa.Column("temporary_parent_id", sa.Integer(), nullable=False),
+        sa.Column(
+            "barrier_id",
+            sa.Integer(),
+            sa.ForeignKey(
+                "daily_report_purge_transition_barrier.id",
+                deferrable=True,
+                initially="DEFERRED",
+            ),
+            nullable=False,
+        ),
+    )
+    op.create_table(
+        "daily_report_audio_purge_queue",
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column("daily_report_id", sa.Integer(), nullable=False),
+        sa.Column("relative_audio_path", sa.String(length=512), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint(
+            "daily_report_id",
+            "relative_audio_path",
+            name="uq_daily_report_audio_purge_path",
+        ),
     )
     _allow_archived_report_retention_mutations()
 
 
 def downgrade() -> None:
     _restore_strict_archived_report_guards()
+    op.drop_table("daily_report_audio_purge_queue")
     op.drop_table("daily_report_purge_transitions")
+    op.drop_table("daily_report_purge_transition_barrier")
     op.drop_index("ix_daily_reports_pinned_date", table_name="daily_reports")
     op.drop_index("ix_daily_reports_deleted_purge", table_name="daily_reports")
     op.drop_column("daily_reports", "purge_after")
@@ -162,6 +194,7 @@ def _allow_archived_report_retention_mutations() -> None:
                     RAISE EXCEPTION 'daily_report_archived_immutable'
                         USING ERRCODE = '23514';
                 END IF;
+                PERFORM set_config('newsradar.purge_report_id', OLD.id::text, true);
                 RETURN OLD;
             END IF;
             IF OLD.status = 'archived' THEN
@@ -229,9 +262,13 @@ def _allow_archived_report_retention_mutations() -> None:
         AS $$
         DECLARE
             report_ids integer[];
+            purge_report_id integer;
         BEGIN
-            IF TG_OP = 'DELETE' AND pg_trigger_depth() > 1 THEN
-                RETURN OLD;
+            IF TG_OP = 'DELETE' THEN
+                purge_report_id := current_setting('newsradar.purge_report_id', true)::integer;
+                IF OLD.daily_report_id = purge_report_id THEN
+                    RETURN OLD;
+                END IF;
             END IF;
             IF TG_OP = 'INSERT' THEN
                 report_ids := ARRAY[NEW.daily_report_id];
