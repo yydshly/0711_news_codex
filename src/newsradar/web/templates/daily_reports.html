@@ -22,6 +22,36 @@
   {% else %}<p>尚无完整事件运行快照，请先完成事件构建。</p>{% endif %}
 </section>
 
+<section class="panel" aria-labelledby="daily-autopilot-heading">
+  <p class="eyebrow">全自动 · 可恢复任务</p>
+  <h2 id="daily-autopilot-heading">生成今日自动日报</h2>
+  <p>按已审核的来源配置刷新公开信息，来源部分失败不会阻塞后续事件、中文日报和两份语音。不会显示或写入任何凭据。</p>
+  <form method="post" action="/daily-reports/autopilot">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <label>时间窗口
+      <select name="window_hours">
+        <option value="24">最近24小时</option>
+        <option value="48">最近48小时</option>
+        <option value="72">最近72小时</option>
+      </select>
+    </label>
+    <button type="submit">开始自动日报</button>
+  </form>
+  {% if autopilot_runs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>任务</th><th>状态</th><th>阶段</th><th>报告</th><th>更新时间</th></tr></thead>
+      <tbody>{% for run in autopilot_runs %}<tr>
+        <td><a href="/daily-autopilot/{{ run.run_id }}">#{{ run.run_id }}</a></td>
+        <td>{{ run.status }}</td><td>{{ run.stage }}</td>
+        <td>{% if run.daily_report_id %}<a href="/daily-reports/{{ run.daily_report_id }}">中文日报</a>{% else %}尚未生成{% endif %}</td>
+        <td>{{ run.updated_at|format_datetime_zh }}</td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
 <section class="panel" aria-labelledby="daily-report-history-heading">
   <h2 id="daily-report-history-heading">日报存档</h2>
   {% if reports %}

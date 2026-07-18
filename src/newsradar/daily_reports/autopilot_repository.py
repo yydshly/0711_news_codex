@@ -101,3 +101,13 @@ class DailyAutopilotRepository:
         run.error_message = message
         self.session.flush()
         return run
+
+    def cancel(self, run_id: int) -> DailyAutopilotRunRecord:
+        run = self.get_for_update(run_id)
+        if run.status not in {"queued", "running"}:
+            return run
+        return self.transition(
+            run_id,
+            stage=DailyAutopilotStage.CANCELLED,
+            status="cancelled",
+        )

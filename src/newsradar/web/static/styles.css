@@ -551,6 +551,12 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   white-space: pre-line;
 }
 .daily-report-page audio { width: min(100%, 44rem); }
+.original-article-links ul,
+.autopilot-operation-list { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+.original-article-links li,
+.autopilot-operation-list li { overflow-wrap: anywhere; }
+.autopilot-operation-list { display: grid; gap: 0.8rem; }
+.inline-diagnostic { display: inline; margin-left: 0.4rem; }
 
 @media (max-width: 1100px) {
   .dashboard-grid, .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

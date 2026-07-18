@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}自动日报任务 #{{ autopilot.run_id }} · News Codex{% endblock %}
+{% block header %}<h1>自动日报任务 #{{ autopilot.run_id }}</h1>{% endblock %}
+{% macro operation_row(label, operation, partial_note='') %}
+<li>
+  <strong>{{ label }}</strong>：
+  {% if operation %}
+  <a href="/operations/{{ operation.operation_id }}">任务 #{{ operation.operation_id }}</a>
+  · {{ operation.status }}
+  {% if operation.progress_total is not none %} · {{ operation.progress_current }}/{{ operation.progress_total }}{% endif %}
+  {% if operation.status == 'partial' and partial_note %}<span class="diagnostic-warning inline-diagnostic">{{ partial_note }}</span>{% endif %}
+  {% if operation.error_message %}<p class="metric-note">中文诊断：{{ operation.error_message }}</p>{% endif %}
+  {% else %}<span class="metric-note">尚未创建</span>{% endif %}
+</li>
+{% endmacro %}
+{% block content %}
+<section class="panel" aria-labelledby="autopilot-status-heading">
+  <p class="eyebrow">自动刷新来源 → 构建事件 → 中文审核 → 归档与语音</p>
+  <h2 id="autopilot-status-heading">当前状态：{{ autopilot.status }}</h2>
+  <p>阶段：{{ {
+    'enqueue_source_refresh': '准备来源刷新',
+    'wait_source_refresh': '等待来源刷新',
+    'enqueue_event_pipeline': '准备事件处理',
+    'wait_event_pipeline': '等待事件处理',
+    'generate_report': '生成中文日报',
+    'write_reviews': '写入中文审核',
+    'archive_and_enqueue_audio': '归档并提交语音',
+    'wait_audio': '等待双版本语音',
+    'completed': '已完成',
+    'failed': '处理失败',
+    'cancelled': '已取消'
+  }.get(autopilot.stage, autopilot.stage) }}</p>
+  <p class="metric-note">时间窗口：最近 {{ autopilot.window_hours }} 小时 · 创建于 {{ autopilot.created_at|format_datetime_zh }} · 更新于 {{ autopilot.updated_at|format_datetime_zh }}</p>
+  {% if autopilot.error_message %}<p class="diagnostic-warning"><strong>中文诊断：</strong>{{ autopilot.error_message }}</p>{% endif %}
+  {% if autopilot.status in ['queued', 'running'] %}
+  <form method="post" action="/daily-autopilot/{{ autopilot.run_id }}/cancel">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">取消自动日报</button>
+  </form>
+  {% endif %}
+</section>
+
+<section class="panel" aria-labelledby="autopilot-children-heading">
+  <h2 id="autopilot-children-heading">关联任务</h2>
+  <ul class="autopilot-operation-list">
+    {{ operation_row('来源刷新', autopilot.source_operation, '部分来源未成功：已记录具体中文原因，自动日报会继续处理已获得的公开信息。') }}
+    {{ operation_row('事件处理', autopilot.event_operation) }}
+    {{ operation_row('决策版语音', autopilot.decision_audio_operation) }}
+    {{ operation_row('情报全览语音', autopilot.overview_audio_operation) }}
+  </ul>
+  {% if autopilot.daily_report_id %}<p><a href="/daily-reports/{{ autopilot.daily_report_id }}">打开生成的中文日报</a></p>{% endif %}
+</section>
+{% endblock %}

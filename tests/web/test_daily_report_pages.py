@@ -925,6 +925,33 @@ def test_daily_report_detail_never_renders_non_public_snapshot_href(
     assert f'href="{url}"' not in response.text
 
 
+def test_daily_brief_and_overview_render_safe_original_article_links(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_url = "https://example.com/original-article"
+    report = seed_daily_report(db_session, evidence_url=source_url)
+    report_id = report.id
+    decision_item = DailyReportRepository(db_session).items(report.id)[0]
+    decision_item.snapshot = {
+        **decision_item.snapshot,
+        "evidence": [{"title": "官方原文", "url": source_url}],
+    }
+    overview_item = DailyReportRepository(db_session).overview_items(report.id)[0]
+    overview_item.snapshot = {
+        **overview_item.snapshot,
+        "evidence": [{"title": "官方原文", "url": source_url}],
+    }
+    db_session.commit()
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert response.text.count(f'href="{source_url}"') >= 3
+    assert "查看原文" in response.text
+    assert 'target="_blank" rel="noopener noreferrer"' in response.text
+
+
 def test_daily_report_posts_require_safe_action_token(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

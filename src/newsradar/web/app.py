@@ -19,6 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
 from newsradar.credentials import SettingsCredentials
+from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     DailyReportEditorialReviewDraft,
@@ -32,6 +33,7 @@ from newsradar.db.models import (
 from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
+from newsradar.operations.repository import OperationRepository
 from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.settings import get_settings
@@ -42,6 +44,7 @@ from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
 from newsradar.waves.planning import build_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
+from newsradar.web.daily_autopilot_queries import DailyAutopilotQueryService
 from newsradar.web.daily_report_queries import DailyReportQueryService
 from newsradar.web.event_merge_queries import EventMergeQueryService
 from newsradar.web.event_queries import EventQueryService
@@ -160,6 +163,7 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
         409,
         "情报全览没有可播报的保留或需补证条目。",
     ),
+    "active_daily_autopilot_exists": (409, "已有自动日报正在执行，请先查看当前任务。"),
 }
 
 _PROVIDER_CATEGORIES = (
@@ -594,6 +598,7 @@ def create_app(
                 service = DailyReportQueryService(session)
                 reports = service.list_reports()
                 snapshot_available = service.has_complete_event_snapshot()
+                autopilot_runs = DailyAutopilotQueryService(session).list_recent()
         except SQLAlchemyError as error:
             return database_error_response(request, error)
         return templates.TemplateResponse(
@@ -602,6 +607,7 @@ def create_app(
             context={
                 "reports": reports,
                 "snapshot_available": snapshot_available,
+                "autopilot_runs": autopilot_runs,
                 "action_token": issue_action_token(request),
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
@@ -631,6 +637,70 @@ def create_app(
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url=f"/daily-reports/{report_id}", status_code=303)
+
+    @app.post("/daily-reports/autopilot")
+    async def enqueue_daily_autopilot(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        try:
+            try:
+                window_hours = int(values.get("window_hours", "24"))
+            except (TypeError, ValueError) as error:
+                raise ValueError("invalid_daily_report_window") from error
+            with create_session() as session:
+                run_id = OperationCommandService(session).enqueue_daily_autopilot(
+                    plan=_source_wave_plan(),
+                    window_hours=window_hours,
+                    trigger="web",
+                )
+        except ValueError as error:
+            raise _daily_report_http_error(error, default_status=409) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-autopilot/{run_id}", status_code=303)
+
+    @app.get("/daily-autopilot/{run_id}", response_class=HTMLResponse)
+    def daily_autopilot_detail(request: Request, run_id: int) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                detail = DailyAutopilotQueryService(session).detail(run_id)
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="自动日报任务不存在。")
+        return templates.TemplateResponse(
+            request=request,
+            name="daily_autopilot_detail.html",
+            context={
+                "autopilot": detail,
+                "action_token": issue_action_token(request),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": detail.updated_at,
+            },
+        )
+
+    @app.post("/daily-autopilot/{run_id}/cancel")
+    async def cancel_daily_autopilot(request: Request, run_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                runs = DailyAutopilotRepository(session)
+                run = runs.get_for_update(run_id)
+                for operation_id in (
+                    run.source_operation_id,
+                    run.event_operation_id,
+                    run.decision_audio_operation_id,
+                    run.overview_audio_operation_id,
+                ):
+                    if operation_id is not None:
+                        OperationRepository(session).request_cancel(operation_id)
+                runs.cancel(run_id)
+                session.commit()
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="自动日报任务不存在。") from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-autopilot/{run_id}", status_code=303)
 
     @app.get("/daily-reports/{report_id}", response_class=HTMLResponse)
     def daily_report_detail(request: Request, report_id: int) -> HTMLResponse:

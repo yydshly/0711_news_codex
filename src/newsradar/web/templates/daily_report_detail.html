@@ -90,7 +90,25 @@
     <strong>中文证据评价</strong>
     <p>{{ review.evidence_assessment if review else item.snapshot.get('confirmation_summary', '尚未形成中文证据评价。') }}</p>
   </div>
+  {{ render_original_article_links(item.snapshot) }}
 </article>
+{% endmacro %}
+{% macro render_original_article_links(snapshot) %}
+{% set evidence_rows = snapshot.get('evidence', []) %}
+{% set public_links = namespace(count=0) %}
+<div class="report-field original-article-links">
+  <strong>查看原文</strong>
+  <ul>
+    {% for evidence in evidence_rows %}
+    {% set safe_url = evidence.get('url')|daily_report_public_url %}
+    {% if safe_url and public_links.count < 3 %}
+    {% set public_links.count = public_links.count + 1 %}
+    <li><a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ evidence.get('title', '原文链接') }}</a>{% if evidence.get('published_at') %} · {{ evidence.get('published_at') }}{% endif %}</li>
+    {% endif %}
+    {% endfor %}
+    {% if public_links.count == 0 %}<li>暂无可公开原文链接。</li>{% endif %}
+  </ul>
+</div>
 {% endmacro %}
 {% macro render_overview_group(items, heading, heading_id, tone) %}
 <section class="overview-group" aria-labelledby="{{ heading_id }}">
@@ -107,6 +125,7 @@
       <div class="report-field"><strong>中文文章概述</strong><p>{{ item.zh_summary }}</p></div>
       {% if item.why_it_matters %}<div class="report-field"><strong>为何值得关注</strong><p>{{ item.why_it_matters }}</p></div>{% endif %}
       {% if item.confirmation_summary %}<div class="report-field"><strong>证据状态</strong><p>{{ item.confirmation_summary }}</p></div>{% endif %}
+      {{ render_original_article_links(item.snapshot) }}
     </article>
     {% endfor %}
   </div>
