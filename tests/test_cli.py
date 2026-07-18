@@ -1155,6 +1155,10 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     assert calls[0]._handlers["source_remediation"] is remediation_handler
     assert calls[0]._handlers["high_value_news_wave"] is wave_handler
     assert calls[0]._handlers["event_merge_scan"] is merge_scan_handler
+    assert (
+        calls[0]._handlers["daily_report_purge"].__class__.__name__
+        == "DailyReportPurgeHandler"
+    )
     assert "processed 1 operation" in result.stdout
 
 

@@ -724,6 +724,107 @@ def test_enqueue_fetch_records_complete_scope() -> None:
         }
 
 
+def test_enqueue_daily_report_purge_rejects_more_than_twenty_ids() -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="invalid_daily_report_purge_report_ids"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=range(1, 22),
+                trigger="web",
+            )
+
+
+def test_enqueue_daily_report_purge_deduplicates_positive_trashed_ids() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        first = reviewed_daily_report(db, reviewed=False)
+        first_report = db.get(DailyReportRecord, first)
+        assert first_report is not None
+        second_report = DailyReportRecord(
+            report_date=date(2026, 7, 17),
+            timezone=first_report.timezone,
+            window_hours=24,
+            window_start=now - timedelta(hours=24),
+            window_end=now,
+            source_operation_id=first_report.source_operation_id,
+            status="archived",
+            revision=1,
+            generation_summary={},
+            generated_at=now,
+            archived_at=now,
+        )
+        db.add(second_report)
+        db.commit()
+        second = second_report.id
+        for report_id in (first, second):
+            report = db.get(DailyReportRecord, report_id)
+            assert report is not None
+            report.deleted_at = now
+            report.purge_after = now + timedelta(days=30)
+        db.commit()
+
+        operation_id = OperationCommandService(db).enqueue_daily_report_purge(
+            report_ids=[first, second, first],
+            trigger="web",
+        )
+
+        operation = db.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        assert operation.operation_type == OperationType.DAILY_REPORT_PURGE.value
+        assert operation.requested_scope == {
+            "schema_version": 1,
+            "report_ids": [first, second],
+        }
+        assert "audio" not in dumps(operation.requested_scope)
+
+
+@pytest.mark.parametrize("report_ids", [[], [0], [-1], [True], [1, "2"]])
+def test_enqueue_daily_report_purge_rejects_invalid_ids(report_ids: list[object]) -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="invalid_daily_report_purge_report_ids"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=report_ids,  # type: ignore[arg-type]
+                trigger="web",
+            )
+
+
+def test_enqueue_daily_report_purge_accepts_only_trashed_reports() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db, reviewed=False)
+
+        with pytest.raises(ValueError, match="daily_report_must_be_trashed_for_purge"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=[report_id],
+                trigger="web",
+            )
+
+
+def test_enqueue_daily_report_purge_rejects_trashed_report_with_active_work() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        report_id = reviewed_daily_report(db, reviewed=False)
+        report = db.get(DailyReportRecord, report_id)
+        assert report is not None
+        report.deleted_at = now
+        report.purge_after = now + timedelta(days=30)
+        db.add(
+            OperationRunRecord(
+                operation_type=OperationType.DAILY_REPORT_AUDIO.value,
+                trigger="test",
+                status="queued",
+                requested_scope={"daily_report_id": report_id, "rendition": "decision"},
+                result_summary={},
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        with pytest.raises(ValueError, match="daily_report_has_active_work"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=[report_id],
+                trigger="web",
+            )
+
+
 def test_retry_creates_new_auditable_operation() -> None:
     with session() as db:
         service = OperationCommandService(db)

@@ -1,0 +1,418 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, sessionmaker
+
+from newsradar.daily_reports.purge_runtime import DailyReportPurgeHandler
+from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.schema import (
+    DailyReportEditorialReviewDraft,
+    DailyReportOverviewEditorialReviewDraft,
+)
+from newsradar.db.models import (
+    Base,
+    DailyAutopilotRunRecord,
+    DailyReportAudioArtifactRecord,
+    DailyReportItemEditorialReviewRecord,
+    DailyReportItemRecord,
+    DailyReportOverviewEditorialReviewRecord,
+    DailyReportOverviewItemRecord,
+    DailyReportRecord,
+    EventRecord,
+    OperationRunRecord,
+)
+from newsradar.operations.repository import OperationLease
+from newsradar.operations.schema import OperationStatus
+from tests.web.test_daily_report_pages import NOW, seed_daily_report
+
+
+def _factory(tmp_path: Path) -> sessionmaker[Session]:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'purge-test.sqlite3'}")
+    Base.metadata.create_all(engine)
+    return sessionmaker(engine, expire_on_commit=False)
+
+
+def _lease(*report_ids: int) -> OperationLease:
+    return OperationLease(
+        9901,
+        9902,
+        1,
+        "purge-test-worker",
+        {"schema_version": 1, "report_ids": list(report_ids)},
+        "daily_report_purge",
+    )
+
+
+def _trash(db: Session, report_id: int) -> None:
+    report = db.get(DailyReportRecord, report_id)
+    assert report is not None
+    report.deleted_at = NOW
+    report.purge_after = NOW + timedelta(days=30)
+    db.commit()
+
+
+def _audio(db: Session, report_id: int, relative_path: str) -> DailyReportAudioArtifactRecord:
+    artifact = DailyReportAudioArtifactRecord(
+        daily_report_id=report_id,
+        rendition="decision",
+        status="succeeded",
+        script="synthetic purge test",
+        script_sha256="a" * 64,
+        model="test",
+        voice_id="test",
+        audio_format="mp3",
+        sample_rate=32000,
+        bitrate=128000,
+        channel=1,
+        relative_audio_path=relative_path,
+    )
+    db.add(artifact)
+    db.commit()
+    return artifact
+
+
+def test_purge_removes_only_trashed_report_owned_rows_and_synthetic_audio(
+    tmp_path: Path,
+) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        source_operation_id = report.source_operation_id
+        event_ids = tuple(db.scalars(select(DailyReportItemRecord.event_id)))
+        _trash(db, report_id)
+        artifact = _audio(db, report_id, f"{report_id}/synthetic.mp3")
+        audio_path = audio_root / artifact.relative_audio_path
+        audio_path.parent.mkdir(parents=True)
+        audio_path.write_bytes(b"synthetic-test-audio")
+        autopilot = DailyAutopilotRunRecord(
+            trigger="test",
+            status="succeeded",
+            stage="completed",
+            window_hours=24,
+            requested_scope={},
+            daily_report_id=report_id,
+            result_summary={"daily_report_id": report_id, "report_private_marker": "remove"},
+            created_at=NOW,
+            updated_at=NOW,
+            finished_at=NOW,
+        )
+        db.add(autopilot)
+        db.commit()
+        autopilot_id = autopilot.id
+
+    checkpoints: list[str] = []
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), checkpoints.append
+    )
+
+    with factory() as db:
+        saved_autopilot = db.get(DailyAutopilotRunRecord, autopilot_id)
+        assert result.status is OperationStatus.SUCCEEDED
+        assert result.result_summary == {
+            "requested": 1,
+            "purged": 1,
+            "missing": 0,
+            "failed": 0,
+            "failures": [],
+        }
+        assert db.get(DailyReportRecord, report_id) is None
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportItemRecord).where(
+                DailyReportItemRecord.daily_report_id == report_id
+            )
+        ) == 0
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportOverviewItemRecord).where(
+                DailyReportOverviewItemRecord.daily_report_id == report_id
+            )
+        ) == 0
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportAudioArtifactRecord).where(
+                DailyReportAudioArtifactRecord.daily_report_id == report_id
+            )
+        ) == 0
+        assert all(db.get(EventRecord, event_id) is not None for event_id in event_ids)
+        assert db.get(OperationRunRecord, source_operation_id) is not None
+        assert saved_autopilot is not None
+        assert saved_autopilot.daily_report_id is None
+        assert saved_autopilot.result_summary == {"daily_report_retention": "purged"}
+    assert not audio_path.exists()
+    assert checkpoints == [f"before_daily_report_purge:{report_id}"]
+
+
+def test_unlink_failure_retains_report_and_is_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        _trash(db, report_id)
+        artifact = _audio(db, report_id, f"{report_id}/retry.mp3")
+        audio_path = audio_root / artifact.relative_audio_path
+        audio_path.parent.mkdir(parents=True)
+        audio_path.write_bytes(b"synthetic-test-audio")
+
+    original_unlink = Path.unlink
+
+    def fail_synthetic_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        if path == audio_path:
+            raise OSError("synthetic unlink failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_synthetic_unlink)
+    failed = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert failed.status is OperationStatus.FAILED
+        assert failed.retryable is True
+        assert failed.result_summary["failed"] == 1
+        assert db.get(DailyReportRecord, report_id) is not None
+        assert db.get(DailyReportAudioArtifactRecord, artifact.id) is not None
+    assert audio_path.exists()
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    retried = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert retried.status is OperationStatus.SUCCEEDED
+        assert db.get(DailyReportRecord, report_id) is None
+    assert not audio_path.exists()
+
+
+def test_path_escape_is_rejected_without_unlinking_or_deleting_report(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    escaped = tmp_path / "must-survive.mp3"
+    escaped.write_bytes(b"outside-root")
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        _trash(db, report_id)
+        _audio(db, report_id, "../must-survive.mp3")
+
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert result.retryable is False
+        assert result.result_summary["failures"] == [
+            {"report_id": report_id, "error_code": "daily_report_audio_path_outside_root"}
+        ]
+        assert db.get(DailyReportRecord, report_id) is not None
+    assert escaped.read_bytes() == b"outside-root"
+
+
+def test_member_failure_does_not_block_other_reports_and_returns_partial(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    escaped = tmp_path / "must-survive.mp3"
+    escaped.write_bytes(b"outside-root")
+    with factory() as db:
+        first = seed_daily_report(db, operation_id=4101)
+        second = seed_daily_report(db, operation_id=4102)
+        for report_id in (first.id, second.id):
+            _trash(db, report_id)
+        _audio(db, first.id, "../must-survive.mp3")
+
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(first.id, second.id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.PARTIAL
+        assert result.result_summary["purged"] == 1
+        assert result.result_summary["failed"] == 1
+        assert db.get(DailyReportRecord, first.id) is not None
+        assert db.get(DailyReportRecord, second.id) is None
+
+
+def test_persistence_failure_does_not_block_later_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = _factory(tmp_path)
+    with factory() as db:
+        first = seed_daily_report(db, operation_id=4101)
+        second = seed_daily_report(db, operation_id=4102)
+        for report_id in (first.id, second.id):
+            _trash(db, report_id)
+        first_id, second_id = first.id, second.id
+
+    original_delete = DailyReportPurgeHandler._delete_owned_rows
+    failed_once = False
+
+    def fail_first(session: Session, report_id: int) -> None:
+        nonlocal failed_once
+        if report_id == first_id and not failed_once:
+            failed_once = True
+            raise SQLAlchemyError("synthetic persistence failure")
+        original_delete(session, report_id)
+
+    monkeypatch.setattr(DailyReportPurgeHandler, "_delete_owned_rows", staticmethod(fail_first))
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(first_id, second_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.PARTIAL
+        assert result.retryable is True
+        assert result.result_summary["failures"] == [
+            {"report_id": first_id, "error_code": "daily_report_purge_persistence_failed"}
+        ]
+        assert db.get(DailyReportRecord, first_id) is not None
+        assert db.get(DailyReportRecord, second_id) is None
+
+
+def test_purging_middle_revision_reparents_newer_and_detaches_external_refs(
+    tmp_path: Path,
+) -> None:
+    factory = _factory(tmp_path)
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        original = seed_daily_report(db)
+        repository.archive(original.id)
+        middle = repository.revise(original.id)
+        middle_item = repository.items(middle.id)[0]
+        middle_overview = repository.overview_items(middle.id)[0]
+        repository.save_editorial_review(
+            middle.id,
+            middle_item.id,
+            DailyReportEditorialReviewDraft.create(
+                decision="keep",
+                zh_title="middle",
+                zh_summary="middle",
+                review_recommendation="middle",
+                evidence_assessment="middle",
+            ),
+        )
+        repository.save_overview_editorial_review(
+            middle.id,
+            middle_overview.id,
+            DailyReportOverviewEditorialReviewDraft.create(
+                decision="keep",
+                zh_title="middle",
+                zh_summary="middle",
+                review_recommendation="middle",
+                evidence_assessment="middle",
+            ),
+        )
+        repository.archive(middle.id)
+        newer = repository.revise(middle.id)
+        newer_id = newer.id
+        middle_id = middle.id
+        original_id = original.id
+        newer_review = db.scalar(
+            select(DailyReportItemEditorialReviewRecord)
+            .join(DailyReportItemRecord)
+            .where(DailyReportItemRecord.daily_report_id == newer_id)
+        )
+        newer_overview_review = db.scalar(
+            select(DailyReportOverviewEditorialReviewRecord)
+            .join(
+                DailyReportOverviewItemRecord,
+                DailyReportOverviewEditorialReviewRecord.daily_report_overview_item_id
+                == DailyReportOverviewItemRecord.id,
+            )
+            .where(DailyReportOverviewItemRecord.daily_report_id == newer_id)
+        )
+        assert newer_review is not None
+        assert newer_overview_review is not None
+        newer_overview_review.duplicate_of_overview_item_id = middle_overview.id
+        db.commit()
+        newer_review_id = newer_review.id
+        newer_overview_review_id = newer_overview_review.id
+        _trash(db, middle_id)
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(middle_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        newer = db.get(DailyReportRecord, newer_id)
+        newer_review = db.get(DailyReportItemEditorialReviewRecord, newer_review_id)
+        newer_overview_review = db.get(
+            DailyReportOverviewEditorialReviewRecord, newer_overview_review_id
+        )
+        assert result.status is OperationStatus.SUCCEEDED
+        assert newer is not None
+        assert newer.supersedes_report_id == original_id
+        assert newer_review is not None
+        assert newer_review.copied_from_editorial_review_id is None
+        assert newer_overview_review is not None
+        assert newer_overview_review.copied_from_editorial_review_id is None
+        assert newer_overview_review.duplicate_of_overview_item_id is None
+
+
+def test_missing_report_is_an_idempotent_success(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(999999), lambda _boundary: None
+    )
+
+    assert result.status is OperationStatus.SUCCEEDED
+    assert result.result_summary["missing"] == 1
+
+
+def test_handler_rechecks_report_is_still_trashed(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert result.retryable is False
+        assert result.result_summary["failures"] == [
+            {"report_id": report_id, "error_code": "daily_report_must_be_trashed_for_purge"}
+        ]
+        assert db.get(DailyReportRecord, report_id) is not None
+
+
+def test_handler_rechecks_report_has_no_new_active_work(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        _trash(db, report_id)
+        db.add(
+            OperationRunRecord(
+                operation_type="daily_report_audio",
+                trigger="test",
+                status="running",
+                requested_scope={"daily_report_id": report_id, "rendition": "decision"},
+                result_summary={},
+                created_at=NOW,
+            )
+        )
+        db.commit()
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert result.retryable is True
+        assert result.result_summary["failures"] == [
+            {"report_id": report_id, "error_code": "daily_report_has_active_work"}
+        ]
+        assert db.get(DailyReportRecord, report_id) is not None

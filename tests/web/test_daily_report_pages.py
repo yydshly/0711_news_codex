@@ -2103,6 +2103,71 @@ def test_safe_bulk_trash_and_restore_reach_their_static_handlers(
     )
 
 
+def test_trash_page_purge_requires_confirmation_and_enqueues_only(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    DailyReportRepository(db_session).move_to_trash(report_id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    trash = client.get("/daily-reports/trash")
+    unconfirmed = client.post(
+        f"/daily-reports/{report_id}/purge",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+    fresh_page = client.get("/operations")
+    token = fresh_page.text.split('name="action_token" value="', 1)[1].split('"', 1)[0]
+    confirmed = client.post(
+        f"/daily-reports/{report_id}/purge",
+        data={"action_token": token, "confirm_purge": "true"},
+        follow_redirects=False,
+    )
+
+    operation = db_session.scalar(
+        select(OperationRunRecord)
+        .where(OperationRunRecord.operation_type == "daily_report_purge")
+        .order_by(OperationRunRecord.id.desc())
+    )
+    assert trash.status_code == 200
+    assert f'action="/daily-reports/{report_id}/purge"' in trash.text
+    assert 'name="confirm_purge" value="true"' in trash.text
+    assert "永久删除" in trash.text
+    assert unconfirmed.status_code == 422
+    assert confirmed.status_code == 303
+    assert confirmed.headers["location"] == "/daily-reports/trash"
+    assert operation is not None
+    assert operation.status == "queued"
+    assert operation.requested_scope == {"schema_version": 1, "report_ids": [report_id]}
+    assert db_session.get(DailyReportRecord, report_id) is not None
+
+
+def test_purge_post_requires_safe_action_token(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    DailyReportRepository(db_session).move_to_trash(report.id)
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+    client = TestClient(
+        create_app(),
+        base_url="http://127.0.0.1",
+        headers={"Origin": "http://127.0.0.1"},
+    )
+
+    response = client.post(
+        f"/daily-reports/{report.id}/purge",
+        data={"confirm_purge": "true"},
+    )
+
+    assert response.status_code == 400
+    assert db_session.scalar(
+        select(OperationRunRecord).where(
+            OperationRunRecord.operation_type == "daily_report_purge"
+        )
+    ) is None
+
+
 def test_daily_report_routes_enforce_ownership_and_not_found(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

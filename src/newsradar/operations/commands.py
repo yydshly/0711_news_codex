@@ -13,6 +13,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
+    DailyAutopilotRunRecord,
+    DailyReportAudioArtifactRecord,
     DailyReportRecord,
     OperationRunRecord,
     SourceRemediationBatchRecord,
@@ -113,6 +115,91 @@ class OperationCommandService:
                 rendition=rendition,
                 trigger=trigger,
             )
+
+    def enqueue_daily_report_purge(
+        self, *, report_ids: object, trigger: str
+    ) -> int:
+        normalized = self._daily_report_purge_ids(report_ids)
+        if self.session.in_transaction():
+            self.session.commit()
+        with self.session.begin():
+            reports = tuple(
+                self.session.scalars(
+                    select(DailyReportRecord)
+                    .where(DailyReportRecord.id.in_(normalized))
+                    .with_for_update()
+                )
+            )
+            reports_by_id = {report.id: report for report in reports}
+            for report_id in normalized:
+                report = reports_by_id.get(report_id)
+                if report is None:
+                    raise ValueError("daily_report_not_found")
+                if report.deleted_at is None:
+                    raise ValueError("daily_report_must_be_trashed_for_purge")
+                if self._daily_report_has_active_work(report_id):
+                    raise ValueError("daily_report_has_active_work")
+            return OperationRepository(self.session).enqueue(
+                OperationType.DAILY_REPORT_PURGE,
+                {"schema_version": 1, "report_ids": normalized},
+                trigger=trigger,
+                in_transaction=True,
+            ).id
+
+    @staticmethod
+    def _daily_report_purge_ids(report_ids: object) -> list[int]:
+        if isinstance(report_ids, (str, bytes, dict)):
+            raise ValueError("invalid_daily_report_purge_report_ids")
+        try:
+            values = list(report_ids)  # type: ignore[arg-type]
+        except TypeError as error:
+            raise ValueError("invalid_daily_report_purge_report_ids") from error
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in values
+        ):
+            raise ValueError("invalid_daily_report_purge_report_ids")
+        normalized = list(dict.fromkeys(values))
+        if not 1 <= len(normalized) <= 20:
+            raise ValueError("invalid_daily_report_purge_report_ids")
+        return normalized
+
+    def _daily_report_has_active_work(self, report_id: int) -> bool:
+        if self.session.scalar(
+            select(DailyAutopilotRunRecord.id).where(
+                DailyAutopilotRunRecord.daily_report_id == report_id,
+                DailyAutopilotRunRecord.status.in_(("queued", "running")),
+            )
+        ) is not None:
+            return True
+        if self.session.scalar(
+            select(DailyReportAudioArtifactRecord.id).where(
+                DailyReportAudioArtifactRecord.daily_report_id == report_id,
+                DailyReportAudioArtifactRecord.status.in_(("queued", "running")),
+            )
+        ) is not None:
+            return True
+        active_operations = self.session.scalars(
+            select(OperationRunRecord).where(
+                OperationRunRecord.operation_type.in_(
+                    (
+                        OperationType.DAILY_REPORT_AUDIO.value,
+                        OperationType.DAILY_REPORT_PURGE.value,
+                    )
+                ),
+                OperationRunRecord.status.in_(("queued", "running")),
+            )
+        )
+        for operation in active_operations:
+            scope = operation.requested_scope
+            if not isinstance(scope, dict):
+                continue
+            if scope.get("daily_report_id") == report_id:
+                return True
+            values = scope.get("report_ids")
+            if isinstance(values, list) and report_id in values:
+                return True
+        return False
 
     def archive_and_enqueue_daily_report_audio(self, *, report_id: int, trigger: str) -> int:
         # Keep the daily-report package out of this module's import path. The

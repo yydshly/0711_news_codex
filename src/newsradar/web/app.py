@@ -921,6 +921,30 @@ def create_app(
             "/daily-reports/trash", retention_outcomes([result.outcome])
         )
 
+    @app.post("/daily-reports/{report_id}/purge")
+    async def purge_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        values = await require_safe_action(request)
+        if values.get("confirm_purge") != "true":
+            raise HTTPException(status_code=422, detail="永久删除前必须明确确认。")
+        try:
+            with create_session() as session:
+                OperationCommandService(session).enqueue_daily_report_purge(
+                    report_ids=[report_id],
+                    trigger="web",
+                )
+        except ValueError as error:
+            if str(error) == "daily_report_not_found":
+                raise HTTPException(status_code=404, detail="日报不存在。") from error
+            if str(error) == "daily_report_must_be_trashed_for_purge":
+                raise HTTPException(
+                    status_code=409,
+                    detail="仅回收站中的日报可以永久删除。",
+                ) from error
+            raise HTTPException(status_code=422, detail="日报清理请求无效。") from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url="/daily-reports/trash", status_code=303)
+
     @app.post("/daily-reports/{report_id}/items/{item_id}/included")
     async def set_daily_report_item_included(
         request: Request, report_id: int, item_id: int

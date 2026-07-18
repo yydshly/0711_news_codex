@@ -19,7 +19,7 @@
   </form>
   <div class="table-wrap">
     <table>
-      <thead><tr><th><input type="checkbox" aria-label="选择当前页全部回收站日报" data-select-all-reports></th><th>日期</th><th>修订</th><th>移入时间</th><th>预计清理时间</th><th>恢复</th></tr></thead>
+      <thead><tr><th><input type="checkbox" aria-label="选择当前页全部回收站日报" data-select-all-reports></th><th>日期</th><th>修订</th><th>移入时间</th><th>预计清理时间</th><th>恢复</th><th>永久删除</th></tr></thead>
       <tbody>{% for report in reports %}
       {% set trash_state = trash_states.get(report.report_id) %}
       <tr>
@@ -29,6 +29,7 @@
         <td>{% if trash_state %}{{ trash_state.deleted_at|format_datetime_zh }}{% else %}状态不可用{% endif %}</td>
         <td>{% if trash_state and trash_state.purge_after %}{{ trash_state.purge_after|format_datetime_zh }}{% else %}暂未安排{% endif %}</td>
         <td><form method="post" action="/daily-reports/{{ report.report_id }}/restore"><input type="hidden" name="action_token" value="{{ action_token }}"><button type="submit">恢复</button></form></td>
+        <td><form method="post" action="/daily-reports/{{ report.report_id }}/purge"><input type="hidden" name="action_token" value="{{ action_token }}"><label><input type="checkbox" name="confirm_purge" value="true" required>确认不可恢复</label><button type="submit" class="danger-action">永久删除</button></form></td>
       </tr>
       {% endfor %}</tbody>
     </table>
