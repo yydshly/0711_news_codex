@@ -463,6 +463,51 @@ class OperationRunRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DailyAutopilotRunRecord(Base):
+    __tablename__ = "daily_autopilot_runs"
+    __table_args__ = (
+        CheckConstraint("window_hours IN (24, 48, 72)", name="ck_daily_autopilot_window"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="ck_daily_autopilot_status",
+        ),
+        Index("ix_daily_autopilot_runs_created_at", "created_at"),
+        Index("ix_daily_autopilot_runs_source_operation", "source_operation_id"),
+        Index("ix_daily_autopilot_runs_event_operation", "event_operation_id"),
+        Index("ix_daily_autopilot_runs_decision_audio", "decision_audio_operation_id"),
+        Index("ix_daily_autopilot_runs_overview_audio", "overview_audio_operation_id"),
+        Index("ix_daily_autopilot_runs_daily_report", "daily_report_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    stage: Mapped[str] = mapped_column(String(48), nullable=False)
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_scope: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT")
+    )
+    event_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT")
+    )
+    decision_audio_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT")
+    )
+    overview_audio_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operation_runs.id", ondelete="RESTRICT")
+    )
+    daily_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("daily_reports.id", ondelete="RESTRICT")
+    )
+    result_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(96))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class SourceCatalogRefreshMemberRecord(Base):
     __tablename__ = "source_catalog_refresh_members"
     __table_args__ = (

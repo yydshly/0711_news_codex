@@ -7,7 +7,7 @@ from alembic.config import Config
 from sqlalchemy import TEXT, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from newsradar.db.models import EventMergeCandidateRecord
+from newsradar.db.models import DailyAutopilotRunRecord, EventMergeCandidateRecord
 
 
 def _sqlite_url(path: Path) -> str:
@@ -18,6 +18,62 @@ def _upgrade(database_url: str, revision: str) -> None:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, revision)
+
+
+def test_daily_autopilot_migration_round_trips_with_expected_columns(tmp_path: Path) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-autopilot.db")
+    _upgrade(database_url, "20260717_0027")
+    engine = create_engine(database_url)
+
+    _upgrade(database_url, "20260718_0028")
+
+    expected_columns = {
+        "id",
+        "trigger",
+        "status",
+        "stage",
+        "window_hours",
+        "requested_scope",
+        "source_operation_id",
+        "event_operation_id",
+        "decision_audio_operation_id",
+        "overview_audio_operation_id",
+        "daily_report_id",
+        "result_summary",
+        "error_code",
+        "error_message",
+        "created_at",
+        "updated_at",
+        "finished_at",
+    }
+    expected_checks = {"ck_daily_autopilot_window", "ck_daily_autopilot_status"}
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert "daily_autopilot_runs" in inspector.get_table_names()
+        assert {
+            column["name"] for column in inspector.get_columns("daily_autopilot_runs")
+        } == expected_columns
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("daily_autopilot_runs")
+        } == expected_checks
+        assert {
+            index["name"] for index in inspector.get_indexes("daily_autopilot_runs")
+        } == {
+            "ix_daily_autopilot_runs_created_at",
+            "ix_daily_autopilot_runs_source_operation",
+            "ix_daily_autopilot_runs_event_operation",
+            "ix_daily_autopilot_runs_decision_audio",
+            "ix_daily_autopilot_runs_overview_audio",
+            "ix_daily_autopilot_runs_daily_report",
+        }
+    assert set(DailyAutopilotRunRecord.__table__.columns.keys()) == expected_columns
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.downgrade(config, "20260717_0027")
+    with engine.connect() as connection:
+        assert "daily_autopilot_runs" not in inspect(connection).get_table_names()
 
 
 def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
