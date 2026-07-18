@@ -510,8 +510,39 @@ def test_completed_task_does_not_claim_that_partial_collection_is_still_running(
     assert "会继续生成中文日报" not in response.text
 
 
+@pytest.mark.parametrize(
+    (
+        "decision_status",
+        "overview_status",
+        "failed_message",
+        "retry_label",
+        "other_retry_label",
+    ),
+    [
+        (
+            OperationStatus.SUCCEEDED,
+            OperationStatus.FAILED,
+            "日报内容已完成，情报全览语音失败",
+            "重新生成全览版语音",
+            "重新生成决策版语音",
+        ),
+        (
+            OperationStatus.FAILED,
+            OperationStatus.SUCCEEDED,
+            "日报内容已完成，决策版语音失败",
+            "重新生成决策版语音",
+            "重新生成全览版语音",
+        ),
+    ],
+)
 def test_audio_partial_task_page_preserves_report_and_guides_failed_audio_retry(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_status: OperationStatus,
+    overview_status: OperationStatus,
+    failed_message: str,
+    retry_label: str,
+    other_retry_label: str,
 ) -> None:
     source_operation = OperationRunRecord(
         operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
@@ -540,17 +571,17 @@ def test_audio_partial_task_page_preserves_report_and_guides_failed_audio_retry(
     decision = OperationRunRecord(
         operation_type=OperationType.DAILY_REPORT_AUDIO.value,
         trigger="autopilot",
-        status=OperationStatus.SUCCEEDED.value,
+        status=decision_status.value,
         requested_scope={"daily_report_id": report_id, "rendition": "decision"},
         result_summary={},
     )
     overview = OperationRunRecord(
         operation_type=OperationType.DAILY_REPORT_AUDIO.value,
         trigger="autopilot",
-        status=OperationStatus.FAILED.value,
+        status=overview_status.value,
         requested_scope={"daily_report_id": report_id, "rendition": "overview"},
         result_summary={},
-        error_message="情报全览语音失败。",
+        error_message="情报全览语音失败。" if overview_status is OperationStatus.FAILED else None,
     )
     db_session.add_all((decision, overview))
     db_session.flush()
@@ -570,8 +601,8 @@ def test_audio_partial_task_page_preserves_report_and_guides_failed_audio_retry(
     run.result_summary = {
         "outcome": "audio_partial",
         "daily_report_id": report_id,
-        "decision_audio_status": "succeeded",
-        "overview_audio_status": "failed",
+        "decision_audio_status": decision_status.value,
+        "overview_audio_status": overview_status.value,
     }
     run_id = run.id
     db_session.commit()
@@ -581,6 +612,7 @@ def test_audio_partial_task_page_preserves_report_and_guides_failed_audio_retry(
 
     assert response.status_code == 200
     assert f'href="/daily-reports/{report_id}"' in response.text
-    assert "日报内容已完成，情报全览语音失败" in response.text
-    assert "重新生成全览版语音" in response.text
+    assert failed_message in response.text
+    assert retry_label in response.text
+    assert other_retry_label not in response.text
     assert "重新抓取" not in response.text

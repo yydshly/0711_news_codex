@@ -61,7 +61,7 @@
   </ul>
   {% if autopilot.daily_report_id %}<p><a href="/daily-reports/{{ autopilot.daily_report_id }}">打开生成的中文日报</a></p>{% endif %}
   {% if autopilot.result_summary.get('outcome') == 'audio_partial' %}
-  <p class="diagnostic-warning">日报内容已完成，情报全览语音失败</p>
+  <p class="diagnostic-warning">{{ autopilot.audio_partial_message_zh }}</p>
   {% if autopilot.decision_audio_operation and autopilot.decision_audio_operation.status == 'failed' %}
   <form method="post" action="/daily-reports/{{ autopilot.daily_report_id }}/audio/decision">
     <input type="hidden" name="action_token" value="{{ action_token }}">
