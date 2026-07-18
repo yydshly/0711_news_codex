@@ -23,7 +23,7 @@ from newsradar.db.models import DailyAutopilotRunRecord, OperationRunRecord
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.repository import OperationLease, OperationRepository
 from newsradar.operations.schema import OperationStatus, OperationType
-from newsradar.operations.worker import OperationResult
+from newsradar.operations.worker import OperationCancelled, OperationResult
 
 _WAIT_SECONDS = 15
 _RUNNING_STATUSES = {OperationStatus.QUEUED.value, OperationStatus.RUNNING.value}
@@ -85,8 +85,17 @@ class DailyAutopilotHandler:
 
         try:
             return self._advance(run, stage, checkpoint)
+        except OperationCancelled:
+            raise
         except ValueError as exc:
             self._fail(run_id, "daily_autopilot_validation", _diagnostic_message(str(exc)))
+            return _succeeded({"run_id": run_id, "failed": True})
+        except Exception:
+            self._fail(
+                run_id,
+                "daily_autopilot_internal",
+                "自动日报处理出现内部错误，已停止后续步骤，请查看关联任务的中文诊断。",
+            )
             return _succeeded({"run_id": run_id, "failed": True})
 
     def _advance(
@@ -216,8 +225,9 @@ class DailyAutopilotHandler:
         if run.daily_report_id is None:
             checkpoint("daily_autopilot:generate_report")
             with self._create_session() as session:
-                report = DailyReportService(session, utcnow=self._utcnow).generate(run.window_hours)
-            report_id = report.id
+                report_id = DailyReportService(
+                    session, utcnow=self._utcnow
+                ).generate(run.window_hours).id
         else:
             report_id = run.daily_report_id
         self._transition_and_continue(
