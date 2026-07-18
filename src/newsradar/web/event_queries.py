@@ -383,6 +383,26 @@ class EventQueryService:
         snapshot = latest_complete_event_snapshot(self.session, now=now)
         if snapshot is None:
             return None
+        return self._operation_page(snapshot, filters)
+
+    def operation_page(
+        self,
+        operation_id: int,
+        filters: dict[str, object] | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> OperationEventPage | None:
+        """Project one explicitly requested immutable operation snapshot."""
+        snapshot = event_snapshot_by_id(self.session, operation_id, now=now)
+        if snapshot is None:
+            return None
+        return self._operation_page(snapshot, filters)
+
+    def _operation_page(
+        self,
+        snapshot: OperationSnapshotRef,
+        filters: dict[str, object] | None,
+    ) -> OperationEventPage:
         active = dict(filters or {})
         rows = self._operation_rows(snapshot)
         filtered = self._filter_operation_rows(rows, active, snapshot.window_end)

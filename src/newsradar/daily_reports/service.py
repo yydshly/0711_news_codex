@@ -201,12 +201,38 @@ class DailyReportService:
         *,
         now: datetime | None = None,
     ) -> DailyReportRecord:
+        return self._generate(window_hours, now=now, operation_id=None)
+
+    def generate_from_operation(
+        self,
+        operation_id: int,
+        window_hours: int,
+        *,
+        now: datetime | None = None,
+    ) -> DailyReportRecord:
+        """Generate from one exact child operation without a latest-snapshot fallback."""
+        return self._generate(window_hours, now=now, operation_id=operation_id)
+
+    def _generate(
+        self,
+        window_hours: int,
+        *,
+        now: datetime | None,
+        operation_id: int | None,
+    ) -> DailyReportRecord:
         checked_at = now or self._utcnow()
         window_hours = validate_window_hours(window_hours)
-        page = self._events.latest_operation_page(
-            {"hours": window_hours, "limit": 1000},
-            now=checked_at,
-        )
+        if operation_id is None:
+            page = self._events.latest_operation_page(
+                {"hours": window_hours, "limit": 1000},
+                now=checked_at,
+            )
+        else:
+            page = self._events.operation_page(
+                operation_id,
+                {"hours": window_hours, "limit": 1000},
+                now=checked_at,
+            )
         if page is None:
             raise ValueError("complete_event_snapshot_required")
         snapshot = event_snapshot_by_id(
@@ -214,7 +240,9 @@ class DailyReportService:
             page.snapshot.operation_id,
             now=checked_at,
         )
-        if snapshot is None:
+        if snapshot is None or (
+            operation_id is not None and snapshot.window_hours != window_hours
+        ):
             raise ValueError("complete_event_snapshot_required")
 
         snapshot_event_ids = tuple(ref.event_id for ref in snapshot.event_versions)

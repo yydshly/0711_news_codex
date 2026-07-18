@@ -319,6 +319,42 @@ def test_generate_freezes_confirmed_and_emerging_in_separate_sections(
     assert stored_window_end == SEEDED_WINDOW_END
 
 
+def test_generate_from_operation_uses_exact_snapshot(db_session: Session) -> None:
+    operation_id = seed_complete_snapshot(db_session)
+    operation = db_session.get(OperationRunRecord, operation_id)
+    assert operation is not None
+    operation.requested_scope["window_hours"] = 24
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(operation, "requested_scope")
+    db_session.add(
+        OperationRunRecord(
+            id=operation_id + 1,
+            operation_type="event_pipeline",
+            trigger="test",
+            status="succeeded",
+            requested_scope={
+                "window_hours": 24,
+                "window_end": NOW.isoformat(),
+                "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+            },
+            result_summary={"event_version_snapshots": []},
+            created_at=NOW,
+            finished_at=NOW,
+        )
+    )
+    db_session.commit()
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate_from_operation(
+        operation_id,
+        24,
+        now=NOW,
+    )
+
+    assert report.source_operation_id == operation_id
+    assert DailyReportRepository(db_session).items(report.id)
+
+
 def test_generate_persists_every_displayable_operation_event_for_overview(
     db_session: Session,
 ) -> None:

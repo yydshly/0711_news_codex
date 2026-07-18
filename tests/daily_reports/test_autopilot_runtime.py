@@ -149,7 +149,7 @@ def test_partial_source_wait_advances_to_event_enqueue() -> None:
         assert saved.stage == DailyAutopilotStage.ENQUEUE_EVENT_PIPELINE.value
 
 
-def test_generate_report_reads_identifier_before_closing_its_session(monkeypatch) -> None:
+def test_generate_report_uses_exact_child_and_reads_id_before_session_closes(monkeypatch) -> None:
     class GuardedSession:
         active = False
 
@@ -174,7 +174,11 @@ def test_generate_report_reads_identifier_before_closing_its_session(monkeypatch
         def __init__(self, session: GuardedSession, **_kwargs) -> None:
             self._session = session
 
-        def generate(self, _window_hours: int) -> GeneratedReport:
+        def generate_from_operation(
+            self, operation_id: int, window_hours: int
+        ) -> GeneratedReport:
+            assert operation_id == 88
+            assert window_hours == 24
             return GeneratedReport(self._session)
 
     session = GuardedSession()
@@ -188,11 +192,32 @@ def test_generate_report_reads_identifier_before_closing_its_session(monkeypatch
     )
 
     result = handler._generate_report(
-        SimpleNamespace(id=9, daily_report_id=None, window_hours=24), lambda _boundary: None
+        SimpleNamespace(
+            id=9,
+            daily_report_id=None,
+            event_operation_id=88,
+            window_hours=24,
+        ),
+        lambda _boundary: None,
     )
 
     assert result.status is OperationStatus.SUCCEEDED
     assert transitions == [(9, DailyAutopilotStage.WRITE_REVIEWS, {"daily_report_id": 41})]
+
+
+def test_generate_report_rejects_missing_content_operation() -> None:
+    handler = DailyAutopilotHandler(lambda: None)
+
+    with pytest.raises(ValueError, match="daily_autopilot_event_operation_missing"):
+        handler._generate_report(
+            SimpleNamespace(
+                id=9,
+                daily_report_id=None,
+                event_operation_id=None,
+                window_hours=24,
+            ),
+            lambda _boundary: None,
+        )
 
 
 def test_unexpected_stage_error_marks_autopilot_run_failed(monkeypatch) -> None:

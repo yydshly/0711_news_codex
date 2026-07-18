@@ -331,11 +331,16 @@ class DailyAutopilotHandler:
         self, run: DailyAutopilotRunRecord, checkpoint: Callable[[str], None]
     ) -> OperationResult:
         if run.daily_report_id is None:
+            if run.event_operation_id is None:
+                raise ValueError("daily_autopilot_event_operation_missing")
             checkpoint("daily_autopilot:generate_report")
             with self._create_session() as session:
                 report_id = DailyReportService(
                     session, utcnow=self._utcnow
-                ).generate(run.window_hours).id
+                ).generate_from_operation(
+                    run.event_operation_id,
+                    run.window_hours,
+                ).id
         else:
             report_id = run.daily_report_id
         self._transition_and_continue(

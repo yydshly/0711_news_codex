@@ -223,6 +223,28 @@ def test_latest_operation_page_uses_exact_version_not_current_pointer(db_session
     assert page.events[0].detail_href == f"/events/{record.id}?operation={operation.id}&version=1"
 
 
+def test_operation_page_reads_requested_snapshot_instead_of_latest(db_session):
+    from newsradar.web.event_queries import EventQueryService
+
+    now = datetime.now(UTC)
+    older_event = _event(
+        db_session,
+        event_id=410,
+        status="confirmed",
+        title="指定批次事件",
+        occurred_at=now - timedelta(hours=1),
+    )
+    older = _pipeline_snapshot(db_session, refs=[(older_event.id, 1)], now=now)
+    newer = _pipeline_snapshot(db_session, refs=[], now=now)
+
+    page = EventQueryService(db_session).operation_page(older.id, now=now)
+
+    assert newer.id > older.id
+    assert page is not None
+    assert page.snapshot.operation_id == older.id
+    assert [row.event_id for row in page.events] == [older_event.id]
+
+
 def test_operation_detail_rejects_event_not_in_operation(db_session):
     from newsradar.web.event_queries import EventQueryService
 
