@@ -372,7 +372,7 @@ def test_generate_persists_every_displayable_operation_event_for_overview(
     assert report.generation_summary["overview_count"] == 5
 
 
-def test_generate_skips_invalid_overview_only_event_without_blocking_report(
+def test_generate_keeps_invalid_overview_event_as_degraded_item(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -388,9 +388,10 @@ def test_generate_skips_invalid_overview_only_event_without_blocking_report(
 
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
 
-    assert [
-        row.event_id for row in DailyReportRepository(db_session).overview_items(report.id)
-    ] == [101, 102, 201, 202]
+    rows = DailyReportRepository(db_session).overview_items(report.id)
+
+    assert [row.event_id for row in rows] == [101, 102, 201, 202, 302]
+    assert rows[-1].snapshot["display_degradation_reason"] == "event_detail_unavailable"
     assert report.generation_summary["skipped_invalid_overview_event"] == 1
     assert len(DailyReportRepository(db_session).items(report.id)) == 4
 

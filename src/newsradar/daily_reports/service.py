@@ -183,6 +183,30 @@ def _item_snapshot(
     }
 
 
+def _degraded_item_snapshot(
+    row: EventRow,
+    section: ReportSection,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "zh_title": row.zh_title,
+        "zh_summary": "该事件的日报展示数据不完整，已保留为待补齐条目。",
+        "why_it_matters": row.why_it_matters,
+        "status": row.status,
+        "unconfirmed": section is ReportSection.EMERGING,
+        "display_tier": row.display_tier,
+        "category": row.category,
+        "rank_score": row.rank_score,
+        "occurred_at": _snapshot_datetime(row.occurred_at),
+        "independent_root_count": row.independent_root_count,
+        "confirmation_summary": row.confirmation_summary,
+        "enrichment_origin": row.enrichment_origin,
+        "limitations": ["日报展示数据待补齐"],
+        "evidence": [],
+        "display_degradation_reason": reason,
+    }
+
+
 class DailyReportService:
     def __init__(
         self,
@@ -267,7 +291,11 @@ class DailyReportService:
                     break
                 version_number = version_by_event.get(row.event_id)
                 overview_item = overview_by_event.get(row.event_id)
-                if overview_item is None or version_number is None:
+                if (
+                    overview_item is None
+                    or version_number is None
+                    or "display_degradation_reason" in overview_item.snapshot
+                ):
                     skipped_invalid += 1
                     continue
                 section_position += 1
@@ -383,6 +411,22 @@ class DailyReportService:
                 detail = None
             if detail is None:
                 skipped_invalid += 1
+                drafts.append(
+                    DailyReportOverviewItemDraft(
+                        event_id=row.event_id,
+                        event_version_number=version_number,
+                        position=len(drafts) + 1,
+                        snapshot=_degraded_item_snapshot(
+                            row,
+                            (
+                                ReportSection.CONFIRMED
+                                if row.status == "confirmed"
+                                else ReportSection.EMERGING
+                            ),
+                            "event_detail_unavailable",
+                        ),
+                    )
+                )
                 continue
             section = (
                 ReportSection.CONFIRMED
@@ -393,6 +437,16 @@ class DailyReportService:
                 item_snapshot = _item_snapshot(detail, section)
             except _InvalidEventSnapshot:
                 skipped_invalid += 1
+                drafts.append(
+                    DailyReportOverviewItemDraft(
+                        event_id=row.event_id,
+                        event_version_number=version_number,
+                        position=len(drafts) + 1,
+                        snapshot=_degraded_item_snapshot(
+                            row, section, "invalid_snapshot_data"
+                        ),
+                    )
+                )
                 continue
             drafts.append(
                 DailyReportOverviewItemDraft(
