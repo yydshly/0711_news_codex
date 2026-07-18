@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     event_model_timeout_seconds: float = 45
     event_model_max_concurrency: int = 2
     event_top_limit: int = 20
+    daily_report_model_max_items: int = 60
     github_token: SecretStr | None = None
     reddit_client_id: SecretStr | None = None
     reddit_client_secret: SecretStr | None = None

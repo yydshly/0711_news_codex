@@ -17,6 +17,7 @@ def test_minimax_defaults_use_current_official_models() -> None:
 
     assert settings.minimax_deep_model == "MiniMax-M2.7"
     assert settings.minimax_fast_model == "MiniMax-M2.7-highspeed"
+    assert settings.daily_report_model_max_items == 60
 
 
 def test_config_check_reports_region_without_exposing_key() -> None:
