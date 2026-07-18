@@ -5,13 +5,11 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from json import dumps
 from time import monotonic, sleep
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_catalog_plan
-from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.db.models import (
     DailyReportRecord,
     OperationRunRecord,
@@ -29,6 +27,9 @@ from newsradar.sources.catalog_refresh import CatalogRefreshPlan
 from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
 from newsradar.waves.planning import WavePlan
 from newsradar.waves.repository import WaveRepository
+
+if TYPE_CHECKING:
+    from newsradar.daily_reports.autopilot import DailyAutopilotStage
 
 
 class OperationCommandService:
@@ -293,6 +294,9 @@ class OperationCommandService:
         trigger: str,
     ) -> int:
         """Create one durable, resumable daily-report run and its first continuation."""
+        from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_catalog_plan
+        from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
+
         if self.session.in_transaction():
             self.session.commit()
         with self.session.begin():
@@ -321,6 +325,8 @@ class OperationCommandService:
         trigger: str = "autopilot",
         not_before: datetime | None = None,
     ) -> int:
+        from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
+
         if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
             raise ValueError("invalid_daily_autopilot_run_id")
         if self.session.in_transaction():
