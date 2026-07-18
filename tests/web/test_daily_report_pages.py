@@ -133,6 +133,133 @@ def test_daily_report_page_replaces_legacy_model_degraded_copy(
     assert "MiniMax：已降级，本版使用规则中文内容" not in response.text
 
 
+@pytest.mark.parametrize("audit", ({}, {"items": []}))
+def test_malformed_chinese_enrichment_audit_keeps_legacy_display(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    audit: dict[str, object],
+) -> None:
+    report = seed_daily_report(db_session)
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": audit,
+    }
+    db_session.commit()
+    report_id = report.id
+
+    view = DailyReportQueryService(db_session).detail(report_id)
+    assert view is not None
+    assert view.chinese_enrichment.recorded is False
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report_id}")
+    assert "MiniMax：已降级" in response.text
+    assert "本版使用规则中文内容" in response.text
+
+
+def test_detail_normalizes_unknown_chinese_enrichment_error_code(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    item = DailyReportRepository(db_session).items(report.id)[0]
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 1,
+            "processed": 1,
+            "model_success": 0,
+            "rule_fallback": 1,
+            "budget_fallback": 0,
+            "error_counts": {"untrusted": 1},
+            "items": {
+                f"{item.event_id}:{item.event_version_number}": {
+                    "origin": "rule_fallback",
+                    "error_code": "untrusted",
+                }
+            },
+        },
+    }
+    db_session.commit()
+
+    view = DailyReportQueryService(db_session).detail(report.id)
+
+    assert view is not None
+    assert view.confirmed[0].chinese_origin is not None
+    assert view.confirmed[0].chinese_origin.error_code == "unexpected_error"
+    assert view.confirmed[0].chinese_origin.label_zh == "规则回退（内部异常）"
+
+
+def test_daily_report_page_shows_pending_and_budget_limit_enrichment_states(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    confirmed, emerging = DailyReportRepository(db_session).items(report.id)
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 3,
+            "processed": 2,
+            "model_success": 1,
+            "rule_fallback": 0,
+            "budget_fallback": 1,
+            "error_counts": {"budget_limit": 1},
+            "items": {
+                f"{confirmed.event_id}:{confirmed.event_version_number}": {
+                    "origin": "model",
+                    "error_code": None,
+                },
+                f"{emerging.event_id}:{emerging.event_version_number}": {
+                    "origin": "budget_limit",
+                    "error_code": "budget_limit",
+                },
+            },
+        },
+    }
+    db_session.commit()
+    report_id = report.id
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert "安全上限回退 1 条" in response.text
+    assert "待处理 1 条" in response.text
+    assert "中文增强：安全上限回退（本期安全上限）" in response.text
+
+
+def test_detail_matches_chinese_audit_by_event_id_and_version(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    confirmed, emerging = DailyReportRepository(db_session).items(report.id)
+    emerging.event_id = confirmed.event_id
+    emerging.event_version_number = confirmed.event_version_number + 1
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 1,
+            "processed": 1,
+            "model_success": 1,
+            "rule_fallback": 0,
+            "budget_fallback": 0,
+            "error_counts": {},
+            "items": {
+                f"{emerging.event_id}:{emerging.event_version_number}": {
+                    "origin": "model",
+                    "error_code": None,
+                }
+            },
+        },
+    }
+    db_session.commit()
+
+    view = DailyReportQueryService(db_session).detail(report.id)
+
+    assert view is not None
+    assert view.confirmed[0].chinese_origin is None
+    assert view.emerging[0].chinese_origin is not None
+    assert view.emerging[0].chinese_origin.label_zh == "MiniMax"
+
+
 def seed_daily_report(
     session: Session,
     *,

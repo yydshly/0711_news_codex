@@ -61,6 +61,10 @@ def _non_negative_integer(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+def _is_non_negative_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 @dataclass(frozen=True, slots=True)
 class DailyReportChineseOriginView:
     origin: str
@@ -83,38 +87,51 @@ def _chinese_enrichment_view(
     generation_summary: dict[str, object],
 ) -> tuple[DailyReportChineseEnrichmentView, dict[str, DailyReportChineseOriginView]]:
     raw = generation_summary.get("daily_chinese_enrichment")
-    if not isinstance(raw, dict):
-        return DailyReportChineseEnrichmentView(0, 0, 0, 0, 0, {}, False), {}
-    raw_errors = raw.get("error_counts")
-    errors = (
-        {
-            key: _non_negative_integer(value)
-            for key, value in raw_errors.items()
-            if isinstance(key, str) and key in _CHINESE_ENRICHMENT_ERROR_LABELS
-        }
-        if isinstance(raw_errors, dict)
-        else {}
+    count_keys = (
+        "candidate_total",
+        "processed",
+        "model_success",
+        "rule_fallback",
+        "budget_fallback",
     )
+    if (
+        not isinstance(raw, dict)
+        or not all(_is_non_negative_integer(raw.get(key)) for key in count_keys)
+        or not isinstance(raw.get("error_counts"), dict)
+        or not isinstance(raw.get("items"), dict)
+    ):
+        return DailyReportChineseEnrichmentView(0, 0, 0, 0, 0, {}, False), {}
+    raw_errors = raw["error_counts"]
+    errors = {
+        key: _non_negative_integer(value)
+        for key, value in raw_errors.items()
+        if isinstance(key, str) and key in _CHINESE_ENRICHMENT_ERROR_LABELS
+    }
     origins: dict[str, DailyReportChineseOriginView] = {}
-    raw_items = raw.get("items")
-    if isinstance(raw_items, dict):
-        for key, value in raw_items.items():
-            if not isinstance(key, str) or not isinstance(value, dict):
-                continue
-            origin = value.get("origin")
-            error = value.get("error_code")
-            if origin == "model":
-                origins[key] = DailyReportChineseOriginView("model", None, "MiniMax")
-            elif origin == "rule_fallback":
-                safe_error = error if isinstance(error, str) else "unexpected_error"
-                label = _CHINESE_ENRICHMENT_ERROR_LABELS.get(safe_error, "安全规则回退")
-                origins[key] = DailyReportChineseOriginView(
-                    "rule_fallback", safe_error, f"规则回退（{label}）"
-                )
-            elif origin == "budget_limit":
-                origins[key] = DailyReportChineseOriginView(
-                    "budget_limit", "budget_limit", "安全上限回退（本期安全上限）"
-                )
+    raw_items = raw["items"]
+    for key, value in raw_items.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        origin = value.get("origin")
+        error = value.get("error_code")
+        if origin == "model":
+            origins[key] = DailyReportChineseOriginView("model", None, "MiniMax")
+        elif origin == "rule_fallback":
+            safe_error = (
+                error
+                if isinstance(error, str) and error in _CHINESE_ENRICHMENT_ERROR_LABELS
+                else "unexpected_error"
+                if isinstance(error, str)
+                else None
+            )
+            label = _CHINESE_ENRICHMENT_ERROR_LABELS.get(safe_error, "安全规则回退")
+            origins[key] = DailyReportChineseOriginView(
+                "rule_fallback", safe_error, f"规则回退（{label}）"
+            )
+        elif origin == "budget_limit":
+            origins[key] = DailyReportChineseOriginView(
+                "budget_limit", "budget_limit", "安全上限回退（本期安全上限）"
+            )
     return (
         DailyReportChineseEnrichmentView(
             candidate_total=_non_negative_integer(raw.get("candidate_total")),
