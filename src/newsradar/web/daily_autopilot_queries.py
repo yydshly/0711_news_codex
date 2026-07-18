@@ -242,6 +242,8 @@ def _next_action(
     summary = run.result_summary if isinstance(run.result_summary, dict) else {}
     if run.status == "failed":
         return "请先按上方中文诊断处理；修复后重新开始一次自动日报。"
+    if summary.get("outcome") == "audio_partial":
+        return "日报内容已完成，情报全览语音失败，请重新生成缺失的语音版本。"
     if summary.get("outcome") == "no_content":
         return "本次已完成真实抓取，但没有形成可收录事件；无需把目录探测结果补成新闻。"
     if run.status == "succeeded":

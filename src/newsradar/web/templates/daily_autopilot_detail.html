@@ -60,6 +60,21 @@
     {{ operation_row('情报全览语音', autopilot.overview_audio_operation) }}
   </ul>
   {% if autopilot.daily_report_id %}<p><a href="/daily-reports/{{ autopilot.daily_report_id }}">打开生成的中文日报</a></p>{% endif %}
+  {% if autopilot.result_summary.get('outcome') == 'audio_partial' %}
+  <p class="diagnostic-warning">日报内容已完成，情报全览语音失败</p>
+  {% if autopilot.decision_audio_operation and autopilot.decision_audio_operation.status == 'failed' %}
+  <form method="post" action="/daily-reports/{{ autopilot.daily_report_id }}/audio/decision">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">重新生成决策版语音</button>
+  </form>
+  {% endif %}
+  {% if autopilot.overview_audio_operation and autopilot.overview_audio_operation.status == 'failed' %}
+  <form method="post" action="/daily-reports/{{ autopilot.daily_report_id }}/audio/overview">
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit">重新生成全览版语音</button>
+  </form>
+  {% endif %}
+  {% endif %}
   {% if autopilot.chinese_enrichment.recorded %}
   <p class="metric-note">中文增强候选 {{ autopilot.chinese_enrichment.candidate_total }} · MiniMax 完整成功 {{ autopilot.chinese_enrichment.model_success }}{% if autopilot.chinese_enrichment.partial_fallback %} · 部分字段回退 {{ autopilot.chinese_enrichment.partial_fallback }}{% endif %} · 整条规则回退 {{ autopilot.chinese_enrichment.rule_fallback }}{% if autopilot.chinese_enrichment.budget_fallback %} · 安全上限回退 {{ autopilot.chinese_enrichment.budget_fallback }}{% endif %}{% if autopilot.chinese_enrichment.candidate_total > autopilot.chinese_enrichment.processed %} · 待处理 {{ autopilot.chinese_enrichment.candidate_total - autopilot.chinese_enrichment.processed }}{% endif %}</p>
   {% if autopilot.chinese_enrichment.error_counts %}<p class="metric-note"><strong>主要回退原因：</strong>{% for code, count in autopilot.chinese_enrichment.error_counts.items() %}{{ autopilot.chinese_enrichment.error_labels[code] }} {{ count }} 条{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}

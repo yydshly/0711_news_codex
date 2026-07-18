@@ -508,3 +508,79 @@ def test_completed_task_does_not_claim_that_partial_collection_is_still_running(
     assert response.status_code == 200
     assert "自动日报已完成" in response.text
     assert "会继续生成中文日报" not in response.text
+
+
+def test_audio_partial_task_page_preserves_report_and_guides_failed_audio_retry(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_operation = OperationRunRecord(
+        operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+        trigger="test",
+        status=OperationStatus.SUCCEEDED.value,
+        requested_scope={},
+        result_summary={},
+    )
+    db_session.add(source_operation)
+    db_session.flush()
+    report = DailyReportRecord(
+        report_date=date(2026, 7, 18),
+        timezone="Asia/Shanghai",
+        window_hours=24,
+        window_start=datetime(2026, 7, 17, tzinfo=UTC),
+        window_end=datetime(2026, 7, 18, tzinfo=UTC),
+        source_operation_id=source_operation.id,
+        status="archived",
+        revision=1,
+        generation_summary={},
+        generated_at=datetime(2026, 7, 18, tzinfo=UTC),
+    )
+    db_session.add(report)
+    db_session.flush()
+    report_id = report.id
+    decision = OperationRunRecord(
+        operation_type=OperationType.DAILY_REPORT_AUDIO.value,
+        trigger="autopilot",
+        status=OperationStatus.SUCCEEDED.value,
+        requested_scope={"daily_report_id": report_id, "rendition": "decision"},
+        result_summary={},
+    )
+    overview = OperationRunRecord(
+        operation_type=OperationType.DAILY_REPORT_AUDIO.value,
+        trigger="autopilot",
+        status=OperationStatus.FAILED.value,
+        requested_scope={"daily_report_id": report_id, "rendition": "overview"},
+        result_summary={},
+        error_message="情报全览语音失败。",
+    )
+    db_session.add_all((decision, overview))
+    db_session.flush()
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="web",
+        requested_scope={"wave_plan": serialize_wave_plan(_wave_plan(24))},
+    )
+    DailyAutopilotRepository(db_session).transition(
+        run.id,
+        stage=DailyAutopilotStage.COMPLETED,
+        status="succeeded",
+        daily_report_id=report_id,
+        decision_audio_operation_id=decision.id,
+        overview_audio_operation_id=overview.id,
+    )
+    run.result_summary = {
+        "outcome": "audio_partial",
+        "daily_report_id": report_id,
+        "decision_audio_status": "succeeded",
+        "overview_audio_status": "failed",
+    }
+    run_id = run.id
+    db_session.commit()
+    client, _token = _client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-autopilot/{run_id}")
+
+    assert response.status_code == 200
+    assert f'href="/daily-reports/{report_id}"' in response.text
+    assert "日报内容已完成，情报全览语音失败" in response.text
+    assert "重新生成全览版语音" in response.text
+    assert "重新抓取" not in response.text
