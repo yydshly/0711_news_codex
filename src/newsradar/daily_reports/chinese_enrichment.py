@@ -77,8 +77,12 @@ class _ChineseResponse(BaseModel):
 
     zh_title: str
     zh_summary: str
+    review_recommendation: str
+    evidence_assessment: str
 
-    @field_validator("zh_title", "zh_summary")
+    @field_validator(
+        "zh_title", "zh_summary", "review_recommendation", "evidence_assessment"
+    )
     @classmethod
     def validate_text(cls, value: str) -> str:
         cleaned = value.strip()
@@ -91,6 +95,8 @@ class _ChineseResponse(BaseModel):
 class DailyReportChineseCopy:
     zh_title: str
     zh_summary: str
+    review_recommendation: str
+    evidence_assessment: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +170,8 @@ class DailyReportChineseEnricher:
         fallback = _ChineseResponse(
             zh_title="中文增强暂不可用",
             zh_summary="本条内容暂时使用固定快照回退。",
+            review_recommendation="建议先核对现有公开材料，再决定是否进入重点跟踪。",
+            evidence_assessment="当前使用规则回退生成说明，需结合已有公开证据继续判断。",
         )
         result = await MiniMaxClient(self.settings, self.http, usages.append).structured(
             "daily_report_chinese_enrichment",
@@ -176,14 +184,7 @@ class DailyReportChineseEnricher:
                 _MAX_ITEM_TIMEOUT_SECONDS,
             ),
         )
-        snapshot_copy = DailyReportChineseCopy(
-            zh_title=_snapshot_text(candidate.snapshot, "zh_title", "未命名事件"),
-            zh_summary=_snapshot_text(
-                candidate.snapshot,
-                "zh_summary",
-                "当前公开材料不足以形成完整中文概述。",
-            ),
-        )
+        snapshot_copy = rule_based_chinese_copy(candidate.snapshot)
         if result is fallback:
             return self._fallback_result(
                 candidate,
@@ -203,6 +204,8 @@ class DailyReportChineseEnricher:
             copy=DailyReportChineseCopy(
                 zh_title=result.zh_title,
                 zh_summary=result.zh_summary,
+                review_recommendation=result.review_recommendation,
+                evidence_assessment=result.evidence_assessment,
             ),
             origin="model",
             error_code=None,
@@ -238,14 +241,7 @@ class DailyReportChineseEnricher:
                     error=safe_error,
                 )
             )
-        copy = snapshot_copy or DailyReportChineseCopy(
-            zh_title=_snapshot_text(candidate.snapshot, "zh_title", "未命名事件"),
-            zh_summary=_snapshot_text(
-                candidate.snapshot,
-                "zh_summary",
-                "当前公开材料不足以形成完整中文概述。",
-            ),
-        )
+        copy = snapshot_copy or rule_based_chinese_copy(candidate.snapshot)
         return DailyReportChineseResult(
             candidate=candidate,
             copy=copy,
@@ -270,8 +266,9 @@ class DailyReportChineseEnricher:
         context["event_key"] = candidate.key
         return (
             f"{UNTRUSTED_PREAMBLE}\n"
-            "只生成简体中文标题和中文文章概述。不得判断来源合法性、事件确认状态、"
-            "证据强度、收录或审核结论。\n"
+            "只生成简体中文标题、中文文章概述、中文审核建议和中文证据评价。"
+            "固定日报材料已经给出审核结论所需事实；不得判断或改变来源合法性、事件确认状态、"
+            "证据强度、收录或审核结论。审核建议和证据评价只能解释已有事实与下一步核对动作。\n"
             f"固定日报材料：{json.dumps(context, ensure_ascii=False)}\n"
             f"JSON schema: {json.dumps(_ChineseResponse.model_json_schema())}"
         )
@@ -280,6 +277,54 @@ class DailyReportChineseEnricher:
 def _snapshot_text(snapshot: dict[str, object], key: str, fallback: str) -> str:
     value = snapshot.get(key)
     return value.strip() if isinstance(value, str) and value.strip() else fallback
+
+
+def rule_based_chinese_copy(snapshot: dict[str, object]) -> DailyReportChineseCopy:
+    recommendation, assessment = _rule_explanations(snapshot)
+    return DailyReportChineseCopy(
+        zh_title=_snapshot_text(snapshot, "zh_title", "未命名事件"),
+        zh_summary=_snapshot_text(
+            snapshot,
+            "zh_summary",
+            "当前公开材料不足以形成完整中文概述。",
+        ),
+        review_recommendation=recommendation,
+        evidence_assessment=assessment,
+    )
+
+
+def _rule_explanations(snapshot: dict[str, object]) -> tuple[str, str]:
+    roots = snapshot.get("independent_root_count")
+    root_count = roots if isinstance(roots, int) and not isinstance(roots, bool) else 0
+    status = _snapshot_text(snapshot, "status", "emerging")
+    if status == "confirmed" or root_count >= 2:
+        return (
+            "建议跟踪后续影响、正式执行节点和新的权威公开材料。",
+            "现有公开材料已具备较强的独立交叉印证，可作为持续跟踪信号。",
+        )
+    limitations = " ".join(_string_values(snapshot.get("limitations"))).lower()
+    confirmation = _snapshot_text(snapshot, "confirmation_summary", "").lower()
+    combined = f"{limitations} {confirmation}"
+    if any(marker in combined for marker in ("independent", "独立", "second", "第二")):
+        return (
+            "建议补充第二个独立公开来源，并核对其发布时间与原始材料。",
+            "当前已有公开线索，但独立证据根数量不足，仍需交叉确认。",
+        )
+    if any(marker in combined for marker in ("official", "官方", "一手")):
+        return (
+            "建议优先核对主管机构、公司或项目方的官方一手发布。",
+            "当前公开线索尚未形成可核验的官方一手证据，暂不宜作为已确认事实。",
+        )
+    return (
+        "建议保留为待核对信号，优先补充可追溯的原始发布或独立报道。",
+        "现有材料尚不足以形成独立交叉印证，需要结合后续公开信息继续评估。",
+    )
+
+
+def _string_values(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
 
 
 def _safe_context(value: object) -> str:
@@ -300,6 +345,16 @@ def _is_meaningful_simplified_chinese(result: _ChineseResponse) -> bool:
         minimum_han=3,
     ) and _is_meaningful_chinese_text(
         result.zh_summary,
+        minimum_length=_MIN_SUMMARY_LENGTH,
+        maximum_length=_MAX_SUMMARY_LENGTH,
+        minimum_han=8,
+    ) and _is_meaningful_chinese_text(
+        result.review_recommendation,
+        minimum_length=_MIN_SUMMARY_LENGTH,
+        maximum_length=_MAX_SUMMARY_LENGTH,
+        minimum_han=8,
+    ) and _is_meaningful_chinese_text(
+        result.evidence_assessment,
         minimum_length=_MIN_SUMMARY_LENGTH,
         maximum_length=_MAX_SUMMARY_LENGTH,
         minimum_han=8,

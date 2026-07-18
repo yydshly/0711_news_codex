@@ -50,9 +50,11 @@ def test_enricher_returns_valid_chinese_without_sending_urls() -> None:
                     {
                         "message": {
                             "content": json.dumps(
-                                {
-                                    "zh_title": "产品正式发布",
-                                    "zh_summary": "官方材料显示，该产品已经正式发布。",
+                                    {
+                                        "zh_title": "产品正式发布",
+                                        "zh_summary": "官方材料显示，该产品已经正式发布。",
+                                        "review_recommendation": "建议继续跟踪正式上线后的影响与后续公开材料。",
+                                        "evidence_assessment": "现有公开材料可支持当前产品发布信息，仍应关注后续更新。",
                                 },
                                 ensure_ascii=False,
                             )
@@ -88,9 +90,11 @@ def test_non_chinese_model_output_falls_back_only_that_item() -> None:
                     {
                         "message": {
                             "content": json.dumps(
-                                {
-                                    "zh_title": "English only",
-                                    "zh_summary": "Still English only",
+                                    {
+                                        "zh_title": "English only",
+                                        "zh_summary": "Still English only",
+                                        "review_recommendation": "建议继续核对公开材料并补充独立来源。",
+                                        "evidence_assessment": "当前证据仍需结合后续公开信息进一步确认。",
                                 }
                             )
                         }
@@ -125,6 +129,28 @@ def test_missing_key_never_calls_http_and_records_no_api_key() -> None:
     result = asyncio.run(run())[0]
     assert result.origin == "rule_fallback"
     assert result.error_code == "no_api_key"
+
+
+def test_rule_fallback_explains_distinct_evidence_gaps() -> None:
+    only_discovery = candidate(201)
+    only_discovery.snapshot["confirmation_summary"] = "仅有发现型媒体报道，尚未找到官方公告。"
+    only_discovery.snapshot["limitations"] = ["缺少官方一手发布。"]
+
+    missing_second_root = candidate(202)
+    missing_second_root.snapshot["confirmation_summary"] = "已有官方发布，但只有一个独立证据根。"
+    missing_second_root.snapshot["limitations"] = ["仍需第二个独立公开来源确认。"]
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            return await DailyReportChineseEnricher(
+                Settings(_env_file=None), http
+            ).enrich_batch((only_discovery, missing_second_root))
+
+    first, second = asyncio.run(run())
+
+    assert first.origin == second.origin == "rule_fallback"
+    assert first.copy.review_recommendation != second.copy.review_recommendation
+    assert first.copy.evidence_assessment != second.copy.evidence_assessment
 
 
 def test_timeout_falls_back_with_safe_code() -> None:
@@ -469,7 +495,12 @@ def test_invalid_or_non_simplified_model_copy_falls_back(
     async def fake_structured(
         self, purpose, model, prompt, response_type, fallback, timeout_seconds=None
     ):
-        return response_type(zh_title=zh_title, zh_summary=zh_summary)
+        return response_type(
+            zh_title=zh_title,
+            zh_summary=zh_summary,
+            review_recommendation="建议继续核对公开材料并补充独立来源。",
+            evidence_assessment="当前证据仍需结合后续公开信息进一步确认。",
+        )
 
     monkeypatch.setattr(
         "newsradar.daily_reports.chinese_enrichment.MiniMaxClient.structured",
@@ -511,7 +542,12 @@ def test_meaningful_simplified_chinese_with_ascii_terms_is_accepted(
     async def fake_structured(
         self, purpose, model, prompt, response_type, fallback, timeout_seconds=None
     ):
-        return response_type(zh_title=zh_title, zh_summary=zh_summary)
+        return response_type(
+            zh_title=zh_title,
+            zh_summary=zh_summary,
+            review_recommendation="建议继续核对公开材料并补充独立来源。",
+            evidence_assessment="当前证据仍需结合后续公开信息进一步确认。",
+        )
 
     monkeypatch.setattr(
         "newsradar.daily_reports.chinese_enrichment.MiniMaxClient.structured",
