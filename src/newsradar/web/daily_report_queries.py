@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from newsradar.daily_reports.chinese_enrichment import candidate_key
+from newsradar.daily_reports.chinese_enrichment import (
+    DAILY_CHINESE_ERROR_LABELS,
+    DAILY_CHINESE_SAFE_ERROR_CODES,
+    candidate_key,
+)
 from newsradar.daily_reports.intelligence import (
     DecisionReportItem,
     OverviewReportItem,
@@ -42,19 +48,7 @@ def _snapshot_float(snapshot: dict[str, object], key: str) -> float:
     return float(value)
 
 
-_CHINESE_ENRICHMENT_ERROR_LABELS = {
-    "no_api_key": "未配置文本模型",
-    "timeout": "请求超时",
-    "http_401": "凭据无效",
-    "http_403": "缺少文本模型权限",
-    "http_429": "请求频率受限",
-    "http_5xx": "模型服务异常",
-    "transport_error": "网络连接异常",
-    "schema_validation_failed": "返回结构无效",
-    "non_chinese_output": "返回内容不是有效中文",
-    "budget_limit": "本期安全上限",
-    "unexpected_error": "内部异常",
-}
+_EVENT_VERSION_KEY = re.compile(r"[1-9]\d*:[1-9]\d*")
 
 
 def _non_negative_integer(value: object) -> int:
@@ -112,6 +106,7 @@ class DailyReportChineseEnrichmentView:
     rule_fallback: int
     budget_fallback: int
     error_counts: dict[str, int]
+    error_labels: dict[str, str]
     recorded: bool
 
 
@@ -132,50 +127,98 @@ def _chinese_enrichment_view(
         or not isinstance(raw.get("error_counts"), dict)
         or not isinstance(raw.get("items"), dict)
     ):
-        return DailyReportChineseEnrichmentView(0, 0, 0, 0, 0, {}, False), {}
+        return _empty_chinese_enrichment_view()
+    candidate_total = raw["candidate_total"]
+    processed = raw["processed"]
+    model_success = raw["model_success"]
+    rule_fallback = raw["rule_fallback"]
+    budget_fallback = raw["budget_fallback"]
+    if (
+        processed > candidate_total
+        or model_success + rule_fallback + budget_fallback != processed
+    ):
+        return _empty_chinese_enrichment_view()
+    model_budget = raw.get("model_budget")
+    if model_budget is not None:
+        if not _is_non_negative_integer(model_budget):
+            return _empty_chinese_enrichment_view()
+        if (
+            model_success + rule_fallback > min(candidate_total, model_budget)
+            or budget_fallback > max(candidate_total - model_budget, 0)
+        ):
+            return _empty_chinese_enrichment_view()
+
     raw_errors = raw["error_counts"]
-    errors = {
-        key: _non_negative_integer(value)
+    if not all(
+        isinstance(key, str)
+        and key in DAILY_CHINESE_SAFE_ERROR_CODES
+        and _is_non_negative_integer(value)
+        and value > 0
         for key, value in raw_errors.items()
-        if isinstance(key, str) and key in _CHINESE_ENRICHMENT_ERROR_LABELS
-    }
+    ):
+        return _empty_chinese_enrichment_view()
     origins: dict[str, DailyReportChineseOriginView] = {}
+    derived_origins: Counter[str] = Counter()
+    derived_errors: Counter[str] = Counter()
     raw_items = raw["items"]
     for key, value in raw_items.items():
-        if not isinstance(key, str) or not isinstance(value, dict):
-            continue
+        if (
+            not isinstance(key, str)
+            or _EVENT_VERSION_KEY.fullmatch(key) is None
+            or not isinstance(value, dict)
+        ):
+            return _empty_chinese_enrichment_view()
         origin = value.get("origin")
         error = value.get("error_code")
-        if origin == "model":
+        if origin == "model" and error is None:
             origins[key] = DailyReportChineseOriginView("model", None, "MiniMax")
-        elif origin == "rule_fallback":
-            safe_error = (
-                error
-                if isinstance(error, str) and error in _CHINESE_ENRICHMENT_ERROR_LABELS
-                else "unexpected_error"
-                if isinstance(error, str)
-                else None
-            )
-            label = _CHINESE_ENRICHMENT_ERROR_LABELS.get(safe_error, "安全规则回退")
+        elif (
+            origin == "rule_fallback"
+            and isinstance(error, str)
+            and error in DAILY_CHINESE_SAFE_ERROR_CODES
+            and error != "budget_limit"
+        ):
+            label = DAILY_CHINESE_ERROR_LABELS[error]
             origins[key] = DailyReportChineseOriginView(
-                "rule_fallback", safe_error, f"规则回退（{label}）"
+                "rule_fallback", error, f"规则回退（{label}）"
             )
-        elif origin == "budget_limit":
+        elif origin == "budget_limit" and error == "budget_limit":
             origins[key] = DailyReportChineseOriginView(
                 "budget_limit", "budget_limit", "安全上限回退（本期安全上限）"
             )
+        else:
+            return _empty_chinese_enrichment_view()
+        derived_origins[origin] += 1
+        if isinstance(error, str):
+            derived_errors[error] += 1
+    errors = dict(sorted(derived_errors.items()))
+    if (
+        len(raw_items) != processed
+        or derived_origins["model"] != model_success
+        or derived_origins["rule_fallback"] != rule_fallback
+        or derived_origins["budget_limit"] != budget_fallback
+        or dict(sorted(raw_errors.items())) != errors
+    ):
+        return _empty_chinese_enrichment_view()
     return (
         DailyReportChineseEnrichmentView(
-            candidate_total=_non_negative_integer(raw.get("candidate_total")),
-            processed=_non_negative_integer(raw.get("processed")),
-            model_success=_non_negative_integer(raw.get("model_success")),
-            rule_fallback=_non_negative_integer(raw.get("rule_fallback")),
-            budget_fallback=_non_negative_integer(raw.get("budget_fallback")),
-            error_counts=dict(sorted(errors.items())),
+            candidate_total=candidate_total,
+            processed=processed,
+            model_success=model_success,
+            rule_fallback=rule_fallback,
+            budget_fallback=budget_fallback,
+            error_counts=errors,
+            error_labels={code: DAILY_CHINESE_ERROR_LABELS[code] for code in errors},
             recorded=True,
         ),
         origins,
     )
+
+
+def _empty_chinese_enrichment_view() -> tuple[
+    DailyReportChineseEnrichmentView, dict[str, DailyReportChineseOriginView]
+]:
+    return DailyReportChineseEnrichmentView(0, 0, 0, 0, 0, {}, {}, False), {}
 
 
 @dataclass(frozen=True, slots=True)

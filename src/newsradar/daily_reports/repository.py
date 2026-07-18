@@ -11,8 +11,9 @@ from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from newsradar.ai.minimax import SAFE_MODEL_ERROR_CODES, bounded_token_count
+from newsradar.ai.minimax import bounded_token_count
 from newsradar.daily_reports.chinese_enrichment import (
+    DAILY_CHINESE_SAFE_ERROR_CODES,
     DailyReportChineseCandidate,
     DailyReportChineseResult,
     candidate_key,
@@ -43,9 +44,6 @@ MAX_REVISION_ATTEMPTS = 3
 _DAILY_CHINESE_ENRICHMENT_PURPOSE = "daily_report_chinese_enrichment"
 _SAFE_DAILY_CHINESE_ORIGINS = frozenset({"model", "rule_fallback", "budget_limit"})
 _SAFE_DAILY_CHINESE_OUTCOMES = frozenset({"success", "fallback", "retry"})
-_SAFE_DAILY_CHINESE_ERROR_CODES = SAFE_MODEL_ERROR_CODES | frozenset(
-    {"budget_limit", "non_chinese_output", "unexpected_error"}
-)
 _SAFE_MODEL_NAME = re.compile(r"[A-Za-z0-9._-]{1,120}")
 _MAX_MODEL_LATENCY_MS = 300_000.0
 
@@ -849,7 +847,7 @@ def _safe_origin(value: object) -> str:
 def _safe_error_code(value: object) -> str | None:
     return (
         value
-        if isinstance(value, str) and value in _SAFE_DAILY_CHINESE_ERROR_CODES
+        if isinstance(value, str) and value in DAILY_CHINESE_SAFE_ERROR_CODES
         else None
     )
 

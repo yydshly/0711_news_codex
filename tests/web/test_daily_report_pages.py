@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from newsradar.daily_reports import chinese_enrichment
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     DailyReportDraft,
@@ -184,9 +185,77 @@ def test_detail_normalizes_unknown_chinese_enrichment_error_code(
     view = DailyReportQueryService(db_session).detail(report.id)
 
     assert view is not None
-    assert view.confirmed[0].chinese_origin is not None
-    assert view.confirmed[0].chinese_origin.error_code == "unexpected_error"
-    assert view.confirmed[0].chinese_origin.label_zh == "规则回退（内部异常）"
+    assert view.chinese_enrichment.recorded is False
+    assert view.confirmed[0].chinese_origin is None
+
+
+@pytest.mark.parametrize(
+    "audit_update",
+    [
+        {"processed": 0},
+        {"model_success": 0, "rule_fallback": 0},
+        {"candidate_total": 0},
+        {"error_counts": {"timeout": 1}},
+        {"items": {"not-an-event-version": {"origin": "model", "error_code": None}}},
+        {"items": {"1:1": {"origin": "unknown", "error_code": None}}},
+        {"items": {"1:1": {"origin": "model", "error_code": "timeout"}}},
+        {"items": {"1:1": {"origin": "rule_fallback", "error_code": "private text"}}},
+        {"items": {"1:1": {"origin": "budget_limit", "error_code": None}}},
+    ],
+)
+def test_inconsistent_chinese_enrichment_audit_is_unrecorded(
+    audit_update: dict[str, object],
+) -> None:
+    audit = {
+        "candidate_total": 1,
+        "processed": 1,
+        "model_success": 1,
+        "rule_fallback": 0,
+        "budget_fallback": 0,
+        "error_counts": {},
+        "items": {"1:1": {"origin": "model", "error_code": None}},
+    }
+    audit.update(audit_update)
+
+    from newsradar.web.daily_report_queries import _chinese_enrichment_view
+
+    view, origins = _chinese_enrichment_view({"daily_chinese_enrichment": audit})
+
+    assert view.recorded is False
+    assert origins == {}
+
+
+def test_every_persistable_chinese_enrichment_error_has_safe_chinese_label() -> None:
+    daily_chinese_error_labels = chinese_enrichment.DAILY_CHINESE_ERROR_LABELS
+    items = {
+        f"{index}:1": {
+            "origin": "budget_limit" if code == "budget_limit" else "rule_fallback",
+            "error_code": code,
+        }
+        for index, code in enumerate(daily_chinese_error_labels, start=1)
+    }
+    audit = {
+        "candidate_total": len(items),
+        "processed": len(items),
+        "model_success": 0,
+        "rule_fallback": len(items) - 1,
+        "budget_fallback": 1,
+        "error_counts": {code: 1 for code in daily_chinese_error_labels},
+        "items": items,
+    }
+
+    from newsradar.web.daily_report_queries import _chinese_enrichment_view
+
+    view, origins = _chinese_enrichment_view({"daily_chinese_enrichment": audit})
+
+    assert view.recorded is True
+    assert set(view.error_labels) == set(daily_chinese_error_labels)
+    assert all(
+        label and any("\u3400" <= char <= "\u9fff" for char in label)
+        for label in view.error_labels.values()
+    )
+    assert {origin.error_code for origin in origins.values()} == set(daily_chinese_error_labels)
+    assert all("private" not in origin.label_zh for origin in origins.values())
 
 
 def test_daily_report_page_shows_pending_and_budget_limit_enrichment_states(
@@ -578,9 +647,7 @@ def review_overview_for_audio(session: Session, report_id: int) -> None:
                 zh_summary=f"已审核全览概述 {index + 1}",
                 review_recommendation="继续关注并核验后续。",
                 evidence_assessment=(
-                    "已有可靠公开证据。"
-                    if index == 0
-                    else "尚待进一步确认第一方来源。"
+                    "已有可靠公开证据。" if index == 0 else "尚待进一步确认第一方来源。"
                 ),
             ),
         )
@@ -826,9 +893,7 @@ def test_overview_audio_enqueue_rejects_fully_reviewed_report_with_no_included_i
         )
     repository.archive(report_id)
 
-    with pytest.raises(
-        ValueError, match="daily_report_overview_has_no_included_items"
-    ):
+    with pytest.raises(ValueError, match="daily_report_overview_has_no_included_items"):
         OperationCommandService(db_session).enqueue_daily_report_audio(
             report_id=report_id,
             rendition="overview",
@@ -902,9 +967,7 @@ def test_daily_report_audio_enqueue_reuses_active_operation_and_page_explains_qu
 
     assert first == second
     assert db_session.scalars(
-        select(OperationRunRecord).where(
-            OperationRunRecord.operation_type == "daily_report_audio"
-        )
+        select(OperationRunRecord).where(OperationRunRecord.operation_type == "daily_report_audio")
     ).all() == [db_session.get(OperationRunRecord, first)]
     client, _token = safe_client_with_token(db_session, monkeypatch)
     page = client.get(f"/daily-reports/{report_id}")
@@ -1382,9 +1445,7 @@ def test_overview_editorial_review_post_requires_token_and_writes_draft(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == (
-        f"/daily-reports/{report.id}#overview-item-{item.id}"
-    )
+    assert response.headers["location"] == (f"/daily-reports/{report.id}#overview-item-{item.id}")
     saved = DailyReportQueryService(db_session).detail(report.id)
     assert saved is not None
     saved_item = next(row for row in saved.overview.items if row.item_id == item.id)
@@ -1513,8 +1574,7 @@ def test_draft_page_renders_overview_summary_all_candidates_and_chinese_review_f
     assert f'id="overview-item-{first_id}"' in response.text
     assert f'id="overview-item-{second_id}"' in response.text
     assert (
-        f"/daily-reports/{report_id}/overview-items/{second_id}/editorial-reviews"
-        in response.text
+        f"/daily-reports/{report_id}/overview-items/{second_id}/editorial-reviews" in response.text
     )
     assert "中文文章概述" in response.text
     assert "中文审核建议" in response.text
@@ -1546,10 +1606,7 @@ def test_overview_body_marks_needs_evidence_items_with_explicit_warning(
     response = client.get(f"/daily-reports/{report_id}")
 
     assert response.status_code == 200
-    assert (
-        '<span class="overview-brief-warning">尚待进一步确认</span>'
-        in response.text
-    )
+    assert '<span class="overview-brief-warning">尚待进一步确认</span>' in response.text
 
 
 def test_archived_page_keeps_overview_audit_history_read_only(

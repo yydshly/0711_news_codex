@@ -62,6 +62,7 @@
   {% if autopilot.daily_report_id %}<p><a href="/daily-reports/{{ autopilot.daily_report_id }}">打开生成的中文日报</a></p>{% endif %}
   {% if autopilot.chinese_enrichment.recorded %}
   <p class="metric-note">中文增强候选 {{ autopilot.chinese_enrichment.candidate_total }} · MiniMax 成功 {{ autopilot.chinese_enrichment.model_success }} · 规则回退 {{ autopilot.chinese_enrichment.rule_fallback }}{% if autopilot.chinese_enrichment.budget_fallback %} · 安全上限回退 {{ autopilot.chinese_enrichment.budget_fallback }}{% endif %}{% if autopilot.chinese_enrichment.candidate_total > autopilot.chinese_enrichment.processed %} · 待处理 {{ autopilot.chinese_enrichment.candidate_total - autopilot.chinese_enrichment.processed }}{% endif %}</p>
+  {% if autopilot.chinese_enrichment.error_counts %}<p class="metric-note"><strong>主要回退原因：</strong>{% for code, count in autopilot.chinese_enrichment.error_counts.items() %}{{ autopilot.chinese_enrichment.error_labels[code] }} {{ count }} 条{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
   {% endif %}
 </section>
 

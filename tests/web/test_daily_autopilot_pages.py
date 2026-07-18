@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from newsradar.daily_reports import chinese_enrichment
 from newsradar.daily_reports.autopilot import (
     DailyAutopilotStage,
     serialize_catalog_plan,
@@ -102,7 +103,13 @@ def test_automatic_task_page_shows_linked_report_enrichment_metrics(
                 "rule_fallback": 1,
                 "budget_fallback": 0,
                 "error_counts": {"http_429": 1},
-                "items": {},
+                "items": {
+                    "1:1": {"origin": "model", "error_code": None},
+                    "2:1": {
+                        "origin": "rule_fallback",
+                        "error_code": "http_429",
+                    },
+                },
             },
         },
         generated_at=datetime(2026, 7, 18, tzinfo=UTC),
@@ -130,6 +137,130 @@ def test_automatic_task_page_shows_linked_report_enrichment_metrics(
     assert "中文增强候选 2" in response.text
     assert "MiniMax 成功 1" in response.text
     assert "规则回退 1" in response.text
+
+
+def test_automatic_task_page_hides_inconsistent_enrichment_audit(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operation = OperationRunRecord(
+        operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+        trigger="test",
+        status=OperationStatus.SUCCEEDED.value,
+        requested_scope={},
+        result_summary={},
+    )
+    db_session.add(operation)
+    db_session.flush()
+    report = DailyReportRecord(
+        report_date=date(2026, 7, 18),
+        timezone="Asia/Shanghai",
+        window_hours=24,
+        window_start=datetime(2026, 7, 17, tzinfo=UTC),
+        window_end=datetime(2026, 7, 18, tzinfo=UTC),
+        source_operation_id=operation.id,
+        status="draft",
+        revision=1,
+        generation_summary={
+            "daily_chinese_enrichment": {
+                "candidate_total": 1,
+                "processed": 1,
+                "model_success": 1,
+                "rule_fallback": 0,
+                "budget_fallback": 0,
+                "error_counts": {},
+                "items": {},
+            }
+        },
+        generated_at=datetime(2026, 7, 18, tzinfo=UTC),
+    )
+    db_session.add(report)
+    db_session.flush()
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="test",
+        requested_scope={"wave_plan": serialize_wave_plan(_wave_plan(24))},
+    )
+    DailyAutopilotRepository(db_session).transition(
+        run.id,
+        stage=DailyAutopilotStage.WRITE_REVIEWS,
+        event_operation_id=operation.id,
+        daily_report_id=report.id,
+    )
+    run_id = run.id
+    db_session.commit()
+
+    client, _token = _client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-autopilot/{run_id}")
+
+    assert response.status_code == 200
+    assert "中文增强候选" not in response.text
+
+
+def test_automatic_task_page_uses_complete_safe_chinese_error_labels(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operation = OperationRunRecord(
+        operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+        trigger="test",
+        status=OperationStatus.SUCCEEDED.value,
+        requested_scope={},
+        result_summary={},
+    )
+    db_session.add(operation)
+    db_session.flush()
+    daily_chinese_error_labels = chinese_enrichment.DAILY_CHINESE_ERROR_LABELS
+    items = {
+        f"{index}:1": {
+            "origin": "budget_limit" if code == "budget_limit" else "rule_fallback",
+            "error_code": code,
+        }
+        for index, code in enumerate(daily_chinese_error_labels, start=1)
+    }
+    report = DailyReportRecord(
+        report_date=date(2026, 7, 18),
+        timezone="Asia/Shanghai",
+        window_hours=24,
+        window_start=datetime(2026, 7, 17, tzinfo=UTC),
+        window_end=datetime(2026, 7, 18, tzinfo=UTC),
+        source_operation_id=operation.id,
+        status="draft",
+        revision=1,
+        generation_summary={
+            "daily_chinese_enrichment": {
+                "candidate_total": len(items),
+                "processed": len(items),
+                "model_success": 0,
+                "rule_fallback": len(items) - 1,
+                "budget_fallback": 1,
+                "error_counts": {code: 1 for code in daily_chinese_error_labels},
+                "items": items,
+            }
+        },
+        generated_at=datetime(2026, 7, 18, tzinfo=UTC),
+    )
+    db_session.add(report)
+    db_session.flush()
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="test",
+        requested_scope={"wave_plan": serialize_wave_plan(_wave_plan(24))},
+    )
+    DailyAutopilotRepository(db_session).transition(
+        run.id,
+        stage=DailyAutopilotStage.WRITE_REVIEWS,
+        event_operation_id=operation.id,
+        daily_report_id=report.id,
+    )
+    run_id = run.id
+    db_session.commit()
+
+    client, _token = _client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-autopilot/{run_id}")
+
+    assert response.status_code == 200
+    for code, label in daily_chinese_error_labels.items():
+        assert label in response.text
+        assert code not in response.text
 
 
 def test_autopilot_post_queues_then_redirects_to_task_page(

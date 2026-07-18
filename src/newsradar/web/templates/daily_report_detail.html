@@ -334,6 +334,7 @@
   <p>确认 {{ daily_report.report.confirmed_count }} 条 · 线索 {{ daily_report.report.emerging_count }} 条{% if daily_report.generation_summary.get('skipped_invalid_event') %} · 跳过无效事件 {{ daily_report.generation_summary.get('skipped_invalid_event') }} 条{% endif %}</p>
   {% if daily_report.chinese_enrichment.recorded %}
   <p><strong>自动日报中文增强：</strong>候选 {{ daily_report.chinese_enrichment.candidate_total }} 条 · MiniMax 成功 {{ daily_report.chinese_enrichment.model_success }} 条 · 规则回退 {{ daily_report.chinese_enrichment.rule_fallback }} 条{% if daily_report.chinese_enrichment.budget_fallback %} · 安全上限回退 {{ daily_report.chinese_enrichment.budget_fallback }} 条{% endif %}{% if daily_report.chinese_enrichment.candidate_total > daily_report.chinese_enrichment.processed %} · 待处理 {{ daily_report.chinese_enrichment.candidate_total - daily_report.chinese_enrichment.processed }} 条{% endif %}。模型只负责中文表达，不决定确认状态、证据或来源合法性。</p>
+  {% if daily_report.chinese_enrichment.error_counts %}<p class="metric-note"><strong>主要回退原因：</strong>{% for code, count in daily_report.chinese_enrichment.error_counts.items() %}{{ daily_report.chinese_enrichment.error_labels[code] }} {{ count }} 条{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
   {% elif daily_report.generation_summary.get('minimax_degraded') is sameas true %}
   <p><strong>MiniMax：已降级</strong>，本版使用规则中文内容；确认状态与来源合法性不由模型决定。</p>
   {% elif daily_report.generation_summary.get('minimax_degraded') is sameas false %}

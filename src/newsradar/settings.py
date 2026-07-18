@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MAX_DAILY_REPORT_MODEL_ITEMS = 1000
 
 
 class Settings(BaseSettings):
@@ -20,7 +22,7 @@ class Settings(BaseSettings):
     event_model_timeout_seconds: float = 45
     event_model_max_concurrency: int = 2
     event_top_limit: int = 20
-    daily_report_model_max_items: int = 60
+    daily_report_model_max_items: int = Field(default=60, ge=0, le=MAX_DAILY_REPORT_MODEL_ITEMS)
     github_token: SecretStr | None = None
     reddit_client_id: SecretStr | None = None
     reddit_client_secret: SecretStr | None = None
@@ -36,6 +38,13 @@ class Settings(BaseSettings):
     worker_heartbeat_seconds: float = 15
     default_pages_per_fetch: int = 1
     max_pages_per_fetch: int = 10
+
+    @field_validator("daily_report_model_max_items", mode="before")
+    @classmethod
+    def validate_daily_report_model_max_items(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("daily_report_model_max_items must be an integer")
+        return value
 
 
 @lru_cache

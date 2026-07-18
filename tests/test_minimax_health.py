@@ -20,6 +20,25 @@ def test_minimax_defaults_use_current_official_models() -> None:
     assert settings.daily_report_model_max_items == 60
 
 
+@pytest.mark.parametrize("value", [-1, 1001])
+def test_daily_report_model_budget_rejects_out_of_range_values(value: int) -> None:
+    with pytest.raises(ValueError, match="daily_report_model_max_items"):
+        Settings(_env_file=None, daily_report_model_max_items=value)
+
+
+@pytest.mark.parametrize("value", [False, True, 1.5])
+def test_daily_report_model_budget_rejects_non_integer_values(value: object) -> None:
+    with pytest.raises(ValueError, match="daily_report_model_max_items"):
+        Settings(_env_file=None, daily_report_model_max_items=value)
+
+
+@pytest.mark.parametrize("value", [0, 1000])
+def test_daily_report_model_budget_accepts_bounded_values(value: int) -> None:
+    assert Settings(
+        _env_file=None, daily_report_model_max_items=value
+    ).daily_report_model_max_items == value
+
+
 def test_config_check_reports_region_without_exposing_key() -> None:
     result = check_minimax_config(
         Settings(
