@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISLNK
 from typing import Literal
 
 from sqlalchemy import delete, select, update
@@ -148,14 +149,9 @@ class DailyReportPurgeHandler:
                         )
                     )
                 )
-                targets = tuple(
-                    self._audio_target(artifact.relative_audio_path)
-                    for artifact in artifacts
-                    if artifact.relative_audio_path is not None
-                )
-                for target in targets:
-                    if target.exists():
-                        target.unlink()
+                for artifact in artifacts:
+                    if artifact.relative_audio_path is not None:
+                        self._unlink_audio(artifact.relative_audio_path)
 
                 self._detach_external_references(session, report)
                 self._delete_owned_rows(session, report_id)
@@ -171,11 +167,18 @@ class DailyReportPurgeHandler:
             code = (
                 "daily_report_audio_path_outside_root"
                 if str(error) == "daily_report_audio_path_outside_root"
-                else "daily_report_audio_unlink_failed"
+                else (
+                    "daily_report_audio_path_symlink"
+                    if str(error) == "daily_report_audio_path_symlink"
+                    else "daily_report_audio_unlink_failed"
+                )
             )
             raise PurgeMemberError(
                 code,
-                code == "daily_report_audio_unlink_failed",
+                code in {
+                    "daily_report_audio_path_symlink",
+                    "daily_report_audio_unlink_failed",
+                },
             ) from error
 
     @staticmethod
@@ -221,12 +224,35 @@ class DailyReportPurgeHandler:
 
     def _audio_target(self, relative_audio_path: str) -> Path:
         relative = Path(relative_audio_path)
-        if relative.is_absolute():
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
             raise OSError("daily_report_audio_path_outside_root")
-        target = (self._audio_root / relative).resolve()
+        target = self._audio_root.joinpath(*relative.parts)
         if target == self._audio_root or not target.is_relative_to(self._audio_root):
             raise OSError("daily_report_audio_path_outside_root")
         return target
+
+    def _unlink_audio(self, relative_audio_path: str) -> None:
+        target = self._audio_target(relative_audio_path)
+        current = self._audio_root
+        for part in target.relative_to(self._audio_root).parts:
+            current /= part
+            try:
+                path_stat = current.lstat()
+            except FileNotFoundError:
+                return
+            reparse_point = bool(
+                (getattr(path_stat, "st_file_attributes", 0) or 0) & 0x400
+            )
+            if S_ISLNK(path_stat.st_mode) or reparse_point:
+                raise OSError("daily_report_audio_path_symlink")
+        # Keep validation adjacent to unlink. The lexical target is never
+        # resolved, so a final-component link introduced after lstat would be
+        # unlinked as a link rather than followed to another report's file.
+        target.unlink()
 
     @staticmethod
     def _detach_external_references(session: Session, report: DailyReportRecord) -> None:

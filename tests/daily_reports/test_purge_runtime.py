@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from pathlib import Path
+from stat import S_IFLNK
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -215,6 +217,68 @@ def test_path_escape_is_rejected_without_unlinking_or_deleting_report(tmp_path: 
         ]
         assert db.get(DailyReportRecord, report_id) is not None
     assert escaped.read_bytes() == b"outside-root"
+
+
+def test_in_root_audio_symlink_is_rejected_without_unlinking_target_or_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    report_directory = audio_root / "report-dir"
+    other_report_directory = audio_root / "other-report"
+    report_directory.mkdir(parents=True)
+    other_report_directory.mkdir(parents=True)
+    target = other_report_directory / "real.mp3"
+    target.write_bytes(b"other-report-audio")
+    link = report_directory / "link.mp3"
+    real_symlink = True
+    try:
+        link.symlink_to(Path("..") / "other-report" / "real.mp3")
+    except OSError as error:
+        if getattr(error, "winerror", None) != 1314:
+            raise
+        real_symlink = False
+        link.write_bytes(b"other-report-audio")
+        original_lstat = Path.lstat
+        original_resolve = Path.resolve
+        link_stat = original_lstat(link)
+
+        def simulated_lstat(path: Path) -> os.stat_result:
+            if path == link:
+                return os.stat_result((S_IFLNK | 0o777, *link_stat[1:]))
+            return original_lstat(path)
+
+        def simulated_resolve(path: Path, strict: bool = False) -> Path:
+            if path == link:
+                return target
+            return original_resolve(path, strict=strict)
+
+        monkeypatch.setattr(Path, "lstat", simulated_lstat)
+        monkeypatch.setattr(Path, "resolve", simulated_resolve)
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        _trash(db, report_id)
+        artifact = _audio(db, report_id, "report-dir/link.mp3")
+        artifact_id = artifact.id
+
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert result.retryable is True
+        assert result.result_summary["failures"] == [
+            {"report_id": report_id, "error_code": "daily_report_audio_path_symlink"}
+        ]
+        assert db.get(DailyReportRecord, report_id) is not None
+        assert db.get(DailyReportAudioArtifactRecord, artifact_id) is not None
+    assert link.exists()
+    if real_symlink:
+        assert link.is_symlink()
+    assert link.read_bytes() == b"other-report-audio"
+    assert target.read_bytes() == b"other-report-audio"
 
 
 def test_member_failure_does_not_block_other_reports_and_returns_partial(tmp_path: Path) -> None:
