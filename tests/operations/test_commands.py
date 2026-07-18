@@ -8,7 +8,10 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from newsradar.daily_reports.autopilot import DailyAutopilotStage
+from newsradar.daily_reports.autopilot import (
+    DailyAutopilotStage,
+    deserialize_wave_plan,
+)
 from newsradar.db.models import (
     Base,
     DailyAutopilotRunRecord,
@@ -26,6 +29,7 @@ from newsradar.sources.catalog_refresh import (
 )
 from newsradar.sources.catalog_refresh_repository import CatalogRefreshRepository
 from newsradar.waves import WaveMemberSnapshot, WavePlan
+from newsradar.waves.planning import wave_plan_from_members
 from newsradar.waves.repository import WaveRepository
 
 
@@ -169,47 +173,31 @@ def test_enqueue_catalog_refresh_freezes_members_and_scope() -> None:
         assert [member.source_id for member in members] == ["a", "b"]
 
 
-def test_enqueue_daily_autopilot_freezes_catalog_plan_and_continuation() -> None:
+def test_enqueue_daily_autopilot_freezes_wave_plan_and_continuation() -> None:
     now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
     with session() as db:
+        plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"), wave_member("b")),
+            window_hours=72,
+            trend_days=7,
+        )
         run_id = OperationCommandService(
             db,
             utcnow=lambda: now,
             settings=Settings(operation_timeout_seconds=30),
         ).enqueue_daily_autopilot(
-            plan=catalog_plan(catalog_member("b"), catalog_member("a")),
-            window_hours=24,
+            plan=plan,
             trigger="web",
         )
 
         run = db.get(DailyAutopilotRunRecord, run_id)
         assert run is not None
-        assert run.stage == DailyAutopilotStage.ENQUEUE_SOURCE_REFRESH.value
+        assert run.stage == DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value
         assert run.status == "queued"
-        assert run.requested_scope["catalog_plan"]["members"] == [
-            {
-                "source_id": "a",
-                "provider_id": "provider",
-                "definition_hash": "hash-a",
-                "provider_definition_hash": None,
-                "availability": "ready",
-                "coverage_mode": "direct",
-                "access_kind": "rss",
-                "lane": "content",
-                "initial_result_code": None,
-            },
-            {
-                "source_id": "b",
-                "provider_id": "provider",
-                "definition_hash": "hash-b",
-                "provider_definition_hash": None,
-                "availability": "ready",
-                "coverage_mode": "direct",
-                "access_kind": "rss",
-                "lane": "content",
-                "initial_result_code": None,
-            },
-        ]
+        assert run.window_hours == 72
+        assert deserialize_wave_plan(run.requested_scope["wave_plan"]) == plan
+        assert "catalog_plan" not in run.requested_scope
         operation = db.scalar(
             select(OperationRunRecord).where(
                 OperationRunRecord.operation_type == "daily_autopilot"
@@ -218,7 +206,7 @@ def test_enqueue_daily_autopilot_freezes_catalog_plan_and_continuation() -> None
         assert operation is not None
         assert operation.requested_scope == {
             "daily_autopilot_run_id": run_id,
-            "stage": "enqueue_source_refresh",
+            "stage": "enqueue_content_wave",
         }
 
 

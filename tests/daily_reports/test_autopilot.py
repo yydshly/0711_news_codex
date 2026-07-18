@@ -1,14 +1,39 @@
+import pytest
+
 from newsradar.daily_reports.autopilot import (
     build_decision_review,
     build_overview_review,
     deserialize_catalog_plan,
+    deserialize_wave_plan,
     serialize_catalog_plan,
+    serialize_wave_plan,
 )
 from newsradar.sources.catalog_refresh import (
     CatalogRefreshLane,
     CatalogRefreshMemberSnapshot,
     CatalogRefreshPlan,
 )
+from newsradar.waves.planning import WaveMemberSnapshot, wave_plan_from_members
+
+
+def _wave_plan():
+    return wave_plan_from_members(
+        profile_id="daily",
+        members=(
+            WaveMemberSnapshot(
+                source_id="source-a",
+                provider_id="provider-a",
+                definition_hash="source-hash",
+                roles=("evidence",),
+                availability="ready",
+                access_kind="rss",
+                fetchable=True,
+                blocked_reason=None,
+            ),
+        ),
+        window_hours=48,
+        trend_days=7,
+    )
 
 
 def test_rule_review_marks_single_root_signal_as_needing_evidence() -> None:
@@ -67,3 +92,25 @@ def test_catalog_plan_round_trip_is_secret_free_and_tamper_evident() -> None:
         assert str(exc) == "invalid_daily_autopilot_catalog_plan"
     else:
         raise AssertionError("tampered catalog plan must be rejected")
+
+
+def test_wave_plan_round_trip_is_secret_free() -> None:
+    plan = _wave_plan()
+
+    stored = serialize_wave_plan(plan)
+
+    assert deserialize_wave_plan(stored) == plan
+    assert "credential" not in repr(stored).lower()
+    assert "token" not in repr(stored).lower()
+
+
+@pytest.mark.parametrize("tamper", ["member", "digest"])
+def test_wave_plan_rejects_tampering(tamper: str) -> None:
+    stored = serialize_wave_plan(_wave_plan())
+    if tamper == "member":
+        stored["members"][0]["fetchable"] = False
+    else:
+        stored["digest"] = "tampered"
+
+    with pytest.raises(ValueError, match="invalid_daily_autopilot_wave_plan"):
+        deserialize_wave_plan(stored)

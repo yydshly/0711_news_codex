@@ -141,10 +141,26 @@ def build_wave_plan(
         )
         for source_id in sorted(profile.source_ids)
     )
+    return wave_plan_from_members(
+        profile_id=profile.id,
+        members=members,
+        window_hours=profile.window_hours,
+        trend_days=profile.trend_days,
+    )
+
+
+def wave_plan_from_members(
+    *,
+    profile_id: str,
+    members: tuple[WaveMemberSnapshot, ...],
+    window_hours: int,
+    trend_days: int,
+) -> WavePlan:
+    """Build a plan through the single canonical, secret-free digest boundary."""
     payload = {
-        "profile_id": profile.id,
-        "window_hours": profile.window_hours,
-        "trend_days": profile.trend_days,
+        "profile_id": profile_id,
+        "window_hours": window_hours,
+        "trend_days": trend_days,
         "members": [
             {
                 "source_id": member.source_id,
@@ -161,4 +177,4 @@ def build_wave_plan(
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return WavePlan(profile.id, members, digest, profile.window_hours, profile.trend_days)
+    return WavePlan(profile_id, members, digest, window_hours, trend_days)

@@ -38,7 +38,7 @@ class DailyAutopilotRepository:
         run = DailyAutopilotRunRecord(
             trigger=trigger,
             status="queued",
-            stage=DailyAutopilotStage.ENQUEUE_SOURCE_REFRESH.value,
+            stage=DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value,
             window_hours=window_hours,
             requested_scope=requested_scope,
             result_summary={},

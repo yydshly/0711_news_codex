@@ -13,6 +13,7 @@ from newsradar.sources.catalog_refresh import (
     CatalogRefreshMemberSnapshot,
     CatalogRefreshPlan,
 )
+from newsradar.waves.planning import WaveMemberSnapshot, wave_plan_from_members
 from newsradar.web.app import create_app
 
 
@@ -29,6 +30,26 @@ def _plan() -> CatalogRefreshPlan:
                 lane=CatalogRefreshLane.CONTENT,
             )
         ]
+    )
+
+
+def _wave_plan(window_hours: int):
+    return wave_plan_from_members(
+        profile_id="high-value",
+        members=(
+            WaveMemberSnapshot(
+                "source-a",
+                "provider-a",
+                "source-hash",
+                ("evidence",),
+                "ready",
+                "rss",
+                True,
+                None,
+            ),
+        ),
+        window_hours=window_hours,
+        trend_days=7,
     )
 
 
@@ -49,17 +70,25 @@ def _client_with_token(
 def test_autopilot_post_queues_then_redirects_to_task_page(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("newsradar.web.app._source_wave_plan", _plan)
+    monkeypatch.setattr(
+        "newsradar.web.app._high_value_wave_plan",
+        lambda _session, window_hours=None: _wave_plan(window_hours or 24),
+    )
     client, token = _client_with_token(db_session, monkeypatch)
 
     response = client.post(
         "/daily-reports/autopilot",
-        data={"action_token": token, "window_hours": "24"},
+        data={"action_token": token, "window_hours": "72"},
         follow_redirects=False,
     )
 
     assert response.status_code == 303
     assert response.headers["location"] == "/daily-autopilot/1"
+    run = DailyAutopilotRepository(db_session).get(1)
+    assert run.window_hours == 72
+    assert run.stage == DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value
+    assert run.requested_scope["wave_plan"]["window_hours"] == 72
+    assert "catalog_plan" not in run.requested_scope
 
 
 def test_task_page_shows_child_links_and_chinese_partial_reason(

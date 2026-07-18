@@ -289,12 +289,11 @@ class OperationCommandService:
     def enqueue_daily_autopilot(
         self,
         *,
-        plan: CatalogRefreshPlan,
-        window_hours: int,
+        plan: WavePlan,
         trigger: str,
     ) -> int:
         """Create one durable, resumable daily-report run and its first continuation."""
-        from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_catalog_plan
+        from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_wave_plan
         from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 
         if self.session.in_transaction():
@@ -302,15 +301,15 @@ class OperationCommandService:
         with self.session.begin():
             self._lock_daily_autopilot_enqueue()
             run = DailyAutopilotRepository(self.session, utcnow=self._utcnow).create_run(
-                window_hours=window_hours,
+                window_hours=plan.window_hours,
                 trigger=trigger,
-                requested_scope={"catalog_plan": serialize_catalog_plan(plan)},
+                requested_scope={"wave_plan": serialize_wave_plan(plan)},
             )
             OperationRepository(self.session).enqueue(
                 OperationType.DAILY_AUTOPILOT,
                 {
                     "daily_autopilot_run_id": run.id,
-                    "stage": DailyAutopilotStage.ENQUEUE_SOURCE_REFRESH.value,
+                    "stage": DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value,
                 },
                 trigger=trigger,
                 in_transaction=True,

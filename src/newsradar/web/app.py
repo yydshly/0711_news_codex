@@ -256,13 +256,15 @@ def _source_wave_plan():
     )
 
 
-def _high_value_wave_plan(session):
+def _high_value_wave_plan(session, window_hours: int | None = None):
     """Synchronize reviewed local definitions then freeze one local-only WavePlan.
 
     This boundary deliberately uses persisted probe history only.  It never creates an
     HTTP client, reads a browser session, or invokes MiniMax.
     """
     profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
+    if window_hours is not None:
+        profile = profile.model_copy(update={"window_hours": window_hours})
     sources = load_source_tree(Path("sources"))
     providers = load_provider_tree(Path("providers"))
     ProviderRepository(session).sync(providers)
@@ -648,8 +650,7 @@ def create_app(
                 raise ValueError("invalid_daily_report_window") from error
             with create_session() as session:
                 run_id = OperationCommandService(session).enqueue_daily_autopilot(
-                    plan=_source_wave_plan(),
-                    window_hours=window_hours,
+                    plan=_high_value_wave_plan(session, window_hours),
                     trigger="web",
                 )
         except ValueError as error:

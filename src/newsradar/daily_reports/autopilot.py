@@ -12,9 +12,16 @@ from newsradar.sources.catalog_refresh import (
     CatalogRefreshPlan,
     CatalogResultCode,
 )
+from newsradar.waves.planning import (
+    WaveMemberSnapshot,
+    WavePlan,
+    wave_plan_from_members,
+)
 
 
 class DailyAutopilotStage(StrEnum):
+    ENQUEUE_CONTENT_WAVE = "enqueue_content_wave"
+    WAIT_CONTENT_WAVE = "wait_content_wave"
     ENQUEUE_SOURCE_REFRESH = "enqueue_source_refresh"
     WAIT_SOURCE_REFRESH = "wait_source_refresh"
     ENQUEUE_EVENT_PIPELINE = "enqueue_event_pipeline"
@@ -106,6 +113,81 @@ def deserialize_catalog_plan(value: object) -> CatalogRefreshPlan:
     return plan
 
 
+def serialize_wave_plan(plan: WavePlan) -> dict[str, object]:
+    """Store a frozen high-value wave without settings, credentials, or tokens."""
+    return {
+        "profile_id": plan.profile_id,
+        "digest": plan.digest,
+        "window_hours": plan.window_hours,
+        "trend_days": plan.trend_days,
+        "members": [
+            {
+                "source_id": member.source_id,
+                "provider_id": member.provider_id,
+                "definition_hash": member.definition_hash,
+                "roles": list(member.roles),
+                "availability": member.availability,
+                "access_kind": member.access_kind,
+                "fetchable": member.fetchable,
+                "blocked_reason": member.blocked_reason,
+                "nature": member.nature,
+            }
+            for member in plan.members
+        ],
+    }
+
+
+def deserialize_wave_plan(value: object) -> WavePlan:
+    """Restore a high-value wave and reject malformed or tampered digest fields."""
+    error = "invalid_daily_autopilot_wave_plan"
+    if not isinstance(value, dict) or not isinstance(value.get("members"), list):
+        raise ValueError(error)
+    try:
+        profile_id = _required_scope_text(value, "profile_id", error=error)
+        digest = _required_scope_text(value, "digest", error=error)
+        window_hours = _required_scope_integer(value, "window_hours", error=error)
+        trend_days = _required_scope_integer(value, "trend_days", error=error)
+        members = tuple(_deserialize_wave_member(item) for item in value["members"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(error) from exc
+    plan = wave_plan_from_members(
+        profile_id=profile_id,
+        members=members,
+        window_hours=window_hours,
+        trend_days=trend_days,
+    )
+    if digest != plan.digest:
+        raise ValueError(error)
+    return plan
+
+
+def _deserialize_wave_member(value: object) -> WaveMemberSnapshot:
+    error = "invalid_daily_autopilot_wave_plan"
+    if not isinstance(value, dict):
+        raise ValueError(error)
+    roles_value = value.get("roles")
+    fetchable = value.get("fetchable")
+    blocked_reason = value.get("blocked_reason")
+    if (
+        not isinstance(roles_value, list)
+        or any(not isinstance(role, str) or not role for role in roles_value)
+        or not isinstance(fetchable, bool)
+        or (blocked_reason is not None and not isinstance(blocked_reason, str))
+    ):
+        raise ValueError(error)
+    return WaveMemberSnapshot(
+        source_id=_required_scope_text(value, "source_id", error=error),
+        provider_id=_required_scope_text(value, "provider_id", error=error),
+        definition_hash=_required_scope_text(value, "definition_hash", error=error),
+        roles=tuple(roles_value),
+        availability=_required_scope_text(value, "availability", error=error),
+        access_kind=_required_scope_text(value, "access_kind", error=error),
+        fetchable=fetchable,
+        blocked_reason=blocked_reason,
+        nature=_required_scope_text(value, "nature", error=error),
+    )
+
+
 def build_decision_review(snapshot: dict[str, object]) -> DailyReportEditorialReviewDraft:
     title, summary, recommendation, assessment, decision = _review_values(snapshot)
     return DailyReportEditorialReviewDraft.create(
@@ -161,8 +243,22 @@ def _integer(snapshot: dict[str, object], key: str) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _required_scope_text(item: dict[object, object], key: str) -> str:
+def _required_scope_text(
+    item: dict[object, object],
+    key: str,
+    *,
+    error: str = "invalid_daily_autopilot_catalog_plan",
+) -> str:
     value = item.get(key)
     if not isinstance(value, str) or not value:
-        raise ValueError("invalid_daily_autopilot_catalog_plan")
+        raise ValueError(error)
+    return value
+
+
+def _required_scope_integer(
+    item: dict[object, object], key: str, *, error: str
+) -> int:
+    value = item.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(error)
     return value

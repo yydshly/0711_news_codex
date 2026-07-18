@@ -28,8 +28,9 @@ def test_autopilot_run_persists_stage_scope_and_linked_operation(
     run = repository.create_run(
         window_hours=24,
         trigger="web",
-        requested_scope={"catalog_plan": {"members": []}},
+        requested_scope={"wave_plan": {"members": []}},
     )
+    assert run.stage == DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value
     saved = repository.transition(
         run.id,
         stage=DailyAutopilotStage.WAIT_SOURCE_REFRESH,
@@ -39,7 +40,7 @@ def test_autopilot_run_persists_stage_scope_and_linked_operation(
     assert saved.status == "running"
     assert saved.stage == DailyAutopilotStage.WAIT_SOURCE_REFRESH.value
     assert saved.source_operation_id == 41
-    assert saved.requested_scope == {"catalog_plan": {"members": []}}
+    assert saved.requested_scope == {"wave_plan": {"members": []}}
 
 
 def test_autopilot_repository_rejects_second_active_run(db_session: Session) -> None:
