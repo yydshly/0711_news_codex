@@ -99,6 +99,29 @@ def test_worker_checks_the_daily_schedule_at_most_once_per_minute(monkeypatch) -
     assert ticks == ["tick", "tick"]
 
 
+def test_worker_does_not_catch_up_schedule_checks_after_a_long_operation(monkeypatch) -> None:
+    _stub_worker_dependencies(monkeypatch, processed_results=iter([False] * 4))
+    ticks = []
+    monotonic_values = iter([0.0, 180.0, 180.1, 180.2])
+    sleeps = 0
+
+    monkeypatch.setattr(cli, "_tick_daily_automation", lambda: ticks.append("tick"))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(monotonic_values))
+
+    def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 4:
+            raise _StopWorkerLoop
+
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+
+    with pytest.raises(_StopWorkerLoop):
+        cli.run_worker(once=False)
+
+    assert ticks == ["tick", "tick"]
+
+
 def test_worker_once_does_not_tick_or_wait(monkeypatch) -> None:
     _stub_worker_dependencies(monkeypatch, processed_results=iter([False]))
     ticks = []

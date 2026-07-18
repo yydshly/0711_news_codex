@@ -662,9 +662,11 @@ def run_worker(
     processed_count = 0
     next_schedule_check = 0.0
     while True:
-        if not once and time.monotonic() >= next_schedule_check:
-            _tick_daily_automation()
-            next_schedule_check += SCHEDULE_CHECK_SECONDS
+        if not once:
+            now_monotonic = time.monotonic()
+            if now_monotonic >= next_schedule_check:
+                _tick_daily_automation()
+                next_schedule_check = now_monotonic + SCHEDULE_CHECK_SECONDS
         with create_session() as session:
 
             def guard(lease):
