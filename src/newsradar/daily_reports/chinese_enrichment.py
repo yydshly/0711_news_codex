@@ -37,6 +37,7 @@ _URL_LIKE_FEATURE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 _MAX_CONTEXT = 1200
+_MAX_CONTEXT_INSPECTION = 16_000
 _MAX_ITEM_TIMEOUT_SECONDS = 45
 _MIN_TITLE_LENGTH = 4
 _MAX_TITLE_LENGTH = 80
@@ -283,8 +284,12 @@ def _snapshot_text(snapshot: dict[str, object], key: str, fallback: str) -> str:
 
 def _safe_context(value: object) -> str:
     rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    bounded = " ".join(rendered.split())[:_MAX_CONTEXT]
-    return "[omitted]" if _URL_LIKE_FEATURE.search(bounded) else bounded
+    if len(rendered) > _MAX_CONTEXT_INSPECTION:
+        return "[omitted]"
+    normalized = " ".join(rendered.split())
+    if _URL_LIKE_FEATURE.search(normalized):
+        return "[omitted]"
+    return normalized[:_MAX_CONTEXT]
 
 
 def _is_meaningful_simplified_chinese(result: _ChineseResponse) -> bool:

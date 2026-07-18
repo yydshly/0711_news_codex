@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from newsradar.daily_reports.chinese_enrichment import (
+    _MAX_CONTEXT,
     DailyReportChineseCandidate,
     DailyReportChineseEnricher,
     _safe_context,
@@ -414,6 +415,33 @@ def test_safe_context_omits_entire_url_contaminated_fragment(
     contaminated: str,
 ) -> None:
     assert _safe_context(f"ordinary prefix {contaminated} ordinary suffix") == "[omitted]"
+
+
+def test_safe_context_detects_domain_crossing_prompt_truncation_boundary() -> None:
+    value = "a" * (_MAX_CONTEXT - 9) + " secret.example.com/private"
+
+    assert value[:_MAX_CONTEXT].endswith("secret.e")
+    assert _safe_context(value) == "[omitted]"
+
+
+def test_safe_context_detects_uri_starting_at_prompt_truncation_boundary() -> None:
+    value = "a" * (_MAX_CONTEXT - 2) + " x://private-host/secret"
+
+    assert value[:_MAX_CONTEXT].endswith(" x")
+    assert _safe_context(value) == "[omitted]"
+
+
+def test_safe_context_truncates_clean_overlong_field_after_inspection() -> None:
+    value = "普通文本" * ((_MAX_CONTEXT // 4) + 100)
+
+    assert len(value) > _MAX_CONTEXT
+    assert _safe_context(value) == value[:_MAX_CONTEXT]
+
+
+def test_safe_context_fails_closed_above_absolute_inspection_cap() -> None:
+    value = "a" * 16_001
+
+    assert _safe_context(value) == "[omitted]"
 
 
 @pytest.mark.parametrize(
