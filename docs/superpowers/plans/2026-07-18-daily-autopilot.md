@@ -31,7 +31,7 @@
 | `src/newsradar/daily_reports/autopilot_runtime.py` | 单 Worker 安全的短续跑处理器。 |
 | `src/newsradar/operations/{schema,repository,commands}.py` | 新操作类型、延迟入队、创建/取消命令。 |
 | `src/newsradar/web/daily_autopilot_queries.py` | 任务列表/详情中文视图。 |
-| `src/newsradar/web/app.py` 与模板 | 入队、详情、取消和任务页面。 |
+| `src/newsradar/web/app.py` 与模板 | 入队、详情、取消、任务页面和原文链接。 |
 
 ## 阶段与接口
 
@@ -109,6 +109,7 @@ class DailyAutopilotRunRecord(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
     stage: Mapped[str] = mapped_column(String(48), nullable=False)
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_scope: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     source_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operation_runs.id"))
     event_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operation_runs.id"))
     decision_audio_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operation_runs.id"))
@@ -141,7 +142,7 @@ def fail(self, run_id: int, code: str, message: str) -> DailyAutopilotRunRecord:
     return run
 ```
 
-`create_run` rejects a second queued/running run with `ValueError("active_daily_autopilot_exists")`; PostgreSQL uses an advisory transaction lock, matching catalog refresh.
+`create_run` receives and persists `requested_scope={"catalog_plan": serialize_catalog_plan(plan)}`. It rejects a second queued/running run with `ValueError("active_daily_autopilot_exists")`; PostgreSQL uses an advisory transaction lock, matching catalog refresh. The serialized plan contains source IDs, definition hashes, lanes and eligibility result codes only; it never contains environment values.
 
 - [ ] **Step 4: 验证并提交**
 
@@ -219,7 +220,8 @@ def enqueue_daily_autopilot(
     self, plan: CatalogRefreshPlan, *, window_hours: int, trigger: str
 ) -> int:
     run = DailyAutopilotRepository(self.session, utcnow=self._utcnow).create_run(
-        window_hours=window_hours, trigger=trigger
+        window_hours=window_hours, trigger=trigger,
+        requested_scope={"catalog_plan": serialize_catalog_plan(plan)},
     )
     operation = OperationRepository(self.session).enqueue(
         OperationType.DAILY_AUTOPILOT,
@@ -310,7 +312,7 @@ def _write_reviews(self, run: DailyAutopilotRunRecord) -> OperationResult:
     return OperationResult(result_summary={"reviewed": True}, retryable=False)
 ```
 
-The source stage calls existing `enqueue_source_catalog_refresh`; its wait accepts `succeeded` and `partial`. The event stage calls existing `enqueue_event_pipeline`; its wait requires `succeeded`. The report stage calls `DailyReportService.generate(run.window_hours)`. All terminal child failures call repository `.fail(...)` with the stored Chinese message or a fixed Chinese fallback.
+The source stage reconstructs the frozen plan with `deserialize_catalog_plan(run.requested_scope["catalog_plan"])`, then calls existing `enqueue_source_catalog_refresh`; its wait accepts `succeeded` and `partial`. The event stage calls existing `enqueue_event_pipeline`; its wait requires `succeeded`. The report stage calls `DailyReportService.generate(run.window_hours)`. All terminal child failures call repository `.fail(...)` with the stored Chinese message or a fixed Chinese fallback.
 
 - [ ] **Step 4: 实现归档与双音频阶段**
 
@@ -340,6 +342,7 @@ git commit -m "feat: orchestrate daily autopilot stages"
 - Modify: `src/newsradar/web/app.py:590-633`
 - Modify: `src/newsradar/web/templates/daily_reports.html`
 - Create: `src/newsradar/web/templates/daily_autopilot_detail.html`
+- Modify: `src/newsradar/web/templates/daily_report_detail.html`
 - Modify: `src/newsradar/web/static/styles.css`
 - Test: `tests/web/test_daily_autopilot_pages.py`
 
@@ -384,7 +387,7 @@ async def enqueue_daily_autopilot(request: Request) -> RedirectResponse:
 
 - [ ] **Step 3: 实现页面和响应式样式**
 
-The list page adds an explicit “生成今日自动日报” panel. The task page renders fixed Chinese stage labels, child-operation links, source success/skip/fail metrics, fixed Chinese error, report link and two audio states. Reuse `.status-*`, `.metric-note`, `.table-wrap` and `overflow-wrap:anywhere`; do not redesign the daily report detail page.
+The list page adds an explicit “生成今日自动日报” panel. The task page renders fixed Chinese stage labels, child-operation links, source success/skip/fail metrics, fixed Chinese error, report link and two audio states. In `daily_report_detail.html`, decision cards and overview cards render up to three snapshot evidence links using the existing `daily_report_public_url` filter, with `target="_blank" rel="noopener noreferrer"`; show “暂无可公开原文链接” only if all evidence URLs are filtered out. Reuse `.status-*`, `.metric-note`, `.table-wrap` and `overflow-wrap:anywhere`; do not redesign the report layout.
 
 - [ ] **Step 4: 验证并提交**
 
