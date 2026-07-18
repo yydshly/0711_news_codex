@@ -7,6 +7,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from newsradar.daily_reports import chinese_enrichment
@@ -65,6 +66,50 @@ def safe_client_with_token(
     page = client.get("/operations")
     token = page.text.split('name="action_token" value="', 1)[1].split('"', 1)[0]
     return client, token
+
+
+def test_trash_write_failure_has_specific_chinese_diagnostic(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+
+    def raise_database_error(*_args: object, **_kwargs: object) -> None:
+        raise ProgrammingError("UPDATE daily_reports", {}, RuntimeError("test failure"))
+
+    monkeypatch.setattr(DailyReportRepository, "move_to_trash", raise_database_error)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/trash",
+        data={"action_token": token},
+    )
+
+    assert response.status_code == 503
+    assert "回收站操作失败" in response.text
+    assert "日报未被移动" in response.text
+
+
+def test_trash_connection_failure_keeps_database_recovery_diagnostic(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+
+    def raise_database_error(*_args: object, **_kwargs: object) -> None:
+        raise OperationalError("UPDATE daily_reports", {}, RuntimeError("test failure"))
+
+    monkeypatch.setattr(DailyReportRepository, "move_to_trash", raise_database_error)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/trash",
+        data={"action_token": token},
+    )
+
+    assert response.status_code == 503
+    assert "数据库暂时不可用" in response.text
+    assert "uv run newsradar db start" in response.text
 
 
 def test_detail_projects_daily_chinese_enrichment_per_item(db_session: Session) -> None:

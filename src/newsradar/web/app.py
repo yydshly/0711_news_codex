@@ -327,6 +327,26 @@ def create_app(
             status_code=503,
         )
 
+    def retention_database_error_response(
+        request: Request, error: SQLAlchemyError
+    ) -> HTMLResponse:
+        if isinstance(error, OperationalError) or _is_undefined_table(error):
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={
+                "error_title": "回收站操作失败",
+                "error_message": (
+                    "日报未被移动或恢复。请刷新页面后重试；"
+                    "如果问题持续，请检查本地服务状态。"
+                ),
+                "database_status": "回收站操作失败",
+                "database_status_tone": "failed",
+            },
+            status_code=503,
+        )
+
     def query_service_safely(
         request: Request,
         query: Callable[[DashboardQueryService], QueryResult],
@@ -851,7 +871,8 @@ def create_app(
                     except LookupError:
                         outcomes.append("missing")
         except SQLAlchemyError as error:
-            return database_error_response(request, error)  # type: ignore[return-value]
+            logger.exception("daily report bulk trash failed", exc_info=error)
+            return retention_database_error_response(request, error)  # type: ignore[return-value]
         return retention_redirect("/daily-reports", retention_outcomes(outcomes))
 
     @app.post("/daily-reports/bulk/restore")
@@ -868,7 +889,8 @@ def create_app(
                     except LookupError:
                         outcomes.append("missing")
         except SQLAlchemyError as error:
-            return database_error_response(request, error)  # type: ignore[return-value]
+            logger.exception("daily report bulk restore failed", exc_info=error)
+            return retention_database_error_response(request, error)  # type: ignore[return-value]
         return retention_redirect("/daily-reports/trash", retention_outcomes(outcomes))
 
     @app.post("/daily-reports/{report_id}/pin")
@@ -904,7 +926,8 @@ def create_app(
         except LookupError:
             return retention_redirect("/daily-reports", {"missing": 1})
         except SQLAlchemyError as error:
-            return database_error_response(request, error)  # type: ignore[return-value]
+            logger.exception("daily report trash failed", exc_info=error)
+            return retention_database_error_response(request, error)  # type: ignore[return-value]
         return retention_redirect("/daily-reports", retention_outcomes([result.outcome]))
 
     @app.post("/daily-reports/{report_id}/restore")
@@ -916,7 +939,8 @@ def create_app(
         except LookupError:
             return retention_redirect("/daily-reports/trash", {"missing": 1})
         except SQLAlchemyError as error:
-            return database_error_response(request, error)  # type: ignore[return-value]
+            logger.exception("daily report restore failed", exc_info=error)
+            return retention_database_error_response(request, error)  # type: ignore[return-value]
         return retention_redirect(
             "/daily-reports/trash", retention_outcomes([result.outcome])
         )
@@ -942,7 +966,8 @@ def create_app(
                 ) from error
             raise HTTPException(status_code=422, detail="日报清理请求无效。") from error
         except SQLAlchemyError as error:
-            return database_error_response(request, error)  # type: ignore[return-value]
+            logger.exception("daily report purge enqueue failed", exc_info=error)
+            return retention_database_error_response(request, error)  # type: ignore[return-value]
         return RedirectResponse(url="/daily-reports/trash", status_code=303)
 
     @app.post("/daily-reports/{report_id}/items/{item_id}/included")
