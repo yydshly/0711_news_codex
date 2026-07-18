@@ -2009,6 +2009,54 @@ def test_revise_route_from_older_parent_reuses_archived_direct_child(
     ] == [child_id]
 
 
+def test_archive_page_shows_pin_and_trash_controls(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    DailyReportRepository(db_session).archive(report.id)
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get("/daily-reports")
+
+    assert response.status_code == 200
+    assert "置顶保护" in response.text
+    assert "移入回收站" in response.text
+    assert 'href="/daily-reports/trash"' in response.text
+
+
+def test_trashed_detail_redirects_to_private_body_free_trash_page(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    report.generation_summary = {"private_marker": "private report body must not render"}
+    db_session.commit()
+    DailyReportRepository(db_session).move_to_trash(report_id)
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}", follow_redirects=False)
+    trash = client.get("/daily-reports/trash")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/daily-reports/trash"
+    assert trash.status_code == 200
+    assert "恢复" in trash.text
+    assert "private report body must not render" not in trash.text
+
+
+def test_bulk_trash_rejects_more_than_fifty_unique_positive_ids(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        "/daily-reports/bulk/trash",
+        data=[("action_token", token), *(("report_ids", str(value)) for value in range(1, 52))],
+    )
+
+    assert response.status_code == 422
+
+
 def test_daily_report_routes_enforce_ownership_and_not_found(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

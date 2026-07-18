@@ -274,6 +274,7 @@ class DailyReportSummaryView:
     window_hours: int
     window_end: datetime
     source_operation_id: int
+    pinned_at: datetime | None
     confirmed_count: int
     emerging_count: int
 
@@ -997,6 +998,7 @@ class DailyReportQueryService:
             window_hours=record.window_hours,
             window_end=record.window_end,
             source_operation_id=record.source_operation_id,
+            pinned_at=record.pinned_at,
             confirmed_count=sum(
                 row.included and row.section == "confirmed" for row in loaded
             ),

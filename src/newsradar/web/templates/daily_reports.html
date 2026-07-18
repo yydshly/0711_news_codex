@@ -117,20 +117,56 @@
 </section>
 
 <section class="panel" aria-labelledby="daily-report-history-heading">
-  <h2 id="daily-report-history-heading">日报存档</h2>
+  <div class="section-heading">
+    <div><p class="eyebrow">可恢复保留</p><h2 id="daily-report-history-heading">日报存档</h2></div>
+    <a class="secondary-action" href="/daily-reports/trash">回收站</a>
+  </div>
+  <p class="metric-note">自动保留最近 90 天；置顶保护的日报不会被自动清理。移入回收站后可在 30 天内恢复。</p>
+  {% if retention_notice.changed or retention_notice.blocked or retention_notice.unchanged or retention_notice.missing %}
+  <p class="retention-notice" role="status">操作结果：已处理 {{ retention_notice.changed }} 份；受阻 {{ retention_notice.blocked }} 份；未变更 {{ retention_notice.unchanged }} 份；未找到 {{ retention_notice.missing }} 份。</p>
+  {% endif %}
+  <form class="filter-form retention-filter" method="get" action="/daily-reports">
+    <label>保留范围
+      <select name="period">
+        <option value="all"{% if selected_period == 'all' %} selected{% endif %}>全部日报</option>
+        <option value="7"{% if selected_period == '7' %} selected{% endif %}>最近 7 天</option>
+        <option value="30"{% if selected_period == '30' %} selected{% endif %}>最近 30 天</option>
+        <option value="pinned"{% if selected_period == 'pinned' %} selected{% endif %}>仅已置顶</option>
+      </select>
+    </label>
+    <div class="filter-actions"><button type="submit">筛选</button></div>
+  </form>
   {% if reports %}
+  <form id="bulk-report-actions" class="bulk-report-actions" method="post" data-report-selection>
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit" formaction="/daily-reports/bulk/trash" disabled>批量移入回收站</button>
+    <span data-selected-report-count>尚未选择日报</span>
+  </form>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>日期</th><th>修订</th><th>状态</th><th>窗口截止</th><th>确认数</th><th>线索数</th></tr></thead>
+      <thead><tr><th><input type="checkbox" aria-label="选择当前页全部日报" data-select-all-reports></th><th>日期</th><th>修订</th><th>状态</th><th>保留</th><th>窗口截止</th><th>确认数</th><th>线索数</th><th>操作</th></tr></thead>
       <tbody>
       {% for report in reports %}
       <tr>
+        <td><input form="bulk-report-actions" type="checkbox" name="report_ids" value="{{ report.report_id }}" aria-label="选择日报 {{ report.report_date.isoformat() }}" data-report-selector></td>
         <td><a href="/daily-reports/{{ report.report_id }}">{{ report.report_date.isoformat() }}</a></td>
         <td>第 {{ report.revision }} 版</td>
         <td>{{ '草稿' if report.status == 'draft' else '已归档' }}</td>
+        <td>{% if report.pinned_at %}已置顶保护{% else %}普通保留{% endif %}</td>
         <td>{{ report.window_end|format_datetime_zh }}</td>
         <td>{{ report.confirmed_count }}</td>
         <td>{{ report.emerging_count }}</td>
+        <td class="retention-row-actions">
+          <form method="post" action="/daily-reports/{{ report.report_id }}/{{ 'unpin' if report.pinned_at else 'pin' }}">
+            <input type="hidden" name="action_token" value="{{ action_token }}">
+            <button type="submit">{{ '取消置顶' if report.pinned_at else '置顶保护' }}</button>
+          </form>
+          <form method="post" action="/daily-reports/{{ report.report_id }}/trash">
+            <input type="hidden" name="action_token" value="{{ action_token }}">
+            <button type="submit">移入回收站</button>
+          </form>
+          <small>删除前会检查正在运行的日报、语音或清理任务。</small>
+        </td>
       </tr>
       {% endfor %}
       </tbody>
