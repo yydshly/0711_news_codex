@@ -77,10 +77,17 @@ class HighValueWaveHandler:
             if "deadline_at" in lease.requested_scope
             else None
         )
+        limits = _wave_concurrency(lease.requested_scope)
+        if limits is None:
+            return _failed(
+                "invalid_wave_concurrency",
+                "High-value wave operations require valid persisted concurrency limits",
+            )
+        global_concurrency, provider_concurrency = limits
         members = self._unfinished_members(lease.operation_id)
-        global_semaphore = asyncio.Semaphore(6)
+        global_semaphore = asyncio.Semaphore(global_concurrency)
         provider_semaphores: defaultdict[str, asyncio.Semaphore] = defaultdict(
-            lambda: asyncio.Semaphore(2)
+            lambda: asyncio.Semaphore(provider_concurrency)
         )
 
         async def run_one(source_id: str, provider_id: str) -> WaveMemberOutcome:
@@ -412,6 +419,21 @@ class HighValueWaveHandler:
             )
         finally:
             event_session.close()
+
+
+def _wave_concurrency(scope: dict[str, object]) -> tuple[int, int] | None:
+    global_concurrency = scope.get("global_concurrency", 8)
+    provider_concurrency = scope.get("provider_concurrency", 2)
+    if (
+        isinstance(global_concurrency, bool)
+        or not isinstance(global_concurrency, int)
+        or not 1 <= global_concurrency <= 16
+        or isinstance(provider_concurrency, bool)
+        or not isinstance(provider_concurrency, int)
+        or not 1 <= provider_concurrency <= 8
+    ):
+        return None
+    return global_concurrency, provider_concurrency
 
 
 def _failed(

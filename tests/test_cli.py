@@ -76,30 +76,7 @@ def test_waves_plan_counts_payment_blockers(monkeypatch) -> None:
 def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
     monkeypatch, tmp_path: Path
 ) -> None:
-    source = SourceDefinition.model_validate(valid_source())
-    provider = type("Provider", (), {"id": source.provider_id})()
-    syncs: list[str] = []
     build_kwargs: dict[str, object] = {}
-
-    class SourceRepo:
-        def __init__(self, session):
-            pass
-
-        def sync(self, values):
-            syncs.append("sources")
-
-        def latest_probe_snapshots(self, source_ids):
-            return {}
-
-        def successful_fetch_access(self, source_ids):
-            return {source.id: source.access_methods[0].kind.value}
-
-    class ProviderRepo:
-        def __init__(self, session):
-            pass
-
-        def sync(self, values):
-            syncs.append("providers")
 
     class Commands:
         def __init__(self, session):
@@ -156,19 +133,15 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
 
     monkeypatch.setattr(
         "newsradar.cli.load_wave_profile",
-        lambda path: type("Profile", (), {"source_ids": (source.id,)})(),
+        lambda path: type("Profile", (), {"window_hours": 24})(),
     )
-    monkeypatch.setattr("newsradar.cli.load_source_tree", lambda root: [source])
-    monkeypatch.setattr("newsradar.cli.load_provider_tree", lambda root: [provider])
     monkeypatch.setattr(
-        "newsradar.cli.build_wave_plan",
+        "newsradar.cli.build_local_wave_plan",
         lambda *args, **kwargs: (
             build_kwargs.update(kwargs)
             or type("Plan", (), {"profile_id": "safe-profile"})()
         ),
     )
-    monkeypatch.setattr("newsradar.cli.SourceRepository", SourceRepo)
-    monkeypatch.setattr("newsradar.cli.ProviderRepository", ProviderRepo)
     monkeypatch.setattr("newsradar.cli.OperationCommandService", Commands)
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(Session()))
     monkeypatch.setattr(
@@ -186,10 +159,7 @@ def test_waves_enqueue_status_and_report_do_not_probe_or_call_model(
 
     assert enqueue.exit_code == 0
     assert "88" in enqueue.stdout
-    assert syncs == ["providers", "sources"]
-    assert build_kwargs["successful_fetch_access"] == {
-        source.id: source.access_methods[0].kind.value
-    }
+    assert build_kwargs == {"profile_path": Path("pyproject.toml"), "window_hours": 24}
     assert status.exit_code == 0
     assert "2/3" in status.stdout
     assert report.exit_code == 0
@@ -1155,6 +1125,10 @@ def test_worker_command_claims_and_runs_one_queued_operation(monkeypatch, tmp_pa
     assert calls[0]._handlers["source_remediation"] is remediation_handler
     assert calls[0]._handlers["high_value_news_wave"] is wave_handler
     assert calls[0]._handlers["event_merge_scan"] is merge_scan_handler
+    assert (
+        calls[0]._handlers["daily_report_purge"].__class__.__name__
+        == "DailyReportPurgeHandler"
+    )
     assert "processed 1 operation" in result.stdout
 
 

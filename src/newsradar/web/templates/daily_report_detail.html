@@ -353,6 +353,18 @@
     <button type="submit">创建修订版</button>
   </form>
   {% endif %}
+  <div class="retention-detail-actions">
+    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/{{ 'unpin' if daily_report.report.pinned_at else 'pin' }}">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <button type="submit">{{ '取消置顶' if daily_report.report.pinned_at else '置顶保护' }}</button>
+    </form>
+    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/trash">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <button type="submit">移入回收站</button>
+    </form>
+    <a class="secondary-action" href="/daily-reports/trash">查看回收站</a>
+  </div>
+  <p class="metric-note">自动保留最近 90 天；移入回收站后可在 30 天内恢复。正在运行的日报、语音或清理任务会阻止删除。</p>
 </section>
 
 <section class="daily-report-complete" aria-labelledby="complete-report-heading">

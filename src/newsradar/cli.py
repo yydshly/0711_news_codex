@@ -90,6 +90,7 @@ from newsradar.sources.reporting import render_source_report
 from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
+from newsradar.waves.local_plan import build_local_wave_plan
 from newsradar.waves.planning import build_wave_plan
 from newsradar.waves.reporting import render_high_value_wave_report
 from newsradar.waves.runtime import HighValueWaveHandler
@@ -129,6 +130,7 @@ CatalogProviderRootOption = Annotated[
 WorkerProviderRootOption = Annotated[
     Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
 ]
+SCHEDULE_CHECK_SECONDS = 60.0
 
 
 @waves_app.command("validate")
@@ -161,26 +163,6 @@ def plan_wave(
     )
 
 
-def _wave_plan_from_local_catalog(profile: Path, session):
-    """Build a frozen wave plan from reviewed local files and persisted probe state only."""
-    loaded = load_wave_profile(profile)
-    sources = load_source_tree(Path("sources"))
-    providers = load_provider_tree(Path("providers"))
-    ProviderRepository(session).sync(providers)
-    SourceRepository(session).sync(sources)
-    session.commit()
-    repository = SourceRepository(session)
-    source_ids = list(loaded.source_ids)
-    probes = repository.latest_probe_snapshots(source_ids)
-    return build_wave_plan(
-        loaded,
-        sources,
-        probes,
-        SettingsCredentials().configured_names(),
-        successful_fetch_access=repository.successful_fetch_access(source_ids),
-    )
-
-
 @waves_app.command("enqueue")
 def enqueue_wave(
     profile: Annotated[Path, typer.Option("--profile", exists=True, dir_okay=False)],
@@ -188,7 +170,11 @@ def enqueue_wave(
     """Synchronize reviewed YAML and queue one frozen wave; this command never probes."""
     try:
         with create_session() as session:
-            plan = _wave_plan_from_local_catalog(profile, session)
+            plan = build_local_wave_plan(
+                session,
+                profile_path=profile,
+                window_hours=load_wave_profile(profile).window_hours,
+            )
             operation_id = OperationCommandService(session).enqueue_high_value_wave(
                 plan=plan, trigger="cli"
             )
@@ -205,7 +191,11 @@ def enqueue_due_wave(
     """Queue one due frozen wave only; this command never starts a worker or fetch."""
     try:
         with create_session() as session:
-            plan = _wave_plan_from_local_catalog(profile, session)
+            plan = build_local_wave_plan(
+                session,
+                profile_path=profile,
+                window_hours=load_wave_profile(profile).window_hours,
+            )
             result = enqueue_due(OperationCommandService(session), plan, now=datetime.now(UTC))
     except ValueError as exc:
         typer.echo(f"enqueue_due_failed: {exc}", err=True)
@@ -623,6 +613,16 @@ def retry_operation(operation_id: int) -> None:
     typer.echo(f"Queued retry for {operation_id} as operation {retry_id}")
 
 
+def _tick_daily_automation() -> None:
+    from newsradar.daily_reports.automation_service import DailyAutomationService
+
+    try:
+        with create_session() as session:
+            DailyAutomationService(session).tick()
+    except SQLAlchemyError:
+        typer.echo("daily_automation_schedule_tick_failed", err=True)
+
+
 @app.command("worker")
 def run_worker(
     root: RootOption = Path("sources"),
@@ -636,6 +636,7 @@ def run_worker(
     providers = load_provider_tree(provider_root)
     from newsradar.daily_reports.audio_runtime import DailyReportAudioHandler
     from newsradar.daily_reports.autopilot_runtime import DailyAutopilotHandler
+    from newsradar.daily_reports.purge_runtime import DailyReportPurgeHandler
 
     handler = OperationRouter(
         {
@@ -653,6 +654,7 @@ def run_worker(
             "event_split": EventOperationHandler.production(create_session),
             "event_exclude": EventOperationHandler.production(create_session),
             "daily_report_audio": DailyReportAudioHandler(create_session),
+            "daily_report_purge": DailyReportPurgeHandler(create_session),
             "daily_autopilot": DailyAutopilotHandler.production(
                 sources, providers, create_session
             ),
@@ -661,7 +663,13 @@ def run_worker(
     settings = get_settings()
     identifier = worker_id or f"{socket.gethostname()}-{os.getpid()}"
     processed_count = 0
+    next_schedule_check = 0.0
     while True:
+        if not once:
+            now_monotonic = time.monotonic()
+            if now_monotonic >= next_schedule_check:
+                _tick_daily_automation()
+                next_schedule_check = now_monotonic + SCHEDULE_CHECK_SECONDS
         with create_session() as session:
 
             def guard(lease):

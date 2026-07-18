@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from json import dumps
@@ -12,6 +13,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
+    DailyAutopilotRunRecord,
+    DailyReportAudioArtifactRecord,
     DailyReportRecord,
     OperationRunRecord,
     SourceRemediationBatchRecord,
@@ -31,6 +34,12 @@ from newsradar.waves.repository import WaveRepository
 
 if TYPE_CHECKING:
     from newsradar.daily_reports.autopilot import DailyAutopilotStage
+
+
+@dataclass(frozen=True, slots=True)
+class DailyAutopilotEnqueueResult:
+    run_id: int
+    created: bool
 
 
 class OperationCommandService:
@@ -106,6 +115,107 @@ class OperationCommandService:
                 rendition=rendition,
                 trigger=trigger,
             )
+
+    def enqueue_daily_report_purge(
+        self, *, report_ids: object, trigger: str
+    ) -> int:
+        normalized = self._daily_report_purge_ids(report_ids)
+        if self.session.in_transaction():
+            self.session.commit()
+        with self.session.begin():
+            return self._enqueue_daily_report_purge_in_transaction(
+                report_ids=normalized, trigger=trigger
+            )
+
+    def _enqueue_daily_report_purge_in_transaction(
+        self, *, report_ids: object, trigger: str
+    ) -> int:
+        normalized = self._daily_report_purge_ids(report_ids)
+        reports = tuple(
+            self.session.scalars(
+                select(DailyReportRecord)
+                .where(DailyReportRecord.id.in_(normalized))
+                .with_for_update()
+            )
+        )
+        reports_by_id = {report.id: report for report in reports}
+        for report_id in normalized:
+            report = reports_by_id.get(report_id)
+            if report is None:
+                raise ValueError("daily_report_not_found")
+            if report.deleted_at is None:
+                raise ValueError("daily_report_must_be_trashed_for_purge")
+            if self._daily_report_has_active_work(report_id):
+                raise ValueError("daily_report_has_active_work")
+        return OperationRepository(self.session).enqueue(
+            OperationType.DAILY_REPORT_PURGE,
+            {"schema_version": 1, "report_ids": normalized},
+            trigger=trigger,
+            in_transaction=True,
+        ).id
+
+    @staticmethod
+    def _daily_report_purge_ids(report_ids: object) -> list[int]:
+        if isinstance(report_ids, (str, bytes, dict)):
+            raise ValueError("invalid_daily_report_purge_report_ids")
+        try:
+            values = list(report_ids)  # type: ignore[arg-type]
+        except TypeError as error:
+            raise ValueError("invalid_daily_report_purge_report_ids") from error
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in values
+        ):
+            raise ValueError("invalid_daily_report_purge_report_ids")
+        normalized = list(dict.fromkeys(values))
+        if not 1 <= len(normalized) <= 20:
+            raise ValueError("invalid_daily_report_purge_report_ids")
+        return normalized
+
+    def _daily_report_has_active_work(self, report_id: int) -> bool:
+        return report_id in self._active_daily_report_ids()
+
+    def _active_daily_report_ids(self) -> frozenset[int]:
+        active_report_ids = set(
+            self.session.scalars(
+                select(DailyAutopilotRunRecord.daily_report_id).where(
+                    DailyAutopilotRunRecord.daily_report_id.is_not(None),
+                    DailyAutopilotRunRecord.status.in_(("queued", "running")),
+                )
+            )
+        )
+        active_report_ids.update(
+            self.session.scalars(
+                select(DailyReportAudioArtifactRecord.daily_report_id).where(
+                    DailyReportAudioArtifactRecord.status.in_(("queued", "running"))
+                )
+            )
+        )
+        for operation in self.session.scalars(
+            select(OperationRunRecord).where(
+                OperationRunRecord.operation_type.in_(
+                    (
+                        OperationType.DAILY_REPORT_AUDIO.value,
+                        OperationType.DAILY_REPORT_PURGE.value,
+                    )
+                ),
+                OperationRunRecord.status.in_(("queued", "running")),
+            )
+        ):
+            scope = operation.requested_scope
+            if not isinstance(scope, dict):
+                continue
+            report_id = scope.get("daily_report_id")
+            if isinstance(report_id, int) and not isinstance(report_id, bool):
+                active_report_ids.add(report_id)
+            values = scope.get("report_ids")
+            if isinstance(values, list):
+                active_report_ids.update(
+                    value
+                    for value in values
+                    if isinstance(value, int) and not isinstance(value, bool)
+                )
+        return frozenset(active_report_ids)
 
     def archive_and_enqueue_daily_report_audio(self, *, report_id: int, trigger: str) -> int:
         # Keep the daily-report package out of this module's import path. The
@@ -198,6 +308,8 @@ class OperationCommandService:
         )
         if report is None:
             raise ValueError("daily_report_not_found")
+        if report.deleted_at is not None:
+            raise ValueError("daily_report_trashed")
         if report.status != "archived":
             raise ValueError("daily_report_must_be_archived_for_audio")
         if rendition == "overview":
@@ -354,43 +466,60 @@ class OperationCommandService:
         plan: WavePlan,
         trigger: str,
     ) -> int:
-        """Create one durable, resumable daily-report run and its first continuation."""
-        from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_wave_plan
-        from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
+        return self.enqueue_daily_autopilot_result(plan=plan, trigger=trigger).run_id
 
+    def enqueue_daily_autopilot_result(
+        self,
+        *,
+        plan: WavePlan,
+        trigger: str,
+    ) -> DailyAutopilotEnqueueResult:
+        """Create one durable, resumable daily-report run and its first continuation."""
         if self.session.in_transaction():
             self.session.commit()
         with self.session.begin():
-            self._lock_daily_autopilot_enqueue()
-            repository = DailyAutopilotRepository(self.session, utcnow=self._utcnow)
-            local_date = self._utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
-            daily_key = f"{local_date.isoformat()}:{plan.window_hours}:{plan.digest}"
-            reusable = repository.reusable_for_daily_wave(
-                daily_key=daily_key,
-                local_date=local_date,
-                window_hours=plan.window_hours,
-                wave_digest=plan.digest,
-            )
-            if reusable is not None:
-                return reusable.id
-            run = repository.create_run(
-                window_hours=plan.window_hours,
-                trigger=trigger,
-                requested_scope={
-                    "wave_plan": serialize_wave_plan(plan),
-                    "daily_key": daily_key,
-                },
-            )
-            OperationRepository(self.session).enqueue(
-                OperationType.DAILY_AUTOPILOT,
-                {
-                    "daily_autopilot_run_id": run.id,
-                    "stage": DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value,
-                },
-                trigger=trigger,
-                in_transaction=True,
-            )
-            return run.id
+            return self._enqueue_daily_autopilot_result_in_transaction(plan=plan, trigger=trigger)
+
+    def _enqueue_daily_autopilot_result_in_transaction(
+        self,
+        *,
+        plan: WavePlan,
+        trigger: str,
+    ) -> DailyAutopilotEnqueueResult:
+        """Enqueue while the caller owns the surrounding transaction."""
+        from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_wave_plan
+        from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
+
+        self._lock_daily_autopilot_enqueue()
+        repository = DailyAutopilotRepository(self.session, utcnow=self._utcnow)
+        local_date = self._utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
+        daily_key = f"{local_date.isoformat()}:{plan.window_hours}:{plan.digest}"
+        reusable = repository.reusable_for_daily_wave(
+            daily_key=daily_key,
+            local_date=local_date,
+            window_hours=plan.window_hours,
+            wave_digest=plan.digest,
+        )
+        if reusable is not None:
+            return DailyAutopilotEnqueueResult(run_id=reusable.id, created=False)
+        run = repository.create_run(
+            window_hours=plan.window_hours,
+            trigger=trigger,
+            requested_scope={
+                "wave_plan": serialize_wave_plan(plan),
+                "daily_key": daily_key,
+            },
+        )
+        OperationRepository(self.session).enqueue(
+            OperationType.DAILY_AUTOPILOT,
+            {
+                "daily_autopilot_run_id": run.id,
+                "stage": DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value,
+            },
+            trigger=trigger,
+            in_transaction=True,
+        )
+        return DailyAutopilotEnqueueResult(run_id=run.id, created=True)
 
     def enqueue_daily_autopilot_continuation(
         self,
@@ -427,7 +556,23 @@ class OperationCommandService:
             retry_of_operation_id=operation_id,
         )
 
-    def enqueue_high_value_wave(self, *, plan: WavePlan, trigger: str) -> int:
+    def enqueue_high_value_wave(
+        self,
+        *,
+        plan: WavePlan,
+        trigger: str,
+        global_concurrency: int = 8,
+        provider_concurrency: int = 2,
+    ) -> int:
+        if (
+            isinstance(global_concurrency, bool)
+            or not isinstance(global_concurrency, int)
+            or not 1 <= global_concurrency <= 16
+            or isinstance(provider_concurrency, bool)
+            or not isinstance(provider_concurrency, int)
+            or not 1 <= provider_concurrency <= 8
+        ):
+            raise ValueError("invalid_high_value_wave_concurrency")
         if self.session.in_transaction():
             self.session.commit()
         window_end = self._utcnow()
@@ -444,6 +589,8 @@ class OperationCommandService:
                     "member_count": len(plan.members),
                     "window_hours": plan.window_hours,
                     "trend_days": plan.trend_days,
+                    "global_concurrency": global_concurrency,
+                    "provider_concurrency": provider_concurrency,
                     "window_end": window_end.isoformat(),
                     "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
                     "deadline_at": (

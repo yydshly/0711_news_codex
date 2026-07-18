@@ -485,20 +485,33 @@ class DailyAutopilotHandler:
             self._fail(run.id, "daily_autopilot_audio_missing", "日报音频任务不存在。")
             return _succeeded({"run_id": run.id, "failed": True})
         operations = [child for child in children if child is not None]
-        successful_or_running = _RUNNING_STATUSES | {OperationStatus.SUCCEEDED.value}
-        failed_child = next(
-            (child for child in operations if child.status not in successful_or_running), None
-        )
-        if failed_child is not None:
+        if any(child.status in _RUNNING_STATUSES for child in operations):
+            self._transition_and_continue(run.id, DailyAutopilotStage.WAIT_AUDIO, delayed=True)
+            return _succeeded({"run_id": run.id, "waiting_for_audio": True})
+        failed_children = [
+            child for child in operations if child.status != OperationStatus.SUCCEEDED.value
+        ]
+        if failed_children and any(
+            child.status == OperationStatus.SUCCEEDED.value for child in operations
+        ):
+            self._finish(
+                run.id,
+                {
+                    "outcome": "audio_partial",
+                    "daily_report_id": run.daily_report_id,
+                    "decision_audio_status": operations[0].status,
+                    "overview_audio_status": operations[1].status,
+                },
+            )
+            return _succeeded({"run_id": run.id, "completed": True, "outcome": "audio_partial"})
+        if failed_children:
+            failed_child = failed_children[0]
             self._fail(
                 run.id,
                 failed_child.error_code or "daily_autopilot_audio_failed",
                 failed_child.error_message or "日报音频生成失败。",
             )
             return _succeeded({"run_id": run.id, "failed": True})
-        if any(child.status in _RUNNING_STATUSES for child in operations):
-            self._transition_and_continue(run.id, DailyAutopilotStage.WAIT_AUDIO, delayed=True)
-            return _succeeded({"run_id": run.id, "waiting_for_audio": True})
         self._finish(run.id, {"daily_report_id": run.daily_report_id, "audio_count": 2})
         return _succeeded({"run_id": run.id, "completed": True})
 

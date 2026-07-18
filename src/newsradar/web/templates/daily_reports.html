@@ -2,6 +2,60 @@
 {% block title %}中文日报 · News Codex{% endblock %}
 {% block header %}<h1>中文日报</h1>{% endblock %}
 {% block content %}
+<section class="panel daily-automation-console" aria-labelledby="daily-automation-heading"{% if automation.active_run %} data-active-daily-run="true"{% endif %}>
+  <div class="daily-automation-heading">
+    <div>
+      <p class="eyebrow">本地定时 · 默认关闭</p>
+      <h2 id="daily-automation-heading">日报自动化控制台</h2>
+    </div>
+    <span class="report-status {{ 'report-status-confirmed' if automation.enabled else 'report-status-needs_evidence' }}">{{ automation.status_zh }}</span>
+  </div>
+  <p class="metric-note">每天 {{ automation.daily_time }} · {{ automation.timezone }} · 最近 {{ automation.window_hours }} 小时 · {{ automation.resource_profile_zh }}</p>
+  <p class="{{ 'metric-note' if automation.worker_online else 'diagnostic-warning' }}"><strong>调度状态：</strong>{{ automation.diagnostic }}</p>
+  <dl class="daily-automation-facts">
+    <div><dt>下次计划</dt><dd>{{ automation.next_run_at|format_datetime_zh }}</dd></div>
+    <div><dt>上次定时任务</dt><dd>{% if automation.last_run %}<a href="/daily-autopilot/{{ automation.last_run.run_id }}">任务 #{{ automation.last_run.run_id }}</a> · {{ {'queued': '排队中', 'running': '执行中', 'succeeded': '已完成', 'failed': '失败', 'cancelled': '已取消'}.get(automation.last_run.status, '状态未知') }}{% else %}尚无{% endif %}</dd></div>
+  </dl>
+  {% if automation.active_run %}
+  <div class="daily-automation-active">
+    <p><strong>当前任务：</strong><a href="/daily-autopilot/{{ automation.active_run.run_id }}">自动日报 #{{ automation.active_run.run_id }}</a> · {{ {
+      'enqueue_content_wave': '准备真实内容抓取',
+      'wait_content_wave': '等待内容抓取与事件处理',
+      'enqueue_source_refresh': '准备来源刷新',
+      'wait_source_refresh': '等待来源刷新',
+      'enqueue_event_pipeline': '准备事件处理',
+      'wait_event_pipeline': '等待事件处理',
+      'generate_report': '生成中文日报',
+      'write_reviews': '写入中文审核',
+      'archive_and_enqueue_audio': '归档并提交语音',
+      'wait_audio': '等待双版本语音'
+    }.get(automation.active_run.stage, '处理中') }}</p>
+    <form method="post" action="/daily-autopilot/{{ automation.active_run.run_id }}/cancel">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <button type="submit" class="secondary-action">取消当前自动日报</button>
+    </form>
+  </div>
+  {% else %}<p class="metric-note">当前没有排队或执行中的自动日报。</p>{% endif %}
+  <div class="daily-automation-actions">
+    <form method="post" action="/daily-automation/{{ 'pause' if automation.enabled else 'enable' }}">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <button type="submit">{{ '暂停后续定时任务' if automation.enabled else '启用每天 07:30' }}</button>
+    </form>
+    <form method="post" action="/daily-automation/run-now">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <label>立即运行窗口
+        <select name="window_hours">
+          <option value="24">最近24小时</option>
+          <option value="48">最近48小时</option>
+          <option value="72">最近72小时</option>
+        </select>
+      </label>
+      <button type="submit">立即运行</button>
+    </form>
+  </div>
+  <p class="metric-note">暂停只影响后续计划，不会取消当前任务；需要停止时请使用当前任务的取消操作。</p>
+</section>
+
 <section class="panel">
   <p class="eyebrow">手动生成 · 固定事件快照</p>
   <h2>中文日报</h2>
@@ -63,20 +117,56 @@
 </section>
 
 <section class="panel" aria-labelledby="daily-report-history-heading">
-  <h2 id="daily-report-history-heading">日报存档</h2>
+  <div class="section-heading">
+    <div><p class="eyebrow">可恢复保留</p><h2 id="daily-report-history-heading">日报存档</h2></div>
+    <a class="secondary-action" href="/daily-reports/trash">回收站</a>
+  </div>
+  <p class="metric-note">自动保留最近 90 天；置顶保护的日报不会被自动清理。移入回收站后可在 30 天内恢复。</p>
+  {% if retention_notice.changed or retention_notice.blocked or retention_notice.unchanged or retention_notice.missing %}
+  <p class="retention-notice" role="status">操作结果：已处理 {{ retention_notice.changed }} 份；受阻 {{ retention_notice.blocked }} 份；未变更 {{ retention_notice.unchanged }} 份；未找到 {{ retention_notice.missing }} 份。</p>
+  {% endif %}
+  <form class="filter-form retention-filter" method="get" action="/daily-reports">
+    <label>保留范围
+      <select name="period">
+        <option value="all"{% if selected_period == 'all' %} selected{% endif %}>全部日报</option>
+        <option value="7"{% if selected_period == '7' %} selected{% endif %}>最近 7 天</option>
+        <option value="30"{% if selected_period == '30' %} selected{% endif %}>最近 30 天</option>
+        <option value="pinned"{% if selected_period == 'pinned' %} selected{% endif %}>仅已置顶</option>
+      </select>
+    </label>
+    <div class="filter-actions"><button type="submit">筛选</button></div>
+  </form>
   {% if reports %}
+  <form id="bulk-report-actions" class="bulk-report-actions" method="post" data-report-selection>
+    <input type="hidden" name="action_token" value="{{ action_token }}">
+    <button type="submit" formaction="/daily-reports/bulk/trash" disabled>批量移入回收站</button>
+    <span data-selected-report-count>尚未选择日报</span>
+  </form>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>日期</th><th>修订</th><th>状态</th><th>窗口截止</th><th>确认数</th><th>线索数</th></tr></thead>
+      <thead><tr><th><input type="checkbox" aria-label="选择当前页全部日报" data-select-all-reports></th><th>日期</th><th>修订</th><th>状态</th><th>保留</th><th>窗口截止</th><th>确认数</th><th>线索数</th><th>操作</th></tr></thead>
       <tbody>
       {% for report in reports %}
       <tr>
+        <td><input form="bulk-report-actions" type="checkbox" name="report_ids" value="{{ report.report_id }}" aria-label="选择日报 {{ report.report_date.isoformat() }}" data-report-selector></td>
         <td><a href="/daily-reports/{{ report.report_id }}">{{ report.report_date.isoformat() }}</a></td>
         <td>第 {{ report.revision }} 版</td>
         <td>{{ '草稿' if report.status == 'draft' else '已归档' }}</td>
+        <td>{% if report.pinned_at %}已置顶保护{% else %}普通保留{% endif %}</td>
         <td>{{ report.window_end|format_datetime_zh }}</td>
         <td>{{ report.confirmed_count }}</td>
         <td>{{ report.emerging_count }}</td>
+        <td class="retention-row-actions">
+          <form method="post" action="/daily-reports/{{ report.report_id }}/{{ 'unpin' if report.pinned_at else 'pin' }}">
+            <input type="hidden" name="action_token" value="{{ action_token }}">
+            <button type="submit">{{ '取消置顶' if report.pinned_at else '置顶保护' }}</button>
+          </form>
+          <form method="post" action="/daily-reports/{{ report.report_id }}/trash">
+            <input type="hidden" name="action_token" value="{{ action_token }}">
+            <button type="submit">移入回收站</button>
+          </form>
+          <small>删除前会检查正在运行的日报、语音或清理任务。</small>
+        </td>
       </tr>
       {% endfor %}
       </tbody>

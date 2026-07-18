@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm.attributes import flag_modified
@@ -165,6 +166,7 @@ def test_wave_operation_page_shows_allow_listed_coverage_without_secrets(
 
 def test_event_update_only_enqueues_and_requires_safe_write(db_session, monkeypatch):
     calls: list[object] = []
+    plan_windows: list[int] = []
 
     class Commands:
         def __init__(self, session):
@@ -176,7 +178,15 @@ def test_event_update_only_enqueues_and_requires_safe_write(db_session, monkeypa
 
     monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
     monkeypatch.setattr("newsradar.web.app.OperationCommandService", Commands)
-    monkeypatch.setattr("newsradar.web.app._high_value_wave_plan", lambda session: object())
+    monkeypatch.setattr(
+        "newsradar.web.app.build_local_wave_plan",
+        lambda _session, *, profile_path, window_hours: (
+            plan_windows.append(window_hours) or object()
+        ),
+    )
+    monkeypatch.setattr(
+        "newsradar.web.app.load_wave_profile", lambda _path: SimpleNamespace(window_hours=72)
+    )
 
     with TestClient(create_app()) as client:
         page = client.get("/")
@@ -197,4 +207,5 @@ def test_event_update_only_enqueues_and_requires_safe_write(db_session, monkeypa
     assert response.status_code == 303
     assert response.headers["location"] == "/operations/77"
     assert calls and calls[0][1] == "web"
+    assert plan_windows == [72]
     assert reused.status_code == 400

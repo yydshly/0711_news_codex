@@ -64,6 +64,7 @@ class DailyAutopilotDetailView(DailyAutopilotSummaryView):
     overview_audio_operation: DailyAutopilotOperationView | None
     chinese_enrichment: DailyReportChineseEnrichmentView
     coverage: DailyAutopilotCoverageView
+    audio_partial_message_zh: str | None
     next_action_zh: str
 
 
@@ -89,17 +90,19 @@ class DailyAutopilotQueryService:
         overview_audio = self._operation(row.overview_audio_operation_id)
         chinese_enrichment = self._chinese_enrichment(row.daily_report_id)
         coverage = self._coverage(row, event_operation)
+        summary = dict(row.result_summary) if isinstance(row.result_summary, dict) else {}
         return DailyAutopilotDetailView(
             **asdict(self._summary(row)),
             error_code=row.error_code,
             error_message=row.error_message,
-            result_summary=dict(row.result_summary),
+            result_summary=summary,
             source_operation=source_operation,
             event_operation=event_operation,
             decision_audio_operation=decision_audio,
             overview_audio_operation=overview_audio,
             chinese_enrichment=chinese_enrichment,
             coverage=coverage,
+            audio_partial_message_zh=_audio_partial_message(summary),
             next_action_zh=_next_action(row, event_operation),
         )
 
@@ -242,6 +245,8 @@ def _next_action(
     summary = run.result_summary if isinstance(run.result_summary, dict) else {}
     if run.status == "failed":
         return "请先按上方中文诊断处理；修复后重新开始一次自动日报。"
+    if summary.get("outcome") == "audio_partial":
+        return _audio_partial_next_action(summary)
     if summary.get("outcome") == "no_content":
         return "本次已完成真实抓取，但没有形成可收录事件；无需把目录探测结果补成新闻。"
     if run.status == "succeeded":
@@ -253,3 +258,33 @@ def _next_action(
     if run.stage in {"archive_and_enqueue_audio", "wait_audio"}:
         return "两版报告已完成审核，正在生成决策版与全览版语音。"
     return "任务会在 Worker 中继续推进；单个来源失败不会阻塞整批。"
+
+
+def _audio_partial_message(summary: dict[str, object]) -> str | None:
+    if summary.get("outcome") != "audio_partial":
+        return None
+    failed = _failed_audio_renditions(summary)
+    if failed == {"decision"}:
+        return "日报内容已完成，决策版语音失败"
+    if failed == {"overview"}:
+        return "日报内容已完成，情报全览语音失败"
+    if failed == {"decision", "overview"}:
+        return "日报内容已完成，决策版语音和情报全览语音失败"
+    return "日报内容已完成，部分语音生成失败"
+
+
+def _audio_partial_next_action(summary: dict[str, object]) -> str:
+    failed = _failed_audio_renditions(summary)
+    if failed == {"decision"}:
+        return "日报内容已完成，请重新生成决策版语音。"
+    if failed == {"overview"}:
+        return "日报内容已完成，请重新生成全览版语音。"
+    return "日报内容已完成，请重新生成缺失的语音版本。"
+
+
+def _failed_audio_renditions(summary: dict[str, object]) -> set[str]:
+    return {
+        rendition
+        for rendition in ("decision", "overview")
+        if summary.get(f"{rendition}_audio_status") == "failed"
+    }

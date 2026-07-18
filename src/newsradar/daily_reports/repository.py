@@ -5,7 +5,7 @@ import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +18,13 @@ from newsradar.daily_reports.chinese_enrichment import (
     DailyReportChineseCandidate,
     DailyReportChineseResult,
     candidate_key,
+)
+from newsradar.daily_reports.retention import (
+    RETENTION_DAYS,
+    TRASH_BATCH_LIMIT,
+    TRASH_DAYS,
+    RetentionActionResult,
+    report_local_date,
 )
 from newsradar.daily_reports.schema import (
     REPORT_TIMEZONE,
@@ -33,12 +40,15 @@ from newsradar.daily_reports.schema import (
 )
 from newsradar.daily_reports.text_integrity import ensure_editorial_text_integrity
 from newsradar.db.models import (
+    DailyAutopilotRunRecord,
+    DailyReportAudioArtifactRecord,
     DailyReportItemEditorialReviewRecord,
     DailyReportItemRecord,
     DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
     DailyReportRecord,
     ModelUsageRecord,
+    OperationRunRecord,
 )
 
 MAX_REVISION_ATTEMPTS = 3
@@ -152,6 +162,73 @@ class DailyReportRepository:
                     raise RuntimeError("daily_report_revision_conflict") from error
 
         raise RuntimeError("daily_report_revision_conflict")
+
+    def pin(self, report_id: int) -> RetentionActionResult:
+        report = self._report_for_update(report_id)
+        if report.pinned_at is not None:
+            self.session.commit()
+            return RetentionActionResult(report_id, "unchanged", "日报已经置顶。")
+        report.pinned_at = self._utcnow()
+        self.session.commit()
+        return RetentionActionResult(report_id, "pinned", "日报已置顶。")
+
+    def unpin(self, report_id: int) -> RetentionActionResult:
+        report = self._report_for_update(report_id)
+        if report.pinned_at is None:
+            self.session.commit()
+            return RetentionActionResult(report_id, "unchanged", "日报未置顶。")
+        report.pinned_at = None
+        self.session.commit()
+        return RetentionActionResult(report_id, "unpinned", "日报已取消置顶。")
+
+    def move_to_trash(
+        self, report_id: int, *, automatic: bool = False
+    ) -> RetentionActionResult:
+        report = self._report_for_update(report_id)
+        if report.deleted_at is not None:
+            self.session.commit()
+            return RetentionActionResult(report_id, "unchanged", "日报已在回收站中。")
+        if automatic and report.pinned_at is not None:
+            self.session.commit()
+            return RetentionActionResult(
+                report_id, "unchanged", "日报已置顶，自动清理已跳过。"
+            )
+        blocked = self._trash_block_diagnostic(report_id)
+        if blocked is not None:
+            self.session.commit()
+            return RetentionActionResult(report_id, "blocked", blocked)
+        deleted_at = self._utcnow()
+        report.deleted_at = deleted_at
+        report.purge_after = deleted_at + timedelta(days=TRASH_DAYS)
+        self.session.commit()
+        return RetentionActionResult(report_id, "trashed", "日报已移入回收站。")
+
+    def restore(self, report_id: int) -> RetentionActionResult:
+        report = self._report_for_update(report_id)
+        if report.deleted_at is None:
+            self.session.commit()
+            return RetentionActionResult(report_id, "unchanged", "日报不在回收站中。")
+        report.deleted_at = None
+        report.purge_after = None
+        self.session.commit()
+        return RetentionActionResult(report_id, "restored", "日报已从回收站恢复。")
+
+    def trash_candidates(self) -> tuple[DailyReportRecord, ...]:
+        retention_start = report_local_date(self._utcnow()) - timedelta(
+            days=RETENTION_DAYS
+        )
+        return tuple(
+            self.session.scalars(
+                select(DailyReportRecord)
+                .where(
+                    DailyReportRecord.deleted_at.is_(None),
+                    DailyReportRecord.pinned_at.is_(None),
+                    DailyReportRecord.report_date <= retention_start,
+                )
+                .order_by(DailyReportRecord.report_date, DailyReportRecord.id)
+                .limit(TRASH_BATCH_LIMIT)
+            )
+        )
 
     def items(self, report_id: int) -> tuple[DailyReportItemRecord, ...]:
         records = self.session.scalars(
@@ -681,6 +758,68 @@ class DailyReportRepository:
             {"key": f"newsradar:daily-report:{report_date.isoformat()}:{window_hours}"},
         )
 
+    def _report_for_update(self, report_id: int) -> DailyReportRecord:
+        report = self.session.scalar(
+            select(DailyReportRecord)
+            .where(DailyReportRecord.id == report_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if report is None:
+            self.session.rollback()
+            raise LookupError("daily_report_not_found")
+        return report
+
+    def _trash_block_diagnostic(self, report_id: int) -> str | None:
+        if self.session.scalar(
+            select(DailyAutopilotRunRecord.id).where(
+                DailyAutopilotRunRecord.daily_report_id == report_id,
+                DailyAutopilotRunRecord.status.in_(("queued", "running")),
+            )
+        ) is not None:
+            return "自动日报仍在处理中，完成或取消后才能删除。"
+
+        if self._active_operation_owns_report("daily_report_audio", report_id):
+            return "日报语音仍在处理中，完成或取消后才能删除。"
+
+        active_audio = self.session.scalar(
+            select(DailyReportAudioArtifactRecord.id)
+            .join(
+                OperationRunRecord,
+                DailyReportAudioArtifactRecord.operation_run_id == OperationRunRecord.id,
+                isouter=True,
+            )
+            .where(
+                DailyReportAudioArtifactRecord.daily_report_id == report_id,
+                (
+                    DailyReportAudioArtifactRecord.status.in_(("queued", "running"))
+                    | OperationRunRecord.status.in_(("queued", "running"))
+                ),
+            )
+        )
+        if active_audio is not None:
+            return "日报语音仍在处理中，完成或取消后才能删除。"
+
+        if self._active_operation_owns_report("daily_report_purge", report_id):
+            return "日报清理仍在处理中，完成或取消后才能删除。"
+        return None
+
+    def _active_operation_owns_report(
+        self, operation_type: str, report_id: int
+    ) -> bool:
+        operations = self.session.scalars(
+            select(OperationRunRecord).where(
+                OperationRunRecord.operation_type == operation_type,
+                OperationRunRecord.status.in_(("queued", "running")),
+            )
+        )
+        if any(
+            _operation_owns_report(operation.requested_scope, report_id)
+            for operation in operations
+        ):
+            return True
+        return False
+
     def _draft_report(self, report_id: int) -> DailyReportRecord:
         report = self.session.scalar(
             select(DailyReportRecord)
@@ -802,6 +941,19 @@ class DailyReportRepository:
                 "daily_reports.supersedes_report_id",
             )
         )
+
+
+def _operation_owns_report(scope: object, report_id: int) -> bool:
+    if not isinstance(scope, dict):
+        return False
+    for key in ("report_id", "daily_report_id"):
+        if scope.get(key) == report_id:
+            return True
+    for key in ("report_ids", "daily_report_ids"):
+        report_ids = scope.get(key)
+        if isinstance(report_ids, (list, tuple)) and report_id in report_ids:
+            return True
+    return False
 
 
 def rebuild_chinese_enrichment_summary(

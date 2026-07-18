@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from json import dumps
@@ -200,6 +201,27 @@ def test_archive_and_enqueue_daily_report_audios_recovers_committed_pair() -> No
         ) == 2
 
 
+def test_enqueue_daily_report_audio_rejects_trashed_report_without_creating_operation() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db)
+        repository = DailyReportRepository(db)
+        repository.archive(report_id)
+        repository.move_to_trash(report_id)
+
+        with pytest.raises(ValueError, match="daily_report_trashed"):
+            OperationCommandService(db).enqueue_daily_report_audio(
+                report_id=report_id,
+                rendition="decision",
+                trigger="test",
+            )
+
+        assert db.scalar(
+            select(func.count())
+            .select_from(OperationRunRecord)
+            .where(OperationRunRecord.operation_type == "daily_report_audio")
+        ) == 0
+
+
 def test_archive_and_enqueue_daily_report_audios_rejects_incomplete_package_without_writes(
 ) -> None:
     with session() as db:
@@ -237,6 +259,8 @@ def test_enqueue_wave_freezes_plan_atomically() -> None:
             "member_count": 2,
             "window_hours": 24,
             "trend_days": 7,
+            "global_concurrency": 8,
+            "provider_concurrency": 2,
             "window_end": now.isoformat(),
             "algorithm_versions": {
                 "relevance": "relevance-v2",
@@ -248,6 +272,23 @@ def test_enqueue_wave_freezes_plan_atomically() -> None:
             "deadline_at": "2026-07-16T12:00:30+00:00",
         }
         assert [row.source_id for row in WaveRepository(db).members(operation_id)] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("global_concurrency", "provider_concurrency"),
+    [(0, 2), (17, 2), (8, 0), (8, 9), (True, 2), (8, False), ("8", 2), (8, "2")],
+)
+def test_enqueue_wave_rejects_invalid_concurrency(
+    global_concurrency: object, provider_concurrency: object
+) -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="invalid_high_value_wave_concurrency"):
+            OperationCommandService(db).enqueue_high_value_wave(
+                plan=wave_plan(wave_member("a")),
+                trigger="web",
+                global_concurrency=global_concurrency,
+                provider_concurrency=provider_concurrency,
+            )
 
 
 def test_enqueue_wave_rejects_active_batch_and_rolls_back_member_failure(
@@ -398,6 +439,57 @@ def test_enqueue_daily_autopilot_reuses_same_daily_wave() -> None:
         assert run.requested_scope["daily_key"] == (
             f"2026-07-18:24:{plan.digest}"
         )
+
+
+def test_enqueue_daily_autopilot_result_reports_whether_the_run_was_created() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"),),
+            window_hours=24,
+            trend_days=7,
+        )
+        service = OperationCommandService(db, utcnow=lambda: now)
+
+        created = service.enqueue_daily_autopilot_result(plan=plan, trigger="schedule")
+        reused = service.enqueue_daily_autopilot_result(plan=plan, trigger="schedule")
+
+        assert created.created is True
+        assert reused == type(created)(run_id=created.run_id, created=False)
+        assert service.enqueue_daily_autopilot(plan=plan, trigger="schedule") == created.run_id
+
+
+@pytest.mark.parametrize("method", ["enqueue_daily_autopilot_result", "enqueue_daily_autopilot"])
+def test_public_daily_autopilot_enqueue_paths_commit_before_the_session_is_reopened(
+    method: str,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    plan = wave_plan_from_members(
+        profile_id="high-value",
+        members=(wave_member("a"),),
+        window_hours=24,
+        trend_days=7,
+    )
+    try:
+        with Session(engine) as db:
+            service = OperationCommandService(db, utcnow=lambda: datetime(2026, 7, 18, tzinfo=UTC))
+            result = getattr(service, method)(plan=plan, trigger="web")
+            run_id = result.run_id if method.endswith("result") else result
+
+        with Session(engine) as verifier:
+            assert verifier.get(DailyAutopilotRunRecord, run_id) is not None
+    finally:
+        engine.dispose()
+
+
+def test_public_daily_autopilot_result_does_not_expose_transaction_ownership() -> None:
+    parameters = inspect.signature(
+        OperationCommandService.enqueue_daily_autopilot_result
+    ).parameters
+
+    assert "in_transaction" not in parameters
 
 
 def test_enqueue_daily_autopilot_allows_retry_after_failed_run() -> None:
@@ -630,6 +722,107 @@ def test_enqueue_fetch_records_complete_scope() -> None:
             "one_off": False,
             "trial": False,
         }
+
+
+def test_enqueue_daily_report_purge_rejects_more_than_twenty_ids() -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="invalid_daily_report_purge_report_ids"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=range(1, 22),
+                trigger="web",
+            )
+
+
+def test_enqueue_daily_report_purge_deduplicates_positive_trashed_ids() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        first = reviewed_daily_report(db, reviewed=False)
+        first_report = db.get(DailyReportRecord, first)
+        assert first_report is not None
+        second_report = DailyReportRecord(
+            report_date=date(2026, 7, 17),
+            timezone=first_report.timezone,
+            window_hours=24,
+            window_start=now - timedelta(hours=24),
+            window_end=now,
+            source_operation_id=first_report.source_operation_id,
+            status="archived",
+            revision=1,
+            generation_summary={},
+            generated_at=now,
+            archived_at=now,
+        )
+        db.add(second_report)
+        db.commit()
+        second = second_report.id
+        for report_id in (first, second):
+            report = db.get(DailyReportRecord, report_id)
+            assert report is not None
+            report.deleted_at = now
+            report.purge_after = now + timedelta(days=30)
+        db.commit()
+
+        operation_id = OperationCommandService(db).enqueue_daily_report_purge(
+            report_ids=[first, second, first],
+            trigger="web",
+        )
+
+        operation = db.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        assert operation.operation_type == OperationType.DAILY_REPORT_PURGE.value
+        assert operation.requested_scope == {
+            "schema_version": 1,
+            "report_ids": [first, second],
+        }
+        assert "audio" not in dumps(operation.requested_scope)
+
+
+@pytest.mark.parametrize("report_ids", [[], [0], [-1], [True], [1, "2"]])
+def test_enqueue_daily_report_purge_rejects_invalid_ids(report_ids: list[object]) -> None:
+    with session() as db:
+        with pytest.raises(ValueError, match="invalid_daily_report_purge_report_ids"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=report_ids,  # type: ignore[arg-type]
+                trigger="web",
+            )
+
+
+def test_enqueue_daily_report_purge_accepts_only_trashed_reports() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db, reviewed=False)
+
+        with pytest.raises(ValueError, match="daily_report_must_be_trashed_for_purge"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=[report_id],
+                trigger="web",
+            )
+
+
+def test_enqueue_daily_report_purge_rejects_trashed_report_with_active_work() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        report_id = reviewed_daily_report(db, reviewed=False)
+        report = db.get(DailyReportRecord, report_id)
+        assert report is not None
+        report.deleted_at = now
+        report.purge_after = now + timedelta(days=30)
+        db.add(
+            OperationRunRecord(
+                operation_type=OperationType.DAILY_REPORT_AUDIO.value,
+                trigger="test",
+                status="queued",
+                requested_scope={"daily_report_id": report_id, "rendition": "decision"},
+                result_summary={},
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        with pytest.raises(ValueError, match="daily_report_has_active_work"):
+            OperationCommandService(db).enqueue_daily_report_purge(
+                report_ids=[report_id],
+                trigger="web",
+            )
 
 
 def test_retry_creates_new_auditable_operation() -> None:

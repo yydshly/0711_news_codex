@@ -29,6 +29,7 @@ def test_operation_enums_match_the_runtime_contract() -> None:
         "event_split",
         "event_exclude",
         "daily_report_audio",
+        "daily_report_purge",
         "daily_autopilot",
     }
     assert {member.value for member in ErrorCategory} == {

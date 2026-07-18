@@ -7,7 +7,11 @@ from alembic.config import Config
 from sqlalchemy import TEXT, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from newsradar.db.models import DailyAutopilotRunRecord, EventMergeCandidateRecord
+from newsradar.db.models import (
+    DailyAutomationConfigRecord,
+    DailyAutopilotRunRecord,
+    EventMergeCandidateRecord,
+)
 
 
 def _sqlite_url(path: Path) -> str:
@@ -74,6 +78,149 @@ def test_daily_autopilot_migration_round_trips_with_expected_columns(tmp_path: P
     command.downgrade(config, "20260717_0027")
     with engine.connect() as connection:
         assert "daily_autopilot_runs" not in inspect(connection).get_table_names()
+
+
+def test_daily_automation_retention_migration_round_trips_with_expected_schema(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-automation-retention.db")
+    _upgrade(database_url, "20260718_0028")
+    engine = create_engine(database_url)
+
+    _upgrade(database_url, "20260718_0029")
+
+    expected_config_columns = {
+        "id",
+        "enabled",
+        "timezone",
+        "daily_time",
+        "window_hours",
+        "resource_profile",
+        "last_scheduled_date",
+        "last_retention_date",
+        "last_run_id",
+        "next_run_at",
+        "created_at",
+        "updated_at",
+    }
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert "daily_automation_config" in inspector.get_table_names()
+        assert {
+            column["name"]
+            for column in inspector.get_columns("daily_automation_config")
+        } == expected_config_columns
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("daily_automation_config")
+        } == {
+            "ck_daily_automation_singleton",
+            "ck_daily_automation_window",
+            "ck_daily_automation_resource_profile",
+        }
+        assert {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("daily_automation_config")
+        } == {"ix_daily_automation_next_run": ("enabled", "next_run_at")}
+        report_columns = {
+            column["name"]: column
+            for column in inspector.get_columns("daily_reports")
+        }
+        assert {"pinned_at", "deleted_at", "purge_after"} <= set(report_columns)
+        assert all(
+            report_columns[name]["nullable"]
+            for name in ("pinned_at", "deleted_at", "purge_after")
+        )
+        assert {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("daily_reports")
+        }.items() >= {
+            "ix_daily_reports_deleted_purge": ("deleted_at", "purge_after"),
+            "ix_daily_reports_pinned_date": ("pinned_at", "report_date"),
+        }.items()
+        config_count = connection.execute(
+            text("SELECT count(*) FROM daily_automation_config")
+        ).scalar_one()
+        assert config_count == 0
+    assert set(DailyAutomationConfigRecord.__table__.columns.keys()) == expected_config_columns
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.downgrade(config, "20260718_0028")
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        assert "daily_automation_config" not in inspector.get_table_names()
+        report_columns = {column["name"] for column in inspector.get_columns("daily_reports")}
+        assert not {"pinned_at", "deleted_at", "purge_after"} & report_columns
+
+
+def test_retention_migration_allows_archived_report_retention_lifecycle(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-report-retention-lifecycle.db")
+    _upgrade(database_url, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO operation_runs (
+                    id, operation_type, trigger, status, requested_scope,
+                    progress_current, result_summary, attempt_count, created_at, updated_at
+                ) VALUES (
+                    1, 'event_pipeline', 'test', 'succeeded', '{}',
+                    0, '{}', 0, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO daily_reports (
+                    id, report_date, timezone, window_hours, window_start, window_end,
+                    source_operation_id, status, revision, generation_summary,
+                    generated_at, archived_at
+                ) VALUES (
+                    1, '2026-07-18', 'Asia/Shanghai', 24,
+                    '2026-07-17T00:00:00Z', '2026-07-18T00:00:00Z',
+                    1, 'archived', 1, '{"private_marker":"immutable"}',
+                    '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'
+                )
+                """
+            )
+        )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE daily_reports SET pinned_at = '2026-07-18T01:00:00Z' "
+                "WHERE id = 1"
+            )
+        )
+    with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE daily_reports SET generation_summary = :summary WHERE id = 1"
+                ),
+                {"summary": '{"private_marker":"changed"}'},
+            )
+    with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM daily_reports WHERE id = 1"))
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE daily_reports SET deleted_at = '2026-07-18T02:00:00Z', "
+                "purge_after = '2026-08-17T02:00:00Z' WHERE id = 1"
+            )
+        )
+        connection.execute(text("DELETE FROM daily_reports WHERE id = 1"))
+        assert connection.execute(
+            text("SELECT count(*) FROM daily_reports WHERE id = 1")
+        ).scalar_one() == 0
 
 
 def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
@@ -349,6 +496,9 @@ def test_daily_report_migration_downgrade_removes_only_report_tables(tmp_path: P
             "trg_daily_report_item_archived_delete",
             "trg_daily_report_item_archived_insert",
             "trg_daily_report_item_archived_update",
+            "trg_daily_report_purge_transition_delete",
+            "trg_daily_report_purge_transition_insert",
+            "trg_daily_report_purge_transition_update",
         }
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)

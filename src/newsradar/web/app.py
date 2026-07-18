@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated, Literal, TypeVar
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -19,8 +19,10 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
 from newsradar.credentials import SettingsCredentials
+from newsradar.daily_reports.automation_repository import DailyAutomationRepository
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.retention import TRASH_BATCH_LIMIT
 from newsradar.daily_reports.schema import (
     DailyReportEditorialReviewDraft,
     DailyReportOverviewEditorialReviewDraft,
@@ -34,16 +36,15 @@ from newsradar.db.session import create_session
 from newsradar.diagnostics import collect_diagnostic_snapshot, create_diagnostic_bundle
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.repository import OperationRepository
-from newsradar.providers.repository import ProviderRepository
 from newsradar.providers.yaml_loader import load_provider_tree
 from newsradar.settings import get_settings
 from newsradar.sources.catalog_refresh import build_catalog_refresh_plan
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
-from newsradar.sources.repository import SourceRepository
 from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
-from newsradar.waves.planning import build_wave_plan
+from newsradar.waves.local_plan import build_local_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
+from newsradar.web.daily_automation_queries import DailyAutomationQueryService
 from newsradar.web.daily_autopilot_queries import DailyAutopilotQueryService
 from newsradar.web.daily_report_queries import DailyReportQueryService
 from newsradar.web.event_merge_queries import EventMergeQueryService
@@ -115,6 +116,7 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
     ),
     "invalid_daily_report_move": (422, "移动方向只能是上移或下移。"),
     "daily_report_not_found": (404, "日报不存在。"),
+    "daily_report_trashed": (409, "日报已在回收站中，不能创建语音任务。"),
     "daily_report_item_not_found": (404, "日报条目不存在或不属于当前日报。"),
     "daily_report_overview_item_not_found": (
         404,
@@ -256,32 +258,6 @@ def _source_wave_plan():
     )
 
 
-def _high_value_wave_plan(session, window_hours: int | None = None):
-    """Synchronize reviewed local definitions then freeze one local-only WavePlan.
-
-    This boundary deliberately uses persisted probe history only.  It never creates an
-    HTTP client, reads a browser session, or invokes MiniMax.
-    """
-    profile = load_wave_profile(Path("wave_profiles/high-value-ai-tech.yaml"))
-    if window_hours is not None:
-        profile = profile.model_copy(update={"window_hours": window_hours})
-    sources = load_source_tree(Path("sources"))
-    providers = load_provider_tree(Path("providers"))
-    ProviderRepository(session).sync(providers)
-    SourceRepository(session).sync(sources)
-    session.commit()
-    repository = SourceRepository(session)
-    source_ids = list(profile.source_ids)
-    probes = repository.latest_probe_snapshots(source_ids)
-    return build_wave_plan(
-        profile,
-        sources,
-        probes,
-        SettingsCredentials().configured_names(),
-        successful_fetch_access=repository.successful_fetch_access(source_ids),
-    )
-
-
 @contextmanager
 def _dashboard_service_context() -> Iterator[DashboardQueryService]:
     session = create_session()
@@ -419,7 +395,7 @@ def create_app(
             )
             body = (await request.body()).decode("utf-8", errors="replace")
             values = {
-                name: entries[-1]
+                name: ",".join(entries) if name == "report_ids" else entries[-1]
                 for name, entries in parse_qs(body, keep_blank_values=True).items()
                 if entries
             }
@@ -427,6 +403,58 @@ def create_app(
             return values
         except UnsafeWrite as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+    def retention_notice(request: Request) -> dict[str, int]:
+        return {
+            name: max(0, min(50, int(request.query_params.get(name, "0"))))
+            if request.query_params.get(name, "0").isdigit()
+            else 0
+            for name in ("changed", "blocked", "unchanged", "missing")
+        }
+
+    def retention_redirect(
+        destination: str, outcomes: dict[str, int]
+    ) -> RedirectResponse:
+        safe_counts = {
+            name: max(0, min(50, outcomes.get(name, 0)))
+            for name in ("changed", "blocked", "unchanged", "missing")
+        }
+        return RedirectResponse(
+            url=f"{destination}?{urlencode(safe_counts)}", status_code=303
+        )
+
+    def parse_report_ids(value: str) -> tuple[int, ...]:
+        parts = tuple(part.strip() for part in value.split(",") if part.strip())
+        if not parts:
+            raise HTTPException(status_code=422, detail="请选择至少一份日报。")
+        try:
+            report_ids = tuple(dict.fromkeys(int(part) for part in parts))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="日报编号必须是正整数。") from error
+        if any(report_id <= 0 for report_id in report_ids):
+            raise HTTPException(status_code=422, detail="日报编号必须是正整数。")
+        if len(report_ids) > TRASH_BATCH_LIMIT:
+            raise HTTPException(status_code=422, detail="一次最多操作 50 份日报。")
+        return report_ids
+
+    def retention_outcomes(results: list[str]) -> dict[str, int]:
+        return {
+            "changed": sum(
+                result in {"pinned", "unpinned", "trashed", "restored"}
+                for result in results
+            ),
+            "blocked": results.count("blocked"),
+            "unchanged": results.count("unchanged"),
+            "missing": results.count("missing"),
+        }
+
+    async def require_daily_automation_action(request: Request) -> dict[str, str]:
+        try:
+            return await require_safe_action(request)
+        except HTTPException as error:
+            if error.status_code == 400:
+                raise HTTPException(status_code=403, detail=error.detail) from error
+            raise
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -594,28 +622,109 @@ def create_app(
         )
 
     @app.get("/daily-reports", response_class=HTMLResponse)
-    def daily_reports(request: Request) -> HTMLResponse:
+    def daily_reports(request: Request, period: str = "all") -> HTMLResponse:
         try:
             with create_session() as session:
                 service = DailyReportQueryService(session)
-                reports = service.list_reports()
+                reports = service.list_reports(period=period)
                 snapshot_available = service.has_complete_event_snapshot()
                 autopilot_runs = DailyAutopilotQueryService(session).list_recent()
+                automation = DailyAutomationQueryService(
+                    session,
+                    worker_lease_seconds=get_settings().worker_lease_seconds,
+                ).view()
+                session.commit()
         except SQLAlchemyError as error:
             return database_error_response(request, error)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="无效的日报筛选条件。") from error
         return templates.TemplateResponse(
             request=request,
             name="daily_reports.html",
             context={
                 "reports": reports,
+                "selected_period": period,
+                "retention_notice": retention_notice(request),
                 "snapshot_available": snapshot_available,
                 "autopilot_runs": autopilot_runs,
+                "automation": automation,
                 "action_token": issue_action_token(request),
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
             },
         )
+
+    @app.get("/daily-reports/trash", response_class=HTMLResponse)
+    def daily_report_trash(request: Request, page: int = 1) -> HTMLResponse:
+        try:
+            with create_session() as session:
+                service = DailyReportQueryService(session)
+                reports = service.trash_reports(page=page, page_size=TRASH_BATCH_LIMIT)
+                trash_states = {
+                    report.report_id: service.trash_state(report.report_id)
+                    for report in reports
+                }
+                session.commit()
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)
+        return templates.TemplateResponse(
+            request=request,
+            name="daily_report_trash.html",
+            context={
+                "reports": reports,
+                "trash_states": trash_states,
+                "page": max(1, page),
+                "action_token": issue_action_token(request),
+                "retention_notice": retention_notice(request),
+                "database_status": "数据库已连接",
+                "database_status_tone": "healthy",
+                "latest_probe_at": None,
+            },
+        )
+
+    @app.post("/daily-automation/enable")
+    async def enable_daily_automation(request: Request) -> RedirectResponse:
+        await require_daily_automation_action(request)
+        try:
+            with create_session() as session:
+                DailyAutomationRepository(session).enable()
+                session.commit()
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url="/daily-reports", status_code=303)
+
+    @app.post("/daily-automation/pause")
+    async def pause_daily_automation(request: Request) -> RedirectResponse:
+        await require_daily_automation_action(request)
+        try:
+            with create_session() as session:
+                DailyAutomationRepository(session).pause()
+                session.commit()
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url="/daily-reports", status_code=303)
+
+    @app.post("/daily-automation/run-now")
+    async def run_daily_automation_now(request: Request) -> RedirectResponse:
+        values = await require_daily_automation_action(request)
+        try:
+            try:
+                window_hours = int(values.get("window_hours", "24"))
+            except (TypeError, ValueError) as error:
+                raise ValueError("invalid_daily_report_window") from error
+            if window_hours not in {24, 48, 72}:
+                raise ValueError("invalid_daily_report_window")
+            with create_session() as session:
+                run_id = OperationCommandService(session).enqueue_daily_autopilot(
+                    plan=build_local_wave_plan(session, window_hours=window_hours),
+                    trigger="web",
+                )
+        except ValueError as error:
+            raise _daily_report_http_error(error, default_status=422) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-autopilot/{run_id}", status_code=303)
 
     @app.post("/daily-reports")
     async def generate_daily_report(request: Request) -> RedirectResponse:
@@ -650,7 +759,7 @@ def create_app(
                 raise ValueError("invalid_daily_report_window") from error
             with create_session() as session:
                 run_id = OperationCommandService(session).enqueue_daily_autopilot(
-                    plan=_high_value_wave_plan(session, window_hours),
+                    plan=build_local_wave_plan(session, window_hours=window_hours),
                     trigger="web",
                 )
         except ValueError as error:
@@ -707,10 +816,14 @@ def create_app(
     def daily_report_detail(request: Request, report_id: int) -> HTMLResponse:
         try:
             with create_session() as session:
-                detail = DailyReportQueryService(session).detail(report_id)
+                service = DailyReportQueryService(session)
+                detail = service.detail(report_id)
+                in_trash = detail is None and service.trash_state(report_id) is not None
         except SQLAlchemyError as error:
             return database_error_response(request, error)
         if detail is None:
+            if in_trash:
+                return RedirectResponse(url="/daily-reports/trash", status_code=303)
             raise HTTPException(status_code=404)
         return templates.TemplateResponse(
             request=request,
@@ -723,6 +836,114 @@ def create_app(
                 "latest_probe_at": detail.report.window_end,
             },
         )
+
+    @app.post("/daily-reports/bulk/trash")
+    async def bulk_trash_daily_reports(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        report_ids = parse_report_ids(values.get("report_ids", ""))
+        outcomes: list[str] = []
+        try:
+            with create_session() as session:
+                repository = DailyReportRepository(session)
+                for report_id in report_ids:
+                    try:
+                        outcomes.append(repository.move_to_trash(report_id).outcome)
+                    except LookupError:
+                        outcomes.append("missing")
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect("/daily-reports", retention_outcomes(outcomes))
+
+    @app.post("/daily-reports/bulk/restore")
+    async def bulk_restore_daily_reports(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        report_ids = parse_report_ids(values.get("report_ids", ""))
+        outcomes: list[str] = []
+        try:
+            with create_session() as session:
+                repository = DailyReportRepository(session)
+                for report_id in report_ids:
+                    try:
+                        outcomes.append(repository.restore(report_id).outcome)
+                    except LookupError:
+                        outcomes.append("missing")
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect("/daily-reports/trash", retention_outcomes(outcomes))
+
+    @app.post("/daily-reports/{report_id}/pin")
+    async def pin_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                result = DailyReportRepository(session).pin(report_id)
+        except LookupError:
+            return retention_redirect("/daily-reports", {"missing": 1})
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect("/daily-reports", retention_outcomes([result.outcome]))
+
+    @app.post("/daily-reports/{report_id}/unpin")
+    async def unpin_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                result = DailyReportRepository(session).unpin(report_id)
+        except LookupError:
+            return retention_redirect("/daily-reports", {"missing": 1})
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect("/daily-reports", retention_outcomes([result.outcome]))
+
+    @app.post("/daily-reports/{report_id}/trash")
+    async def trash_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                result = DailyReportRepository(session).move_to_trash(report_id)
+        except LookupError:
+            return retention_redirect("/daily-reports", {"missing": 1})
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect("/daily-reports", retention_outcomes([result.outcome]))
+
+    @app.post("/daily-reports/{report_id}/restore")
+    async def restore_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        await require_safe_action(request)
+        try:
+            with create_session() as session:
+                result = DailyReportRepository(session).restore(report_id)
+        except LookupError:
+            return retention_redirect("/daily-reports/trash", {"missing": 1})
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect(
+            "/daily-reports/trash", retention_outcomes([result.outcome])
+        )
+
+    @app.post("/daily-reports/{report_id}/purge")
+    async def purge_daily_report(request: Request, report_id: int) -> RedirectResponse:
+        values = await require_safe_action(request)
+        if values.get("confirm_purge") != "true":
+            raise HTTPException(status_code=422, detail="永久删除前必须明确确认。")
+        try:
+            with create_session() as session:
+                OperationCommandService(session).enqueue_daily_report_purge(
+                    report_ids=[report_id],
+                    trigger="web",
+                )
+        except ValueError as error:
+            if str(error) == "daily_report_not_found":
+                raise HTTPException(status_code=404, detail="日报不存在。") from error
+            if str(error) == "daily_report_must_be_trashed_for_purge":
+                raise HTTPException(
+                    status_code=409,
+                    detail="仅回收站中的日报可以永久删除。",
+                ) from error
+            raise HTTPException(status_code=422, detail="日报清理请求无效。") from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url="/daily-reports/trash", status_code=303)
 
     @app.post("/daily-reports/{report_id}/items/{item_id}/included")
     async def set_daily_report_item_included(
@@ -1089,7 +1310,12 @@ def create_app(
         await require_safe_action(request)
         try:
             with create_session() as session:
-                plan = _high_value_wave_plan(session)
+                profile_path = Path("wave_profiles/high-value-ai-tech.yaml")
+                plan = build_local_wave_plan(
+                    session,
+                    profile_path=profile_path,
+                    window_hours=load_wave_profile(profile_path).window_hours,
+                )
                 operation_id = OperationCommandService(session).enqueue_high_value_wave(
                     plan=plan, trigger="web"
                 )

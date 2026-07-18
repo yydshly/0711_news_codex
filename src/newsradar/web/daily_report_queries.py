@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
@@ -20,6 +20,7 @@ from newsradar.daily_reports.intelligence import (
     build_decision_script,
     build_overview_script,
 )
+from newsradar.daily_reports.retention import report_local_date
 from newsradar.daily_reports.text_integrity import has_suspicious_question_run
 from newsradar.db.models import (
     DailyReportAudioArtifactRecord,
@@ -273,8 +274,16 @@ class DailyReportSummaryView:
     window_hours: int
     window_end: datetime
     source_operation_id: int
+    pinned_at: datetime | None
     confirmed_count: int
     emerging_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportTrashStateView:
+    report_id: int
+    deleted_at: datetime
+    purge_after: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,9 +413,26 @@ class DailyReportQueryService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def list_reports(self, *, limit: int = 100) -> tuple[DailyReportSummaryView, ...]:
+    def list_reports(
+        self,
+        *,
+        limit: int = 100,
+        period: str = "all",
+        now: datetime | None = None,
+    ) -> tuple[DailyReportSummaryView, ...]:
+        statement = select(DailyReportRecord).where(DailyReportRecord.deleted_at.is_(None))
+        if period in {"7", "30"}:
+            current = now or datetime.now(UTC)
+            statement = statement.where(
+                DailyReportRecord.report_date
+                >= report_local_date(current) - timedelta(days=int(period) - 1)
+            )
+        elif period == "pinned":
+            statement = statement.where(DailyReportRecord.pinned_at.is_not(None))
+        elif period != "all":
+            raise ValueError("invalid_daily_report_period")
         records = self.session.scalars(
-            select(DailyReportRecord)
+            statement
             .order_by(
                 DailyReportRecord.report_date.desc(),
                 DailyReportRecord.revision.desc(),
@@ -416,8 +442,45 @@ class DailyReportQueryService:
         )
         return tuple(self._summary(record) for record in records)
 
+    def trash_reports(
+        self, *, page: int, page_size: int
+    ) -> tuple[DailyReportSummaryView, ...]:
+        safe_page = max(1, page)
+        safe_page_size = max(1, min(page_size, 100))
+        records = self.session.scalars(
+            select(DailyReportRecord)
+            .where(DailyReportRecord.deleted_at.is_not(None))
+            .order_by(
+                DailyReportRecord.purge_after.asc(),
+                DailyReportRecord.id.asc(),
+            )
+            .offset((safe_page - 1) * safe_page_size)
+            .limit(safe_page_size)
+        )
+        return tuple(self._summary(record) for record in records)
+
+    def trash_state(self, report_id: int) -> DailyReportTrashStateView | None:
+        record = self.session.scalar(
+            select(DailyReportRecord).where(
+                DailyReportRecord.id == report_id,
+                DailyReportRecord.deleted_at.is_not(None),
+            )
+        )
+        if record is None or record.deleted_at is None:
+            return None
+        return DailyReportTrashStateView(
+            report_id=record.id,
+            deleted_at=record.deleted_at,
+            purge_after=record.purge_after,
+        )
+
     def detail(self, report_id: int) -> DailyReportDetailView | None:
-        record = self.session.get(DailyReportRecord, report_id)
+        record = self.session.scalar(
+            select(DailyReportRecord).where(
+                DailyReportRecord.id == report_id,
+                DailyReportRecord.deleted_at.is_(None),
+            )
+        )
         if record is None:
             return None
         generation_summary = (
@@ -934,6 +997,7 @@ class DailyReportQueryService:
             window_hours=record.window_hours,
             window_end=record.window_end,
             source_operation_id=record.source_operation_id,
+            pinned_at=record.pinned_at,
             confirmed_count=sum(
                 row.included and row.section == "confirmed" for row in loaded
             ),

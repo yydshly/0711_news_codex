@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -1050,6 +1051,28 @@ def test_daily_report_audio_enqueue_reuses_active_operation_and_page_explains_qu
     assert f'action="/daily-reports/{report_id}/audio/decision"' not in page.text
 
 
+def test_daily_report_audio_enqueue_rejects_trashed_report_with_safe_diagnostic(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    repository.archive(report_id)
+    repository.move_to_trash(report_id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/audio/decision",
+        data={"action_token": token},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "日报已在回收站中，不能创建语音任务。"
+    assert db_session.scalars(
+        select(OperationRunRecord).where(OperationRunRecord.operation_type == "daily_report_audio")
+    ).all() == []
+
+
 def test_archive_rolls_back_when_automatic_audio_enqueue_fails(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1985,6 +2008,164 @@ def test_revise_route_from_older_parent_reuses_archived_direct_child(
             select(DailyReportRecord).where(DailyReportRecord.supersedes_report_id == parent_id)
         )
     ] == [child_id]
+
+
+def test_archive_page_shows_pin_and_trash_controls(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    DailyReportRepository(db_session).archive(report.id)
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get("/daily-reports")
+
+    assert response.status_code == 200
+    assert "置顶保护" in response.text
+    assert "移入回收站" in response.text
+    assert 'href="/daily-reports/trash"' in response.text
+
+
+def test_trashed_detail_redirects_to_private_body_free_trash_page(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    report.generation_summary = {"private_marker": "private report body must not render"}
+    db_session.commit()
+    DailyReportRepository(db_session).move_to_trash(report_id)
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}", follow_redirects=False)
+    trash = client.get("/daily-reports/trash")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/daily-reports/trash"
+    assert trash.status_code == 200
+    assert "恢复" in trash.text
+    assert "private report body must not render" not in trash.text
+
+
+def test_bulk_trash_rejects_more_than_fifty_unique_positive_ids(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        "/daily-reports/bulk/trash",
+        content=urlencode(
+            [("action_token", token), *(("report_ids", str(value)) for value in range(1, 52))]
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "一次最多操作 50 份日报。"
+
+
+def test_safe_bulk_trash_and_restore_reach_their_static_handlers(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = seed_two_daily_reports(db_session)
+    report_ids = (first.id, second.id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    trashed = client.post(
+        "/daily-reports/bulk/trash",
+        content=urlencode(
+            [("action_token", token), *(("report_ids", str(report_id)) for report_id in report_ids)]
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert trashed.status_code == 303
+    assert trashed.headers["location"].startswith("/daily-reports?")
+    assert all(
+        db_session.get(DailyReportRecord, report_id).deleted_at is not None
+        for report_id in report_ids
+    )
+
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    restored = client.post(
+        "/daily-reports/bulk/restore",
+        content=urlencode(
+            [("action_token", token), *(("report_ids", str(report_id)) for report_id in report_ids)]
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert restored.status_code == 303
+    assert restored.headers["location"].startswith("/daily-reports/trash?")
+    assert all(
+        db_session.get(DailyReportRecord, report_id).deleted_at is None
+        for report_id in report_ids
+    )
+
+
+def test_trash_page_purge_requires_confirmation_and_enqueues_only(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    DailyReportRepository(db_session).move_to_trash(report_id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    trash = client.get("/daily-reports/trash")
+    unconfirmed = client.post(
+        f"/daily-reports/{report_id}/purge",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+    fresh_page = client.get("/operations")
+    token = fresh_page.text.split('name="action_token" value="', 1)[1].split('"', 1)[0]
+    confirmed = client.post(
+        f"/daily-reports/{report_id}/purge",
+        data={"action_token": token, "confirm_purge": "true"},
+        follow_redirects=False,
+    )
+
+    operation = db_session.scalar(
+        select(OperationRunRecord)
+        .where(OperationRunRecord.operation_type == "daily_report_purge")
+        .order_by(OperationRunRecord.id.desc())
+    )
+    assert trash.status_code == 200
+    assert f'action="/daily-reports/{report_id}/purge"' in trash.text
+    assert 'name="confirm_purge" value="true"' in trash.text
+    assert "永久删除" in trash.text
+    assert unconfirmed.status_code == 422
+    assert confirmed.status_code == 303
+    assert confirmed.headers["location"] == "/daily-reports/trash"
+    assert operation is not None
+    assert operation.status == "queued"
+    assert operation.requested_scope == {"schema_version": 1, "report_ids": [report_id]}
+    assert db_session.get(DailyReportRecord, report_id) is not None
+
+
+def test_purge_post_requires_safe_action_token(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    DailyReportRepository(db_session).move_to_trash(report.id)
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+    client = TestClient(
+        create_app(),
+        base_url="http://127.0.0.1",
+        headers={"Origin": "http://127.0.0.1"},
+    )
+
+    response = client.post(
+        f"/daily-reports/{report.id}/purge",
+        data={"confirm_purge": "true"},
+    )
+
+    assert response.status_code == 400
+    assert db_session.scalar(
+        select(OperationRunRecord).where(
+            OperationRunRecord.operation_type == "daily_report_purge"
+        )
+    ) is None
 
 
 def test_daily_report_routes_enforce_ownership_and_not_found(

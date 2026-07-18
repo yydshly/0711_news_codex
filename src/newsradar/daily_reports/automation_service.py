@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Literal
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from newsradar.daily_reports.automation_repository import DailyAutomationRepository
+from newsradar.db.models import DailyAutopilotRunRecord
+from newsradar.operations.commands import OperationCommandService
+from newsradar.waves.local_plan import build_local_wave_plan
+from newsradar.waves.planning import WavePlan
+
+
+@dataclass(frozen=True, slots=True)
+class DailyAutomationTickResult:
+    outcome: Literal["disabled", "not_due", "enqueued", "reused", "deferred"]
+    run_id: int | None = None
+    retention: DailyRetentionSweepResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DailyRetentionSweepResult:
+    outcome: Literal["swept", "already_checked"]
+    trashed_count: int = 0
+    purge_operation_id: int | None = None
+
+
+class DailyAutomationService:
+    """Enqueue at most one due daily-autopilot run without performing automation work."""
+
+    def __init__(
+        self,
+        session: Session,
+        *,
+        utcnow: Callable[[], datetime] | None = None,
+        plan_factory: Callable[[Session, int], WavePlan] | None = None,
+    ) -> None:
+        self.session = session
+        self._utcnow = utcnow or (lambda: datetime.now(UTC))
+        self._plan_factory = plan_factory or (
+            lambda current_session, hours: build_local_wave_plan(
+                current_session, window_hours=hours
+            )
+        )
+
+    def tick(self) -> DailyAutomationTickResult:
+        repository = DailyAutomationRepository(self.session, utcnow=self._utcnow)
+        try:
+            retention = self._sweep_retention(repository)
+            due = repository.lock_due()
+            if due is None:
+                config = repository.get_or_create()
+                self.session.commit()
+                return DailyAutomationTickResult(
+                    "disabled" if not config.enabled else "not_due", retention=retention
+                )
+
+            commands = OperationCommandService(self.session, utcnow=self._utcnow)
+            plan = self._plan_factory(self.session, 24)
+            try:
+                result = commands._enqueue_daily_autopilot_result_in_transaction(
+                    plan=plan,
+                    trigger="schedule",
+                )
+            except ValueError as error:
+                if str(error) != "active_daily_autopilot_exists":
+                    raise
+                active_run_id = self.session.scalar(
+                    select(DailyAutopilotRunRecord.id)
+                    .where(DailyAutopilotRunRecord.status.in_(("queued", "running")))
+                    .order_by(DailyAutopilotRunRecord.id.desc())
+                    .limit(1)
+                )
+                self.session.commit()
+                return DailyAutomationTickResult("deferred", active_run_id, retention)
+            repository.mark_scheduled(due, run_id=result.run_id)
+            self.session.commit()
+            return DailyAutomationTickResult(
+                "enqueued" if result.created else "reused", result.run_id, retention
+            )
+        except Exception:
+            self.session.rollback()
+            raise
+
+    def _sweep_retention(
+        self, repository: DailyAutomationRepository
+    ) -> DailyRetentionSweepResult:
+        config = repository.lock_retention()
+        if config is None:
+            return DailyRetentionSweepResult("already_checked")
+        trashed_ids = repository.trash_retention_candidates()
+        purge_ids = repository.purge_retention_candidates()
+        purge_operation_id = None
+        if purge_ids:
+            try:
+                purge_operation_id = OperationCommandService(
+                    self.session, utcnow=self._utcnow
+                )._enqueue_daily_report_purge_in_transaction(
+                    report_ids=purge_ids, trigger="schedule"
+                )
+            except ValueError as error:
+                if str(error) != "daily_report_has_active_work":
+                    raise
+        repository.mark_retention_swept(config)
+        return DailyRetentionSweepResult(
+            "swept", len(trashed_ids), purge_operation_id
+        )
