@@ -25,7 +25,7 @@
 <section class="panel" aria-labelledby="daily-autopilot-heading">
   <p class="eyebrow">全自动 · 可恢复任务</p>
   <h2 id="daily-autopilot-heading">生成今日自动日报</h2>
-  <p>按已审核的来源配置刷新公开信息，来源部分失败不会阻塞后续事件、中文日报和两份语音。不会显示或写入任何凭据。</p>
+  <p>执行已审核的高价值真实内容波次；部分来源失败不会阻塞后续事件、中文日报和两份语音。不会显示或写入任何凭据。</p>
   <form method="post" action="/daily-reports/autopilot">
     <input type="hidden" name="action_token" value="{{ action_token }}">
     <label>时间窗口
@@ -43,7 +43,17 @@
       <thead><tr><th>任务</th><th>状态</th><th>阶段</th><th>报告</th><th>更新时间</th></tr></thead>
       <tbody>{% for run in autopilot_runs %}<tr>
         <td><a href="/daily-autopilot/{{ run.run_id }}">#{{ run.run_id }}</a></td>
-        <td>{{ run.status }}</td><td>{{ run.stage }}</td>
+        <td>{{ run.status }}</td><td>{{ {
+          'enqueue_content_wave': '准备真实内容抓取',
+          'wait_content_wave': '等待内容抓取与事件处理',
+          'generate_report': '生成中文日报',
+          'write_reviews': '写入中文审核',
+          'archive_and_enqueue_audio': '归档并提交双版本语音',
+          'wait_audio': '等待双版本语音',
+          'completed': '已完成',
+          'failed': '处理失败',
+          'cancelled': '已取消'
+        }.get(run.stage, run.stage) }}</td>
         <td>{% if run.daily_report_id %}<a href="/daily-reports/{{ run.daily_report_id }}">中文日报</a>{% else %}尚未生成{% endif %}</td>
         <td>{{ run.updated_at|format_datetime_zh }}</td>
       </tr>{% endfor %}</tbody>

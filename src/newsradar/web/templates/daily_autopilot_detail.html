@@ -34,6 +34,7 @@
   }.get(autopilot.stage, autopilot.stage) }}</p>
   <p class="metric-note">时间窗口：最近 {{ autopilot.window_hours }} 小时 · 创建于 {{ autopilot.created_at|format_datetime_zh }} · 更新于 {{ autopilot.updated_at|format_datetime_zh }}</p>
   {% if autopilot.error_message %}<p class="diagnostic-warning"><strong>中文诊断：</strong>{{ autopilot.error_message }}</p>{% endif %}
+  <p><strong>下一步：</strong>{{ autopilot.next_action_zh }}</p>
   {% if autopilot.status in ['queued', 'running'] %}
   <form method="post" action="/daily-autopilot/{{ autopilot.run_id }}/cancel">
     <input type="hidden" name="action_token" value="{{ action_token }}">
@@ -47,12 +48,12 @@
   <ul class="autopilot-operation-list">
     {{ operation_row('来源刷新', autopilot.source_operation, '部分来源未成功：已记录具体中文原因，自动日报会继续处理已获得的公开信息。') }}
     {{ operation_row('内容抓取与事件处理', autopilot.event_operation) }}
-    {% if autopilot.event_operation and autopilot.event_operation.result_summary %}
+    {% if autopilot.event_operation and autopilot.event_operation.metrics %}
     <li class="metric-note">
-      目标：{{ autopilot.event_operation.result_summary.get('member_total', '—') }}
-      · 成功抓取：{{ autopilot.event_operation.result_summary.get('fetch_succeeded', '—') }}
-      · 阻塞：{{ autopilot.event_operation.result_summary.get('blocked', '—') }}
-      · 事件：{{ autopilot.event_operation.result_summary.get('event_manifest_count', '—') }}
+      目标：{{ autopilot.event_operation.metrics.get('member_total', '—') }}
+      · 成功抓取：{{ autopilot.event_operation.metrics.get('fetch_succeeded', '—') }}
+      · 阻塞：{{ autopilot.event_operation.metrics.get('blocked', '—') }}
+      · 事件：{{ autopilot.event_operation.metrics.get('event_manifest_count', '—') }}
     </li>
     {% endif %}
     {{ operation_row('决策版语音', autopilot.decision_audio_operation) }}
@@ -60,4 +61,24 @@
   </ul>
   {% if autopilot.daily_report_id %}<p><a href="/daily-reports/{{ autopilot.daily_report_id }}">打开生成的中文日报</a></p>{% endif %}
 </section>
+
+{% if autopilot.event_operation %}
+{% set metrics = autopilot.event_operation.metrics %}
+<section class="panel" aria-labelledby="autopilot-metrics-heading">
+  <p class="eyebrow">本次真实抓取结果</p>
+  <h2 id="autopilot-metrics-heading">内容与事件指标</h2>
+  <div class="metric-grid">
+    <article class="metric-card"><span>抓取目标</span><strong>{{ metrics.get('member_total', '—') }}</strong><small>本次冻结范围</small></article>
+    <article class="metric-card"><span>成功抓取</span><strong>{{ metrics.get('fetch_succeeded', '—') }}</strong><small>成功或无变化</small></article>
+    <article class="metric-card"><span>阻塞目标</span><strong>{{ metrics.get('blocked', '—') }}</strong><small>凭据、审批或外部限制</small></article>
+    <article class="metric-card"><span>抓取批次</span><strong>{{ metrics.get('fetch_run_count', '—') }}</strong><small>真实 FetchRun 数</small></article>
+    <article class="metric-card"><span>接收条目</span><strong>{{ metrics.get('items_received', '—') }}</strong><small>抓取器收到</small></article>
+    <article class="metric-card"><span>新增条目</span><strong>{{ metrics.get('items_inserted', '—') }}</strong><small>新写入 RawItem</small></article>
+    <article class="metric-card"><span>更新条目</span><strong>{{ metrics.get('items_updated', '—') }}</strong><small>已有条目更新</small></article>
+    <article class="metric-card"><span>未变化</span><strong>{{ metrics.get('items_unchanged', '—') }}</strong><small>去重后无需写入</small></article>
+    <article class="metric-card"><span>事件总数</span><strong>{{ metrics.get('event_manifest_count', '—') }}</strong><small>本次完整事件清单</small></article>
+    <article class="metric-card"><span>确认事件</span><strong>{{ metrics.get('confirmed_event_count', '—') }}</strong><small>证据达到确认门槛</small></article>
+  </div>
+</section>
+{% endif %}
 {% endblock %}
