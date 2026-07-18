@@ -15,6 +15,7 @@ from newsradar.daily_reports.autopilot import (
     build_decision_review,
     build_overview_review,
     deserialize_catalog_plan,
+    deserialize_wave_plan,
 )
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.repository import DailyReportRepository
@@ -104,6 +105,10 @@ class DailyAutopilotHandler:
         stage: DailyAutopilotStage,
         checkpoint: Callable[[str], None],
     ) -> OperationResult:
+        if stage is DailyAutopilotStage.ENQUEUE_CONTENT_WAVE:
+            return self._enqueue_content_wave(run, checkpoint)
+        if stage is DailyAutopilotStage.WAIT_CONTENT_WAVE:
+            return self._wait_for_content_wave(run)
         if stage is DailyAutopilotStage.ENQUEUE_SOURCE_REFRESH:
             return self._enqueue_source_refresh(run, checkpoint)
         if stage is DailyAutopilotStage.WAIT_SOURCE_REFRESH:
@@ -135,6 +140,109 @@ class DailyAutopilotHandler:
         if stage is DailyAutopilotStage.WAIT_AUDIO:
             return self._wait_for_audio(run)
         return _failed("invalid_daily_autopilot_stage", "自动日报处于不可执行阶段。")
+
+    def _enqueue_content_wave(
+        self, run: DailyAutopilotRunRecord, checkpoint: Callable[[str], None]
+    ) -> OperationResult:
+        if run.event_operation_id is not None:
+            self._transition_and_continue(
+                run.id, DailyAutopilotStage.WAIT_CONTENT_WAVE, delayed=True
+            )
+            return _succeeded({"run_id": run.id, "idempotent": True})
+        plan = deserialize_wave_plan(run.requested_scope.get("wave_plan"))
+        checkpoint("daily_autopilot:enqueue_high_value_wave")
+        try:
+            with self._create_session() as session:
+                operation_id = OperationCommandService(
+                    session, utcnow=self._utcnow
+                ).enqueue_high_value_wave(plan=plan, trigger="autopilot")
+        except ValueError as exc:
+            if str(exc) == "active_high_value_wave_exists":
+                self._transition_and_continue(
+                    run.id,
+                    DailyAutopilotStage.ENQUEUE_CONTENT_WAVE,
+                    delayed=True,
+                )
+                return _succeeded({"run_id": run.id, "waiting_for_content_wave": True})
+            raise
+        self._transition_and_continue(
+            run.id,
+            DailyAutopilotStage.WAIT_CONTENT_WAVE,
+            event_operation_id=operation_id,
+            delayed=True,
+        )
+        return _succeeded({"run_id": run.id, "event_operation_id": operation_id})
+
+    def _wait_for_content_wave(self, run: DailyAutopilotRunRecord) -> OperationResult:
+        child_id = run.event_operation_id
+        if child_id is None:
+            self._fail(
+                run.id,
+                "daily_autopilot_child_missing",
+                "内容抓取与事件处理任务未创建。",
+            )
+            return _succeeded({"run_id": run.id, "failed": True})
+        child = self._operation(child_id)
+        if child is None or child.operation_type != OperationType.HIGH_VALUE_NEWS_WAVE.value:
+            self._fail(
+                run.id,
+                "daily_autopilot_child_missing",
+                "内容抓取与事件处理任务不存在或类型不正确。",
+            )
+            return _succeeded({"run_id": run.id, "failed": True})
+        if child.status in _RUNNING_STATUSES:
+            self._transition_and_continue(
+                run.id, DailyAutopilotStage.WAIT_CONTENT_WAVE, delayed=True
+            )
+            return _succeeded({"run_id": run.id, "waiting_for_operation_id": child.id})
+        if child.status not in {
+            OperationStatus.SUCCEEDED.value,
+            OperationStatus.PARTIAL.value,
+        }:
+            self._fail(
+                run.id,
+                child.error_code or "daily_autopilot_content_wave_failed",
+                child.error_message or "内容抓取与事件处理任务未能完成。",
+            )
+            return _succeeded(
+                {"run_id": run.id, "failed": True, "child_status": child.status}
+            )
+        summary = child.result_summary if isinstance(child.result_summary, dict) else {}
+        fetch_succeeded = _summary_count(summary, "fetch_succeeded")
+        event_count = _summary_count(summary, "event_manifest_count")
+        if summary.get("event_manifest_complete") is not True or event_count is None:
+            self._fail(
+                run.id,
+                "daily_autopilot_event_manifest_incomplete",
+                "真实抓取任务未形成完整事件清单，不能据此生成日报。",
+            )
+            return _succeeded({"run_id": run.id, "failed": True})
+        if fetch_succeeded is None or fetch_succeeded == 0:
+            self._fail(
+                run.id,
+                "daily_autopilot_content_not_fetched",
+                "本次波次没有来源完成真实抓取，不能把目录探测结果当作今日新闻。",
+            )
+            return _succeeded({"run_id": run.id, "failed": True})
+        if event_count == 0:
+            self._finish(
+                run.id,
+                {
+                    "outcome": "no_content",
+                    "event_operation_id": child.id,
+                    "fetch_succeeded": fetch_succeeded,
+                    "event_manifest_count": 0,
+                },
+            )
+            return _succeeded({"run_id": run.id, "completed": True, "no_content": True})
+        self._transition_and_continue(run.id, DailyAutopilotStage.GENERATE_REPORT)
+        return _succeeded(
+            {
+                "run_id": run.id,
+                "child_status": child.status,
+                "event_manifest_count": event_count,
+            }
+        )
 
     def _enqueue_source_refresh(
         self, run: DailyAutopilotRunRecord, checkpoint: Callable[[str], None]
@@ -383,6 +491,13 @@ def _failed(code: str, message: str) -> OperationResult:
         error_message=message,
         retryable=False,
     )
+
+
+def _summary_count(summary: dict[str, Any], key: str) -> int | None:
+    value = summary.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _diagnostic_message(code: str) -> str:

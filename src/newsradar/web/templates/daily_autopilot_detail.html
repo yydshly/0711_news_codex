@@ -15,9 +15,11 @@
 {% endmacro %}
 {% block content %}
 <section class="panel" aria-labelledby="autopilot-status-heading">
-  <p class="eyebrow">自动刷新来源 → 构建事件 → 中文审核 → 归档与语音</p>
+  <p class="eyebrow">真实内容抓取 → 构建事件 → 中文审核 → 归档与语音</p>
   <h2 id="autopilot-status-heading">当前状态：{{ autopilot.status }}</h2>
   <p>阶段：{{ {
+    'enqueue_content_wave': '准备真实内容抓取',
+    'wait_content_wave': '等待内容抓取与事件处理',
     'enqueue_source_refresh': '准备来源刷新',
     'wait_source_refresh': '等待来源刷新',
     'enqueue_event_pipeline': '准备事件处理',
@@ -44,7 +46,15 @@
   <h2 id="autopilot-children-heading">关联任务</h2>
   <ul class="autopilot-operation-list">
     {{ operation_row('来源刷新', autopilot.source_operation, '部分来源未成功：已记录具体中文原因，自动日报会继续处理已获得的公开信息。') }}
-    {{ operation_row('事件处理', autopilot.event_operation) }}
+    {{ operation_row('内容抓取与事件处理', autopilot.event_operation) }}
+    {% if autopilot.event_operation and autopilot.event_operation.result_summary %}
+    <li class="metric-note">
+      目标：{{ autopilot.event_operation.result_summary.get('member_total', '—') }}
+      · 成功抓取：{{ autopilot.event_operation.result_summary.get('fetch_succeeded', '—') }}
+      · 阻塞：{{ autopilot.event_operation.result_summary.get('blocked', '—') }}
+      · 事件：{{ autopilot.event_operation.result_summary.get('event_manifest_count', '—') }}
+    </li>
+    {% endif %}
     {{ operation_row('决策版语音', autopilot.decision_audio_operation) }}
     {{ operation_row('情报全览语音', autopilot.overview_audio_operation) }}
   </ul>

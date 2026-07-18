@@ -19,6 +19,7 @@ class DailyAutopilotOperationView:
     progress_total: int | None
     error_code: str | None
     error_message: str | None
+    result_summary: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,4 +96,7 @@ class DailyAutopilotQueryService:
             progress_total=row.progress_total,
             error_code=row.error_code,
             error_message=row.error_message,
+            result_summary=(
+                dict(row.result_summary) if isinstance(row.result_summary, dict) else {}
+            ),
         )

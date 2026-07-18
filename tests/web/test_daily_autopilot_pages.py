@@ -4,7 +4,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_catalog_plan
+from newsradar.daily_reports.autopilot import (
+    DailyAutopilotStage,
+    serialize_catalog_plan,
+    serialize_wave_plan,
+)
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.db.models import OperationRunRecord
 from newsradar.operations.schema import OperationStatus, OperationType
@@ -123,3 +127,45 @@ def test_task_page_shows_child_links_and_chinese_partial_reason(
     assert "来源刷新" in response.text
     assert f'href="/operations/{source.id}"' in response.text
     assert "部分来源未成功" in response.text
+
+
+def test_content_wave_task_page_shows_real_collection_stage_and_counts(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = OperationRunRecord(
+        operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+        trigger="test",
+        status=OperationStatus.PARTIAL.value,
+        requested_scope={},
+        result_summary={
+            "member_total": 41,
+            "fetch_succeeded": 34,
+            "blocked": 7,
+            "event_manifest_count": 36,
+        },
+    )
+    db_session.add(child)
+    db_session.flush()
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="web",
+        requested_scope={"wave_plan": serialize_wave_plan(_wave_plan(24))},
+    )
+    DailyAutopilotRepository(db_session).transition(
+        run.id,
+        stage=DailyAutopilotStage.WAIT_CONTENT_WAVE,
+        event_operation_id=child.id,
+    )
+    run_id = run.id
+    db_session.commit()
+    client, _token = _client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-autopilot/{run_id}")
+
+    assert response.status_code == 200
+    assert "等待内容抓取与事件处理" in response.text
+    assert "内容抓取与事件处理" in response.text
+    assert "目标：41" in response.text
+    assert "成功抓取：34" in response.text
+    assert "阻塞：7" in response.text
+    assert "事件：36" in response.text
