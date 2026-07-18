@@ -19,6 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
 from newsradar.credentials import SettingsCredentials
+from newsradar.daily_reports.automation_repository import DailyAutomationRepository
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
@@ -42,6 +43,7 @@ from newsradar.sources.yaml_loader import load_source_tree
 from newsradar.waves.loader import load_wave_profile
 from newsradar.waves.local_plan import build_local_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
+from newsradar.web.daily_automation_queries import DailyAutomationQueryService
 from newsradar.web.daily_autopilot_queries import DailyAutopilotQueryService
 from newsradar.web.daily_report_queries import DailyReportQueryService
 from newsradar.web.event_merge_queries import EventMergeQueryService
@@ -400,6 +402,14 @@ def create_app(
         except UnsafeWrite as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+    async def require_daily_automation_action(request: Request) -> dict[str, str]:
+        try:
+            return await require_safe_action(request)
+        except HTTPException as error:
+            if error.status_code == 400:
+                raise HTTPException(status_code=403, detail=error.detail) from error
+            raise
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
         response = await call_next(request)
@@ -573,6 +583,11 @@ def create_app(
                 reports = service.list_reports()
                 snapshot_available = service.has_complete_event_snapshot()
                 autopilot_runs = DailyAutopilotQueryService(session).list_recent()
+                automation = DailyAutomationQueryService(
+                    session,
+                    worker_lease_seconds=get_settings().worker_lease_seconds,
+                ).view()
+                session.commit()
         except SQLAlchemyError as error:
             return database_error_response(request, error)
         return templates.TemplateResponse(
@@ -582,12 +597,56 @@ def create_app(
                 "reports": reports,
                 "snapshot_available": snapshot_available,
                 "autopilot_runs": autopilot_runs,
+                "automation": automation,
                 "action_token": issue_action_token(request),
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": None,
             },
         )
+
+    @app.post("/daily-automation/enable")
+    async def enable_daily_automation(request: Request) -> RedirectResponse:
+        await require_daily_automation_action(request)
+        try:
+            with create_session() as session:
+                DailyAutomationRepository(session).enable()
+                session.commit()
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url="/daily-reports", status_code=303)
+
+    @app.post("/daily-automation/pause")
+    async def pause_daily_automation(request: Request) -> RedirectResponse:
+        await require_daily_automation_action(request)
+        try:
+            with create_session() as session:
+                DailyAutomationRepository(session).pause()
+                session.commit()
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url="/daily-reports", status_code=303)
+
+    @app.post("/daily-automation/run-now")
+    async def run_daily_automation_now(request: Request) -> RedirectResponse:
+        values = await require_daily_automation_action(request)
+        try:
+            try:
+                window_hours = int(values.get("window_hours", "24"))
+            except (TypeError, ValueError) as error:
+                raise ValueError("invalid_daily_report_window") from error
+            if window_hours not in {24, 48, 72}:
+                raise ValueError("invalid_daily_report_window")
+            with create_session() as session:
+                run_id = OperationCommandService(session).enqueue_daily_autopilot(
+                    plan=build_local_wave_plan(session, window_hours=window_hours),
+                    trigger="web",
+                )
+        except ValueError as error:
+            raise _daily_report_http_error(error, default_status=422) from error
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return RedirectResponse(url=f"/daily-autopilot/{run_id}", status_code=303)
 
     @app.post("/daily-reports")
     async def generate_daily_report(request: Request) -> RedirectResponse:

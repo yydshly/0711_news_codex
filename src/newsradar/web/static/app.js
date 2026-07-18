@@ -12,3 +12,9 @@ if (navToggle && siteNav) {
     siteNav.dataset.open = String(!expanded);
   });
 }
+
+const activeDailyRun = document.querySelector('[data-active-daily-run="true"]');
+
+if (activeDailyRun) {
+  window.setTimeout(() => window.location.reload(), 10000);
+}

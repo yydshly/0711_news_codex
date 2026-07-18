@@ -573,6 +573,33 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 .autopilot-operation-list li { overflow-wrap: anywhere; }
 .autopilot-operation-list { display: grid; gap: 0.8rem; }
 .inline-diagnostic { display: inline; margin-left: 0.4rem; }
+.daily-automation-heading,
+.daily-automation-actions,
+.daily-automation-active {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.daily-automation-heading h2 { margin-top: 0; }
+.daily-automation-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+.daily-automation-facts div,
+.daily-automation-active {
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: var(--panel-2);
+}
+.daily-automation-facts dt { color: var(--muted); font-size: 0.82rem; }
+.daily-automation-facts dd { margin: 0.3rem 0 0; }
+.daily-automation-actions { justify-content: flex-start; margin-top: 1rem; }
+.daily-automation-actions form { display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: end; }
 
 @media (max-width: 1100px) {
   .dashboard-grid, .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -619,4 +646,5 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   .decision-item-grid,
   .overview-grid { grid-template-columns: minmax(0, 1fr); }
   .overview-review-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .daily-automation-facts { grid-template-columns: minmax(0, 1fr); }
 }

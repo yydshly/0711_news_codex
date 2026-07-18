@@ -2,6 +2,60 @@
 {% block title %}中文日报 · News Codex{% endblock %}
 {% block header %}<h1>中文日报</h1>{% endblock %}
 {% block content %}
+<section class="panel daily-automation-console" aria-labelledby="daily-automation-heading"{% if automation.active_run %} data-active-daily-run="true"{% endif %}>
+  <div class="daily-automation-heading">
+    <div>
+      <p class="eyebrow">本地定时 · 默认关闭</p>
+      <h2 id="daily-automation-heading">日报自动化控制台</h2>
+    </div>
+    <span class="report-status {{ 'report-status-confirmed' if automation.enabled else 'report-status-needs_evidence' }}">{{ automation.status_zh }}</span>
+  </div>
+  <p class="metric-note">每天 {{ automation.daily_time }} · {{ automation.timezone }} · 最近 {{ automation.window_hours }} 小时 · {{ automation.resource_profile_zh }}</p>
+  <p class="{{ 'metric-note' if automation.worker_online else 'diagnostic-warning' }}"><strong>调度状态：</strong>{{ automation.diagnostic }}</p>
+  <dl class="daily-automation-facts">
+    <div><dt>下次计划</dt><dd>{{ automation.next_run_at|format_datetime_zh }}</dd></div>
+    <div><dt>上次定时任务</dt><dd>{% if automation.last_run %}<a href="/daily-autopilot/{{ automation.last_run.run_id }}">任务 #{{ automation.last_run.run_id }}</a> · {{ {'queued': '排队中', 'running': '执行中', 'succeeded': '已完成', 'failed': '失败', 'cancelled': '已取消'}.get(automation.last_run.status, '状态未知') }}{% else %}尚无{% endif %}</dd></div>
+  </dl>
+  {% if automation.active_run %}
+  <div class="daily-automation-active">
+    <p><strong>当前任务：</strong><a href="/daily-autopilot/{{ automation.active_run.run_id }}">自动日报 #{{ automation.active_run.run_id }}</a> · {{ {
+      'enqueue_content_wave': '准备真实内容抓取',
+      'wait_content_wave': '等待内容抓取与事件处理',
+      'enqueue_source_refresh': '准备来源刷新',
+      'wait_source_refresh': '等待来源刷新',
+      'enqueue_event_pipeline': '准备事件处理',
+      'wait_event_pipeline': '等待事件处理',
+      'generate_report': '生成中文日报',
+      'write_reviews': '写入中文审核',
+      'archive_and_enqueue_audio': '归档并提交语音',
+      'wait_audio': '等待双版本语音'
+    }.get(automation.active_run.stage, '处理中') }}</p>
+    <form method="post" action="/daily-autopilot/{{ automation.active_run.run_id }}/cancel">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <button type="submit" class="secondary-action">取消当前自动日报</button>
+    </form>
+  </div>
+  {% else %}<p class="metric-note">当前没有排队或执行中的自动日报。</p>{% endif %}
+  <div class="daily-automation-actions">
+    <form method="post" action="/daily-automation/{{ 'pause' if automation.enabled else 'enable' }}">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <button type="submit">{{ '暂停后续定时任务' if automation.enabled else '启用每天 07:30' }}</button>
+    </form>
+    <form method="post" action="/daily-automation/run-now">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <label>立即运行窗口
+        <select name="window_hours">
+          <option value="24">最近24小时</option>
+          <option value="48">最近48小时</option>
+          <option value="72">最近72小时</option>
+        </select>
+      </label>
+      <button type="submit">立即运行</button>
+    </form>
+  </div>
+  <p class="metric-note">暂停只影响后续计划，不会取消当前任务；需要停止时请使用当前任务的取消操作。</p>
+</section>
+
 <section class="panel">
   <p class="eyebrow">手动生成 · 固定事件快照</p>
   <h2>中文日报</h2>
