@@ -19,6 +19,7 @@ from newsradar.daily_reports.retention import (
     report_local_date,
 )
 from newsradar.db.models import DailyAutomationConfigRecord, DailyReportRecord
+from newsradar.operations.commands import OperationCommandService
 
 PURGE_BATCH_LIMIT = 20
 
@@ -112,6 +113,7 @@ class DailyAutomationRepository:
     def trash_retention_candidates(self) -> tuple[int, ...]:
         now = normalize_utc(self._utcnow())
         retention_start = report_local_date(now) - timedelta(days=RETENTION_DAYS)
+        active_report_ids = self._active_report_ids()
         reports = tuple(
             self.session.scalars(
                 select(DailyReportRecord)
@@ -119,6 +121,7 @@ class DailyAutomationRepository:
                     DailyReportRecord.deleted_at.is_(None),
                     DailyReportRecord.pinned_at.is_(None),
                     DailyReportRecord.report_date <= retention_start,
+                    DailyReportRecord.id.not_in(active_report_ids),
                 )
                 .order_by(DailyReportRecord.report_date, DailyReportRecord.id)
                 .limit(TRASH_BATCH_LIMIT)
@@ -134,6 +137,7 @@ class DailyAutomationRepository:
 
     def purge_retention_candidates(self) -> tuple[int, ...]:
         now = normalize_utc(self._utcnow())
+        active_report_ids = self._active_report_ids()
         return tuple(
             self.session.scalars(
                 select(DailyReportRecord.id)
@@ -141,6 +145,7 @@ class DailyAutomationRepository:
                     DailyReportRecord.deleted_at.is_not(None),
                     DailyReportRecord.pinned_at.is_(None),
                     DailyReportRecord.purge_after <= now,
+                    DailyReportRecord.id.not_in(active_report_ids),
                 )
                 .order_by(DailyReportRecord.purge_after, DailyReportRecord.id)
                 .limit(PURGE_BATCH_LIMIT)
@@ -156,6 +161,9 @@ class DailyAutomationRepository:
         config.updated_at = now
         self.session.flush()
         return config
+
+    def _active_report_ids(self) -> frozenset[int]:
+        return OperationCommandService(self.session)._active_daily_report_ids()
 
     def mark_scheduled(self, due: DueSchedule, *, run_id: int) -> DailyAutomationConfigRecord:
         config = self.session.scalar(

@@ -1,3 +1,10 @@
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+from alembic.operations import Operations
+from alembic.runtime.migration import MigrationContext
+from sqlalchemy import Column, Date, Integer, MetaData, Table, create_engine, inspect
+
 from newsradar.db.models import DailyAutomationConfigRecord, DailyReportRecord
 
 
@@ -49,3 +56,37 @@ def test_daily_report_model_includes_retention_timestamps_and_indexes() -> None:
         "ix_daily_reports_deleted_purge": ("deleted_at", "purge_after"),
         "ix_daily_reports_pinned_date": ("pinned_at", "report_date"),
     }.items()
+
+
+def test_automation_migration_round_trip_adds_then_removes_last_retention_date() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    metadata = MetaData()
+    Table("daily_autopilot_runs", metadata, Column("id", Integer, primary_key=True))
+    Table(
+        "daily_reports",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("report_date", Date, nullable=False),
+    )
+    metadata.create_all(engine)
+    migration_path = (
+        Path(__file__).parents[2]
+        / "migrations"
+        / "versions"
+        / "20260718_0029_daily_automation_retention.py"
+    )
+    spec = spec_from_file_location("daily_automation_retention_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        assert "last_retention_date" in {
+            column["name"]
+            for column in inspect(connection).get_columns("daily_automation_config")
+        }
+
+        migration.downgrade()
+        assert "daily_automation_config" not in inspect(connection).get_table_names()

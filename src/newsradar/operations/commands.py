@@ -173,21 +173,25 @@ class OperationCommandService:
         return normalized
 
     def _daily_report_has_active_work(self, report_id: int) -> bool:
-        if self.session.scalar(
-            select(DailyAutopilotRunRecord.id).where(
-                DailyAutopilotRunRecord.daily_report_id == report_id,
-                DailyAutopilotRunRecord.status.in_(("queued", "running")),
+        return report_id in self._active_daily_report_ids()
+
+    def _active_daily_report_ids(self) -> frozenset[int]:
+        active_report_ids = set(
+            self.session.scalars(
+                select(DailyAutopilotRunRecord.daily_report_id).where(
+                    DailyAutopilotRunRecord.daily_report_id.is_not(None),
+                    DailyAutopilotRunRecord.status.in_(("queued", "running")),
+                )
             )
-        ) is not None:
-            return True
-        if self.session.scalar(
-            select(DailyReportAudioArtifactRecord.id).where(
-                DailyReportAudioArtifactRecord.daily_report_id == report_id,
-                DailyReportAudioArtifactRecord.status.in_(("queued", "running")),
+        )
+        active_report_ids.update(
+            self.session.scalars(
+                select(DailyReportAudioArtifactRecord.daily_report_id).where(
+                    DailyReportAudioArtifactRecord.status.in_(("queued", "running"))
+                )
             )
-        ) is not None:
-            return True
-        active_operations = self.session.scalars(
+        )
+        for operation in self.session.scalars(
             select(OperationRunRecord).where(
                 OperationRunRecord.operation_type.in_(
                     (
@@ -197,17 +201,21 @@ class OperationCommandService:
                 ),
                 OperationRunRecord.status.in_(("queued", "running")),
             )
-        )
-        for operation in active_operations:
+        ):
             scope = operation.requested_scope
             if not isinstance(scope, dict):
                 continue
-            if scope.get("daily_report_id") == report_id:
-                return True
+            report_id = scope.get("daily_report_id")
+            if isinstance(report_id, int) and not isinstance(report_id, bool):
+                active_report_ids.add(report_id)
             values = scope.get("report_ids")
-            if isinstance(values, list) and report_id in values:
-                return True
-        return False
+            if isinstance(values, list):
+                active_report_ids.update(
+                    value
+                    for value in values
+                    if isinstance(value, int) and not isinstance(value, bool)
+                )
+        return frozenset(active_report_ids)
 
     def archive_and_enqueue_daily_report_audio(self, *, report_id: int, trigger: str) -> int:
         # Keep the daily-report package out of this module's import path. The

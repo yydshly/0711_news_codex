@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -224,3 +224,62 @@ def test_tick_sweeps_retention_once_per_shanghai_day_in_bounded_batches(
     )
     assert db_session.get(DailyReportRecord, pinned.id).deleted_at is None
     assert db_session.get(DailyReportRecord, recent.id).deleted_at is None
+
+
+@pytest.mark.parametrize(
+    ("operation_type", "requested_scope"),
+    (
+        (
+            OperationType.DAILY_REPORT_AUDIO.value,
+            lambda report_id: {"daily_report_id": report_id, "rendition": "decision"},
+        ),
+        (
+            OperationType.DAILY_REPORT_PURGE.value,
+            lambda report_id: {"report_ids": [report_id]},
+        ),
+    ),
+)
+def test_tick_marks_the_daily_retention_scan_done_when_all_due_purges_have_active_work(
+    db_session: Session,
+    operation_type: str,
+    requested_scope: object,
+) -> None:
+    expired = _report(
+        db_session,
+        report_id=1,
+        report_date=NOW - timedelta(days=200),
+        trashed=True,
+    )
+    assert callable(requested_scope)
+    db_session.add(
+        OperationRunRecord(
+            operation_type=operation_type,
+            trigger="test",
+            status="queued",
+            requested_scope=requested_scope(expired.id),
+            result_summary={},
+            created_at=NOW,
+        )
+    )
+    DailyAutomationRepository(db_session, utcnow=lambda: NOW).enable()
+    db_session.commit()
+    service = DailyAutomationService(
+        db_session,
+        utcnow=lambda: NOW,
+        plan_factory=lambda _session, _hours: _plan(),
+    )
+
+    result = service.tick()
+
+    config = DailyAutomationRepository(db_session, utcnow=lambda: NOW).get_or_create()
+    assert result.outcome == "enqueued"
+    assert result.retention is not None
+    assert result.retention.outcome == "swept"
+    assert result.retention.trashed_count == 0
+    assert result.retention.purge_operation_id is None
+    assert config.last_retention_date == date(2026, 7, 18)
+    assert db_session.get(DailyReportRecord, expired.id) is not None
+    assert db_session.query(OperationRunRecord).filter(
+        OperationRunRecord.operation_type == OperationType.DAILY_REPORT_PURGE.value,
+        OperationRunRecord.trigger == "schedule",
+    ).count() == 0

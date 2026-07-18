@@ -79,15 +79,17 @@ class DailyAutomationService:
             return DailyRetentionSweepResult("already_checked")
         trashed_ids = repository.trash_retention_candidates()
         purge_ids = repository.purge_retention_candidates()
-        purge_operation_id = (
-            OperationCommandService(
-                self.session, utcnow=self._utcnow
-            )._enqueue_daily_report_purge_in_transaction(
-                report_ids=purge_ids, trigger="schedule"
-            )
-            if purge_ids
-            else None
-        )
+        purge_operation_id = None
+        if purge_ids:
+            try:
+                purge_operation_id = OperationCommandService(
+                    self.session, utcnow=self._utcnow
+                )._enqueue_daily_report_purge_in_transaction(
+                    report_ids=purge_ids, trigger="schedule"
+                )
+            except ValueError as error:
+                if str(error) != "daily_report_has_active_work":
+                    raise
         repository.mark_retention_swept(config)
         return DailyRetentionSweepResult(
             "swept", len(trashed_ids), purge_operation_id
