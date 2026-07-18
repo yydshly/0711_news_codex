@@ -13,6 +13,7 @@ from newsradar.db.models import (
     DailyReportRecord,
     OperationRunRecord,
 )
+from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.schema import OperationType
 from newsradar.waves.planning import WaveMemberSnapshot, wave_plan_from_members
 
@@ -28,7 +29,7 @@ def db_session() -> Session:
     engine.dispose()
 
 
-def _plan():
+def _plan(window_hours: int = 24):
     return wave_plan_from_members(
         profile_id="high-value-ai-tech",
         members=(
@@ -43,7 +44,7 @@ def _plan():
                 blocked_reason=None,
             ),
         ),
-        window_hours=24,
+        window_hours=window_hours,
         trend_days=7,
     )
 
@@ -168,6 +169,34 @@ def test_tick_rolls_back_when_plan_construction_fails(db_session: Session) -> No
 
     assert not db_session.in_transaction()
     assert db_session.query(DailyAutopilotRunRecord).count() == 0
+
+
+def test_tick_defers_incompatible_active_manual_run_without_marking_schedule(
+    db_session: Session,
+) -> None:
+    manual_run_id = OperationCommandService(
+        db_session, utcnow=lambda: NOW
+    ).enqueue_daily_autopilot(plan=_plan(48), trigger="web")
+    DailyAutomationRepository(db_session, utcnow=lambda: NOW).enable()
+    db_session.commit()
+
+    result = DailyAutomationService(
+        db_session,
+        utcnow=lambda: NOW,
+        plan_factory=lambda _session, hours: _plan(hours),
+    ).tick()
+
+    config = DailyAutomationRepository(db_session, utcnow=lambda: NOW).get_or_create()
+    assert result.outcome == "deferred"
+    assert result.run_id == manual_run_id
+    assert config.last_scheduled_date is None
+    assert db_session.query(DailyAutopilotRunRecord).count() == 1
+    assert (
+        db_session.query(OperationRunRecord)
+        .filter(OperationRunRecord.trigger == "schedule")
+        .count()
+        == 0
+    )
 
 
 def test_tick_sweeps_retention_once_per_shanghai_day_in_bounded_batches(

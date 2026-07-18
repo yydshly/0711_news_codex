@@ -451,9 +451,8 @@ class DailyReportQueryService:
             select(DailyReportRecord)
             .where(DailyReportRecord.deleted_at.is_not(None))
             .order_by(
-                DailyReportRecord.deleted_at.desc(),
-                DailyReportRecord.report_date.desc(),
-                DailyReportRecord.id.desc(),
+                DailyReportRecord.purge_after.asc(),
+                DailyReportRecord.id.asc(),
             )
             .offset((safe_page - 1) * safe_page_size)
             .limit(safe_page_size)

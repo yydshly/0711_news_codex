@@ -288,9 +288,12 @@ def test_report_queries_isolate_trashed_reports_and_offer_trash_views(
     active = _report(db_session, report_date=date(2026, 7, 16), report_id=1)
     pinned = _report(db_session, report_date=date(2026, 7, 15), report_id=2)
     trashed = _report(db_session, report_date=date(2026, 7, 14), report_id=3)
+    purges_first = _report(db_session, report_date=date(2026, 7, 13), report_id=4)
     pinned.pinned_at = NOW
     trashed.deleted_at = NOW
     trashed.purge_after = NOW + timedelta(days=TRASH_DAYS)
+    purges_first.deleted_at = NOW - timedelta(days=5)
+    purges_first.purge_after = NOW + timedelta(days=1)
     db_session.commit()
     queries = DailyReportQueryService(db_session)
 
@@ -302,7 +305,7 @@ def test_report_queries_isolate_trashed_reports_and_offer_trash_views(
     assert queries.detail(trashed.id) is None
     assert tuple(
         row.report_id for row in queries.trash_reports(page=1, page_size=10)
-    ) == (trashed.id,)
+    ) == (purges_first.id, trashed.id)
     state = queries.trash_state(trashed.id)
     assert state is not None
     assert state.report_id == trashed.id

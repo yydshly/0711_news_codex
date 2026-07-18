@@ -19,6 +19,7 @@ from newsradar.db.models import (
     DailyReportItemRecord,
     DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
+    DailyReportPurgeTransitionRecord,
     DailyReportRecord,
     OperationRunRecord,
 )
@@ -135,6 +136,8 @@ class DailyReportPurgeHandler:
                     return "missing"
                 if report.deleted_at is None:
                     raise PurgeMemberError("daily_report_must_be_trashed_for_purge", False)
+                if report.status != "archived":
+                    raise PurgeMemberError("daily_report_must_be_archived_for_purge", False)
                 if self._has_active_work(
                     session,
                     report_id,
@@ -149,12 +152,26 @@ class DailyReportPurgeHandler:
                         )
                     )
                 )
-                for artifact in artifacts:
-                    if artifact.relative_audio_path is not None:
-                        self._unlink_audio(artifact.relative_audio_path)
-
-                self._detach_external_references(session, report)
+                audio_paths = tuple(
+                    artifact.relative_audio_path
+                    for artifact in artifacts
+                    if artifact.relative_audio_path is not None
+                )
+                predecessor_id = report.supersedes_report_id
+                reparent_report_ids = self._detach_external_references(session, report)
                 self._delete_owned_rows(session, report_id)
+                self._finish_revision_reparent(
+                    session,
+                    reparent_report_ids,
+                    predecessor_id=predecessor_id,
+                )
+                session.flush()
+                if session.scalar(
+                    select(DailyReportRecord.id).where(DailyReportRecord.id == report_id)
+                ) is not None:
+                    raise PurgeMemberError("daily_report_purge_persistence_failed", True)
+                for relative_audio_path in audio_paths:
+                    self._unlink_audio(relative_audio_path)
             return "purged"
         except PurgeMemberError:
             raise
@@ -255,7 +272,9 @@ class DailyReportPurgeHandler:
         target.unlink()
 
     @staticmethod
-    def _detach_external_references(session: Session, report: DailyReportRecord) -> None:
+    def _detach_external_references(
+        session: Session, report: DailyReportRecord
+    ) -> tuple[int, ...]:
         item_ids = tuple(
             session.scalars(
                 select(DailyReportItemRecord.id).where(
@@ -294,11 +313,47 @@ class DailyReportPurgeHandler:
             if overview_item_ids
             else ()
         )
-        session.execute(
-            update(DailyReportRecord)
-            .where(DailyReportRecord.supersedes_report_id == report.id)
-            .values(supersedes_report_id=report.supersedes_report_id)
+        reparent_reports = tuple(
+            session.scalars(
+                select(DailyReportRecord).where(
+                    DailyReportRecord.supersedes_report_id == report.id
+                )
+            )
         )
+        reparent_report_ids = tuple(child.id for child in reparent_reports)
+        if reparent_report_ids:
+            for child in reparent_reports:
+                temporary_parent_id = child.id
+                seen_report_ids = {child.id}
+                while descendant_id := session.scalar(
+                    select(DailyReportRecord.id).where(
+                        DailyReportRecord.supersedes_report_id == temporary_parent_id
+                    )
+                ):
+                    if descendant_id in seen_report_ids:
+                        raise PurgeMemberError(
+                            "daily_report_purge_persistence_failed", True
+                        )
+                    seen_report_ids.add(descendant_id)
+                    temporary_parent_id = descendant_id
+                session.add(
+                    DailyReportPurgeTransitionRecord(
+                        child_report_id=child.id,
+                        deleted_parent_id=report.id,
+                        predecessor_report_id=report.supersedes_report_id,
+                        temporary_parent_id=temporary_parent_id,
+                    )
+                )
+            session.flush()
+            for child in reparent_reports:
+                transition = session.get(DailyReportPurgeTransitionRecord, child.id)
+                if transition is None:
+                    raise PurgeMemberError("daily_report_purge_persistence_failed", True)
+                session.execute(
+                    update(DailyReportRecord)
+                    .where(DailyReportRecord.id == child.id)
+                    .values(supersedes_report_id=transition.temporary_parent_id)
+                )
         if item_review_ids:
             session.execute(
                 update(DailyReportItemEditorialReviewRecord)
@@ -339,6 +394,39 @@ class DailyReportPurgeHandler:
         for autopilot in autopilots:
             autopilot.daily_report_id = None
             autopilot.result_summary = {"daily_report_retention": "purged"}
+        return reparent_report_ids
+
+    @staticmethod
+    def _finish_revision_reparent(
+        session: Session,
+        report_ids: tuple[int, ...],
+        *,
+        predecessor_id: int | None,
+    ) -> None:
+        if not report_ids:
+            return
+        for report_id in report_ids:
+            transition = session.get(DailyReportPurgeTransitionRecord, report_id)
+            if transition is None or transition.predecessor_report_id != predecessor_id:
+                raise PurgeMemberError("daily_report_purge_persistence_failed", True)
+            updated = session.execute(
+                update(DailyReportRecord)
+                .where(
+                    DailyReportRecord.id == report_id,
+                    DailyReportRecord.supersedes_report_id
+                    == transition.temporary_parent_id,
+                )
+                .values(supersedes_report_id=predecessor_id)
+            )
+            if updated.rowcount != 1:
+                raise PurgeMemberError("daily_report_purge_persistence_failed", True)
+        deleted_transitions = session.execute(
+            delete(DailyReportPurgeTransitionRecord).where(
+                DailyReportPurgeTransitionRecord.child_report_id.in_(report_ids)
+            )
+        )
+        if deleted_transitions.rowcount != len(report_ids):
+            raise PurgeMemberError("daily_report_purge_persistence_failed", True)
 
     @staticmethod
     def _delete_owned_rows(session: Session, report_id: int) -> None:
@@ -356,6 +444,11 @@ class DailyReportPurgeHandler:
                 )
             )
         )
+        deleted_report = session.execute(
+            delete(DailyReportRecord).where(DailyReportRecord.id == report_id)
+        )
+        if deleted_report.rowcount != 1:
+            raise PurgeMemberError("daily_report_purge_persistence_failed", True)
         if overview_item_ids:
             session.execute(
                 delete(DailyReportOverviewEditorialReviewRecord).where(
@@ -383,4 +476,3 @@ class DailyReportPurgeHandler:
                 DailyReportAudioArtifactRecord.daily_report_id == report_id
             )
         )
-        session.execute(delete(DailyReportRecord).where(DailyReportRecord.id == report_id))

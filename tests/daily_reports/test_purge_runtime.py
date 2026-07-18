@@ -6,8 +6,10 @@ from pathlib import Path
 from stat import S_IFLNK
 
 import pytest
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.exc import SQLAlchemyError
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, func, select, text, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from newsradar.daily_reports.purge_runtime import DailyReportPurgeHandler
@@ -24,6 +26,7 @@ from newsradar.db.models import (
     DailyReportItemRecord,
     DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
+    DailyReportPurgeTransitionRecord,
     DailyReportRecord,
     EventRecord,
     OperationRunRecord,
@@ -39,6 +42,14 @@ def _factory(tmp_path: Path) -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)
 
 
+def _migrated_factory(tmp_path: Path) -> sessionmaker[Session]:
+    database_url = f"sqlite:///{(tmp_path / 'purge-migrated.sqlite3').as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "head")
+    return sessionmaker(create_engine(database_url), expire_on_commit=False)
+
+
 def _lease(*report_ids: int) -> OperationLease:
     return OperationLease(
         9901,
@@ -50,9 +61,12 @@ def _lease(*report_ids: int) -> OperationLease:
     )
 
 
-def _trash(db: Session, report_id: int) -> None:
+def _trash(db: Session, report_id: int, *, archived: bool = True) -> None:
     report = db.get(DailyReportRecord, report_id)
     assert report is not None
+    if archived:
+        report.status = "archived"
+        report.archived_at = NOW
     report.deleted_at = NOW
     report.purge_after = NOW + timedelta(days=30)
     db.commit()
@@ -147,6 +161,107 @@ def test_purge_removes_only_trashed_report_owned_rows_and_synthetic_audio(
         assert saved_autopilot.result_summary == {"daily_report_retention": "purged"}
     assert not audio_path.exists()
     assert checkpoints == [f"before_daily_report_purge:{report_id}"]
+
+
+def test_migrated_archived_report_purge_removes_populated_items_and_audio_together(
+    tmp_path: Path,
+) -> None:
+    factory = _migrated_factory(tmp_path)
+    audio_root = tmp_path / "migrated-audio"
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        report = seed_daily_report(db)
+        report_id = report.id
+        repository.archive(report_id)
+        item = repository.items(report_id)[0]
+        with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+            item.included = False
+            db.commit()
+        db.rollback()
+        _trash(db, report_id)
+        artifact = _audio(db, report_id, f"{report_id}/migrated.mp3")
+        audio_path = audio_root / artifact.relative_audio_path
+        audio_path.parent.mkdir(parents=True)
+        audio_path.write_bytes(b"synthetic-migrated-audio")
+
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.SUCCEEDED
+        assert db.get(DailyReportRecord, report_id) is None
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportItemRecord).where(
+                DailyReportItemRecord.daily_report_id == report_id
+            )
+        ) == 0
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportAudioArtifactRecord).where(
+                DailyReportAudioArtifactRecord.daily_report_id == report_id
+            )
+        ) == 0
+    assert not audio_path.exists()
+
+
+def test_database_delete_guard_fails_before_irreversible_audio_unlink(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        report = seed_daily_report(db)
+        report_id = report.id
+        repository.archive(report_id)
+        _trash(db, report_id)
+        artifact = _audio(db, report_id, f"{report_id}/guarded.mp3")
+        audio_path = audio_root / artifact.relative_audio_path
+        audio_path.parent.mkdir(parents=True)
+        audio_path.write_bytes(b"synthetic-guarded-audio")
+        db.execute(
+            text(
+                "CREATE TRIGGER test_block_report_delete "
+                "BEFORE DELETE ON daily_reports BEGIN "
+                "SELECT RAISE(ABORT, 'synthetic_delete_guard'); END"
+            )
+        )
+        db.commit()
+
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert result.result_summary["failures"] == [
+            {"report_id": report_id, "error_code": "daily_report_purge_persistence_failed"}
+        ]
+        assert db.get(DailyReportRecord, report_id) is not None
+    assert audio_path.read_bytes() == b"synthetic-guarded-audio"
+
+
+def test_purge_rejects_trashed_draft_before_audio_side_effects(tmp_path: Path) -> None:
+    factory = _factory(tmp_path)
+    audio_root = tmp_path / "audio"
+    with factory() as db:
+        report = seed_daily_report(db)
+        report_id = report.id
+        _trash(db, report_id, archived=False)
+        artifact = _audio(db, report_id, f"{report_id}/draft.mp3")
+        audio_path = audio_root / artifact.relative_audio_path
+        audio_path.parent.mkdir(parents=True)
+        audio_path.write_bytes(b"synthetic-draft-audio")
+
+    result = DailyReportPurgeHandler(factory, audio_root=audio_root)(
+        _lease(report_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.FAILED
+        assert result.result_summary["failures"] == [
+            {"report_id": report_id, "error_code": "daily_report_must_be_archived_for_purge"}
+        ]
+        assert db.get(DailyReportRecord, report_id) is not None
+    assert audio_path.read_bytes() == b"synthetic-draft-audio"
 
 
 def test_unlink_failure_retains_report_and_is_retryable(
@@ -344,7 +459,7 @@ def test_persistence_failure_does_not_block_later_report(
 def test_purging_middle_revision_reparents_newer_and_detaches_external_refs(
     tmp_path: Path,
 ) -> None:
-    factory = _factory(tmp_path)
+    factory = _migrated_factory(tmp_path)
     with factory() as db:
         repository = DailyReportRepository(db, utcnow=lambda: NOW)
         original = seed_daily_report(db)
@@ -397,6 +512,10 @@ def test_purging_middle_revision_reparents_newer_and_detaches_external_refs(
         assert newer_overview_review is not None
         newer_overview_review.duplicate_of_overview_item_id = middle_overview.id
         db.commit()
+        repository.archive(newer_id)
+        newest = repository.revise(newer_id)
+        repository.archive(newest.id)
+        newest_id = newest.id
         newer_review_id = newer_review.id
         newer_overview_review_id = newer_overview_review.id
         _trash(db, middle_id)
@@ -414,11 +533,52 @@ def test_purging_middle_revision_reparents_newer_and_detaches_external_refs(
         assert result.status is OperationStatus.SUCCEEDED
         assert newer is not None
         assert newer.supersedes_report_id == original_id
+        newest = db.get(DailyReportRecord, newest_id)
+        assert newest is not None
+        assert newest.supersedes_report_id == newer_id
         assert newer_review is not None
         assert newer_review.copied_from_editorial_review_id is None
         assert newer_overview_review is not None
         assert newer_overview_review.copied_from_editorial_review_id is None
         assert newer_overview_review.duplicate_of_overview_item_id is None
+
+
+def test_migrated_guard_rejects_forged_archived_reparent_transition(
+    tmp_path: Path,
+) -> None:
+    factory = _migrated_factory(tmp_path)
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        original = seed_daily_report(db)
+        repository.archive(original.id)
+        middle = repository.revise(original.id)
+        repository.archive(middle.id)
+        newer = repository.revise(middle.id)
+        repository.archive(newer.id)
+        _trash(db, middle.id)
+        unrelated = seed_daily_report(
+            db,
+            report_date=NOW.date() + timedelta(days=1),
+            operation_id=4201,
+        )
+        repository.archive(unrelated.id)
+
+        with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+            db.add(
+                DailyReportPurgeTransitionRecord(
+                    child_report_id=newer.id,
+                    deleted_parent_id=middle.id,
+                    predecessor_report_id=original.id,
+                    temporary_parent_id=unrelated.id,
+                )
+            )
+            db.flush()
+            db.execute(
+                update(DailyReportRecord)
+                .where(DailyReportRecord.id == newer.id)
+                .values(supersedes_report_id=unrelated.id)
+            )
+            db.commit()
 
 
 def test_missing_report_is_an_idempotent_success(tmp_path: Path) -> None:

@@ -929,6 +929,17 @@ class DailyReportRecord(Base):
     purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DailyReportPurgeTransitionRecord(Base):
+    __tablename__ = "daily_report_purge_transitions"
+
+    child_report_id: Mapped[int] = mapped_column(
+        ForeignKey("daily_reports.id", ondelete="CASCADE"), primary_key=True
+    )
+    deleted_parent_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    predecessor_report_id: Mapped[int | None] = mapped_column(Integer)
+    temporary_parent_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class DailyReportItemRecord(Base):
     __tablename__ = "daily_report_items"
     __table_args__ = (

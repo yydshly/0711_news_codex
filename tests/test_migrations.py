@@ -496,6 +496,9 @@ def test_daily_report_migration_downgrade_removes_only_report_tables(tmp_path: P
             "trg_daily_report_item_archived_delete",
             "trg_daily_report_item_archived_insert",
             "trg_daily_report_item_archived_update",
+            "trg_daily_report_purge_transition_delete",
+            "trg_daily_report_purge_transition_insert",
+            "trg_daily_report_purge_transition_update",
         }
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)

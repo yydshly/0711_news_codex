@@ -5,9 +5,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from newsradar.daily_reports.automation_repository import DailyAutomationRepository
+from newsradar.db.models import DailyAutopilotRunRecord
 from newsradar.operations.commands import OperationCommandService
 from newsradar.waves.local_plan import build_local_wave_plan
 from newsradar.waves.planning import WavePlan
@@ -15,7 +17,7 @@ from newsradar.waves.planning import WavePlan
 
 @dataclass(frozen=True, slots=True)
 class DailyAutomationTickResult:
-    outcome: Literal["disabled", "not_due", "enqueued", "reused"]
+    outcome: Literal["disabled", "not_due", "enqueued", "reused", "deferred"]
     run_id: int | None = None
     retention: DailyRetentionSweepResult | None = None
 
@@ -58,10 +60,23 @@ class DailyAutomationService:
                 )
 
             commands = OperationCommandService(self.session, utcnow=self._utcnow)
-            result = commands._enqueue_daily_autopilot_result_in_transaction(
-                plan=self._plan_factory(self.session, 24),
-                trigger="schedule",
-            )
+            plan = self._plan_factory(self.session, 24)
+            try:
+                result = commands._enqueue_daily_autopilot_result_in_transaction(
+                    plan=plan,
+                    trigger="schedule",
+                )
+            except ValueError as error:
+                if str(error) != "active_daily_autopilot_exists":
+                    raise
+                active_run_id = self.session.scalar(
+                    select(DailyAutopilotRunRecord.id)
+                    .where(DailyAutopilotRunRecord.status.in_(("queued", "running")))
+                    .order_by(DailyAutopilotRunRecord.id.desc())
+                    .limit(1)
+                )
+                self.session.commit()
+                return DailyAutomationTickResult("deferred", active_run_id, retention)
             repository.mark_scheduled(due, run_id=result.run_id)
             self.session.commit()
             return DailyAutomationTickResult(

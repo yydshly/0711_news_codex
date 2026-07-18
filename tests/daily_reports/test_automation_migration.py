@@ -1,5 +1,6 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
@@ -87,6 +88,55 @@ def test_automation_migration_round_trip_adds_then_removes_last_retention_date()
             column["name"]
             for column in inspect(connection).get_columns("daily_automation_config")
         }
+        assert "daily_report_purge_transitions" in inspect(connection).get_table_names()
 
         migration.downgrade()
         assert "daily_automation_config" not in inspect(connection).get_table_names()
+        assert "daily_report_purge_transitions" not in inspect(connection).get_table_names()
+
+
+def test_postgresql_guard_sql_rejects_draft_delete_and_allows_only_purge_reparent() -> None:
+    migration_path = (
+        Path(__file__).parents[2]
+        / "migrations"
+        / "versions"
+        / "20260718_0029_daily_automation_retention.py"
+    )
+    spec = spec_from_file_location("daily_automation_retention_postgresql", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    statements: list[str] = []
+    migration.op = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
+        execute=lambda statement: statements.append(str(statement)),
+    )
+
+    migration._allow_archived_report_retention_mutations()
+
+    function_sql = "\n".join(statements)
+    normalized_sql = " ".join(function_sql.split())
+    assert "IF TG_OP = 'DELETE' THEN" in function_sql
+    assert "OLD.status <> 'archived'" in function_sql
+    assert "OLD.deleted_at IS NULL" in function_sql
+    assert "RETURN OLD" in function_sql
+    assert "parent.deleted_at IS NOT NULL" in function_sql
+    assert "daily_report_purge_transitions" in function_sql
+    assert (
+        "transition.predecessor_report_id IS NOT DISTINCT FROM parent.supersedes_report_id"
+        in normalized_sql
+    )
+    assert (
+        "NEW.supersedes_report_id IS NOT DISTINCT FROM transition.temporary_parent_id"
+        in normalized_sql
+    )
+    assert (
+        "NEW.supersedes_report_id IS NOT DISTINCT FROM transition.predecessor_report_id"
+        in normalized_sql
+    )
+    assert "NOT EXISTS (" in function_sql
+    assert "newsradar_guard_daily_report_purge_transition" in function_sql
+    assert "WITH RECURSIVE descendants" in function_sql
+    assert "TG_OP = 'UPDATE'" in function_sql
+    assert "newsradar_guard_archived_daily_report_item" in function_sql
+    assert "TG_OP = 'DELETE' AND pg_trigger_depth() > 1" in function_sql
