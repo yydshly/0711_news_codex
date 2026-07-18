@@ -97,6 +97,7 @@ def test_daily_automation_retention_migration_round_trips_with_expected_schema(
         "window_hours",
         "resource_profile",
         "last_scheduled_date",
+        "last_retention_date",
         "last_run_id",
         "next_run_at",
         "created_at",
