@@ -154,6 +154,75 @@ def test_daily_automation_retention_migration_round_trips_with_expected_schema(
         assert not {"pinned_at", "deleted_at", "purge_after"} & report_columns
 
 
+def test_retention_migration_allows_archived_report_retention_lifecycle(
+    tmp_path: Path,
+) -> None:
+    database_url = _sqlite_url(tmp_path / "daily-report-retention-lifecycle.db")
+    _upgrade(database_url, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO operation_runs (
+                    id, operation_type, trigger, status, requested_scope,
+                    progress_current, result_summary, attempt_count, created_at, updated_at
+                ) VALUES (
+                    1, 'event_pipeline', 'test', 'succeeded', '{}',
+                    0, '{}', 0, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO daily_reports (
+                    id, report_date, timezone, window_hours, window_start, window_end,
+                    source_operation_id, status, revision, generation_summary,
+                    generated_at, archived_at
+                ) VALUES (
+                    1, '2026-07-18', 'Asia/Shanghai', 24,
+                    '2026-07-17T00:00:00Z', '2026-07-18T00:00:00Z',
+                    1, 'archived', 1, '{"private_marker":"immutable"}',
+                    '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'
+                )
+                """
+            )
+        )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE daily_reports SET pinned_at = '2026-07-18T01:00:00Z' "
+                "WHERE id = 1"
+            )
+        )
+    with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE daily_reports SET generation_summary = :summary WHERE id = 1"
+                ),
+                {"summary": '{"private_marker":"changed"}'},
+            )
+    with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM daily_reports WHERE id = 1"))
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE daily_reports SET deleted_at = '2026-07-18T02:00:00Z', "
+                "purge_after = '2026-08-17T02:00:00Z' WHERE id = 1"
+            )
+        )
+        connection.execute(text("DELETE FROM daily_reports WHERE id = 1"))
+        assert connection.execute(
+            text("SELECT count(*) FROM daily_reports WHERE id = 1")
+        ).scalar_one() == 0
+
+
 def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
     tmp_path: Path,
 ) -> None:
