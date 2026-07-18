@@ -43,7 +43,7 @@ def _plan():
     )
 
 
-def test_tick_enqueues_one_due_daily_autopilot_and_marks_the_schedule(
+def test_tick_only_enqueues_one_due_daily_autopilot_and_marks_the_schedule(
     db_session: Session,
 ) -> None:
     DailyAutomationRepository(db_session, utcnow=lambda: NOW).enable()
@@ -68,6 +68,7 @@ def test_tick_enqueues_one_due_daily_autopilot_and_marks_the_schedule(
         )
     )
     assert operation is not None
+    assert operation.status == "queued"
     config = DailyAutomationRepository(db_session, utcnow=lambda: NOW).get_or_create()
     assert config.last_run_id == result.run_id
     assert config.last_scheduled_date.isoformat() == "2026-07-18"

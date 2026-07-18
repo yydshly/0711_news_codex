@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from newsradar.ai.health import check_minimax_config, check_minimax_live
 from newsradar.ai.minimax import ModelUsage
 from newsradar.credentials import SettingsCredentials
+from newsradar.daily_reports.automation_service import DailyAutomationService
 from newsradar.db.models import (
     EventScoreRecord,
     EventVersionRecord,
@@ -130,6 +131,7 @@ CatalogProviderRootOption = Annotated[
 WorkerProviderRootOption = Annotated[
     Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
 ]
+SCHEDULE_CHECK_SECONDS = 60.0
 
 
 @waves_app.command("validate")
@@ -612,6 +614,14 @@ def retry_operation(operation_id: int) -> None:
     typer.echo(f"Queued retry for {operation_id} as operation {retry_id}")
 
 
+def _tick_daily_automation() -> None:
+    try:
+        with create_session() as session:
+            DailyAutomationService(session).tick()
+    except SQLAlchemyError:
+        typer.echo("daily_automation_schedule_tick_failed", err=True)
+
+
 @app.command("worker")
 def run_worker(
     root: RootOption = Path("sources"),
@@ -650,7 +660,11 @@ def run_worker(
     settings = get_settings()
     identifier = worker_id or f"{socket.gethostname()}-{os.getpid()}"
     processed_count = 0
+    next_schedule_check = 0.0
     while True:
+        if not once and time.monotonic() >= next_schedule_check:
+            _tick_daily_automation()
+            next_schedule_check += SCHEDULE_CHECK_SECONDS
         with create_session() as session:
 
             def guard(lease):
