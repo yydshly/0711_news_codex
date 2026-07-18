@@ -114,7 +114,12 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
             )
         )
         return response_type.model_validate(
-            {"zh_title": "模型中文标题", "zh_summary": "模型生成的中文文章概述。"}
+            {
+                "zh_title": "模型中文标题",
+                "zh_summary": "模型生成的中文文章概述。",
+                "review_recommendation": "建议继续核对后续公开材料。",
+                "evidence_assessment": "现有公开材料可支持当前跟踪结论。",
+            }
         )
 
     monkeypatch.setattr("newsradar.ai.minimax.MiniMaxClient.structured", structured)

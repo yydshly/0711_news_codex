@@ -95,8 +95,8 @@ class _ChineseResponse(BaseModel):
 class DailyReportChineseCopy:
     zh_title: str
     zh_summary: str
-    review_recommendation: str
-    evidence_assessment: str
+    review_recommendation: str = ""
+    evidence_assessment: str = ""
 
 
 @dataclass(frozen=True, slots=True)

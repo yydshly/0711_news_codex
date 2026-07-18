@@ -53,8 +53,12 @@ def test_enricher_returns_valid_chinese_without_sending_urls() -> None:
                                     {
                                         "zh_title": "产品正式发布",
                                         "zh_summary": "官方材料显示，该产品已经正式发布。",
-                                        "review_recommendation": "建议继续跟踪正式上线后的影响与后续公开材料。",
-                                        "evidence_assessment": "现有公开材料可支持当前产品发布信息，仍应关注后续更新。",
+                                        "review_recommendation": (
+                                            "建议继续跟踪正式上线后的影响与后续公开材料。"
+                                        ),
+                                        "evidence_assessment": (
+                                            "现有公开材料可支持当前产品发布信息，仍应关注后续更新。"
+                                        ),
                                 },
                                 ensure_ascii=False,
                             )
@@ -93,8 +97,12 @@ def test_non_chinese_model_output_falls_back_only_that_item() -> None:
                                     {
                                         "zh_title": "English only",
                                         "zh_summary": "Still English only",
-                                        "review_recommendation": "建议继续核对公开材料并补充独立来源。",
-                                        "evidence_assessment": "当前证据仍需结合后续公开信息进一步确认。",
+                                        "review_recommendation": (
+                                            "建议继续核对公开材料并补充独立来源。"
+                                        ),
+                                        "evidence_assessment": (
+                                            "当前证据仍需结合后续公开信息进一步确认。"
+                                        ),
                                 }
                             )
                         }
