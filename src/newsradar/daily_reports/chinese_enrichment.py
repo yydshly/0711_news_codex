@@ -15,6 +15,7 @@ from newsradar.settings import Settings
 _CJK = re.compile(r"[\u3400-\u9fff]")
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
 _MAX_CONTEXT = 1200
+_MAX_ITEM_TIMEOUT_SECONDS = 45
 
 
 def candidate_key(event_id: int, event_version_number: int) -> str:
@@ -98,7 +99,10 @@ class DailyReportChineseEnricher:
             self._prompt(candidate),
             _ChineseResponse,
             fallback,
-            timeout_seconds=self.settings.event_model_timeout_seconds,
+            timeout_seconds=min(
+                self.settings.event_model_timeout_seconds,
+                _MAX_ITEM_TIMEOUT_SECONDS,
+            ),
         )
         snapshot_copy = DailyReportChineseCopy(
             zh_title=_snapshot_text(candidate.snapshot, "zh_title", "未命名事件"),

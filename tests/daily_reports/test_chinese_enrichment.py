@@ -145,6 +145,39 @@ def test_timeout_falls_back_with_safe_code() -> None:
     assert result.error_code == "timeout"
 
 
+def test_enricher_caps_total_item_timeout_at_forty_five_seconds(monkeypatch) -> None:
+    timeouts: list[float | None] = []
+
+    async def fake_structured(
+        self,
+        purpose,
+        model,
+        prompt,
+        response_type,
+        fallback,
+        timeout_seconds=None,
+    ):
+        timeouts.append(timeout_seconds)
+        return fallback
+
+    monkeypatch.setattr(
+        "newsradar.daily_reports.chinese_enrichment.MiniMaxClient.structured",
+        fake_structured,
+    )
+
+    async def run():
+        settings = Settings(
+            _env_file=None,
+            minimax_api_key="secret",
+            event_model_timeout_seconds=90,
+        )
+        async with httpx.AsyncClient() as http:
+            return await DailyReportChineseEnricher(settings, http).enrich_batch((candidate(),))
+
+    asyncio.run(run())
+    assert timeouts == [45]
+
+
 def test_batch_never_exceeds_two_concurrent_items(monkeypatch) -> None:
     active = 0
     maximum = 0
