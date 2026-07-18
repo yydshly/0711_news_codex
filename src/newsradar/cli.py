@@ -17,7 +17,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from newsradar.ai.health import check_minimax_config, check_minimax_live
 from newsradar.ai.minimax import ModelUsage
 from newsradar.credentials import SettingsCredentials
-from newsradar.daily_reports.automation_service import DailyAutomationService
 from newsradar.db.models import (
     EventScoreRecord,
     EventVersionRecord,
@@ -615,6 +614,8 @@ def retry_operation(operation_id: int) -> None:
 
 
 def _tick_daily_automation() -> None:
+    from newsradar.daily_reports.automation_service import DailyAutomationService
+
     try:
         with create_session() as session:
             DailyAutomationService(session).tick()
