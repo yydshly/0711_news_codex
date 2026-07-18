@@ -79,13 +79,20 @@ class DailyReportRepository:
         self._utcnow = utcnow or (lambda: datetime.now(UTC))
 
     def create_draft(self, draft: DailyReportDraft) -> DailyReportRecord:
+        report, _ = self._create_draft(draft, commit=True)
+        return report
+
+    def _create_draft(
+        self, draft: DailyReportDraft, *, commit: bool
+    ) -> tuple[DailyReportRecord, bool]:
         validate_window_hours(draft.window_hours)
         for attempt in range(MAX_REVISION_ATTEMPTS):
             self._lock_revision(draft.report_date, draft.window_hours)
             existing = self._matching_report(draft)
             if existing is not None:
-                self.session.commit()
-                return existing
+                if commit:
+                    self.session.commit()
+                return existing, False
 
             revision = int(
                 self.session.scalar(
@@ -147,16 +154,19 @@ class DailyReportRepository:
                     )
                     for item in draft.overview_items
                 )
-                self.session.commit()
-                return report
+                if commit:
+                    self.session.commit()
+                return report, True
             except IntegrityError as error:
                 self.session.rollback()
                 if not self._is_revision_conflict(error):
                     raise
+                self._lock_revision(draft.report_date, draft.window_hours)
                 existing = self._matching_report(draft)
                 if existing is not None:
-                    self.session.commit()
-                    return existing
+                    if commit:
+                        self.session.commit()
+                    return existing, False
                 self.session.rollback()
                 if attempt == MAX_REVISION_ATTEMPTS - 1:
                     raise RuntimeError("daily_report_revision_conflict") from error
@@ -204,6 +214,13 @@ class DailyReportRepository:
         return RetentionActionResult(report_id, "trashed", "日报已移入回收站。")
 
     def restore(self, report_id: int) -> RetentionActionResult:
+        identity = self.session.get(
+            DailyReportRecord, report_id, populate_existing=True
+        )
+        if identity is None:
+            self.session.rollback()
+            raise LookupError("daily_report_not_found")
+        self._lock_revision(identity.report_date, identity.window_hours)
         report = self._report_for_update(report_id)
         if report.deleted_at is None:
             self.session.commit()
@@ -666,8 +683,11 @@ class DailyReportRepository:
         legacy_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
         rebuilt_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
     ) -> DailyReportRecord:
+        selected = self._revision_source(report_id)
+        self._lock_revision(selected.report_date, selected.window_hours)
         original = self.revision_target(report_id)
         if original.status == ReportStatus.DRAFT.value:
+            self.session.commit()
             return original
         original_overview_items = self.overview_items(original.id)
         overview_items = rebuilt_overview_items or (
@@ -686,7 +706,7 @@ class DailyReportRepository:
             if original_overview_items
             else legacy_overview_items
         )
-        revision = self.create_draft(
+        revision, created = self._create_draft(
             DailyReportDraft(
                 report_date=original.report_date,
                 window_hours=original.window_hours,
@@ -707,8 +727,23 @@ class DailyReportRepository:
                     for row in self.items(original.id)
                 ),
                 overview_items=overview_items,
-            )
+            ),
+            commit=False,
         )
+        if not created:
+            self.session.commit()
+            return revision
+        try:
+            self._copy_revision_reviews(original, revision)
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+        return revision
+
+    def _copy_revision_reviews(
+        self, original: DailyReportRecord, revision: DailyReportRecord
+    ) -> None:
         for original_item, revision_item in zip(
             self.items(original.id), self.items(revision.id), strict=True
         ):
@@ -774,17 +809,9 @@ class DailyReportRepository:
                     created_at=self._utcnow(),
                 )
             )
-        self.session.commit()
-        return revision
 
     def revision_target(self, report_id: int) -> DailyReportRecord:
-        report = self.session.get(DailyReportRecord, report_id)
-        if report is None:
-            raise LookupError("daily_report_not_found")
-        if report.deleted_at is not None:
-            raise ValueError("daily_report_is_trashed")
-        if report.status != ReportStatus.ARCHIVED.value:
-            raise ValueError("daily_report_must_be_archived")
+        report = self._revision_source(report_id)
 
         visited: set[int] = set()
         current = report
@@ -793,14 +820,28 @@ class DailyReportRepository:
                 raise RuntimeError("daily_report_revision_chain_invalid")
             visited.add(current.id)
             successor = self.session.scalar(
-                select(DailyReportRecord).where(
+                select(DailyReportRecord)
+                .where(
                     DailyReportRecord.supersedes_report_id == current.id,
                     DailyReportRecord.deleted_at.is_(None),
                 )
+                .execution_options(populate_existing=True)
             )
             if successor is None:
                 return current
             current = successor
+
+    def _revision_source(self, report_id: int) -> DailyReportRecord:
+        report = self.session.get(
+            DailyReportRecord, report_id, populate_existing=True
+        )
+        if report is None:
+            raise LookupError("daily_report_not_found")
+        if report.deleted_at is not None:
+            raise ValueError("daily_report_is_trashed")
+        if report.status != ReportStatus.ARCHIVED.value:
+            raise ValueError("daily_report_must_be_archived")
+        return report
 
     def _lock_revision(self, report_date: date, window_hours: int) -> None:
         if self.session.get_bind().dialect.name != "postgresql":

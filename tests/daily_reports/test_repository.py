@@ -921,6 +921,66 @@ def test_revision_cycle_is_rejected_with_stable_runtime_code(
         repository.revise(parent.id)
 
 
+def test_revise_locks_revision_identity_before_resolving_active_head(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = repository.archive(repository.create_draft(_draft(db_session)).id)
+    original_lock = repository._lock_revision
+    original_target = repository.revision_target
+    calls: list[str] = []
+
+    def tracking_lock(report_date: date, window_hours: int) -> None:
+        calls.append("identity_lock")
+        original_lock(report_date, window_hours)
+
+    def tracking_target(report_id: int) -> DailyReportRecord:
+        calls.append("revision_target")
+        return original_target(report_id)
+
+    monkeypatch.setattr(repository, "_lock_revision", tracking_lock)
+    monkeypatch.setattr(repository, "revision_target", tracking_target)
+
+    repository.revise(parent.id)
+
+    assert calls[:2] == ["identity_lock", "revision_target"]
+
+
+def test_revise_rolls_back_new_draft_when_review_copy_fails(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = repository.create_draft(_draft(db_session))
+    target, duplicate_item, _ = repository.overview_items(original.id)
+    review = repository.save_overview_editorial_review(
+        original.id,
+        duplicate_item.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="duplicate",
+            zh_title="重复标题",
+            zh_summary="重复概述",
+            review_recommendation="与主要事件合并",
+            evidence_assessment="相同第一方链接。",
+            duplicate_of_overview_item_id=target.id,
+        ),
+    )
+    review.duplicate_of_overview_item_id = 999_999
+    db_session.commit()
+    repository.archive(original.id)
+
+    with pytest.raises(
+        ValueError, match="invalid_daily_report_overview_duplicate_target"
+    ):
+        repository.revise(original.id)
+
+    assert db_session.scalars(
+        select(DailyReportRecord).where(
+            DailyReportRecord.supersedes_report_id == original.id
+        )
+    ).all() == []
+    assert db_session.scalar(select(1)) == 1
+
+
 def test_move_at_section_boundary_is_a_no_op(db_session: Session) -> None:
     repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
     report = repository.create_draft(_draft(db_session))

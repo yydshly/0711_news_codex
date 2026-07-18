@@ -190,6 +190,33 @@ def test_restore_blocks_trashed_root_when_newer_active_root_exists(
     assert (abandoned.deleted_at, abandoned.purge_after) == before
 
 
+def test_restore_takes_identity_lock_before_final_row_lock(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _report(db_session, report_date=date(2026, 7, 14))
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    repository.move_to_trash(report.id)
+    original_identity_lock = repository._lock_revision
+    original_row_lock = repository._report_for_update
+    calls: list[str] = []
+
+    def tracking_identity_lock(report_date: date, window_hours: int) -> None:
+        calls.append("identity_lock")
+        original_identity_lock(report_date, window_hours)
+
+    def tracking_row_lock(report_id: int) -> DailyReportRecord:
+        calls.append("row_lock")
+        return original_row_lock(report_id)
+
+    monkeypatch.setattr(repository, "_lock_revision", tracking_identity_lock)
+    monkeypatch.setattr(repository, "_report_for_update", tracking_row_lock)
+
+    result = repository.restore(report.id)
+
+    assert result.outcome == "restored"
+    assert calls[:2] == ["identity_lock", "row_lock"]
+
+
 def test_trash_candidates_exclude_pinned_and_limit_to_old_active_reports(
     db_session: Session,
 ) -> None:
