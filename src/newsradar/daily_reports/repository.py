@@ -44,7 +44,7 @@ _DAILY_CHINESE_ENRICHMENT_PURPOSE = "daily_report_chinese_enrichment"
 _SAFE_DAILY_CHINESE_ORIGINS = frozenset({"model", "rule_fallback", "budget_limit"})
 _SAFE_DAILY_CHINESE_OUTCOMES = frozenset({"success", "fallback", "retry"})
 _SAFE_DAILY_CHINESE_ERROR_CODES = SAFE_MODEL_ERROR_CODES | frozenset(
-    {"non_chinese_output", "unexpected_error"}
+    {"budget_limit", "non_chinese_output", "unexpected_error"}
 )
 _SAFE_MODEL_NAME = re.compile(r"[A-Za-z0-9._-]{1,120}")
 _MAX_MODEL_LATENCY_MS = 300_000.0

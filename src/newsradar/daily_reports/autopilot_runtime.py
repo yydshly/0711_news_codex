@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
@@ -18,13 +19,20 @@ from newsradar.daily_reports.autopilot import (
     deserialize_wave_plan,
 )
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
+from newsradar.daily_reports.chinese_enrichment import (
+    DailyReportChineseCandidate,
+    DailyReportChineseCopy,
+    DailyReportChineseEnricher,
+    DailyReportChineseResult,
+)
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.service import DailyReportService
-from newsradar.db.models import DailyAutopilotRunRecord, OperationRunRecord
+from newsradar.db.models import DailyAutopilotRunRecord, DailyReportRecord, OperationRunRecord
 from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.repository import OperationLease, OperationRepository
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.operations.worker import OperationCancelled, OperationResult
+from newsradar.settings import Settings, get_settings
 
 _WAIT_SECONDS = 15
 _RUNNING_STATUSES = {OperationStatus.QUEUED.value, OperationStatus.RUNNING.value}
@@ -43,9 +51,11 @@ class DailyAutopilotHandler:
         create_session: Callable[[], AbstractContextManager[Session]],
         *,
         utcnow: Callable[[], datetime] | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self._create_session = create_session
         self._utcnow = utcnow or (lambda: datetime.now(UTC))
+        self._settings = settings or get_settings()
 
     @classmethod
     def production(
@@ -355,27 +365,80 @@ class DailyAutopilotHandler:
     ) -> OperationResult:
         if run.daily_report_id is None:
             raise ValueError("daily_report_not_found")
-        reviewed = 0
         with self._create_session() as session:
             reports = DailyReportRepository(session, utcnow=self._utcnow)
-            for item in reports.items(run.daily_report_id):
-                checkpoint("daily_autopilot:write_decision_review")
-                reports.save_editorial_review(
-                    run.daily_report_id,
-                    item.id,
-                    build_decision_review(dict(item.snapshot)),
+            candidates = reports.chinese_enrichment_candidates(run.daily_report_id)
+            completed = reports.completed_chinese_enrichment_keys(run.daily_report_id)
+
+        pending = tuple(row for row in candidates if row.key not in completed)
+        budget = self._settings.daily_report_model_max_items
+        model_keys = {row.key for row in candidates[:budget]}
+        for offset in range(0, len(pending), 2):
+            batch = pending[offset : offset + 2]
+            callable_rows = tuple(row for row in batch if row.key in model_keys)
+            results = list(self._run_chinese_enrichment(callable_rows, checkpoint))
+            results.extend(
+                _budget_result_for(row, self._settings.minimax_fast_model)
+                for row in batch
+                if row.key not in model_keys
+            )
+            for result in results:
+                checkpoint("daily_autopilot:save_chinese_enrichment_item")
+                decision = (
+                    build_decision_review(
+                        result.candidate.snapshot,
+                        zh_title=result.copy.zh_title,
+                        zh_summary=result.copy.zh_summary,
+                    )
+                    if result.candidate.decision_item_id is not None
+                    else None
                 )
-                reviewed += 1
-            for item in reports.overview_items(run.daily_report_id):
-                checkpoint("daily_autopilot:write_overview_review")
-                reports.save_overview_editorial_review(
-                    run.daily_report_id,
-                    item.id,
-                    build_overview_review(dict(item.snapshot)),
+                overview = (
+                    build_overview_review(
+                        result.candidate.snapshot,
+                        zh_title=result.copy.zh_title,
+                        zh_summary=result.copy.zh_summary,
+                    )
+                    if result.candidate.overview_item_id is not None
+                    else None
                 )
-                reviewed += 1
+                with self._create_session() as session:
+                    DailyReportRepository(
+                        session, utcnow=self._utcnow
+                    ).save_automatic_chinese_reviews(
+                        run.daily_report_id,
+                        result,
+                        decision,
+                        overview,
+                        candidate_total=len(candidates),
+                        model_budget=budget,
+                    )
+
+        with self._create_session() as session:
+            report = session.get(DailyReportRecord, run.daily_report_id)
+            if report is None:
+                raise ValueError("daily_report_not_found")
+            summary = dict(report.generation_summary.get("daily_chinese_enrichment") or {})
         self._transition_and_continue(run.id, DailyAutopilotStage.ARCHIVE_AND_ENQUEUE_AUDIO)
-        return _succeeded({"run_id": run.id, "reviewed": reviewed})
+        return _succeeded({"run_id": run.id, **summary})
+
+    def _run_chinese_enrichment(
+        self,
+        candidates: tuple[DailyReportChineseCandidate, ...],
+        checkpoint: Callable[[str], None],
+    ) -> tuple[DailyReportChineseResult, ...]:
+        if not candidates:
+            return ()
+
+        async def run() -> tuple[DailyReportChineseResult, ...]:
+            import httpx
+
+            async with httpx.AsyncClient() as http:
+                return await DailyReportChineseEnricher(
+                    self._settings, http
+                ).enrich_batch(candidates, checkpoint)
+
+        return asyncio.run(run())
 
     def _archive_and_enqueue_audio(
         self, run: DailyAutopilotRunRecord, checkpoint: Callable[[str], None]
@@ -498,6 +561,31 @@ def _summary_count(summary: dict[str, Any], key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _budget_result_for(
+    candidate: DailyReportChineseCandidate, model: str
+) -> DailyReportChineseResult:
+    return DailyReportChineseResult(
+        candidate=candidate,
+        copy=DailyReportChineseCopy(
+            zh_title=_snapshot_text(candidate.snapshot, "zh_title", "未命名事件"),
+            zh_summary=_snapshot_text(
+                candidate.snapshot,
+                "zh_summary",
+                "当前公开材料不足以形成完整中文概述。",
+            ),
+        ),
+        origin="budget_limit",
+        error_code="budget_limit",
+        model=model,
+        usages=(),
+    )
+
+
+def _snapshot_text(snapshot: dict[str, object], key: str, fallback: str) -> str:
+    value = snapshot.get(key)
+    return value.strip() if isinstance(value, str) and value.strip() else fallback
 
 
 def _diagnostic_message(code: str) -> str:

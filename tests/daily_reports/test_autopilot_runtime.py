@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -8,17 +9,33 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from newsradar.ai.minimax import ModelUsage
 from newsradar.daily_reports import autopilot_runtime
 from newsradar.daily_reports.autopilot import (
     DailyAutopilotStage,
+    build_decision_review,
+    build_overview_review,
     serialize_catalog_plan,
     serialize_wave_plan,
 )
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.autopilot_runtime import DailyAutopilotHandler
-from newsradar.db.models import Base, OperationRunRecord
+from newsradar.daily_reports.chinese_enrichment import (
+    DailyReportChineseCopy,
+    DailyReportChineseEnricher,
+    DailyReportChineseResult,
+)
+from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.schema import (
+    DailyReportDraft,
+    DailyReportItemDraft,
+    DailyReportOverviewItemDraft,
+    ReportSection,
+)
+from newsradar.db.models import Base, DailyReportRecord, EventRecord, OperationRunRecord
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
+from newsradar.settings import Settings
 from newsradar.sources.catalog_refresh import (
     CatalogRefreshLane,
     CatalogRefreshMemberSnapshot,
@@ -82,6 +99,219 @@ def _lease(run_id: int, stage: DailyAutopilotStage) -> OperationLease:
         operation_type=OperationType.DAILY_AUTOPILOT.value,
         requested_scope={"daily_autopilot_run_id": run_id, "stage": stage.value},
     )
+
+
+def _seed_autopilot_report(factory, *, event_count: int = 2, completed_count: int = 0):
+    with factory() as db:
+        operation = OperationRunRecord(
+            operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+            trigger="test",
+            status=OperationStatus.SUCCEEDED.value,
+            requested_scope={},
+            result_summary={"event_manifest_complete": True},
+        )
+        db.add(operation)
+        db.flush()
+        items = []
+        overview_items = []
+        for position in range(1, event_count + 1):
+            event_id = 100 + position
+            db.add(
+                EventRecord(
+                    id=event_id,
+                    canonical_key=f"autopilot-chinese-{event_id}",
+                    status="emerging",
+                    current_version_number=1,
+                    occurred_at=datetime(2026, 7, 18, tzinfo=UTC),
+                )
+            )
+            snapshot = {
+                "status": "emerging",
+                "independent_root_count": 0,
+                "zh_title": f"English {event_id}",
+                "zh_summary": f"English summary {event_id}",
+            }
+            items.append(
+                DailyReportItemDraft(
+                    event_id=event_id,
+                    event_version_number=1,
+                    section=ReportSection.EMERGING,
+                    position=position,
+                    snapshot=snapshot,
+                )
+            )
+            overview_items.append(
+                DailyReportOverviewItemDraft(
+                    event_id=event_id,
+                    event_version_number=1,
+                    position=position,
+                    snapshot=snapshot,
+                    decision_event_id=event_id,
+                )
+            )
+        db.flush()
+        report = DailyReportRepository(db).create_draft(
+            DailyReportDraft(
+                report_date=date(2026, 7, 18),
+                window_hours=24,
+                window_start=datetime(2026, 7, 17, tzinfo=UTC),
+                window_end=datetime(2026, 7, 18, tzinfo=UTC),
+                source_operation_id=operation.id,
+                generation_summary={"confirmed_count": 0, "emerging_count": event_count},
+                items=tuple(items),
+                overview_items=tuple(overview_items),
+            )
+        )
+        run = DailyAutopilotRepository(db).create_run(
+            window_hours=24,
+            trigger="test",
+            requested_scope={"wave_plan": serialize_wave_plan(_wave_plan())},
+        )
+        DailyAutopilotRepository(db).transition(
+            run.id,
+            stage=DailyAutopilotStage.WRITE_REVIEWS,
+            daily_report_id=report.id,
+            event_operation_id=operation.id,
+        )
+        report_id = report.id
+        run_id = run.id
+        db.commit()
+        run_view = SimpleNamespace(id=run_id, daily_report_id=report_id)
+
+    if completed_count:
+        with factory() as db:
+            repository = DailyReportRepository(db)
+            for row in repository.chinese_enrichment_candidates(report_id)[:completed_count]:
+                result = _model_result_for(row)
+                repository.save_automatic_chinese_reviews(
+                    report_id,
+                    result,
+                    build_decision_review(
+                        row.snapshot,
+                        zh_title=result.copy.zh_title,
+                        zh_summary=result.copy.zh_summary,
+                    ),
+                    build_overview_review(
+                        row.snapshot,
+                        zh_title=result.copy.zh_title,
+                        zh_summary=result.copy.zh_summary,
+                    ),
+                    candidate_total=event_count,
+                    model_budget=60,
+                )
+    return run_view
+
+
+def _load_enrichment_summary(factory, report_id: int) -> dict[str, object]:
+    with factory() as db:
+        report = db.get(DailyReportRecord, report_id)
+        assert report is not None
+        return dict(report.generation_summary["daily_chinese_enrichment"])
+
+
+def _model_result_for(candidate) -> DailyReportChineseResult:
+    return DailyReportChineseResult(
+        candidate=candidate,
+        copy=DailyReportChineseCopy("模型中文标题", "模型生成的中文文章概述。"),
+        origin="model",
+        error_code=None,
+        model="MiniMax-M2.7-highspeed",
+        usages=(
+            ModelUsage(
+                purpose="daily_report_chinese_enrichment",
+                model="MiniMax-M2.7-highspeed",
+                input_tokens=20,
+                output_tokens=10,
+                latency_ms=12.5,
+                outcome="success",
+            ),
+        ),
+    )
+
+
+def _fallback_result_for(candidate, error_code: str) -> DailyReportChineseResult:
+    result = _model_result_for(candidate)
+    return replace(
+        result,
+        copy=DailyReportChineseCopy(
+            zh_title=str(candidate.snapshot["zh_title"]),
+            zh_summary=str(candidate.snapshot["zh_summary"]),
+        ),
+        origin="rule_fallback",
+        error_code=error_code,
+        usages=(replace(result.usages[0], outcome="fallback", error=error_code),),
+    )
+
+
+def test_write_reviews_enriches_each_unique_event_once_and_reuses_copy(monkeypatch) -> None:
+    factory = _session_factory()
+    run = _seed_autopilot_report(factory)
+    calls: list[str] = []
+
+    async def enrich_batch(self, candidates, checkpoint=None):
+        calls.extend(row.key for row in candidates)
+        return tuple(_model_result_for(row) for row in candidates)
+
+    monkeypatch.setattr(DailyReportChineseEnricher, "enrich_batch", enrich_batch)
+    result = DailyAutopilotHandler(factory)._write_reviews(run, lambda _phase: None)
+
+    assert result.status is OperationStatus.SUCCEEDED
+    assert calls == ["101:1", "102:1"]
+    assert result.result_summary["model_success"] == 2
+
+
+def test_write_reviews_continues_after_one_model_fallback(monkeypatch) -> None:
+    factory = _session_factory()
+    run = _seed_autopilot_report(factory)
+
+    async def enrich_batch(self, candidates, checkpoint=None):
+        return tuple(
+            _fallback_result_for(row, "http_429")
+            if row.event_id == 101
+            else _model_result_for(row)
+            for row in candidates
+        )
+
+    monkeypatch.setattr(DailyReportChineseEnricher, "enrich_batch", enrich_batch)
+    result = DailyAutopilotHandler(factory)._write_reviews(run, lambda _phase: None)
+
+    assert result.status is OperationStatus.SUCCEEDED
+    assert result.result_summary["model_success"] == 1
+    assert result.result_summary["rule_fallback"] == 1
+    assert result.result_summary["error_counts"] == {"http_429": 1}
+
+
+def test_write_reviews_resume_skips_completed_event(monkeypatch) -> None:
+    factory = _session_factory()
+    run = _seed_autopilot_report(factory, completed_count=1)
+    calls: list[str] = []
+
+    async def enrich_batch(self, candidates, checkpoint=None):
+        calls.extend(row.key for row in candidates)
+        return tuple(_model_result_for(row) for row in candidates)
+
+    monkeypatch.setattr(DailyReportChineseEnricher, "enrich_batch", enrich_batch)
+    DailyAutopilotHandler(factory)._write_reviews(run, lambda _phase: None)
+
+    assert calls == ["102:1"]
+
+
+def test_write_reviews_marks_items_beyond_local_limit_without_calling_model(monkeypatch) -> None:
+    factory = _session_factory()
+    run = _seed_autopilot_report(factory, event_count=3)
+    settings = Settings(_env_file=None, daily_report_model_max_items=2, minimax_api_key="secret")
+    calls: list[str] = []
+
+    async def enrich_batch(self, candidates, checkpoint=None):
+        calls.extend(row.key for row in candidates)
+        return tuple(_model_result_for(row) for row in candidates)
+
+    monkeypatch.setattr(DailyReportChineseEnricher, "enrich_batch", enrich_batch)
+    handler = DailyAutopilotHandler(factory, settings=settings)
+    handler._write_reviews(run, lambda _phase: None)
+
+    assert calls == ["101:1", "102:1"]
+    assert _load_enrichment_summary(factory, run.daily_report_id)["budget_fallback"] == 1
 
 
 def test_source_stage_enqueues_refresh_and_delayed_wait() -> None:

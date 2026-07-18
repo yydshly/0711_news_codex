@@ -158,6 +158,7 @@ class DailyReportChineseEnricher:
                 "limitations",
             )
         }
+        context["event_key"] = candidate.key
         return (
             f"{UNTRUSTED_PREAMBLE}\n"
             "只生成简体中文标题和中文文章概述。不得判断来源合法性、事件确认状态、"

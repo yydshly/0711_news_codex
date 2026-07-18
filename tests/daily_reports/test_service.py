@@ -442,6 +442,14 @@ def test_generate_sanitizes_evidence_and_never_calls_network_or_model(
         lambda *args, **kwargs: pytest.fail("model"),
     )
 
+    def forbidden_text_enricher(*_args, **_kwargs):
+        raise AssertionError("manual report generation must remain read-only")
+
+    monkeypatch.setattr(
+        "newsradar.daily_reports.chinese_enrichment.DailyReportChineseEnricher.__init__",
+        forbidden_text_enricher,
+    )
+
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
     evidence = DailyReportRepository(db_session).items(report.id)[0].snapshot["evidence"]
 

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime
 from threading import Lock
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
+from newsradar.ai.minimax import ModelUsage
+from newsradar.daily_reports.audio_client import SpeechSynthesisResult
+from newsradar.daily_reports.audio_runtime import DailyReportAudioHandler
 from newsradar.daily_reports.autopilot import DailyAutopilotStage
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.autopilot_runtime import DailyAutopilotHandler
@@ -86,9 +91,33 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
     monkeypatch,
 ) -> None:
     now = datetime.now(UTC)
-    safe_settings = Settings(_env_file=None, minimax_api_key=None, operation_timeout_seconds=60)
+    safe_settings = Settings(_env_file=None, minimax_api_key="secret", operation_timeout_seconds=60)
     monkeypatch.setattr("newsradar.operations.commands.get_settings", lambda: safe_settings)
     monkeypatch.setattr("newsradar.events.pipeline.get_settings", lambda: safe_settings)
+    model_event_keys: list[str] = []
+
+    async def structured(
+        self, purpose, model, prompt, response_type, fallback, timeout_seconds=None
+    ):
+        assert purpose == "daily_report_chinese_enrichment"
+        context = json.loads(prompt.split("固定日报材料：", 1)[1].split("\nJSON schema:", 1)[0])
+        model_event_keys.append(context["event_key"])
+        assert self.usage_sink is not None
+        self.usage_sink(
+            ModelUsage(
+                purpose=purpose,
+                model=model,
+                input_tokens=20,
+                output_tokens=10,
+                latency_ms=1.0,
+                outcome="success",
+            )
+        )
+        return response_type.model_validate(
+            {"zh_title": "模型中文标题", "zh_summary": "模型生成的中文文章概述。"}
+        )
+
+    monkeypatch.setattr("newsradar.ai.minimax.MiniMaxClient.structured", structured)
     engine = create_engine(
         f"sqlite+pysqlite:///{tmp_path / 'autopilot-acceptance.db'}",
         connect_args={"check_same_thread": False, "timeout": 30},
@@ -140,7 +169,7 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
             db, utcnow=lambda: now, settings=safe_settings
         ).enqueue_daily_autopilot(plan=plan, trigger="acceptance")
 
-    autopilot = DailyAutopilotHandler(factory)
+    autopilot = DailyAutopilotHandler(factory, settings=safe_settings)
     enqueue_result = autopilot(
         _autopilot_lease(run_id, DailyAutopilotStage.ENQUEUE_CONTENT_WAVE),
         lambda _boundary: None,
@@ -249,6 +278,18 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
         assert report.status == "archived"
         assert report.source_operation_id == wave_id
         assert report.generation_summary["overview_count"] > 0
+        summary = report.generation_summary["daily_chinese_enrichment"]
+        decision_reviews = tuple(
+            review
+            for item in repository.items(report.id)
+            for review in repository.editorial_reviews(item.id)
+        )
+        overview_items = repository.overview_items(report.id)
+        assert len(model_event_keys) == len(set(model_event_keys))
+        assert summary["processed"] == summary["candidate_total"]
+        assert summary["model_success"] == summary["candidate_total"]
+        assert all(re.search(r"[\u3400-\u9fff]", review.zh_title) for review in decision_reviews)
+        assert all(repository.overview_editorial_reviews(item.id) for item in overview_items)
         assert db.scalar(
             select(func.count()).select_from(FetchRunRecord).where(
                 FetchRunRecord.operation_run_id == wave_id
@@ -272,6 +313,7 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
             "decision",
             "overview",
         }
+        audio_operations = tuple((row.id, dict(row.requested_scope)) for row in queued)
         members = {
             row.source_id: row.state
             for row in db.scalars(
@@ -282,4 +324,43 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
         }
         assert members["broken-feed"] == "failed"
         assert run.stage == DailyAutopilotStage.WAIT_AUDIO.value
+
+    audio_handler = DailyReportAudioHandler(
+        factory,
+        audio_root=tmp_path / "audio",
+        synthesize=lambda _script: SpeechSynthesisResult(
+            audio_bytes=b"ID3-test-mp3",
+            trace_id="acceptance-trace",
+            duration_ms=100,
+            usage_characters=10,
+        ),
+    )
+    for operation_id, requested_scope in audio_operations:
+        audio_result = audio_handler(
+            OperationLease(
+                operation_id=operation_id,
+                attempt_id=1,
+                attempt_number=1,
+                worker_id="acceptance-worker",
+                operation_type=OperationType.DAILY_REPORT_AUDIO.value,
+                requested_scope=requested_scope,
+            ),
+            lambda _boundary: None,
+        )
+        assert audio_result.status is OperationStatus.SUCCEEDED
+        with factory() as db:
+            operation = db.get(OperationRunRecord, operation_id)
+            assert operation is not None
+            operation.status = audio_result.status.value
+            db.commit()
+
+    wait_result = autopilot(
+        _autopilot_lease(run_id, DailyAutopilotStage.WAIT_AUDIO), lambda _boundary: None
+    )
+    assert wait_result.status is OperationStatus.SUCCEEDED
+    with factory() as db:
+        decision_audio = db.get(OperationRunRecord, run.decision_audio_operation_id)
+        overview_audio = db.get(OperationRunRecord, run.overview_audio_operation_id)
+        assert decision_audio is not None and decision_audio.status == "succeeded"
+        assert overview_audio is not None and overview_audio.status == "succeeded"
     engine.dispose()
