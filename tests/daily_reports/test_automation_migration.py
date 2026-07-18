@@ -144,6 +144,11 @@ def test_postgresql_guard_sql_rejects_draft_delete_and_allows_only_purge_reparen
     assert "TG_OP = 'UPDATE'" in function_sql
     assert "newsradar_guard_archived_daily_report_item" in function_sql
     assert "pg_trigger_depth" not in function_sql
-    assert "set_config('newsradar.purge_report_id', OLD.id::text, true)" in function_sql
-    assert "current_setting('newsradar.purge_report_id', true)" in function_sql
-    assert "OLD.daily_report_id = purge_report_id" in function_sql
+    # Custom GUCs are application-settable session state, never authorization facts.
+    assert "set_config" not in function_sql
+    assert "current_setting" not in function_sql
+    assert (
+        "IF TG_OP = 'DELETE' AND NOT EXISTS ( SELECT 1 FROM daily_reports "
+        "WHERE id = OLD.daily_report_id ) THEN RETURN OLD; END IF;"
+        in normalized_sql
+    )

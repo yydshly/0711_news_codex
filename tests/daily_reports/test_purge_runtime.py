@@ -8,7 +8,7 @@ from stat import S_IFLNK
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, event, func, inspect, select, text, update
+from sqlalchemy import create_engine, delete, event, func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -187,6 +187,12 @@ def test_migrated_archived_report_purge_removes_populated_items_and_audio_togeth
         item = repository.items(report_id)[0]
         with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
             item.included = False
+            db.commit()
+        db.rollback()
+        with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+            db.execute(
+                delete(DailyReportItemRecord).where(DailyReportItemRecord.id == item.id)
+            )
             db.commit()
         db.rollback()
         _trash(db, report_id)

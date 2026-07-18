@@ -13,10 +13,11 @@ report, external source, `.env`, or MiniMax call was used.
    DELETE guard still rejected the handler's child-first purge order. The handler now
    deletes and verifies the trashed archived parent first, then removes any residual owned
    rows for SQLite connections where foreign-key cascades are disabled. Ordinary archived
-   item INSERT/UPDATE/DELETE guards remain enforced. PostgreSQL's report DELETE guard now
-   sets a transaction-local `newsradar.purge_report_id`; the item guard admits a DELETE only
-   when `OLD.daily_report_id` exactly matches that ID. The broad `pg_trigger_depth()` escape
-   is gone, so unrelated nested item deletion remains blocked.
+   item INSERT/UPDATE/DELETE guards remain enforced. PostgreSQL's item guard admits a DELETE
+   only when the referenced `daily_reports` parent row is already absent. That database fact
+   holds inside the FK action's child DELETE after an authorized parent DELETE, while a direct
+   item DELETE still sees its parent and raises. The broad `pg_trigger_depth()` escape and the
+   forgeable custom-GUC authorization path are both gone.
 2. Audio unlink previously happened inside the database transaction, which meant an unlink
    failure rolled the report deletion back and a later commit failure could occur after files
    were already gone. Purge now validates and stages audio paths in a durable queue in the
@@ -101,9 +102,29 @@ four failed for their intended reasons before implementation: PostgreSQL still c
 the broad trigger-depth bypass; a second audio unlink failure restored the report after the
 first file was already removed; an injected commit failure happened after both audio files
 were removed; and a valid phase-one transition could commit incomplete. They are GREEN with
-the exact transaction-local PostgreSQL signal, durable post-commit audio queue, and deferred
+the initial exact-ID PostgreSQL signal, durable post-commit audio queue, and deferred
 must-clear transition barrier. A fifth barrier-arming attack test was RED before adding the
 barrier table's impossible check constraint and is now GREEN.
+
+A strict security rereview then identified that even a transaction-local custom GUC remains
+application-settable and therefore cannot authorize deletion. The revised SQL-contract test
+was RED because generated SQL still called `set_config`. The minimal fix removes all
+`set_config`/`current_setting` use and allows the item DELETE only when
+`daily_reports.id = OLD.daily_report_id` no longer exists. PostgreSQL documents that foreign
+key actions are `AFTER` constraint triggers and that a volatile PL/pgSQL trigger's SPI query
+sees changes already made by the calling command:
+
+- <https://www.postgresql.org/docs/18/sql-createtrigger.html>
+- <https://www.postgresql.org/docs/18/spi-visibility.html>
+- <https://github.com/postgres/postgres/blob/master/src/backend/utils/adt/ri_triggers.c>
+
+This ordering was also verified against a disposable local PostgreSQL cluster with synthetic
+parent/child tables: after an arbitrary
+`set_config('newsradar.purge_report_id', '1', true)`, a direct child DELETE raised SQLSTATE
+`23514` and retained the row; deleting the authorized archived/trashed parent then completed
+the FK cascade and removed the child. The probe returned
+`direct_guc_rejected_and_parent_cascade_succeeded`. SQLite regression coverage separately
+proves direct archived-item DELETE is rejected while the authorized parent cascade succeeds.
 
 ### GREEN
 
@@ -132,6 +153,10 @@ uv run --extra dev pytest \
 
 The only output warnings are the existing Starlette/httpx deprecation and Alembic
 `path_separator` deprecation.
+
+After the custom-GUC security correction, the complete migration/purge suite passed
+`22/22`, and the same expanded `500`-test gate passed again with exit code 0 in 136.0
+seconds.
 
 ## Static verification
 

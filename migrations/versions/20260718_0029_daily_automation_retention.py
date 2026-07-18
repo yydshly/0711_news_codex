@@ -194,7 +194,6 @@ def _allow_archived_report_retention_mutations() -> None:
                     RAISE EXCEPTION 'daily_report_archived_immutable'
                         USING ERRCODE = '23514';
                 END IF;
-                PERFORM set_config('newsradar.purge_report_id', OLD.id::text, true);
                 RETURN OLD;
             END IF;
             IF OLD.status = 'archived' THEN
@@ -262,13 +261,12 @@ def _allow_archived_report_retention_mutations() -> None:
         AS $$
         DECLARE
             report_ids integer[];
-            purge_report_id integer;
         BEGIN
-            IF TG_OP = 'DELETE' THEN
-                purge_report_id := current_setting('newsradar.purge_report_id', true)::integer;
-                IF OLD.daily_report_id = purge_report_id THEN
-                    RETURN OLD;
-                END IF;
+            IF TG_OP = 'DELETE' AND NOT EXISTS (
+                SELECT 1 FROM daily_reports
+                WHERE id = OLD.daily_report_id
+            ) THEN
+                RETURN OLD;
             END IF;
             IF TG_OP = 'INSERT' THEN
                 report_ids := ARRAY[NEW.daily_report_id];
