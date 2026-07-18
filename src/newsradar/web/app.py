@@ -837,6 +837,40 @@ def create_app(
             },
         )
 
+    @app.post("/daily-reports/bulk/trash")
+    async def bulk_trash_daily_reports(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        report_ids = parse_report_ids(values.get("report_ids", ""))
+        outcomes: list[str] = []
+        try:
+            with create_session() as session:
+                repository = DailyReportRepository(session)
+                for report_id in report_ids:
+                    try:
+                        outcomes.append(repository.move_to_trash(report_id).outcome)
+                    except LookupError:
+                        outcomes.append("missing")
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect("/daily-reports", retention_outcomes(outcomes))
+
+    @app.post("/daily-reports/bulk/restore")
+    async def bulk_restore_daily_reports(request: Request) -> RedirectResponse:
+        values = await require_safe_action(request)
+        report_ids = parse_report_ids(values.get("report_ids", ""))
+        outcomes: list[str] = []
+        try:
+            with create_session() as session:
+                repository = DailyReportRepository(session)
+                for report_id in report_ids:
+                    try:
+                        outcomes.append(repository.restore(report_id).outcome)
+                    except LookupError:
+                        outcomes.append("missing")
+        except SQLAlchemyError as error:
+            return database_error_response(request, error)  # type: ignore[return-value]
+        return retention_redirect("/daily-reports/trash", retention_outcomes(outcomes))
+
     @app.post("/daily-reports/{report_id}/pin")
     async def pin_daily_report(request: Request, report_id: int) -> RedirectResponse:
         await require_safe_action(request)
@@ -886,40 +920,6 @@ def create_app(
         return retention_redirect(
             "/daily-reports/trash", retention_outcomes([result.outcome])
         )
-
-    @app.post("/daily-reports/bulk/trash")
-    async def bulk_trash_daily_reports(request: Request) -> RedirectResponse:
-        values = await require_safe_action(request)
-        report_ids = parse_report_ids(values.get("report_ids", ""))
-        outcomes: list[str] = []
-        try:
-            with create_session() as session:
-                repository = DailyReportRepository(session)
-                for report_id in report_ids:
-                    try:
-                        outcomes.append(repository.move_to_trash(report_id).outcome)
-                    except LookupError:
-                        outcomes.append("missing")
-        except SQLAlchemyError as error:
-            return database_error_response(request, error)  # type: ignore[return-value]
-        return retention_redirect("/daily-reports", retention_outcomes(outcomes))
-
-    @app.post("/daily-reports/bulk/restore")
-    async def bulk_restore_daily_reports(request: Request) -> RedirectResponse:
-        values = await require_safe_action(request)
-        report_ids = parse_report_ids(values.get("report_ids", ""))
-        outcomes: list[str] = []
-        try:
-            with create_session() as session:
-                repository = DailyReportRepository(session)
-                for report_id in report_ids:
-                    try:
-                        outcomes.append(repository.restore(report_id).outcome)
-                    except LookupError:
-                        outcomes.append("missing")
-        except SQLAlchemyError as error:
-            return database_error_response(request, error)  # type: ignore[return-value]
-        return retention_redirect("/daily-reports/trash", retention_outcomes(outcomes))
 
     @app.post("/daily-reports/{report_id}/items/{item_id}/included")
     async def set_daily_report_item_included(

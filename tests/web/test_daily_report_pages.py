@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -2051,10 +2052,55 @@ def test_bulk_trash_rejects_more_than_fifty_unique_positive_ids(
 
     response = client.post(
         "/daily-reports/bulk/trash",
-        data=[("action_token", token), *(("report_ids", str(value)) for value in range(1, 52))],
+        content=urlencode(
+            [("action_token", token), *(("report_ids", str(value)) for value in range(1, 52))]
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
 
     assert response.status_code == 422
+    assert response.json()["detail"] == "一次最多操作 50 份日报。"
+
+
+def test_safe_bulk_trash_and_restore_reach_their_static_handlers(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = seed_two_daily_reports(db_session)
+    report_ids = (first.id, second.id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    trashed = client.post(
+        "/daily-reports/bulk/trash",
+        content=urlencode(
+            [("action_token", token), *(("report_ids", str(report_id)) for report_id in report_ids)]
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert trashed.status_code == 303
+    assert trashed.headers["location"].startswith("/daily-reports?")
+    assert all(
+        db_session.get(DailyReportRecord, report_id).deleted_at is not None
+        for report_id in report_ids
+    )
+
+    client, token = safe_client_with_token(db_session, monkeypatch)
+    restored = client.post(
+        "/daily-reports/bulk/restore",
+        content=urlencode(
+            [("action_token", token), *(("report_ids", str(report_id)) for report_id in report_ids)]
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert restored.status_code == 303
+    assert restored.headers["location"].startswith("/daily-reports/trash?")
+    assert all(
+        db_session.get(DailyReportRecord, report_id).deleted_at is None
+        for report_id in report_ids
+    )
 
 
 def test_daily_report_routes_enforce_ownership_and_not_found(
