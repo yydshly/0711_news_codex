@@ -10,8 +10,13 @@ from sqlalchemy.orm import Session
 
 from newsradar.db.models import (
     DailyAutopilotRunRecord,
+    DailyReportRecord,
     FetchRunRecord,
     OperationRunRecord,
+)
+from newsradar.web.daily_report_queries import (
+    DailyReportChineseEnrichmentView,
+    _chinese_enrichment_view,
 )
 
 
@@ -46,6 +51,7 @@ class DailyAutopilotDetailView(DailyAutopilotSummaryView):
     event_operation: DailyAutopilotOperationView | None
     decision_audio_operation: DailyAutopilotOperationView | None
     overview_audio_operation: DailyAutopilotOperationView | None
+    chinese_enrichment: DailyReportChineseEnrichmentView
     next_action_zh: str
 
 
@@ -69,6 +75,7 @@ class DailyAutopilotQueryService:
         event_operation = self._operation(row.event_operation_id)
         decision_audio = self._operation(row.decision_audio_operation_id)
         overview_audio = self._operation(row.overview_audio_operation_id)
+        chinese_enrichment = self._chinese_enrichment(row.daily_report_id)
         return DailyAutopilotDetailView(
             **asdict(self._summary(row)),
             error_code=row.error_code,
@@ -78,8 +85,20 @@ class DailyAutopilotQueryService:
             event_operation=event_operation,
             decision_audio_operation=decision_audio,
             overview_audio_operation=overview_audio,
+            chinese_enrichment=chinese_enrichment,
             next_action_zh=_next_action(row, event_operation),
         )
+
+    def _chinese_enrichment(
+        self, report_id: int | None
+    ) -> DailyReportChineseEnrichmentView:
+        report = self.session.get(DailyReportRecord, report_id) if report_id else None
+        summary = (
+            dict(report.generation_summary)
+            if report is not None and isinstance(report.generation_summary, dict)
+            else {}
+        )
+        return _chinese_enrichment_view(summary)[0]
 
     @staticmethod
     def _summary(row: DailyAutopilotRunRecord) -> DailyAutopilotSummaryView:

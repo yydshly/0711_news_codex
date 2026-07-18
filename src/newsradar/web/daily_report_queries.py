@@ -6,6 +6,7 @@ from datetime import date, datetime
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
+from newsradar.daily_reports.chinese_enrichment import candidate_key
 from newsradar.daily_reports.intelligence import (
     DecisionReportItem,
     OverviewReportItem,
@@ -39,6 +40,93 @@ def _snapshot_float(snapshot: dict[str, object], key: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return float(value)
+
+
+_CHINESE_ENRICHMENT_ERROR_LABELS = {
+    "no_api_key": "未配置文本模型",
+    "timeout": "请求超时",
+    "http_401": "凭据无效",
+    "http_403": "缺少文本模型权限",
+    "http_429": "请求频率受限",
+    "http_5xx": "模型服务异常",
+    "transport_error": "网络连接异常",
+    "schema_validation_failed": "返回结构无效",
+    "non_chinese_output": "返回内容不是有效中文",
+    "budget_limit": "本期安全上限",
+    "unexpected_error": "内部异常",
+}
+
+
+def _non_negative_integer(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportChineseOriginView:
+    origin: str
+    error_code: str | None
+    label_zh: str
+
+
+@dataclass(frozen=True, slots=True)
+class DailyReportChineseEnrichmentView:
+    candidate_total: int
+    processed: int
+    model_success: int
+    rule_fallback: int
+    budget_fallback: int
+    error_counts: dict[str, int]
+    recorded: bool
+
+
+def _chinese_enrichment_view(
+    generation_summary: dict[str, object],
+) -> tuple[DailyReportChineseEnrichmentView, dict[str, DailyReportChineseOriginView]]:
+    raw = generation_summary.get("daily_chinese_enrichment")
+    if not isinstance(raw, dict):
+        return DailyReportChineseEnrichmentView(0, 0, 0, 0, 0, {}, False), {}
+    raw_errors = raw.get("error_counts")
+    errors = (
+        {
+            key: _non_negative_integer(value)
+            for key, value in raw_errors.items()
+            if isinstance(key, str) and key in _CHINESE_ENRICHMENT_ERROR_LABELS
+        }
+        if isinstance(raw_errors, dict)
+        else {}
+    )
+    origins: dict[str, DailyReportChineseOriginView] = {}
+    raw_items = raw.get("items")
+    if isinstance(raw_items, dict):
+        for key, value in raw_items.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            origin = value.get("origin")
+            error = value.get("error_code")
+            if origin == "model":
+                origins[key] = DailyReportChineseOriginView("model", None, "MiniMax")
+            elif origin == "rule_fallback":
+                safe_error = error if isinstance(error, str) else "unexpected_error"
+                label = _CHINESE_ENRICHMENT_ERROR_LABELS.get(safe_error, "安全规则回退")
+                origins[key] = DailyReportChineseOriginView(
+                    "rule_fallback", safe_error, f"规则回退（{label}）"
+                )
+            elif origin == "budget_limit":
+                origins[key] = DailyReportChineseOriginView(
+                    "budget_limit", "budget_limit", "安全上限回退（本期安全上限）"
+                )
+    return (
+        DailyReportChineseEnrichmentView(
+            candidate_total=_non_negative_integer(raw.get("candidate_total")),
+            processed=_non_negative_integer(raw.get("processed")),
+            model_success=_non_negative_integer(raw.get("model_success")),
+            rule_fallback=_non_negative_integer(raw.get("rule_fallback")),
+            budget_fallback=_non_negative_integer(raw.get("budget_fallback")),
+            error_counts=dict(sorted(errors.items())),
+            recorded=True,
+        ),
+        origins,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +166,7 @@ class DailyReportItemView:
     snapshot: dict[str, object]
     editorial_review: DailyReportEditorialReviewView | None
     editorial_history: tuple[DailyReportEditorialReviewView, ...]
+    chinese_origin: DailyReportChineseOriginView | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +188,7 @@ class DailyReportOverviewItemView:
     editorial_history: tuple[DailyReportEditorialReviewView, ...]
     duplicate_of_overview_item_id: int | None
     included_in_decision: bool
+    chinese_origin: DailyReportChineseOriginView | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +253,7 @@ class DailyReportTextIntegrityView:
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
+    chinese_enrichment: DailyReportChineseEnrichmentView
     decision_script: str
     editorial_summary: DailyReportEditorialSummaryView
     text_integrity: DailyReportTextIntegrityView
@@ -194,6 +285,14 @@ class DailyReportQueryService:
         record = self.session.get(DailyReportRecord, report_id)
         if record is None:
             return None
+        generation_summary = (
+            dict(record.generation_summary)
+            if isinstance(record.generation_summary, dict)
+            else {}
+        )
+        chinese_enrichment, chinese_origins = _chinese_enrichment_view(
+            generation_summary
+        )
         rows = tuple(
             self.session.scalars(
                 select(DailyReportItemRecord)
@@ -263,6 +362,9 @@ class DailyReportQueryService:
                     else None
                 ),
                 editorial_history=review_history_by_item.get(row.id, ()),
+                chinese_origin=chinese_origins.get(
+                    candidate_key(row.event_id, row.event_version_number)
+                ),
             )
             for row in rows
         )
@@ -293,14 +395,11 @@ class DailyReportQueryService:
                 for row in views
             ),
         )
-        overview = self._overview(record)
+        overview = self._overview(record, chinese_origins)
         return DailyReportDetailView(
             report=self._summary(record, rows=rows),
-            generation_summary=(
-                dict(record.generation_summary)
-                if isinstance(record.generation_summary, dict)
-                else {}
-            ),
+            generation_summary=generation_summary,
+            chinese_enrichment=chinese_enrichment,
             decision_script=decision_script,
             editorial_summary=DailyReportEditorialSummaryView(
                 total_count=len(views),
@@ -393,7 +492,11 @@ class DailyReportQueryService:
             overview_operation_status=active.get("overview"),
         )
 
-    def _overview(self, record: DailyReportRecord) -> DailyReportOverviewView:
+    def _overview(
+        self,
+        record: DailyReportRecord,
+        chinese_origins: dict[str, DailyReportChineseOriginView],
+    ) -> DailyReportOverviewView:
         persisted = tuple(
             self.session.scalars(
                 select(DailyReportOverviewItemRecord)
@@ -483,6 +586,9 @@ class DailyReportQueryService:
                             duplicate_targets.get(row.id) if latest else None
                         ),
                         included_in_decision=row.decision_item_id is not None,
+                        chinese_origin=chinese_origins.get(
+                            candidate_key(row.event_id, row.event_version_number)
+                        ),
                     )
                 )
             return self._overview_view(
@@ -540,6 +646,9 @@ class DailyReportQueryService:
                     editorial_history=(),
                     duplicate_of_overview_item_id=None,
                     included_in_decision=False,
+                    chinese_origin=chinese_origins.get(
+                        candidate_key(event.event_id, version_by_event[event.event_id])
+                    ),
                 )
             )
         ordered = tuple(sorted(items, key=lambda item: (-item.rank_score, item.event_id)))

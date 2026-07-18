@@ -65,6 +65,74 @@ def safe_client_with_token(
     return client, token
 
 
+def test_detail_projects_daily_chinese_enrichment_per_item(db_session: Session) -> None:
+    report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session)
+    confirmed, emerging = repository.items(report.id)
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 2,
+            "processed": 2,
+            "model_success": 1,
+            "rule_fallback": 1,
+            "budget_fallback": 0,
+            "error_counts": {"http_429": 1},
+            "items": {
+                f"{confirmed.event_id}:1": {"origin": "model", "error_code": None},
+                f"{emerging.event_id}:1": {
+                    "origin": "rule_fallback",
+                    "error_code": "http_429",
+                },
+            },
+        },
+    }
+    db_session.commit()
+
+    view = DailyReportQueryService(db_session).detail(report.id)
+
+    assert view is not None
+    assert view.chinese_enrichment.model_success == 1
+    assert view.confirmed[0].chinese_origin is not None
+    assert view.confirmed[0].chinese_origin.label_zh == "MiniMax"
+    assert view.emerging[0].chinese_origin is not None
+    assert view.emerging[0].chinese_origin.label_zh == "规则回退（请求频率受限）"
+
+
+def test_daily_report_page_replaces_legacy_model_degraded_copy(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    items = DailyReportRepository(db_session).items(report.id)
+    report.generation_summary = {
+        **report.generation_summary,
+        "daily_chinese_enrichment": {
+            "candidate_total": 2,
+            "processed": 2,
+            "model_success": 1,
+            "rule_fallback": 1,
+            "budget_fallback": 0,
+            "error_counts": {"http_429": 1},
+            "items": {
+                f"{items[0].event_id}:1": {"origin": "model", "error_code": None},
+                f"{items[1].event_id}:1": {
+                    "origin": "rule_fallback",
+                    "error_code": "http_429",
+                },
+            },
+        },
+    }
+    db_session.commit()
+    report_id = report.id
+
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert "中文增强：MiniMax" in response.text
+    assert "中文增强：规则回退（请求频率受限）" in response.text
+    assert "MiniMax：已降级，本版使用规则中文内容" not in response.text
+
+
 def seed_daily_report(
     session: Session,
     *,

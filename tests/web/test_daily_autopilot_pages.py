@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -10,7 +12,7 @@ from newsradar.daily_reports.autopilot import (
     serialize_wave_plan,
 )
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
-from newsradar.db.models import FetchRunRecord, OperationRunRecord
+from newsradar.db.models import DailyReportRecord, FetchRunRecord, OperationRunRecord
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.sources.catalog_refresh import (
     CatalogRefreshLane,
@@ -69,6 +71,65 @@ def _client_with_token(
     page = client.get("/operations")
     token = page.text.split('name="action_token" value="', 1)[1].split('"', 1)[0]
     return client, token
+
+
+def test_automatic_task_page_shows_linked_report_enrichment_metrics(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operation = OperationRunRecord(
+        operation_type=OperationType.HIGH_VALUE_NEWS_WAVE.value,
+        trigger="test",
+        status=OperationStatus.SUCCEEDED.value,
+        requested_scope={},
+        result_summary={},
+    )
+    db_session.add(operation)
+    db_session.flush()
+    report = DailyReportRecord(
+        report_date=date(2026, 7, 18),
+        timezone="Asia/Shanghai",
+        window_hours=24,
+        window_start=datetime(2026, 7, 17, tzinfo=UTC),
+        window_end=datetime(2026, 7, 18, tzinfo=UTC),
+        source_operation_id=operation.id,
+        status="draft",
+        revision=1,
+        generation_summary={
+            "daily_chinese_enrichment": {
+                "candidate_total": 2,
+                "processed": 2,
+                "model_success": 1,
+                "rule_fallback": 1,
+                "budget_fallback": 0,
+                "error_counts": {"http_429": 1},
+                "items": {},
+            },
+        },
+        generated_at=datetime(2026, 7, 18, tzinfo=UTC),
+    )
+    db_session.add(report)
+    db_session.flush()
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="test",
+        requested_scope={"wave_plan": serialize_wave_plan(_wave_plan(24))},
+    )
+    DailyAutopilotRepository(db_session).transition(
+        run.id,
+        stage=DailyAutopilotStage.WRITE_REVIEWS,
+        event_operation_id=operation.id,
+        daily_report_id=report.id,
+    )
+    db_session.commit()
+    run_id = run.id
+
+    client, _token = _client_with_token(db_session, monkeypatch)
+    response = client.get(f"/daily-autopilot/{run_id}")
+
+    assert response.status_code == 200
+    assert "中文增强候选 2" in response.text
+    assert "MiniMax 成功 1" in response.text
+    assert "规则回退 1" in response.text
 
 
 def test_autopilot_post_queues_then_redirects_to_task_page(

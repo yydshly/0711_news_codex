@@ -4,6 +4,7 @@
 {% set review = item.editorial_review %}
 <article class="event-card{% if not item.included %} muted{% endif %}">
   <p class="eyebrow">{{ '已确认' if item.section == 'confirmed' else '尚未确认' }} · 事件 #{{ item.event_id }} · 版本 {{ item.event_version_number }}</p>
+  {% if item.chinese_origin %}<span class="chinese-origin chinese-origin-{{ item.chinese_origin.origin }}">中文增强：{{ item.chinese_origin.label_zh }}</span>{% endif %}
   <h3>{{ review.zh_title if review else item.snapshot.get('zh_title', fallback_title) }}</h3>
   <p>{{ review.zh_summary if review else item.snapshot.get('zh_summary', fallback_summary) }}</p>
   {% if review %}
@@ -77,6 +78,7 @@
       {% else %}未人工审核{% endif %}
     </span>
   </div>
+  {% if item.chinese_origin %}<span class="chinese-origin chinese-origin-{{ item.chinese_origin.origin }}">中文增强：{{ item.chinese_origin.label_zh }}</span>{% endif %}
   <h3>{{ review.zh_title if review else item.snapshot.get('zh_title', fallback_title) }}</h3>
   <div class="report-field">
     <strong>中文文章概述</strong>
@@ -121,6 +123,7 @@
     {% for item in items %}
     <article class="overview-brief-card">
       {% if item.editorial_review and item.editorial_review.decision == 'needs_evidence' %}<span class="overview-brief-warning">尚待进一步确认</span>{% endif %}
+      {% if item.chinese_origin %}<span class="chinese-origin chinese-origin-{{ item.chinese_origin.origin }}">中文增强：{{ item.chinese_origin.label_zh }}</span>{% endif %}
       <h4><a href="{{ item.detail_href }}">{{ item.zh_title }}</a></h4>
       <div class="report-field"><strong>中文文章概述</strong><p>{{ item.zh_summary }}</p></div>
       {% if item.why_it_matters %}<div class="report-field"><strong>为何值得关注</strong><p>{{ item.why_it_matters }}</p></div>{% endif %}
@@ -146,6 +149,7 @@
       {% else %}未审核{% endif %}
     </span>
   </div>
+  {% if item.chinese_origin %}<span class="chinese-origin chinese-origin-{{ item.chinese_origin.origin }}">中文增强：{{ item.chinese_origin.label_zh }}</span>{% endif %}
   <h4><a href="{{ item.detail_href }}">{{ item.zh_title }}</a></h4>
   <div class="report-field"><strong>中文文章概述</strong><p>{{ item.zh_summary }}</p></div>
   {% if item.why_it_matters %}<div class="report-field"><strong>为何值得关注</strong><p>{{ item.why_it_matters }}</p></div>{% endif %}
@@ -328,7 +332,9 @@
   <h2 id="daily-report-meta-heading">第 {{ daily_report.report.revision }} 版 · {{ '草稿' if daily_report.report.status == 'draft' else '已归档' }}</h2>
   <p>时间窗口 {{ daily_report.report.window_hours }} 小时，截至 {{ daily_report.report.window_end|format_datetime_zh }}。本页只展示生成时固定的日报条目。</p>
   <p>确认 {{ daily_report.report.confirmed_count }} 条 · 线索 {{ daily_report.report.emerging_count }} 条{% if daily_report.generation_summary.get('skipped_invalid_event') %} · 跳过无效事件 {{ daily_report.generation_summary.get('skipped_invalid_event') }} 条{% endif %}</p>
-  {% if daily_report.generation_summary.get('minimax_degraded') is sameas true %}
+  {% if daily_report.chinese_enrichment.recorded %}
+  <p><strong>自动日报中文增强：</strong>候选 {{ daily_report.chinese_enrichment.candidate_total }} 条 · MiniMax 成功 {{ daily_report.chinese_enrichment.model_success }} 条 · 规则回退 {{ daily_report.chinese_enrichment.rule_fallback }} 条{% if daily_report.chinese_enrichment.budget_fallback %} · 安全上限回退 {{ daily_report.chinese_enrichment.budget_fallback }} 条{% endif %}{% if daily_report.chinese_enrichment.candidate_total > daily_report.chinese_enrichment.processed %} · 待处理 {{ daily_report.chinese_enrichment.candidate_total - daily_report.chinese_enrichment.processed }} 条{% endif %}。模型只负责中文表达，不决定确认状态、证据或来源合法性。</p>
+  {% elif daily_report.generation_summary.get('minimax_degraded') is sameas true %}
   <p><strong>MiniMax：已降级</strong>，本版使用规则中文内容；确认状态与来源合法性不由模型决定。</p>
   {% elif daily_report.generation_summary.get('minimax_degraded') is sameas false %}
   <p><strong>MiniMax：未降级</strong>，本版包含生成时已有的模型增强内容。</p>

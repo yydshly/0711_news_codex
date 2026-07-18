@@ -455,6 +455,22 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
   justify-content: space-between;
 }
 .report-card-heading .eyebrow { margin-bottom: 0; }
+.chinese-origin {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 0.45rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.chinese-origin-model { color: var(--healthy); }
+.chinese-origin-rule_fallback,
+.chinese-origin-budget_limit { color: var(--blocked); }
 .report-status {
   flex: none;
   padding: 0.2rem 0.55rem;
