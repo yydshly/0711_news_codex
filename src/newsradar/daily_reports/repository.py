@@ -24,6 +24,7 @@ from newsradar.daily_reports.retention import (
     TRASH_BATCH_LIMIT,
     TRASH_DAYS,
     RetentionActionResult,
+    report_local_date,
 )
 from newsradar.daily_reports.schema import (
     REPORT_TIMEZONE,
@@ -180,11 +181,18 @@ class DailyReportRepository:
         self.session.commit()
         return RetentionActionResult(report_id, "unpinned", "日报已取消置顶。")
 
-    def move_to_trash(self, report_id: int) -> RetentionActionResult:
+    def move_to_trash(
+        self, report_id: int, *, automatic: bool = False
+    ) -> RetentionActionResult:
         report = self._report_for_update(report_id)
         if report.deleted_at is not None:
             self.session.commit()
             return RetentionActionResult(report_id, "unchanged", "日报已在回收站中。")
+        if automatic and report.pinned_at is not None:
+            self.session.commit()
+            return RetentionActionResult(
+                report_id, "unchanged", "日报已置顶，自动清理已跳过。"
+            )
         blocked = self._trash_block_diagnostic(report_id)
         if blocked is not None:
             self.session.commit()
@@ -206,7 +214,9 @@ class DailyReportRepository:
         return RetentionActionResult(report_id, "restored", "日报已从回收站恢复。")
 
     def trash_candidates(self) -> tuple[DailyReportRecord, ...]:
-        retention_start = (self._utcnow() - timedelta(days=RETENTION_DAYS)).date()
+        retention_start = report_local_date(self._utcnow()) - timedelta(
+            days=RETENTION_DAYS
+        )
         return tuple(
             self.session.scalars(
                 select(DailyReportRecord)

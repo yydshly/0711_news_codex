@@ -115,6 +115,7 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
     ),
     "invalid_daily_report_move": (422, "移动方向只能是上移或下移。"),
     "daily_report_not_found": (404, "日报不存在。"),
+    "daily_report_trashed": (409, "日报已在回收站中，不能创建语音任务。"),
     "daily_report_item_not_found": (404, "日报条目不存在或不属于当前日报。"),
     "daily_report_overview_item_not_found": (
         404,

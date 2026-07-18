@@ -20,6 +20,7 @@ from newsradar.daily_reports.intelligence import (
     build_decision_script,
     build_overview_script,
 )
+from newsradar.daily_reports.retention import report_local_date
 from newsradar.daily_reports.text_integrity import has_suspicious_question_run
 from newsradar.db.models import (
     DailyReportAudioArtifactRecord,
@@ -423,7 +424,7 @@ class DailyReportQueryService:
             current = now or datetime.now(UTC)
             statement = statement.where(
                 DailyReportRecord.report_date
-                >= (current - timedelta(days=int(period) - 1)).date()
+                >= report_local_date(current) - timedelta(days=int(period) - 1)
             )
         elif period == "pinned":
             statement = statement.where(DailyReportRecord.pinned_at.is_not(None))

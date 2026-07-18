@@ -201,6 +201,27 @@ def test_archive_and_enqueue_daily_report_audios_recovers_committed_pair() -> No
         ) == 2
 
 
+def test_enqueue_daily_report_audio_rejects_trashed_report_without_creating_operation() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db)
+        repository = DailyReportRepository(db)
+        repository.archive(report_id)
+        repository.move_to_trash(report_id)
+
+        with pytest.raises(ValueError, match="daily_report_trashed"):
+            OperationCommandService(db).enqueue_daily_report_audio(
+                report_id=report_id,
+                rendition="decision",
+                trigger="test",
+            )
+
+        assert db.scalar(
+            select(func.count())
+            .select_from(OperationRunRecord)
+            .where(OperationRunRecord.operation_type == "daily_report_audio")
+        ) == 0
+
+
 def test_archive_and_enqueue_daily_report_audios_rejects_incomplete_package_without_writes(
 ) -> None:
     with session() as db:

@@ -205,6 +205,8 @@ class OperationCommandService:
         )
         if report is None:
             raise ValueError("daily_report_not_found")
+        if report.deleted_at is not None:
+            raise ValueError("daily_report_trashed")
         if report.status != "archived":
             raise ValueError("daily_report_must_be_archived_for_audio")
         if rendition == "overview":

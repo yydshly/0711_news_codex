@@ -1050,6 +1050,28 @@ def test_daily_report_audio_enqueue_reuses_active_operation_and_page_explains_qu
     assert f'action="/daily-reports/{report_id}/audio/decision"' not in page.text
 
 
+def test_daily_report_audio_enqueue_rejects_trashed_report_with_safe_diagnostic(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    repository.archive(report_id)
+    repository.move_to_trash(report_id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/audio/decision",
+        data={"action_token": token},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "日报已在回收站中，不能创建语音任务。"
+    assert db_session.scalars(
+        select(OperationRunRecord).where(OperationRunRecord.operation_type == "daily_report_audio")
+    ).all() == []
+
+
 def test_archive_rolls_back_when_automatic_audio_enqueue_fails(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

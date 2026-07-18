@@ -133,6 +133,61 @@ def test_trash_candidates_exclude_pinned_and_limit_to_old_active_reports(
     assert recent.id not in {candidate.id for candidate in candidates}
 
 
+def test_automatic_trash_rechecks_pin_after_candidate_selection(
+    db_session: Session,
+) -> None:
+    report = _report(
+        db_session,
+        report_date=(NOW - timedelta(days=RETENTION_DAYS)).date(),
+    )
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+
+    assert tuple(candidate.id for candidate in repository.trash_candidates()) == (report.id,)
+    repository.pin(report.id)
+
+    result = repository.move_to_trash(report.id, automatic=True)
+
+    assert result == RetentionActionResult(
+        report.id,
+        "unchanged",
+        "日报已置顶，自动清理已跳过。",
+    )
+    stored = db_session.get(DailyReportRecord, report.id)
+    assert stored is not None
+    assert stored.deleted_at is None
+
+
+def test_retention_and_period_windows_use_shanghai_local_date(
+    db_session: Session,
+) -> None:
+    shanghai_morning = datetime(2026, 7, 16, 23, 30, tzinfo=UTC)
+    repository = DailyReportRepository(db_session, utcnow=lambda: shanghai_morning)
+    candidate = _report(db_session, report_date=date(2026, 4, 18), report_id=1)
+    too_recent = _report(db_session, report_date=date(2026, 4, 19), report_id=2)
+    seven_day_edge = _report(db_session, report_date=date(2026, 7, 11), report_id=3)
+    seven_day_expired = _report(db_session, report_date=date(2026, 7, 10), report_id=4)
+    thirty_day_edge = _report(db_session, report_date=date(2026, 6, 18), report_id=5)
+    thirty_day_expired = _report(db_session, report_date=date(2026, 6, 17), report_id=6)
+
+    candidates = repository.trash_candidates()
+    queries = DailyReportQueryService(db_session)
+
+    assert tuple(row.id for row in candidates) == (candidate.id,)
+    assert too_recent.id not in {row.id for row in candidates}
+    assert tuple(
+        row.report_id for row in queries.list_reports(period="7", now=shanghai_morning)
+    ) == (seven_day_edge.id,)
+    assert tuple(
+        row.report_id for row in queries.list_reports(period="30", now=shanghai_morning)
+    ) == (seven_day_edge.id, seven_day_expired.id, thirty_day_edge.id)
+    assert seven_day_expired.id not in {
+        row.report_id for row in queries.list_reports(period="7", now=shanghai_morning)
+    }
+    assert thirty_day_expired.id not in {
+        row.report_id for row in queries.list_reports(period="30", now=shanghai_morning)
+    }
+
+
 @pytest.mark.parametrize(
     ("activity", "expected_diagnostic"),
     (
