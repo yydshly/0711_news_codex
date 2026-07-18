@@ -39,6 +39,7 @@ from newsradar.settings import get_settings
 from newsradar.sources.catalog_refresh import build_catalog_refresh_plan
 from newsradar.sources.probes.base import ProbeOutcome as DomainProbeOutcome
 from newsradar.sources.yaml_loader import load_source_tree
+from newsradar.waves.loader import load_wave_profile
 from newsradar.waves.local_plan import build_local_wave_plan
 from newsradar.web.capability_queries import CatalogSnapshot, load_catalog_snapshot
 from newsradar.web.daily_autopilot_queries import DailyAutopilotQueryService
@@ -1060,7 +1061,12 @@ def create_app(
         await require_safe_action(request)
         try:
             with create_session() as session:
-                plan = build_local_wave_plan(session, window_hours=24)
+                profile_path = Path("wave_profiles/high-value-ai-tech.yaml")
+                plan = build_local_wave_plan(
+                    session,
+                    profile_path=profile_path,
+                    window_hours=load_wave_profile(profile_path).window_hours,
+                )
                 operation_id = OperationCommandService(session).enqueue_high_value_wave(
                     plan=plan, trigger="web"
                 )

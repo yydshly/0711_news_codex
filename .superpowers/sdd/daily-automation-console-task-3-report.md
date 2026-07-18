@@ -79,3 +79,31 @@ no web automation controls, and no network or MiniMax action during plan constru
 
 No unresolved implementation concerns.  The focused gate carries an existing third-party
 FastAPI/httpx deprecation warning; it is unrelated to this task and does not fail the gate.
+
+## Review-fix follow-up
+
+### Additional RED evidence
+
+- The rollback regression left `db_session.in_transaction()` true after a plan-factory
+  exception.
+- The public result enqueue signature exposed `in_transaction`.
+- `True` was accepted as a high-value global concurrency value and string inputs raised
+  `TypeError` rather than the required `ValueError`.
+- The restored `/events/update` regression test could not patch `load_wave_profile`, showing
+  the manual route no longer consulted the default profile window.
+
+### Fixes and GREEN evidence
+
+- Public `enqueue_daily_autopilot_result()` is again durable-only.  The service uses a
+  private transaction-owned helper, and fresh-session tests prove both the public result
+  path and legacy integer wrapper persist their run before reopening the session.
+- `DailyAutomationService.tick()` now rolls back on any exception from its due transaction;
+  the plan-factory failure regression confirms the reusable session is left without an open
+  transaction or a partial autopilot run.
+- Enqueue validation now rejects bool and non-integer concurrency inputs with the same error
+  contract and limits as the runtime.
+- `/events/update` loads the profile window rather than forcing 24; scheduled ticks remain
+  the only caller that explicitly supplies 24 hours.
+- `uv run --extra dev pytest tests/daily_reports/test_automation_service.py tests/operations/test_commands.py tests/waves/test_runtime.py tests/web/test_daily_autopilot_pages.py tests/web/test_cli.py tests/web/test_high_value_wave_pages.py -q`
+  — 73 passed, with only the existing FastAPI/httpx deprecation warning.
+- Targeted Ruff checks and `git diff --check` passed.

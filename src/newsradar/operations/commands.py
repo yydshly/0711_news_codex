@@ -368,17 +368,14 @@ class OperationCommandService:
         *,
         plan: WavePlan,
         trigger: str,
-        in_transaction: bool = False,
     ) -> DailyAutopilotEnqueueResult:
         """Create one durable, resumable daily-report run and its first continuation."""
-        if in_transaction:
-            return self._enqueue_daily_autopilot_result(plan=plan, trigger=trigger)
         if self.session.in_transaction():
             self.session.commit()
         with self.session.begin():
-            return self._enqueue_daily_autopilot_result(plan=plan, trigger=trigger)
+            return self._enqueue_daily_autopilot_result_in_transaction(plan=plan, trigger=trigger)
 
-    def _enqueue_daily_autopilot_result(
+    def _enqueue_daily_autopilot_result_in_transaction(
         self,
         *,
         plan: WavePlan,
@@ -462,7 +459,14 @@ class OperationCommandService:
         global_concurrency: int = 8,
         provider_concurrency: int = 2,
     ) -> int:
-        if not 1 <= global_concurrency <= 16 or not 1 <= provider_concurrency <= 8:
+        if (
+            isinstance(global_concurrency, bool)
+            or not isinstance(global_concurrency, int)
+            or not 1 <= global_concurrency <= 16
+            or isinstance(provider_concurrency, bool)
+            or not isinstance(provider_concurrency, int)
+            or not 1 <= provider_concurrency <= 8
+        ):
             raise ValueError("invalid_high_value_wave_concurrency")
         if self.session.in_transaction():
             self.session.commit()

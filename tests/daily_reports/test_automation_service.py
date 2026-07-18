@@ -111,3 +111,19 @@ def test_tick_keeps_the_due_lock_until_enqueue_and_schedule_mark_commit(
     assert result.outcome == "enqueued"
     assert factory_transactions == [True]
     assert commits == ["commit"]
+
+
+def test_tick_rolls_back_when_plan_construction_fails(db_session: Session) -> None:
+    DailyAutomationRepository(db_session, utcnow=lambda: NOW).enable()
+    db_session.commit()
+    service = DailyAutomationService(
+        db_session,
+        utcnow=lambda: NOW,
+        plan_factory=lambda _session, _hours: (_ for _ in ()).throw(RuntimeError("plan failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="plan failed"):
+        service.tick()
+
+    assert not db_session.in_transaction()
+    assert db_session.query(DailyAutopilotRunRecord).count() == 0

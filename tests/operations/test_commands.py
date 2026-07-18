@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from json import dumps
@@ -254,10 +255,10 @@ def test_enqueue_wave_freezes_plan_atomically() -> None:
 
 @pytest.mark.parametrize(
     ("global_concurrency", "provider_concurrency"),
-    [(0, 2), (17, 2), (8, 0), (8, 9)],
+    [(0, 2), (17, 2), (8, 0), (8, 9), (True, 2), (8, False), ("8", 2), (8, "2")],
 )
 def test_enqueue_wave_rejects_invalid_concurrency(
-    global_concurrency: int, provider_concurrency: int
+    global_concurrency: object, provider_concurrency: object
 ) -> None:
     with session() as db:
         with pytest.raises(ValueError, match="invalid_high_value_wave_concurrency"):
@@ -436,6 +437,38 @@ def test_enqueue_daily_autopilot_result_reports_whether_the_run_was_created() ->
         assert created.created is True
         assert reused == type(created)(run_id=created.run_id, created=False)
         assert service.enqueue_daily_autopilot(plan=plan, trigger="schedule") == created.run_id
+
+
+@pytest.mark.parametrize("method", ["enqueue_daily_autopilot_result", "enqueue_daily_autopilot"])
+def test_public_daily_autopilot_enqueue_paths_commit_before_the_session_is_reopened(
+    method: str,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    plan = wave_plan_from_members(
+        profile_id="high-value",
+        members=(wave_member("a"),),
+        window_hours=24,
+        trend_days=7,
+    )
+    try:
+        with Session(engine) as db:
+            service = OperationCommandService(db, utcnow=lambda: datetime(2026, 7, 18, tzinfo=UTC))
+            result = getattr(service, method)(plan=plan, trigger="web")
+            run_id = result.run_id if method.endswith("result") else result
+
+        with Session(engine) as verifier:
+            assert verifier.get(DailyAutopilotRunRecord, run_id) is not None
+    finally:
+        engine.dispose()
+
+
+def test_public_daily_autopilot_result_does_not_expose_transaction_ownership() -> None:
+    parameters = inspect.signature(
+        OperationCommandService.enqueue_daily_autopilot_result
+    ).parameters
+
+    assert "in_transaction" not in parameters
 
 
 def test_enqueue_daily_autopilot_allows_retry_after_failed_run() -> None:

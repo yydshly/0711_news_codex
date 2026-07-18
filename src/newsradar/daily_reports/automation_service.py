@@ -39,20 +39,23 @@ class DailyAutomationService:
 
     def tick(self) -> DailyAutomationTickResult:
         repository = DailyAutomationRepository(self.session, utcnow=self._utcnow)
-        due = repository.lock_due()
-        if due is None:
-            config = repository.get_or_create()
-            self.session.commit()
-            return DailyAutomationTickResult("disabled" if not config.enabled else "not_due")
+        try:
+            due = repository.lock_due()
+            if due is None:
+                config = repository.get_or_create()
+                self.session.commit()
+                return DailyAutomationTickResult("disabled" if not config.enabled else "not_due")
 
-        commands = OperationCommandService(self.session, utcnow=self._utcnow)
-        result = commands.enqueue_daily_autopilot_result(
-            plan=self._plan_factory(self.session, 24),
-            trigger="schedule",
-            in_transaction=True,
-        )
-        repository.mark_scheduled(due, run_id=result.run_id)
-        self.session.commit()
-        return DailyAutomationTickResult(
-            "enqueued" if result.created else "reused", result.run_id
-        )
+            commands = OperationCommandService(self.session, utcnow=self._utcnow)
+            result = commands._enqueue_daily_autopilot_result_in_transaction(
+                plan=self._plan_factory(self.session, 24),
+                trigger="schedule",
+            )
+            repository.mark_scheduled(due, run_id=result.run_id)
+            self.session.commit()
+            return DailyAutomationTickResult(
+                "enqueued" if result.created else "reused", result.run_id
+            )
+        except Exception:
+            self.session.rollback()
+            raise
