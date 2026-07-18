@@ -817,13 +817,19 @@ def test_repository_rejects_revision_of_draft_and_reuses_existing_revision(
     draft = repository.create_draft(_draft(db_session))
     with pytest.raises(ValueError, match="daily_report_must_be_archived"):
         repository.revise(draft.id)
+    original_item = repository.items(draft.id)[0]
+    repository.save_editorial_review(draft.id, original_item.id, REVIEW_KEEP)
     archived = repository.archive(draft.id)
     first = repository.revise(archived.id)
+    copied_item = repository.items(first.id)[0]
+    copied_reviews = repository.editorial_reviews(copied_item.id)
     second = repository.revise(archived.id)
+
     assert second.id == first.id
+    assert repository.editorial_reviews(copied_item.id) == copied_reviews
 
 
-def test_revise_reuses_archived_direct_child_and_only_child_can_continue_chain(
+def test_revise_from_historical_parent_continues_from_latest_archived_head(
     db_session: Session,
 ) -> None:
     repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
@@ -831,16 +837,88 @@ def test_revise_reuses_archived_direct_child_and_only_child_can_continue_chain(
     child = repository.revise(parent.id)
     archived_child = repository.archive(child.id)
 
-    repeated_from_parent = repository.revise(parent.id)
-    grandchild = repository.revise(archived_child.id)
+    grandchild = repository.revise(parent.id)
 
-    assert repeated_from_parent.id == archived_child.id
+    assert grandchild.status == "draft"
     assert grandchild.supersedes_report_id == archived_child.id
     assert db_session.scalars(
         select(DailyReportRecord).where(
-            DailyReportRecord.supersedes_report_id == parent.id
+            DailyReportRecord.supersedes_report_id == archived_child.id
         )
-    ).all() == [archived_child]
+    ).all() == [grandchild]
+
+
+def test_revise_ignores_trashed_child_and_reuses_replacement(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = repository.archive(repository.create_draft(_draft(db_session)).id)
+    abandoned = repository.revise(parent.id)
+    repository.move_to_trash(abandoned.id)
+
+    replacement = repository.revise(parent.id)
+    repeated = repository.revise(parent.id)
+
+    assert replacement.id != abandoned.id
+    assert replacement.revision == abandoned.revision + 1
+    assert replacement.supersedes_report_id == parent.id
+    assert replacement.deleted_at is None
+    assert repeated.id == replacement.id
+    assert db_session.scalars(
+        select(DailyReportRecord).where(
+            DailyReportRecord.supersedes_report_id == parent.id,
+            DailyReportRecord.deleted_at.is_(None),
+        )
+    ).all() == [replacement]
+
+
+def test_create_draft_ignores_trashed_root_and_reuses_replacement(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    draft = _draft(db_session)
+    abandoned = repository.create_draft(draft)
+    repository.move_to_trash(abandoned.id)
+
+    replacement = repository.create_draft(draft)
+    repeated = repository.create_draft(draft)
+
+    assert replacement.id != abandoned.id
+    assert replacement.revision == abandoned.revision + 1
+    assert replacement.supersedes_report_id is None
+    assert replacement.deleted_at is None
+    assert repeated.id == replacement.id
+
+
+def test_revision_target_rejects_missing_draft_and_trashed_reports(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+
+    with pytest.raises(LookupError, match="daily_report_not_found"):
+        repository.revision_target(404)
+
+    draft = repository.create_draft(_draft(db_session))
+    with pytest.raises(ValueError, match="daily_report_must_be_archived"):
+        repository.revision_target(draft.id)
+
+    archived = repository.archive(draft.id)
+    repository.move_to_trash(archived.id)
+    with pytest.raises(ValueError, match="daily_report_is_trashed"):
+        repository.revision_target(archived.id)
+
+
+def test_revision_cycle_is_rejected_with_stable_runtime_code(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = repository.archive(repository.create_draft(_draft(db_session)).id)
+    child = repository.archive(repository.revise(parent.id).id)
+    parent.supersedes_report_id = child.id
+    db_session.commit()
+
+    with pytest.raises(RuntimeError, match="daily_report_revision_chain_invalid"):
+        repository.revise(parent.id)
 
 
 def test_move_at_section_boundary_is_a_no_op(db_session: Session) -> None:

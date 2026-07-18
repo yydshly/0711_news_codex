@@ -74,6 +74,37 @@ def _report(
     return report
 
 
+def _revision_record(
+    session: Session,
+    template: DailyReportRecord,
+    *,
+    revision: int,
+    supersedes_report_id: int | None,
+    deleted_at: datetime | None = None,
+) -> DailyReportRecord:
+    report = DailyReportRecord(
+        report_date=template.report_date,
+        timezone=template.timezone,
+        window_hours=template.window_hours,
+        window_start=template.window_start,
+        window_end=template.window_end,
+        source_operation_id=template.source_operation_id,
+        status="archived",
+        revision=revision,
+        supersedes_report_id=supersedes_report_id,
+        generation_summary={},
+        generated_at=NOW,
+        archived_at=NOW,
+        deleted_at=deleted_at,
+        purge_after=(
+            deleted_at + timedelta(days=TRASH_DAYS) if deleted_at is not None else None
+        ),
+    )
+    session.add(report)
+    session.commit()
+    return report
+
+
 def test_retention_constants_and_result_are_stable() -> None:
     result = RetentionActionResult(17, "pinned", "日报已置顶。")
 
@@ -103,6 +134,60 @@ def test_pin_unpin_and_manual_trash_keep_pin_and_set_recovery_window(
     assert stored.purge_after is None
     assert stored.pinned_at == _sqlite_timestamp(NOW)
     assert repository.unpin(report.id).outcome == "unpinned"
+
+
+def test_restore_blocks_trashed_successor_when_active_sibling_exists(
+    db_session: Session,
+) -> None:
+    parent = _report(db_session, report_date=date(2026, 7, 14))
+    abandoned = _revision_record(
+        db_session,
+        parent,
+        revision=2,
+        supersedes_report_id=parent.id,
+        deleted_at=NOW,
+    )
+    _revision_record(
+        db_session,
+        parent,
+        revision=3,
+        supersedes_report_id=parent.id,
+    )
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    before = (abandoned.deleted_at, abandoned.purge_after)
+
+    result = repository.restore(abandoned.id)
+
+    assert result == RetentionActionResult(
+        abandoned.id,
+        "blocked",
+        "该日报已有新的有效修订版，不能直接恢复。",
+    )
+    assert (abandoned.deleted_at, abandoned.purge_after) == before
+
+
+def test_restore_blocks_trashed_root_when_newer_active_root_exists(
+    db_session: Session,
+) -> None:
+    abandoned = _report(db_session, report_date=date(2026, 7, 14))
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    repository.move_to_trash(abandoned.id)
+    _revision_record(
+        db_session,
+        abandoned,
+        revision=2,
+        supersedes_report_id=None,
+    )
+    before = (abandoned.deleted_at, abandoned.purge_after)
+
+    result = repository.restore(abandoned.id)
+
+    assert result == RetentionActionResult(
+        abandoned.id,
+        "blocked",
+        "该日报已有新的有效修订版，不能直接恢复。",
+    )
+    assert (abandoned.deleted_at, abandoned.purge_after) == before
 
 
 def test_trash_candidates_exclude_pinned_and_limit_to_old_active_reports(

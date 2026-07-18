@@ -208,6 +208,34 @@ class DailyReportRepository:
         if report.deleted_at is None:
             self.session.commit()
             return RetentionActionResult(report_id, "unchanged", "日报不在回收站中。")
+        if report.supersedes_report_id is not None:
+            conflict = self.session.scalar(
+                select(DailyReportRecord.id).where(
+                    DailyReportRecord.id != report.id,
+                    DailyReportRecord.supersedes_report_id
+                    == report.supersedes_report_id,
+                    DailyReportRecord.deleted_at.is_(None),
+                )
+            )
+        else:
+            conflict = self.session.scalar(
+                select(DailyReportRecord.id).where(
+                    DailyReportRecord.id != report.id,
+                    DailyReportRecord.report_date == report.report_date,
+                    DailyReportRecord.window_hours == report.window_hours,
+                    DailyReportRecord.source_operation_id
+                    == report.source_operation_id,
+                    DailyReportRecord.supersedes_report_id.is_(None),
+                    DailyReportRecord.deleted_at.is_(None),
+                )
+            )
+        if conflict is not None:
+            self.session.commit()
+            return RetentionActionResult(
+                report_id,
+                "blocked",
+                "该日报已有新的有效修订版，不能直接恢复。",
+            )
         report.deleted_at = None
         report.purge_after = None
         self.session.commit()
@@ -638,11 +666,9 @@ class DailyReportRepository:
         legacy_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
         rebuilt_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
     ) -> DailyReportRecord:
-        original = self.session.get(DailyReportRecord, report_id)
-        if original is None:
-            raise LookupError("daily_report_not_found")
-        if original.status != ReportStatus.ARCHIVED.value:
-            raise ValueError("daily_report_must_be_archived")
+        original = self.revision_target(report_id)
+        if original.status == ReportStatus.DRAFT.value:
+            return original
         original_overview_items = self.overview_items(original.id)
         overview_items = rebuilt_overview_items or (
             tuple(
@@ -750,6 +776,31 @@ class DailyReportRepository:
             )
         self.session.commit()
         return revision
+
+    def revision_target(self, report_id: int) -> DailyReportRecord:
+        report = self.session.get(DailyReportRecord, report_id)
+        if report is None:
+            raise LookupError("daily_report_not_found")
+        if report.deleted_at is not None:
+            raise ValueError("daily_report_is_trashed")
+        if report.status != ReportStatus.ARCHIVED.value:
+            raise ValueError("daily_report_must_be_archived")
+
+        visited: set[int] = set()
+        current = report
+        while True:
+            if current.id in visited:
+                raise RuntimeError("daily_report_revision_chain_invalid")
+            visited.add(current.id)
+            successor = self.session.scalar(
+                select(DailyReportRecord).where(
+                    DailyReportRecord.supersedes_report_id == current.id,
+                    DailyReportRecord.deleted_at.is_(None),
+                )
+            )
+            if successor is None:
+                return current
+            current = successor
 
     def _lock_revision(self, report_date: date, window_hours: int) -> None:
         if self.session.get_bind().dialect.name != "postgresql":
@@ -904,7 +955,8 @@ class DailyReportRepository:
         if draft.supersedes_report_id is not None:
             return self.session.scalar(
                 select(DailyReportRecord).where(
-                    DailyReportRecord.supersedes_report_id == draft.supersedes_report_id
+                    DailyReportRecord.supersedes_report_id == draft.supersedes_report_id,
+                    DailyReportRecord.deleted_at.is_(None),
                 )
             )
         return self.session.scalar(
@@ -913,6 +965,7 @@ class DailyReportRepository:
                 DailyReportRecord.window_hours == draft.window_hours,
                 DailyReportRecord.source_operation_id == draft.source_operation_id,
                 DailyReportRecord.supersedes_report_id.is_(None),
+                DailyReportRecord.deleted_at.is_(None),
             )
         )
 
