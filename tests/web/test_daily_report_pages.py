@@ -2027,7 +2027,7 @@ def test_move_and_revise_routes_redirect_to_expected_report(
     assert revised.headers["location"] == f"/daily-reports/{revision.id}"
 
 
-def test_revise_route_from_older_parent_reuses_archived_direct_child(
+def test_revise_route_from_older_parent_creates_draft_from_latest_archived_head(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
@@ -2046,7 +2046,14 @@ def test_revise_route_from_older_parent_reuses_archived_direct_child(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == f"/daily-reports/{child_id}"
+    revision = db_session.scalar(
+        select(DailyReportRecord).where(
+            DailyReportRecord.supersedes_report_id == child_id,
+            DailyReportRecord.deleted_at.is_(None),
+        )
+    )
+    assert revision is not None
+    assert response.headers["location"] == f"/daily-reports/{revision.id}"
     assert [
         row.id
         for row in db_session.scalars(

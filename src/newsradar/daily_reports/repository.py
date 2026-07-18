@@ -681,17 +681,27 @@ class DailyReportRepository:
         report_id: int,
         *,
         legacy_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
-        rebuilt_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
+        rebuilt_overview_items: tuple[DailyReportOverviewItemDraft, ...] | None = None,
+        generation_summary: dict[str, object] | None = None,
+        expected_source_report_id: int | None = None,
     ) -> DailyReportRecord:
         selected = self._revision_source(report_id)
         self._lock_revision(selected.report_date, selected.window_hours)
         original = self.revision_target(report_id)
+        if (
+            expected_source_report_id is not None
+            and original.id != expected_source_report_id
+        ):
+            self.session.rollback()
+            raise RuntimeError("daily_report_revision_chain_changed")
         if original.status == ReportStatus.DRAFT.value:
             self.session.commit()
             return original
         original_overview_items = self.overview_items(original.id)
-        overview_items = rebuilt_overview_items or (
-            tuple(
+        overview_items = (
+            rebuilt_overview_items
+            if rebuilt_overview_items is not None
+            else tuple(
                 DailyReportOverviewItemDraft(
                     event_id=row.event_id,
                     event_version_number=row.event_version_number,
@@ -713,7 +723,11 @@ class DailyReportRepository:
                 window_start=original.window_start,
                 window_end=original.window_end,
                 source_operation_id=original.source_operation_id,
-                generation_summary=dict(original.generation_summary),
+                generation_summary=(
+                    dict(generation_summary)
+                    if generation_summary is not None
+                    else dict(original.generation_summary)
+                ),
                 supersedes_report_id=original.id,
                 items=tuple(
                     DailyReportItemDraft(

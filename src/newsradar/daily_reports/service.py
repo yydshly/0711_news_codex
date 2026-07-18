@@ -20,7 +20,11 @@ from newsradar.daily_reports.schema import (
     ReportSection,
     validate_window_hours,
 )
-from newsradar.db.models import DailyReportRecord, EventVersionRecord
+from newsradar.db.models import (
+    DailyReportRecord,
+    EventVersionRecord,
+    OperationRunRecord,
+)
 from newsradar.events.operation_snapshots import (
     OperationSnapshotRef,
     event_snapshot_by_id,
@@ -351,9 +355,22 @@ class DailyReportService:
         )
 
     def revise(self, report_id: int) -> DailyReportRecord:
-        original = self.session.get(DailyReportRecord, report_id)
-        if original is None:
-            raise LookupError("daily_report_not_found")
+        original = self._reports.revision_target(report_id)
+        if original.status == "draft":
+            return original
+        operation = self.session.get(OperationRunRecord, original.source_operation_id)
+        if operation is None or not isinstance(operation.result_summary, dict):
+            raise ValueError("complete_event_snapshot_required")
+        generation_summary = {
+            **original.generation_summary,
+            "revision_overview_source": "archived_report_snapshot",
+        }
+        if "event_version_snapshots" not in operation.result_summary:
+            return self._reports.revise(
+                report_id,
+                generation_summary=generation_summary,
+                expected_source_report_id=original.id,
+            )
         snapshot = event_snapshot_by_id(
             self.session,
             original.source_operation_id,
@@ -361,26 +378,29 @@ class DailyReportService:
         )
         if snapshot is None:
             raise ValueError("complete_event_snapshot_required")
+        generation_summary["revision_overview_source"] = "event_snapshot"
         materialized, _skipped = self._overview_drafts(
             snapshot,
             checked_at=original.generated_at,
         )
-        decision_event_ids = {row.event_id for row in self._reports.items(report_id)}
+        decision_event_ids = {row.event_id for row in self._reports.items(original.id)}
         rebuilt_overview_items = tuple(
-                DailyReportOverviewItemDraft(
-                    event_id=item.event_id,
-                    event_version_number=item.event_version_number,
-                    position=item.position,
-                    snapshot=item.snapshot,
-                    decision_event_id=(
-                        item.event_id if item.event_id in decision_event_ids else None
-                    ),
-                )
+            DailyReportOverviewItemDraft(
+                event_id=item.event_id,
+                event_version_number=item.event_version_number,
+                position=item.position,
+                snapshot=item.snapshot,
+                decision_event_id=(
+                    item.event_id if item.event_id in decision_event_ids else None
+                ),
+            )
             for item in materialized
         )
         return self._reports.revise(
             report_id,
             rebuilt_overview_items=rebuilt_overview_items,
+            generation_summary=generation_summary,
+            expected_source_report_id=original.id,
         )
 
     def _overview_drafts(

@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from newsradar.daily_reports import DailyReportService
 from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.schema import DailyReportOverviewEditorialReviewDraft
 from newsradar.daily_reports.service import _public_url
 from newsradar.db.models import (
     Base,
@@ -396,13 +397,14 @@ def test_generate_keeps_invalid_overview_event_as_degraded_item(
     assert len(DailyReportRepository(db_session).items(report.id)) == 4
 
 
-def test_revise_materializes_overview_for_legacy_archived_report(
+def test_revise_complete_snapshot_keeps_decisions_and_rebuilds_full_overview(
     db_session: Session,
 ) -> None:
     seed_complete_snapshot(db_session)
     service = DailyReportService(db_session, utcnow=lambda: NOW)
     repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
     original = service.generate(24, now=NOW)
+    frozen_decisions = [row.snapshot for row in repository.items(original.id)]
     db_session.execute(
         delete(DailyReportOverviewItemRecord).where(
             DailyReportOverviewItemRecord.daily_report_id == original.id
@@ -414,6 +416,7 @@ def test_revise_materializes_overview_for_legacy_archived_report(
     revision = service.revise(original.id)
 
     assert repository.overview_items(original.id) == ()
+    assert [row.snapshot for row in repository.items(revision.id)] == frozen_decisions
     copied = repository.overview_items(revision.id)
     assert [row.event_id for row in copied] == [101, 102, 201, 202, 302]
     assert [row.snapshot["zh_title"] for row in copied] == [
@@ -423,6 +426,7 @@ def test_revise_materializes_overview_for_legacy_archived_report(
         "事件 202",
         "事件 302",
     ]
+    assert revision.generation_summary["revision_overview_source"] == "event_snapshot"
 
 
 def test_generate_sanitizes_evidence_and_never_calls_network_or_model(
@@ -723,3 +727,204 @@ def test_revise_copies_archived_report_without_refreshing_snapshot(
 
     assert revision.supersedes_report_id == original.id
     assert [row.snapshot for row in repository.items(revision.id)] == frozen_snapshots
+
+
+def test_revise_legacy_manifest_copies_archived_overview_and_reviews(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation_id = seed_complete_snapshot(db_session)
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = service.generate(24, now=NOW)
+    overview = repository.overview_items(original.id)
+    reviewed = overview[1]
+    source_review = repository.save_overview_editorial_review(
+        original.id,
+        reviewed.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="duplicate",
+            zh_title="重复事件",
+            zh_summary="与首条事件内容重复。",
+            review_recommendation="合并到首条事件。",
+            evidence_assessment="使用相同的第一方证据。",
+            duplicate_of_overview_item_id=overview[0].id,
+        ),
+    )
+    frozen = [
+        (
+            row.event_id,
+            row.event_version_number,
+            row.position,
+            dict(row.snapshot),
+            row.decision_item_id is not None,
+        )
+        for row in overview
+    ]
+    repository.archive(original.id)
+    operation = db_session.get(OperationRunRecord, operation_id)
+    assert operation is not None
+    operation.result_summary = {
+        key: value
+        for key, value in operation.result_summary.items()
+        if key != "event_version_snapshots"
+    }
+    db_session.commit()
+    monkeypatch.setattr(
+        service,
+        "_overview_drafts",
+        lambda *_args, **_kwargs: pytest.fail("overview rebuild"),
+    )
+
+    revision = service.revise(original.id)
+
+    copied = repository.overview_items(revision.id)
+    assert [
+        (
+            row.event_id,
+            row.event_version_number,
+            row.position,
+            dict(row.snapshot),
+            row.decision_item_id is not None,
+        )
+        for row in copied
+    ] == frozen
+    copied_review = repository.overview_editorial_reviews(copied[1].id)[0]
+    assert copied_review.copied_from_editorial_review_id == source_review.id
+    assert copied_review.duplicate_of_overview_item_id == copied[0].id
+    assert revision.generation_summary["revision_overview_source"] == (
+        "archived_report_snapshot"
+    )
+
+
+def test_revise_present_but_invalid_manifest_is_rejected_without_draft(
+    db_session: Session,
+) -> None:
+    operation_id = seed_complete_snapshot(db_session)
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = service.generate(24, now=NOW)
+    repository.archive(original.id)
+    operation = db_session.get(OperationRunRecord, operation_id)
+    assert operation is not None
+    operation.result_summary = {"event_version_snapshots": "invalid"}
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="complete_event_snapshot_required"):
+        service.revise(original.id)
+
+    assert db_session.scalar(
+        select(func.count(DailyReportRecord.id)).where(
+            DailyReportRecord.status == "draft"
+        )
+    ) == 0
+
+
+@pytest.mark.parametrize("corruption", ["missing_operation", "non_dict_summary"])
+def test_revise_rejects_missing_operation_or_non_dict_summary(
+    db_session: Session,
+    corruption: str,
+) -> None:
+    operation_id = seed_complete_snapshot(db_session)
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = service.generate(24, now=NOW)
+    repository.archive(original.id)
+    operation = db_session.get(OperationRunRecord, operation_id)
+    assert operation is not None
+    if corruption == "missing_operation":
+        db_session.execute(
+            delete(OperationRunRecord).where(OperationRunRecord.id == operation_id)
+        )
+    else:
+        operation.result_summary = []
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="complete_event_snapshot_required"):
+        service.revise(original.id)
+
+    assert db_session.scalar(
+        select(func.count(DailyReportRecord.id)).where(
+            DailyReportRecord.status == "draft"
+        )
+    ) == 0
+
+
+def test_revise_returns_existing_active_draft_without_snapshot_lookup(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_complete_snapshot(db_session)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+    repository.archive(original.id)
+    active = repository.revise(original.id)
+    active.generation_summary = {"sentinel": "do-not-overwrite"}
+    db_session.commit()
+    monkeypatch.setattr(
+        "newsradar.daily_reports.service.event_snapshot_by_id",
+        lambda *_args, **_kwargs: pytest.fail("snapshot lookup"),
+    )
+
+    reused = DailyReportService(db_session, utcnow=lambda: NOW).revise(original.id)
+
+    assert reused.id == active.id
+    assert reused.generation_summary == {"sentinel": "do-not-overwrite"}
+
+
+def test_revise_rejects_stale_materialization_when_revision_chain_advances(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_complete_snapshot(db_session)
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = service.generate(24, now=NOW)
+    repository.archive(original.id)
+    original_revise = service._reports.revise
+    advanced_head_id: int | None = None
+
+    def advance_then_revise(*args, **kwargs):
+        nonlocal advanced_head_id
+        advanced = repository.revise(original.id)
+        repository.archive(advanced.id)
+        advanced_head_id = advanced.id
+        return original_revise(*args, **kwargs)
+
+    monkeypatch.setattr(service._reports, "revise", advance_then_revise)
+
+    with pytest.raises(RuntimeError, match="daily_report_revision_chain_changed"):
+        service.revise(original.id)
+
+    assert advanced_head_id is not None
+    assert db_session.scalar(
+        select(func.count(DailyReportRecord.id)).where(
+            DailyReportRecord.supersedes_report_id == advanced_head_id
+        )
+    ) == 0
+
+
+def test_revise_reads_decisions_from_latest_archived_head(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_complete_snapshot(db_session)
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = service.generate(24, now=NOW)
+    repository.archive(parent.id)
+    child = repository.revise(parent.id)
+    repository.archive(child.id)
+    original_items = service._reports.items
+    item_report_ids: list[int] = []
+
+    def tracking_items(report_id: int):
+        item_report_ids.append(report_id)
+        return original_items(report_id)
+
+    monkeypatch.setattr(service._reports, "items", tracking_items)
+
+    revision = service.revise(parent.id)
+
+    assert revision.supersedes_report_id == child.id
+    assert item_report_ids[0] == child.id
