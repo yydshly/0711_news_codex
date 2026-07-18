@@ -167,8 +167,9 @@ def test_automatic_task_page_hides_inconsistent_enrichment_audit(
                 "model_success": 1,
                 "rule_fallback": 0,
                 "budget_fallback": 0,
+                "model_budget": 1001,
                 "error_counts": {},
-                "items": {},
+                "items": {"1:1": {"origin": "model", "error_code": None}},
             }
         },
         generated_at=datetime(2026, 7, 18, tzinfo=UTC),

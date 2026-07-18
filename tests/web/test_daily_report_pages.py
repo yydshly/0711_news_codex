@@ -195,6 +195,7 @@ def test_detail_normalizes_unknown_chinese_enrichment_error_code(
         {"processed": 0},
         {"model_success": 0, "rule_fallback": 0},
         {"candidate_total": 0},
+        {"model_budget": 1001},
         {"error_counts": {"timeout": 1}},
         {"items": {"not-an-event-version": {"origin": "model", "error_code": None}}},
         {"items": {"1:1": {"origin": "unknown", "error_code": None}}},

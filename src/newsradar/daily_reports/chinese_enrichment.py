@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 
 import httpx
 from pydantic import BaseModel, ConfigDict, field_validator
+from zhconv import convert as convert_chinese
 
 from newsradar.ai.minimax import (
     SAFE_MODEL_ERROR_CODES,
@@ -22,18 +23,15 @@ _LATIN = re.compile(r"[A-Za-z]")
 _KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
 _URL_LIKE = re.compile(
     r"""
-    (?<![\w])(?:[a-z][a-z0-9+.-]{1,31}:(?://)?|//|www\.)[^\s"'<>()[\]{},]+
+    (?<![\w])(?:[a-z][a-z0-9+.-]*:(?://)?|//)[^\s"'<> ,}]+
+    |(?<![\w])\[[0-9a-f:.]*:[0-9a-f:.]*\](?::\d{1,5})?(?:/[^\s"'<> ,}]*)?
+    |(?<![\w:])(?=[0-9a-f:]*:[0-9a-f:]*:)[0-9a-f]+(?::[0-9a-f]*){2,}(?:/[^\s"'<> ,}]*)?
+    |(?<![\w])www\.[^\s"'<> ,}]+
     |(?<![\w.+-])[\w.+-]+@(?:[a-z0-9-]+\.)+[a-z]{2,63}
     |\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/[^\s"'<>()[\]{},]*)?
     |\b(?:[a-z0-9-]+\.)+[a-z]{2,63}(?::\d{1,5})?(?:/[^\s"'<>()[\]{},]*)?
     """,
     re.IGNORECASE | re.VERBOSE,
-)
-_TRADITIONAL_ONLY = frozenset(
-    "體臺灣學發佈資訊為這後國門開關於過還裡麼說點網絡數據應該產業機讓現從實項採並企業較與將務達處"
-)
-_SIMPLIFIED_ONLY = frozenset(
-    "体台湾学发布资讯为这后国门开关于过还里么说点网络数据应该产业机让现从实项采并企业较与将务达处"
 )
 _MAX_CONTEXT = 1200
 _MAX_ITEM_TIMEOUT_SECONDS = 45
@@ -314,6 +312,9 @@ def _is_meaningful_chinese_text(
     latin_count = len(_LATIN.findall(value))
     if han_count < minimum_han or han_count / max(han_count + latin_count, 1) < 0.35:
         return False
-    traditional_count = sum(char in _TRADITIONAL_ONLY for char in value)
-    simplified_count = sum(char in _SIMPLIFIED_ONLY for char in value)
-    return traditional_count < 2 or simplified_count > 0
+    simplified = convert_chinese(value, "zh-cn")
+    variant_changes = sum(
+        left != right for left, right in zip(value, simplified, strict=False)
+    )
+    variant_changes += abs(len(value) - len(simplified))
+    return variant_changes < 2

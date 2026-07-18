@@ -328,11 +328,55 @@ def test_prompt_omits_adversarial_url_like_tokens_but_preserves_prose() -> None:
     assert "surrounding non-URL prose must survive" in prompt
 
 
+def test_prompt_omits_complete_ipv6_and_one_character_scheme_tokens() -> None:
+    row = candidate()
+    row.snapshot.update(
+        {
+            "zh_title": (
+                "Keep alpha https://[2001:db8::1]/secret-path and keep omega"
+            ),
+            "zh_summary": (
+                "Keep beta //[2001:db8::2]/protocol-path plus "
+                "x://private-host/one-char-secret and keep gamma"
+            ),
+            "publisher_names": [
+                "Keep delta [2001:db8::3]/bracketed-bare-path",
+                "Keep epsilon 2001:db8::4/unbracketed-bare-path",
+            ],
+            "confirmation_summary": "Ordinary surrounding prose remains intact.",
+        }
+    )
+
+    prompt = DailyReportChineseEnricher._prompt(row)
+
+    for leaked in (
+        "2001:db8",
+        "secret-path",
+        "protocol-path",
+        "x:",
+        "private-host",
+        "one-char-secret",
+        "bracketed-bare-path",
+        "unbracketed-bare-path",
+    ):
+        assert leaked not in prompt
+    for prose in ("Keep alpha", "keep omega", "Keep beta", "keep gamma", "Keep delta"):
+        assert prose in prompt
+
+
 @pytest.mark.parametrize(
     ("zh_title", "zh_summary"),
     [
         ("AI launch 新", "This is almost entirely English with only 中文 included."),
         ("人工智慧產品正式發佈", "這項產品採用新模型，並為企業提供更完整的資料處理能力。"),
+        (
+            "蘋果推出全新電腦",
+            "蘋果推出全新電腦，支援人工智能，效能顯著提升，帶來更佳使用經驗。",
+        ),
+        (
+            "軟體開發工具獲得重大更新",
+            "這次更新改善網絡連線與資料處理，並為開發團隊帶來更穩定的使用體驗。",
+        ),
         ("新しいAI製品を発表", "この製品は企業向けの新しい機能を提供します。"),
         ("新产品", "内容太短"),
         ("新" * 81, "这是符合长度要求且包含充分中文信息的产品发布概述。"),
@@ -371,6 +415,14 @@ def test_invalid_or_non_simplified_model_copy_falls_back(
             "OpenAI 今天发布新一代 AI 模型，重点提升推理效率与开发者使用体验。",
         ),
         ("国产 GPU 平台完成升级", "该平台完成软硬件协同升级，并为企业提供更稳定的 AI 推理服务。"),
+        (
+            "苹果推出全新电脑",
+            "苹果推出全新电脑，支持人工智能，性能显著提升，带来更佳使用体验。",
+        ),
+        (
+            "软件开发工具获得重大更新",
+            "这次更新改善网络连接与数据处理，并为开发团队带来更稳定的使用体验。",
+        ),
     ],
 )
 def test_meaningful_simplified_chinese_with_ascii_terms_is_accepted(

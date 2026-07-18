@@ -33,6 +33,7 @@ from newsradar.events.operation_snapshots import (
     event_snapshot_by_id,
     latest_complete_event_snapshot,
 )
+from newsradar.settings import MAX_DAILY_REPORT_MODEL_ITEMS
 from newsradar.web.event_queries import EventQueryService
 
 
@@ -140,7 +141,10 @@ def _chinese_enrichment_view(
         return _empty_chinese_enrichment_view()
     model_budget = raw.get("model_budget")
     if model_budget is not None:
-        if not _is_non_negative_integer(model_budget):
+        if (
+            not _is_non_negative_integer(model_budget)
+            or model_budget > MAX_DAILY_REPORT_MODEL_ITEMS
+        ):
             return _empty_chinese_enrichment_view()
         if (
             model_success + rule_fallback > min(candidate_total, model_budget)
