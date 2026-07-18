@@ -902,6 +902,22 @@ class DailyReportRecord(Base):
         UniqueConstraint(
             "report_date", "window_hours", "revision", name="uq_daily_report_revision"
         ),
+        Index(
+            "uq_daily_report_identity",
+            "report_date",
+            "window_hours",
+            "source_operation_id",
+            unique=True,
+            postgresql_where=text("supersedes_report_id IS NULL AND deleted_at IS NULL"),
+            sqlite_where=text("supersedes_report_id IS NULL AND deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_daily_report_supersedes",
+            "supersedes_report_id",
+            unique=True,
+            postgresql_where=text("supersedes_report_id IS NOT NULL AND deleted_at IS NULL"),
+            sqlite_where=text("supersedes_report_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
         Index("ix_daily_reports_date_status", "report_date", "status"),
         Index("ix_daily_reports_deleted_purge", "deleted_at", "purge_after"),
         Index("ix_daily_reports_pinned_date", "pinned_at", "report_date"),
