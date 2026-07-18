@@ -378,44 +378,53 @@ class DailyReportPurgeHandler:
             session.scalars(
                 select(DailyReportRecord).where(
                     DailyReportRecord.supersedes_report_id == report.id
-                )
+                ).order_by(DailyReportRecord.id)
             )
+        )
+        DailyReportPurgeHandler._raise_on_active_revision_conflict(
+            session, report, reparent_reports
         )
         reparent_report_ids = tuple(child.id for child in reparent_reports)
         if reparent_report_ids:
             for child in reparent_reports:
-                temporary_parent_id = child.id
-                seen_report_ids = {child.id}
-                while descendant_id := session.scalar(
-                    select(DailyReportRecord.id).where(
-                        DailyReportRecord.supersedes_report_id == temporary_parent_id
-                    )
-                ):
-                    if descendant_id in seen_report_ids:
-                        raise PurgeMemberError(
-                            "daily_report_purge_persistence_failed", True
-                        )
-                    seen_report_ids.add(descendant_id)
-                    temporary_parent_id = descendant_id
-                session.add(
-                    DailyReportPurgeTransitionRecord(
-                        child_report_id=child.id,
-                        deleted_parent_id=report.id,
-                        predecessor_report_id=report.supersedes_report_id,
-                        temporary_parent_id=temporary_parent_id,
-                        barrier_id=1,
-                    )
+                temporary_parent_id = DailyReportPurgeHandler._temporary_parent_id(
+                    session, child.id
                 )
-            session.flush()
+                transition = DailyReportPurgeTransitionRecord(
+                    child_report_id=child.id,
+                    deleted_parent_id=report.id,
+                    predecessor_report_id=report.supersedes_report_id,
+                    temporary_parent_id=temporary_parent_id,
+                    barrier_id=1,
+                )
+                session.add(transition)
+                session.flush()
+                persisted = session.get(DailyReportPurgeTransitionRecord, child.id)
+                if (
+                    persisted is None
+                    or persisted.deleted_parent_id != report.id
+                    or persisted.predecessor_report_id != report.supersedes_report_id
+                    or persisted.temporary_parent_id != temporary_parent_id
+                ):
+                    raise PurgeMemberError(
+                        "daily_report_purge_persistence_failed", True
+                    )
             for child in reparent_reports:
                 transition = session.get(DailyReportPurgeTransitionRecord, child.id)
                 if transition is None:
                     raise PurgeMemberError("daily_report_purge_persistence_failed", True)
-                session.execute(
+                updated = session.execute(
                     update(DailyReportRecord)
-                    .where(DailyReportRecord.id == child.id)
+                    .where(
+                        DailyReportRecord.id == child.id,
+                        DailyReportRecord.supersedes_report_id == report.id,
+                    )
                     .values(supersedes_report_id=transition.temporary_parent_id)
                 )
+                if updated.rowcount != 1:
+                    raise PurgeMemberError(
+                        "daily_report_purge_persistence_failed", True
+                    )
         if item_review_ids:
             session.execute(
                 update(DailyReportItemEditorialReviewRecord)
@@ -457,6 +466,93 @@ class DailyReportPurgeHandler:
             autopilot.daily_report_id = None
             autopilot.result_summary = {"daily_report_retention": "purged"}
         return reparent_report_ids
+
+    @staticmethod
+    def _raise_on_active_revision_conflict(
+        session: Session,
+        report: DailyReportRecord,
+        reparent_reports: tuple[DailyReportRecord, ...],
+    ) -> None:
+        active_children = tuple(
+            child for child in reparent_reports if child.deleted_at is None
+        )
+        if not active_children:
+            return
+        if len(active_children) != 1:
+            raise PurgeMemberError(
+                "daily_report_purge_active_revision_conflict", False
+            )
+        active_child = active_children[0]
+        if report.supersedes_report_id is not None:
+            conflict_id = session.scalar(
+                select(DailyReportRecord.id).where(
+                    DailyReportRecord.supersedes_report_id
+                    == report.supersedes_report_id,
+                    DailyReportRecord.deleted_at.is_(None),
+                )
+            )
+        else:
+            conflict_id = session.scalar(
+                select(DailyReportRecord.id).where(
+                    DailyReportRecord.supersedes_report_id.is_(None),
+                    DailyReportRecord.deleted_at.is_(None),
+                    DailyReportRecord.report_date == active_child.report_date,
+                    DailyReportRecord.window_hours == active_child.window_hours,
+                    DailyReportRecord.source_operation_id
+                    == active_child.source_operation_id,
+                )
+            )
+        if conflict_id is not None:
+            raise PurgeMemberError(
+                "daily_report_purge_active_revision_conflict", False
+            )
+
+    @staticmethod
+    def _temporary_parent_id(session: Session, child_report_id: int) -> int:
+        child = session.execute(
+            select(DailyReportRecord.id, DailyReportRecord.deleted_at).where(
+                DailyReportRecord.id == child_report_id
+            )
+        ).one_or_none()
+        if child is None:
+            raise PurgeMemberError("daily_report_purge_persistence_failed", True)
+
+        pending_report_ids = [child_report_id]
+        discovered_report_ids = {child_report_id}
+        deleted_at_by_report_id = {child_report_id: child.deleted_at}
+        terminal_report_ids: list[int] = []
+        while pending_report_ids:
+            current_report_id = pending_report_ids.pop()
+            descendants = tuple(
+                session.execute(
+                    select(DailyReportRecord.id, DailyReportRecord.deleted_at)
+                    .where(
+                        DailyReportRecord.supersedes_report_id == current_report_id
+                    )
+                    .order_by(DailyReportRecord.id)
+                )
+            )
+            if not descendants:
+                terminal_report_ids.append(current_report_id)
+                continue
+            for descendant_id, deleted_at in descendants:
+                if descendant_id in discovered_report_ids:
+                    raise PurgeMemberError(
+                        "daily_report_purge_persistence_failed", True
+                    )
+                discovered_report_ids.add(descendant_id)
+                deleted_at_by_report_id[descendant_id] = deleted_at
+                pending_report_ids.append(descendant_id)
+
+        if not terminal_report_ids:
+            raise PurgeMemberError("daily_report_purge_persistence_failed", True)
+        return min(
+            terminal_report_ids,
+            key=lambda report_id: (
+                deleted_at_by_report_id[report_id] is not None,
+                report_id,
+            ),
+        )
 
     @staticmethod
     def _finish_revision_reparent(

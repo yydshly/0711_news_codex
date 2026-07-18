@@ -653,6 +653,301 @@ def test_purging_middle_revision_reparents_newer_and_detaches_external_refs(
         assert newer_overview_review.duplicate_of_overview_item_id is None
 
 
+def test_purging_parent_reparents_active_and_abandoned_children_without_detaching_branch(
+    tmp_path: Path,
+) -> None:
+    factory = _migrated_factory(tmp_path)
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        parent = repository.archive(seed_daily_report(db).id)
+        abandoned = repository.archive(repository.revise(parent.id).id)
+        abandoned_descendant = repository.archive(repository.revise(abandoned.id).id)
+        repository.move_to_trash(abandoned_descendant.id)
+        repository.move_to_trash(abandoned.id)
+        active = repository.archive(repository.revise(parent.id).id)
+        _trash(db, parent.id)
+        parent_id = parent.id
+        abandoned_id = abandoned.id
+        abandoned_descendant_id = abandoned_descendant.id
+        active_id = active.id
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(parent_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        abandoned = db.get(DailyReportRecord, abandoned_id)
+        abandoned_descendant = db.get(DailyReportRecord, abandoned_descendant_id)
+        active = db.get(DailyReportRecord, active_id)
+        assert result.status is OperationStatus.SUCCEEDED
+        assert db.get(DailyReportRecord, parent_id) is None
+        assert abandoned is not None
+        assert abandoned.supersedes_report_id is None
+        assert active is not None
+        assert active.supersedes_report_id is None
+        assert abandoned_descendant is not None
+        assert abandoned_descendant.supersedes_report_id == abandoned_id
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportPurgeTransitionRecord)
+        ) == 0
+
+
+def test_purging_abandoned_child_preserves_active_sibling_metadata(
+    tmp_path: Path,
+) -> None:
+    factory = _migrated_factory(tmp_path)
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        parent = repository.archive(seed_daily_report(db).id)
+        abandoned = repository.archive(repository.revise(parent.id).id)
+        abandoned_descendant = repository.archive(repository.revise(abandoned.id).id)
+        repository.move_to_trash(abandoned_descendant.id)
+        repository.move_to_trash(abandoned.id)
+        active = repository.archive(repository.revise(parent.id).id)
+        parent_id = parent.id
+        abandoned_id = abandoned.id
+        abandoned_descendant_id = abandoned_descendant.id
+        active_id = active.id
+        active_metadata = (
+            active.supersedes_report_id,
+            active.deleted_at,
+            active.purge_after,
+            dict(active.generation_summary),
+        )
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(abandoned_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        abandoned_descendant = db.get(DailyReportRecord, abandoned_descendant_id)
+        active = db.get(DailyReportRecord, active_id)
+        assert result.status is OperationStatus.SUCCEEDED
+        assert db.get(DailyReportRecord, abandoned_id) is None
+        assert abandoned_descendant is not None
+        assert abandoned_descendant.supersedes_report_id == parent_id
+        assert active is not None
+        assert (
+            active.supersedes_report_id,
+            active.deleted_at,
+            active.purge_after,
+            active.generation_summary,
+        ) == active_metadata
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportPurgeTransitionRecord)
+        ) == 0
+
+
+def test_temporary_parent_prefers_active_branch_and_leaves_deleted_branch_attached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = _migrated_factory(tmp_path)
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        predecessor = repository.archive(seed_daily_report(db).id)
+        parent = repository.archive(repository.revise(predecessor.id).id)
+        child = repository.archive(repository.revise(parent.id).id)
+        deleted_descendant = repository.archive(repository.revise(child.id).id)
+        repository.move_to_trash(deleted_descendant.id)
+        active_descendant = repository.archive(repository.revise(child.id).id)
+        _trash(db, parent.id)
+        parent_id = parent.id
+        child_id = child.id
+        deleted_descendant_id = deleted_descendant.id
+        active_descendant_id = active_descendant.id
+
+    selected_temporary_parents: dict[int, int] = {}
+    original_finish = DailyReportPurgeHandler._finish_revision_reparent
+
+    def capture_temporary_parents(
+        session: Session,
+        report_ids: tuple[int, ...],
+        *,
+        predecessor_id: int | None,
+    ) -> None:
+        for report_id in report_ids:
+            transition = session.get(DailyReportPurgeTransitionRecord, report_id)
+            assert transition is not None
+            selected_temporary_parents[report_id] = transition.temporary_parent_id
+        original_finish(session, report_ids, predecessor_id=predecessor_id)
+
+    monkeypatch.setattr(
+        DailyReportPurgeHandler,
+        "_finish_revision_reparent",
+        staticmethod(capture_temporary_parents),
+    )
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(parent_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        deleted_descendant = db.get(DailyReportRecord, deleted_descendant_id)
+        active_descendant = db.get(DailyReportRecord, active_descendant_id)
+        assert result.status is OperationStatus.SUCCEEDED
+        assert selected_temporary_parents == {child_id: active_descendant_id}
+        assert deleted_descendant is not None
+        assert deleted_descendant.supersedes_report_id == child_id
+        assert active_descendant is not None
+        assert active_descendant.supersedes_report_id == child_id
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportPurgeTransitionRecord)
+        ) == 0
+
+
+def test_revision_cycle_returns_retryable_persistence_error_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    factory = _factory(tmp_path)
+    with factory() as db:
+        parent = seed_daily_report(db, operation_id=4101)
+        deleted_child = seed_daily_report(
+            db,
+            report_date=NOW.date() + timedelta(days=1),
+            operation_id=4102,
+        )
+        active_child = seed_daily_report(
+            db,
+            report_date=NOW.date() + timedelta(days=2),
+            operation_id=4103,
+        )
+        parent.status = "archived"
+        parent.archived_at = NOW
+        parent.deleted_at = NOW
+        parent.purge_after = NOW + timedelta(days=30)
+        deleted_child.status = "archived"
+        deleted_child.archived_at = NOW
+        deleted_child.deleted_at = NOW
+        deleted_child.purge_after = NOW + timedelta(days=30)
+        active_child.status = "archived"
+        active_child.archived_at = NOW
+        db.flush()
+        deleted_child.supersedes_report_id = parent.id
+        active_child.supersedes_report_id = parent.id
+        db.flush()
+        parent.supersedes_report_id = deleted_child.id
+        db.commit()
+        parent_id = parent.id
+        deleted_child_id = deleted_child.id
+        active_child_id = active_child.id
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(parent_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        parent = db.get(DailyReportRecord, parent_id)
+        deleted_child = db.get(DailyReportRecord, deleted_child_id)
+        active_child = db.get(DailyReportRecord, active_child_id)
+        assert result.status is OperationStatus.FAILED
+        assert result.retryable is True
+        assert result.result_summary["failures"] == [
+            {
+                "report_id": parent_id,
+                "error_code": "daily_report_purge_persistence_failed",
+            }
+        ]
+        assert parent is not None
+        assert parent.supersedes_report_id == deleted_child_id
+        assert deleted_child is not None
+        assert deleted_child.supersedes_report_id == parent_id
+        assert active_child is not None
+        assert active_child.supersedes_report_id == parent_id
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportPurgeTransitionRecord)
+        ) == 0
+
+
+@pytest.mark.parametrize("destination", ("predecessor", "root"))
+def test_active_destination_conflict_is_nonretryable_and_rolls_back(
+    tmp_path: Path, destination: str
+) -> None:
+    factory = _factory(tmp_path)
+    with factory() as db:
+        target = seed_daily_report(db, operation_id=4101)
+        moving_child = seed_daily_report(
+            db,
+            report_date=NOW.date() + timedelta(days=1),
+            operation_id=4102,
+        )
+        reports = [target, moving_child]
+        for report in reports:
+            report.status = "archived"
+            report.archived_at = NOW
+        target.deleted_at = NOW
+        target.purge_after = NOW + timedelta(days=30)
+        db.flush()
+
+        if destination == "predecessor":
+            predecessor = seed_daily_report(
+                db,
+                report_date=NOW.date() + timedelta(days=2),
+                operation_id=4103,
+            )
+            existing_active_child = seed_daily_report(
+                db,
+                report_date=NOW.date() + timedelta(days=3),
+                operation_id=4104,
+            )
+            for report in (predecessor, existing_active_child):
+                report.status = "archived"
+                report.archived_at = NOW
+            db.flush()
+            target.supersedes_report_id = predecessor.id
+            moving_child.supersedes_report_id = target.id
+            existing_active_child.supersedes_report_id = predecessor.id
+            expected_target_parent_id = predecessor.id
+        else:
+            moving_child.supersedes_report_id = target.id
+            db.flush()
+            existing_active_child = DailyReportRecord(
+                report_date=moving_child.report_date,
+                timezone=moving_child.timezone,
+                window_hours=moving_child.window_hours,
+                window_start=moving_child.window_start,
+                window_end=moving_child.window_end,
+                source_operation_id=moving_child.source_operation_id,
+                status="archived",
+                revision=moving_child.revision + 1,
+                supersedes_report_id=None,
+                generation_summary=dict(moving_child.generation_summary),
+                generated_at=moving_child.generated_at,
+                archived_at=NOW,
+            )
+            db.add(existing_active_child)
+            expected_target_parent_id = None
+        db.commit()
+        target_id = target.id
+        moving_child_id = moving_child.id
+        existing_active_child_id = existing_active_child.id
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(target_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        target = db.get(DailyReportRecord, target_id)
+        moving_child = db.get(DailyReportRecord, moving_child_id)
+        existing_active_child = db.get(DailyReportRecord, existing_active_child_id)
+        assert result.status is OperationStatus.FAILED
+        assert result.retryable is False
+        assert result.result_summary["failures"] == [
+            {
+                "report_id": target_id,
+                "error_code": "daily_report_purge_active_revision_conflict",
+            }
+        ]
+        assert target is not None
+        assert target.supersedes_report_id == expected_target_parent_id
+        assert moving_child is not None
+        assert moving_child.supersedes_report_id == target_id
+        assert existing_active_child is not None
+        assert existing_active_child.supersedes_report_id == expected_target_parent_id
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportPurgeTransitionRecord)
+        ) == 0
+
+
 def test_migrated_guard_rejects_forged_archived_reparent_transition(
     tmp_path: Path,
 ) -> None:
