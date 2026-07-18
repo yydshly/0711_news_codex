@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 from newsradar.daily_reports.automation_repository import DailyAutomationRepository
 from newsradar.daily_reports.automation_service import DailyAutomationService
 from newsradar.daily_reports.autopilot import DailyAutopilotStage
-from newsradar.db.models import Base, DailyAutopilotRunRecord, OperationRunRecord
+from newsradar.db.models import (
+    Base,
+    DailyAutopilotRunRecord,
+    DailyReportRecord,
+    OperationRunRecord,
+)
 from newsradar.operations.schema import OperationType
 from newsradar.waves.planning import WaveMemberSnapshot, wave_plan_from_members
 
@@ -41,6 +46,41 @@ def _plan():
         window_hours=24,
         trend_days=7,
     )
+
+
+def _report(
+    session: Session, *, report_id: int, report_date: datetime, trashed: bool = False
+) -> DailyReportRecord:
+    operation = OperationRunRecord(
+        id=10_000 + report_id,
+        operation_type="event_pipeline",
+        trigger="test",
+        status="succeeded",
+        requested_scope={},
+        result_summary={},
+        created_at=NOW,
+        finished_at=NOW,
+    )
+    session.add(operation)
+    session.flush()
+    report = DailyReportRecord(
+        id=report_id,
+        report_date=report_date.date(),
+        timezone="Asia/Shanghai",
+        window_hours=24,
+        window_start=NOW - timedelta(days=1),
+        window_end=NOW,
+        source_operation_id=operation.id,
+        status="archived",
+        revision=1,
+        generation_summary={},
+        generated_at=NOW,
+        archived_at=NOW,
+        deleted_at=(NOW - timedelta(days=31) if trashed else None),
+        purge_after=(NOW - timedelta(days=1) if trashed else None),
+    )
+    session.add(report)
+    return report
 
 
 def test_tick_only_enqueues_one_due_daily_autopilot_and_marks_the_schedule(
@@ -128,3 +168,59 @@ def test_tick_rolls_back_when_plan_construction_fails(db_session: Session) -> No
 
     assert not db_session.in_transaction()
     assert db_session.query(DailyAutopilotRunRecord).count() == 0
+
+
+def test_tick_sweeps_retention_once_per_shanghai_day_in_bounded_batches(
+    db_session: Session,
+) -> None:
+    for report_id in range(1, 26):
+        _report(
+            db_session,
+            report_id=report_id,
+            report_date=NOW - timedelta(days=90 + report_id),
+        )
+    for report_id in range(26, 51):
+        _report(
+            db_session,
+            report_id=report_id,
+            report_date=NOW - timedelta(days=200 + report_id),
+            trashed=True,
+        )
+    pinned = _report(
+        db_session,
+        report_id=51,
+        report_date=NOW - timedelta(days=200),
+    )
+    pinned.pinned_at = NOW
+    recent = _report(
+        db_session,
+        report_id=52,
+        report_date=NOW - timedelta(days=89),
+    )
+    db_session.commit()
+    service = DailyAutomationService(
+        db_session,
+        utcnow=lambda: NOW,
+        plan_factory=lambda _session, _hours: _plan(),
+    )
+
+    first = service.tick()
+    second = service.tick()
+
+    assert first.retention.outcome == "swept"
+    assert first.retention.trashed_count == 25
+    assert first.retention.purge_operation_id is not None
+    purge = db_session.get(OperationRunRecord, first.retention.purge_operation_id)
+    assert purge is not None
+    assert purge.operation_type == OperationType.DAILY_REPORT_PURGE.value
+    assert purge.requested_scope["report_ids"] == list(range(26, 46))
+    assert second.retention.outcome == "already_checked"
+    assert db_session.query(OperationRunRecord).filter(
+        OperationRunRecord.operation_type == OperationType.DAILY_REPORT_PURGE.value
+    ).count() == 1
+    assert all(
+        db_session.get(DailyReportRecord, report_id).deleted_at is not None
+        for report_id in range(1, 26)
+    )
+    assert db_session.get(DailyReportRecord, pinned.id).deleted_at is None
+    assert db_session.get(DailyReportRecord, recent.id).deleted_at is None

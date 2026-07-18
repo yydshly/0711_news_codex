@@ -12,6 +12,7 @@ def test_automation_config_model_defines_singleton_scheduler_contract() -> None:
         "window_hours",
         "resource_profile",
         "last_scheduled_date",
+        "last_retention_date",
         "last_run_id",
         "next_run_at",
         "created_at",
@@ -32,6 +33,7 @@ def test_automation_config_model_defines_singleton_scheduler_contract() -> None:
     } == {"ix_daily_automation_next_run": ("enabled", "next_run_at")}
     assert DailyAutomationConfigRecord.enabled.default.arg is False
     assert DailyAutomationConfigRecord.window_hours.default.arg == 24
+    assert DailyAutomationConfigRecord.last_retention_date.nullable
     assert next(iter(DailyAutomationConfigRecord.last_run_id.foreign_keys)).ondelete == "SET NULL"
 
 

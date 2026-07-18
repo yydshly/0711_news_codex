@@ -123,28 +123,36 @@ class OperationCommandService:
         if self.session.in_transaction():
             self.session.commit()
         with self.session.begin():
-            reports = tuple(
-                self.session.scalars(
-                    select(DailyReportRecord)
-                    .where(DailyReportRecord.id.in_(normalized))
-                    .with_for_update()
-                )
+            return self._enqueue_daily_report_purge_in_transaction(
+                report_ids=normalized, trigger=trigger
             )
-            reports_by_id = {report.id: report for report in reports}
-            for report_id in normalized:
-                report = reports_by_id.get(report_id)
-                if report is None:
-                    raise ValueError("daily_report_not_found")
-                if report.deleted_at is None:
-                    raise ValueError("daily_report_must_be_trashed_for_purge")
-                if self._daily_report_has_active_work(report_id):
-                    raise ValueError("daily_report_has_active_work")
-            return OperationRepository(self.session).enqueue(
-                OperationType.DAILY_REPORT_PURGE,
-                {"schema_version": 1, "report_ids": normalized},
-                trigger=trigger,
-                in_transaction=True,
-            ).id
+
+    def _enqueue_daily_report_purge_in_transaction(
+        self, *, report_ids: object, trigger: str
+    ) -> int:
+        normalized = self._daily_report_purge_ids(report_ids)
+        reports = tuple(
+            self.session.scalars(
+                select(DailyReportRecord)
+                .where(DailyReportRecord.id.in_(normalized))
+                .with_for_update()
+            )
+        )
+        reports_by_id = {report.id: report for report in reports}
+        for report_id in normalized:
+            report = reports_by_id.get(report_id)
+            if report is None:
+                raise ValueError("daily_report_not_found")
+            if report.deleted_at is None:
+                raise ValueError("daily_report_must_be_trashed_for_purge")
+            if self._daily_report_has_active_work(report_id):
+                raise ValueError("daily_report_has_active_work")
+        return OperationRepository(self.session).enqueue(
+            OperationType.DAILY_REPORT_PURGE,
+            {"schema_version": 1, "report_ids": normalized},
+            trigger=trigger,
+            in_transaction=True,
+        ).id
 
     @staticmethod
     def _daily_report_purge_ids(report_ids: object) -> list[int]:

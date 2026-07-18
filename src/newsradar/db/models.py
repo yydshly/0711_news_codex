@@ -527,6 +527,7 @@ class DailyAutomationConfigRecord(Base):
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     resource_profile: Mapped[str] = mapped_column(String(16), nullable=False)
     last_scheduled_date: Mapped[date | None] = mapped_column(Date)
+    last_retention_date: Mapped[date | None] = mapped_column(Date)
     last_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("daily_autopilot_runs.id", ondelete="SET NULL")
     )

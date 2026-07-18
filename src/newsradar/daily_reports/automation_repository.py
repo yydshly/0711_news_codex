@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -12,7 +12,15 @@ from newsradar.daily_reports.automation import (
     next_daily_run,
     normalize_utc,
 )
-from newsradar.db.models import DailyAutomationConfigRecord
+from newsradar.daily_reports.retention import (
+    RETENTION_DAYS,
+    TRASH_BATCH_LIMIT,
+    TRASH_DAYS,
+    report_local_date,
+)
+from newsradar.db.models import DailyAutomationConfigRecord, DailyReportRecord
+
+PURGE_BATCH_LIMIT = 20
 
 
 class DailyAutomationRepository:
@@ -80,6 +88,74 @@ class DailyAutomationRepository:
             return None
         self._normalize_config(config)
         return due_schedule(normalize_utc(self._utcnow()), config.last_scheduled_date)
+
+    def lock_retention(self) -> DailyAutomationConfigRecord | None:
+        self.get_or_create()
+        if self.session.get_bind().dialect.name == "postgresql":
+            self.session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('newsradar:daily-retention-sweep'))"
+                )
+            )
+        config = self.session.scalar(
+            select(DailyAutomationConfigRecord)
+            .where(DailyAutomationConfigRecord.id == 1)
+            .with_for_update()
+        )
+        if config is None:
+            raise LookupError("daily_automation_not_found")
+        if config.last_retention_date == report_local_date(self._utcnow()):
+            return None
+        return config
+
+    def trash_retention_candidates(self) -> tuple[int, ...]:
+        now = normalize_utc(self._utcnow())
+        retention_start = report_local_date(now) - timedelta(days=RETENTION_DAYS)
+        reports = tuple(
+            self.session.scalars(
+                select(DailyReportRecord)
+                .where(
+                    DailyReportRecord.deleted_at.is_(None),
+                    DailyReportRecord.pinned_at.is_(None),
+                    DailyReportRecord.report_date <= retention_start,
+                )
+                .order_by(DailyReportRecord.report_date, DailyReportRecord.id)
+                .limit(TRASH_BATCH_LIMIT)
+                .with_for_update()
+            )
+        )
+        for report in reports:
+            if report.pinned_at is None and report.deleted_at is None:
+                report.deleted_at = now
+                report.purge_after = now + timedelta(days=TRASH_DAYS)
+        self.session.flush()
+        return tuple(report.id for report in reports if report.deleted_at == now)
+
+    def purge_retention_candidates(self) -> tuple[int, ...]:
+        now = normalize_utc(self._utcnow())
+        return tuple(
+            self.session.scalars(
+                select(DailyReportRecord.id)
+                .where(
+                    DailyReportRecord.deleted_at.is_not(None),
+                    DailyReportRecord.pinned_at.is_(None),
+                    DailyReportRecord.purge_after <= now,
+                )
+                .order_by(DailyReportRecord.purge_after, DailyReportRecord.id)
+                .limit(PURGE_BATCH_LIMIT)
+                .with_for_update()
+            )
+        )
+
+    def mark_retention_swept(
+        self, config: DailyAutomationConfigRecord
+    ) -> DailyAutomationConfigRecord:
+        now = normalize_utc(self._utcnow())
+        config.last_retention_date = report_local_date(now)
+        config.updated_at = now
+        self.session.flush()
+        return config
 
     def mark_scheduled(self, due: DueSchedule, *, run_id: int) -> DailyAutomationConfigRecord:
         config = self.session.scalar(

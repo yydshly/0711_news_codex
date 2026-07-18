@@ -17,6 +17,14 @@ from newsradar.waves.planning import WavePlan
 class DailyAutomationTickResult:
     outcome: Literal["disabled", "not_due", "enqueued", "reused"]
     run_id: int | None = None
+    retention: DailyRetentionSweepResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DailyRetentionSweepResult:
+    outcome: Literal["swept", "already_checked"]
+    trashed_count: int = 0
+    purge_operation_id: int | None = None
 
 
 class DailyAutomationService:
@@ -40,11 +48,14 @@ class DailyAutomationService:
     def tick(self) -> DailyAutomationTickResult:
         repository = DailyAutomationRepository(self.session, utcnow=self._utcnow)
         try:
+            retention = self._sweep_retention(repository)
             due = repository.lock_due()
             if due is None:
                 config = repository.get_or_create()
                 self.session.commit()
-                return DailyAutomationTickResult("disabled" if not config.enabled else "not_due")
+                return DailyAutomationTickResult(
+                    "disabled" if not config.enabled else "not_due", retention=retention
+                )
 
             commands = OperationCommandService(self.session, utcnow=self._utcnow)
             result = commands._enqueue_daily_autopilot_result_in_transaction(
@@ -54,8 +65,30 @@ class DailyAutomationService:
             repository.mark_scheduled(due, run_id=result.run_id)
             self.session.commit()
             return DailyAutomationTickResult(
-                "enqueued" if result.created else "reused", result.run_id
+                "enqueued" if result.created else "reused", result.run_id, retention
             )
         except Exception:
             self.session.rollback()
             raise
+
+    def _sweep_retention(
+        self, repository: DailyAutomationRepository
+    ) -> DailyRetentionSweepResult:
+        config = repository.lock_retention()
+        if config is None:
+            return DailyRetentionSweepResult("already_checked")
+        trashed_ids = repository.trash_retention_candidates()
+        purge_ids = repository.purge_retention_candidates()
+        purge_operation_id = (
+            OperationCommandService(
+                self.session, utcnow=self._utcnow
+            )._enqueue_daily_report_purge_in_transaction(
+                report_ids=purge_ids, trigger="schedule"
+            )
+            if purge_ids
+            else None
+        )
+        repository.mark_retention_swept(config)
+        return DailyRetentionSweepResult(
+            "swept", len(trashed_ids), purge_operation_id
+        )

@@ -19,6 +19,7 @@ def upgrade() -> None:
         sa.Column("window_hours", sa.Integer(), nullable=False, server_default="24"),
         sa.Column("resource_profile", sa.String(length=16), nullable=False),
         sa.Column("last_scheduled_date", sa.Date()),
+        sa.Column("last_retention_date", sa.Date()),
         sa.Column(
             "last_run_id",
             sa.Integer(),
