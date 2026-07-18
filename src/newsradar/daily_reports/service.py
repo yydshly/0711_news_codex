@@ -354,21 +354,19 @@ class DailyReportService:
         original = self.session.get(DailyReportRecord, report_id)
         if original is None:
             raise LookupError("daily_report_not_found")
-        legacy_overview_items: tuple[DailyReportOverviewItemDraft, ...] = ()
-        if not self._reports.overview_items(report_id):
-            snapshot = event_snapshot_by_id(
-                self.session,
-                original.source_operation_id,
-                now=original.generated_at,
-            )
-            if snapshot is None:
-                raise ValueError("complete_event_snapshot_required")
-            materialized, _skipped = self._overview_drafts(
-                snapshot,
-                checked_at=original.generated_at,
-            )
-            decision_event_ids = {row.event_id for row in self._reports.items(report_id)}
-            legacy_overview_items = tuple(
+        snapshot = event_snapshot_by_id(
+            self.session,
+            original.source_operation_id,
+            now=original.generated_at,
+        )
+        if snapshot is None:
+            raise ValueError("complete_event_snapshot_required")
+        materialized, _skipped = self._overview_drafts(
+            snapshot,
+            checked_at=original.generated_at,
+        )
+        decision_event_ids = {row.event_id for row in self._reports.items(report_id)}
+        rebuilt_overview_items = tuple(
                 DailyReportOverviewItemDraft(
                     event_id=item.event_id,
                     event_version_number=item.event_version_number,
@@ -378,11 +376,11 @@ class DailyReportService:
                         item.event_id if item.event_id in decision_event_ids else None
                     ),
                 )
-                for item in materialized
-            )
+            for item in materialized
+        )
         return self._reports.revise(
             report_id,
-            legacy_overview_items=legacy_overview_items,
+            rebuilt_overview_items=rebuilt_overview_items,
         )
 
     def _overview_drafts(

@@ -636,6 +636,7 @@ class DailyReportRepository:
         report_id: int,
         *,
         legacy_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
+        rebuilt_overview_items: tuple[DailyReportOverviewItemDraft, ...] = (),
     ) -> DailyReportRecord:
         original = self.session.get(DailyReportRecord, report_id)
         if original is None:
@@ -643,7 +644,7 @@ class DailyReportRepository:
         if original.status != ReportStatus.ARCHIVED.value:
             raise ValueError("daily_report_must_be_archived")
         original_overview_items = self.overview_items(original.id)
-        overview_items = (
+        overview_items = rebuilt_overview_items or (
             tuple(
                 DailyReportOverviewItemDraft(
                     event_id=row.event_id,
