@@ -4,6 +4,8 @@ import asyncio
 import os
 import re
 import socket
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -117,6 +119,8 @@ minimax_app = typer.Typer(help="Inspect the local MiniMax runtime without exposi
 app.add_typer(minimax_app, name="minimax")
 waves_app = typer.Typer(help="Validate and plan frozen high-value source waves")
 app.add_typer(waves_app, name="waves")
+desktop_app = typer.Typer(help="Windows desktop shell for the local News Codex runtime")
+app.add_typer(desktop_app, name="desktop")
 
 RootOption = Annotated[
     Path, typer.Option("--root", exists=True, file_okay=False, resolve_path=True)
@@ -131,6 +135,65 @@ WorkerProviderRootOption = Annotated[
     Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
 ]
 SCHEDULE_CHECK_SECONDS = 60.0
+
+
+def _desktop_autostart_command() -> str:
+    desktop_command = subprocess.list2cmdline(
+        [sys.executable, "-c", "from newsradar.cli import app; app()", "desktop", "run"]
+    )
+    project_root = Path(__file__).resolve().parents[2]
+    return _command_with_project_directory(project_root, desktop_command)
+
+
+def _command_with_project_directory(project_root: Path, command: str) -> str:
+    """Build a cmd.exe command that sets the process directory before launching."""
+    return f'cmd.exe /d /c "cd /d \"{project_root}\" && {command}"'
+
+
+@desktop_app.command("run")
+def desktop_run(
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8767,
+) -> None:
+    """Open the visible Windows desktop shell and its notification-area menu."""
+    from newsradar.desktop.app import run_desktop
+
+    run_desktop(port=port)
+
+
+@desktop_app.command("autostart-enable")
+def desktop_autostart_enable() -> None:
+    """Start the visible desktop shell for the current Windows user at sign-in."""
+    from newsradar.desktop.autostart import WindowsAutostart, windows_supported
+
+    if not windows_supported():
+        typer.echo("桌面开机启动仅支持 Windows。", err=True)
+        raise typer.Exit(2)
+    WindowsAutostart().enable(_desktop_autostart_command())
+    typer.echo("已启用 Windows 登录后启动 News Codex 桌面窗口。")
+
+
+@desktop_app.command("autostart-disable")
+def desktop_autostart_disable() -> None:
+    """Remove the current-user Windows desktop-shell login item."""
+    from newsradar.desktop.autostart import WindowsAutostart, windows_supported
+
+    if not windows_supported():
+        typer.echo("桌面开机启动仅支持 Windows。", err=True)
+        raise typer.Exit(2)
+    WindowsAutostart().disable()
+    typer.echo("已关闭 Windows 登录后启动 News Codex 桌面窗口。")
+
+
+@desktop_app.command("autostart-status")
+def desktop_autostart_status() -> None:
+    """Show whether the current user has enabled desktop-shell login startup."""
+    from newsradar.desktop.autostart import WindowsAutostart, windows_supported
+
+    if not windows_supported():
+        typer.echo("桌面开机启动仅支持 Windows。")
+        return
+    status = WindowsAutostart().status()
+    typer.echo("桌面开机启动：已启用" if status.enabled else "桌面开机启动：未启用")
 
 
 @waves_app.command("validate")
