@@ -21,9 +21,9 @@ from newsradar.daily_reports.autopilot import (
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.chinese_enrichment import (
     DailyReportChineseCandidate,
-    DailyReportChineseCopy,
     DailyReportChineseEnricher,
     DailyReportChineseResult,
+    rule_based_chinese_copy,
 )
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.service import DailyReportService
@@ -389,6 +389,8 @@ class DailyAutopilotHandler:
                         result.candidate.snapshot,
                         zh_title=result.copy.zh_title,
                         zh_summary=result.copy.zh_summary,
+                        review_recommendation=result.copy.review_recommendation,
+                        evidence_assessment=result.copy.evidence_assessment,
                     )
                     if result.candidate.decision_item_id is not None
                     else None
@@ -398,6 +400,8 @@ class DailyAutopilotHandler:
                         result.candidate.snapshot,
                         zh_title=result.copy.zh_title,
                         zh_summary=result.copy.zh_summary,
+                        review_recommendation=result.copy.review_recommendation,
+                        evidence_assessment=result.copy.evidence_assessment,
                     )
                     if result.candidate.overview_item_id is not None
                     else None
@@ -568,24 +572,12 @@ def _budget_result_for(
 ) -> DailyReportChineseResult:
     return DailyReportChineseResult(
         candidate=candidate,
-        copy=DailyReportChineseCopy(
-            zh_title=_snapshot_text(candidate.snapshot, "zh_title", "未命名事件"),
-            zh_summary=_snapshot_text(
-                candidate.snapshot,
-                "zh_summary",
-                "当前公开材料不足以形成完整中文概述。",
-            ),
-        ),
+        copy=rule_based_chinese_copy(candidate.snapshot),
         origin="budget_limit",
         error_code="budget_limit",
         model=model,
         usages=(),
     )
-
-
-def _snapshot_text(snapshot: dict[str, object], key: str, fallback: str) -> str:
-    value = snapshot.get(key)
-    return value.strip() if isinstance(value, str) and value.strip() else fallback
 
 
 def _diagnostic_message(code: str) -> str:

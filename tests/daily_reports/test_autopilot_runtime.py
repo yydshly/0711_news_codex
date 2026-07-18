@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -32,7 +32,13 @@ from newsradar.daily_reports.schema import (
     DailyReportOverviewItemDraft,
     ReportSection,
 )
-from newsradar.db.models import Base, DailyReportRecord, EventRecord, OperationRunRecord
+from newsradar.db.models import (
+    Base,
+    DailyReportItemEditorialReviewRecord,
+    DailyReportRecord,
+    EventRecord,
+    OperationRunRecord,
+)
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.settings import Settings
@@ -212,7 +218,12 @@ def _load_enrichment_summary(factory, report_id: int) -> dict[str, object]:
 def _model_result_for(candidate) -> DailyReportChineseResult:
     return DailyReportChineseResult(
         candidate=candidate,
-        copy=DailyReportChineseCopy("模型中文标题", "模型生成的中文文章概述。"),
+        copy=DailyReportChineseCopy(
+            "模型中文标题",
+            "模型生成的中文文章概述。",
+            "建议继续核对后续公开材料。",
+            "现有公开材料可支持当前跟踪结论。",
+        ),
         origin="model",
         error_code=None,
         model="MiniMax-M2.7-highspeed",
@@ -233,10 +244,12 @@ def _fallback_result_for(candidate, error_code: str) -> DailyReportChineseResult
     result = _model_result_for(candidate)
     return replace(
         result,
-        copy=DailyReportChineseCopy(
-            zh_title=str(candidate.snapshot["zh_title"]),
-            zh_summary=str(candidate.snapshot["zh_summary"]),
-        ),
+            copy=DailyReportChineseCopy(
+                zh_title=str(candidate.snapshot["zh_title"]),
+                zh_summary=str(candidate.snapshot["zh_summary"]),
+                review_recommendation="建议补充独立公开来源后再判断。",
+                evidence_assessment="当前独立证据仍不足，使用规则回退说明。",
+            ),
         origin="rule_fallback",
         error_code=error_code,
         usages=(replace(result.usages[0], outcome="fallback", error=error_code),),
@@ -279,6 +292,15 @@ def test_write_reviews_continues_after_one_model_fallback(monkeypatch) -> None:
     assert result.result_summary["model_success"] == 1
     assert result.result_summary["rule_fallback"] == 1
     assert result.result_summary["error_counts"] == {"http_429": 1}
+    with factory() as db:
+        fallback_review = db.scalars(
+            select(DailyReportItemEditorialReviewRecord).order_by(
+                DailyReportItemEditorialReviewRecord.id
+            )
+        ).first()
+    assert fallback_review is not None
+    assert fallback_review.review_recommendation == "建议补充独立公开来源后再判断。"
+    assert fallback_review.evidence_assessment == "当前独立证据仍不足，使用规则回退说明。"
 
 
 def test_write_reviews_resume_skips_completed_event(monkeypatch) -> None:

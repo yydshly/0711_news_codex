@@ -83,6 +83,23 @@ def test_model_copy_cannot_change_rule_decision() -> None:
     assert review.review_recommendation != ""
 
 
+def test_specific_explanation_cannot_change_rule_decision() -> None:
+    review = build_decision_review(
+        {
+            "status": "emerging",
+            "independent_root_count": 0,
+            "zh_title": "English",
+            "zh_summary": "English summary",
+        },
+        review_recommendation="建议优先核对主管机构的官方原始发布。",
+        evidence_assessment="当前缺少可核验的官方一手公开材料。",
+    )
+
+    assert review.decision.value == "needs_evidence"
+    assert review.review_recommendation == "建议优先核对主管机构的官方原始发布。"
+    assert review.evidence_assessment == "当前缺少可核验的官方一手公开材料。"
+
+
 def test_catalog_plan_round_trip_is_secret_free_and_tamper_evident() -> None:
     plan = CatalogRefreshPlan.from_members(
         [

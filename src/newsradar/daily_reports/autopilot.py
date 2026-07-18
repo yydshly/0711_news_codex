@@ -193,14 +193,16 @@ def build_decision_review(
     *,
     zh_title: str | None = None,
     zh_summary: str | None = None,
+    review_recommendation: str | None = None,
+    evidence_assessment: str | None = None,
 ) -> DailyReportEditorialReviewDraft:
     title, summary, recommendation, assessment, decision = _review_values(snapshot)
     return DailyReportEditorialReviewDraft.create(
         decision=decision,
         zh_title=zh_title or title,
         zh_summary=zh_summary or summary,
-        review_recommendation=recommendation,
-        evidence_assessment=assessment,
+        review_recommendation=review_recommendation or recommendation,
+        evidence_assessment=evidence_assessment or assessment,
     )
 
 
@@ -209,14 +211,16 @@ def build_overview_review(
     *,
     zh_title: str | None = None,
     zh_summary: str | None = None,
+    review_recommendation: str | None = None,
+    evidence_assessment: str | None = None,
 ) -> DailyReportOverviewEditorialReviewDraft:
     title, summary, recommendation, assessment, decision = _review_values(snapshot)
     return DailyReportOverviewEditorialReviewDraft.create(
         decision=decision,
         zh_title=zh_title or title,
         zh_summary=zh_summary or summary,
-        review_recommendation=recommendation,
-        evidence_assessment=assessment,
+        review_recommendation=review_recommendation or recommendation,
+        evidence_assessment=evidence_assessment or assessment,
     )
 
 
