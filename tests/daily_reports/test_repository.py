@@ -32,6 +32,7 @@ from newsradar.db.models import (
     DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventRecord,
+    ModelUsageRecord,
     OperationRunRecord,
 )
 
@@ -265,6 +266,55 @@ def test_automatic_review_save_is_atomic_audited_and_idempotent(
     assert summary["model_usage_ids"]
     assert "模型中文标题" not in str(summary)
     assert repository.completed_chinese_enrichment_keys(report.id) == {result.candidate.key}
+
+
+def test_automatic_review_save_drops_untrusted_model_audit_metadata(
+    db_session: Session,
+) -> None:
+    report, repository = _seed_report_with_shared_event(db_session)
+    candidate = repository.chinese_enrichment_candidates(report.id)[0]
+    unsafe = "https://provider.invalid/body?api_key=not-a-secret-" + ("x" * 1000)
+    result = replace(
+        _model_result_for(candidate),
+        origin=unsafe,
+        error_code=unsafe,
+        model=unsafe,
+        usages=(
+            ModelUsage(
+                purpose=unsafe,
+                model=unsafe,
+                input_tokens=20,
+                output_tokens=10,
+                latency_ms=12.5,
+                outcome=unsafe,
+                error=unsafe,
+            ),
+        ),
+    )
+
+    assert repository.save_automatic_chinese_reviews(
+        report.id,
+        result,
+        build_decision_review(candidate.snapshot),
+        build_overview_review(candidate.snapshot),
+        candidate_total=1,
+        model_budget=60,
+    ) is True
+
+    summary = db_session.get(DailyReportRecord, report.id).generation_summary[
+        "daily_chinese_enrichment"
+    ]
+    audit = summary["items"][candidate.key]
+    usage = db_session.scalar(select(ModelUsageRecord))
+    assert audit["origin"] == "rule_fallback"
+    assert audit["error_code"] is None
+    assert audit["model"] == "unknown"
+    assert unsafe not in str(summary)
+    assert usage is not None
+    assert usage.purpose == "daily_report_chinese_enrichment"
+    assert usage.model == "unknown"
+    assert usage.outcome == "fallback"
+    assert usage.error is None
 
 
 @pytest.mark.parametrize(

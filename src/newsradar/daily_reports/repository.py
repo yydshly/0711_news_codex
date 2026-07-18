@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -9,6 +11,7 @@ from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from newsradar.ai.minimax import SAFE_MODEL_ERROR_CODES, bounded_token_count
 from newsradar.daily_reports.chinese_enrichment import (
     DailyReportChineseCandidate,
     DailyReportChineseResult,
@@ -37,6 +40,14 @@ from newsradar.db.models import (
 )
 
 MAX_REVISION_ATTEMPTS = 3
+_DAILY_CHINESE_ENRICHMENT_PURPOSE = "daily_report_chinese_enrichment"
+_SAFE_DAILY_CHINESE_ORIGINS = frozenset({"model", "rule_fallback", "budget_limit"})
+_SAFE_DAILY_CHINESE_OUTCOMES = frozenset({"success", "fallback", "retry"})
+_SAFE_DAILY_CHINESE_ERROR_CODES = SAFE_MODEL_ERROR_CODES | frozenset(
+    {"non_chinese_output", "unexpected_error"}
+)
+_SAFE_MODEL_NAME = re.compile(r"[A-Za-z0-9._-]{1,120}")
+_MAX_MODEL_LATENCY_MS = 300_000.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,13 +435,13 @@ class DailyReportRepository:
         usage_ids: list[int] = []
         for usage in result.usages:
             record = ModelUsageRecord(
-                purpose=usage.purpose,
-                model=usage.model,
-                input_tokens=max(0, usage.input_tokens),
-                output_tokens=max(0, usage.output_tokens),
-                latency_ms=usage.latency_ms,
-                outcome=usage.outcome,
-                error=usage.error[:1000] if usage.error else None,
+                purpose=_DAILY_CHINESE_ENRICHMENT_PURPOSE,
+                model=_safe_model_name(usage.model),
+                input_tokens=bounded_token_count(usage.input_tokens),
+                output_tokens=bounded_token_count(usage.output_tokens),
+                latency_ms=_bounded_latency_ms(usage.latency_ms),
+                outcome=_safe_usage_outcome(usage.outcome),
+                error=_safe_error_code(usage.error),
             )
             self.session.add(record)
             self.session.flush()
@@ -452,9 +463,9 @@ class DailyReportRepository:
             )
 
         item_audits[result.candidate.key] = {
-            "origin": result.origin,
-            "error_code": result.error_code,
-            "model": result.model,
+            "origin": _safe_origin(result.origin),
+            "error_code": _safe_error_code(result.error_code),
+            "model": _safe_model_name(result.model),
             "model_usage_ids": usage_ids,
         }
         summary["daily_chinese_enrichment"] = rebuild_chinese_enrichment_summary(
@@ -827,3 +838,35 @@ def rebuild_chinese_enrichment_summary(
         "model_usage_ids": usage_ids,
         "items": items,
     }
+
+
+def _safe_origin(value: object) -> str:
+    if isinstance(value, str) and value in _SAFE_DAILY_CHINESE_ORIGINS:
+        return value
+    return "rule_fallback"
+
+
+def _safe_error_code(value: object) -> str | None:
+    return (
+        value
+        if isinstance(value, str) and value in _SAFE_DAILY_CHINESE_ERROR_CODES
+        else None
+    )
+
+
+def _safe_model_name(value: object) -> str:
+    return value if isinstance(value, str) and _SAFE_MODEL_NAME.fullmatch(value) else "unknown"
+
+
+def _safe_usage_outcome(value: object) -> str:
+    return value if isinstance(value, str) and value in _SAFE_DAILY_CHINESE_OUTCOMES else "fallback"
+
+
+def _bounded_latency_ms(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and 0 <= number <= _MAX_MODEL_LATENCY_MS else None
