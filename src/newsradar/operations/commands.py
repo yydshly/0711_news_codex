@@ -10,6 +10,8 @@ from typing import Literal
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_catalog_plan
+from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.db.models import (
     DailyReportRecord,
     OperationRunRecord,
@@ -283,6 +285,57 @@ class OperationCommandService:
             operation_id = record.id
         return operation_id
 
+    def enqueue_daily_autopilot(
+        self,
+        *,
+        plan: CatalogRefreshPlan,
+        window_hours: int,
+        trigger: str,
+    ) -> int:
+        """Create one durable, resumable daily-report run and its first continuation."""
+        if self.session.in_transaction():
+            self.session.commit()
+        with self.session.begin():
+            self._lock_daily_autopilot_enqueue()
+            run = DailyAutopilotRepository(self.session, utcnow=self._utcnow).create_run(
+                window_hours=window_hours,
+                trigger=trigger,
+                requested_scope={"catalog_plan": serialize_catalog_plan(plan)},
+            )
+            OperationRepository(self.session).enqueue(
+                OperationType.DAILY_AUTOPILOT,
+                {
+                    "daily_autopilot_run_id": run.id,
+                    "stage": DailyAutopilotStage.ENQUEUE_SOURCE_REFRESH.value,
+                },
+                trigger=trigger,
+                in_transaction=True,
+            )
+            return run.id
+
+    def enqueue_daily_autopilot_continuation(
+        self,
+        *,
+        run_id: int,
+        stage: DailyAutopilotStage,
+        trigger: str = "autopilot",
+        not_before: datetime | None = None,
+    ) -> int:
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+            raise ValueError("invalid_daily_autopilot_run_id")
+        if self.session.in_transaction():
+            self.session.commit()
+        with self.session.begin():
+            DailyAutopilotRepository(self.session).get_for_update(run_id)
+            operation = OperationRepository(self.session).enqueue(
+                OperationType.DAILY_AUTOPILOT,
+                {"daily_autopilot_run_id": run_id, "stage": stage.value},
+                trigger=trigger,
+                in_transaction=True,
+                not_before=not_before,
+            )
+            return operation.id
+
     def retry_source_catalog_refresh(self, operation_id: int, *, trigger: str) -> int:
         plan = CatalogRefreshRepository(self.session).retryable_plan(operation_id)
         if not plan.members:
@@ -400,6 +453,12 @@ class OperationCommandService:
         if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
             self.session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('newsradar:catalog-refresh-enqueue'))")
+            )
+
+    def _lock_daily_autopilot_enqueue(self) -> None:
+        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+            self.session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('newsradar:daily-autopilot-enqueue'))")
             )
 
     def _catalog_refresh_scope(

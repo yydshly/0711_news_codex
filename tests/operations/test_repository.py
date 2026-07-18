@@ -34,6 +34,19 @@ def test_enqueue_and_lease_next_select_ready_operations_fifo_and_binds_attempt()
         assert attempt is not None and attempt.operation_run_id == first.id
 
 
+def test_enqueue_not_before_defers_operation_lease() -> None:
+    with session() as db:
+        repository = OperationRepository(db)
+        operation = repository.enqueue(
+            OperationType.FETCH,
+            {"source_id": "deferred"},
+            not_before=datetime.now(UTC) + timedelta(minutes=1),
+        )
+
+        assert repository.lease_next("worker-a") is None
+        assert db.get(OperationRunRecord, operation.id).status == OperationStatus.QUEUED  # type: ignore[union-attr]
+
+
 @pytest.mark.parametrize("trigger", ["", " ", "x" * 17, None, 1])
 def test_enqueue_rejects_invalid_operation_trigger(trigger: object) -> None:
     with session() as db:

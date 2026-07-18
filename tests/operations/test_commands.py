@@ -5,10 +5,16 @@ from hashlib import sha256
 from json import dumps
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from newsradar.db.models import Base, OperationRunRecord, SourceCatalogRefreshMemberRecord
+from newsradar.daily_reports.autopilot import DailyAutopilotStage
+from newsradar.db.models import (
+    Base,
+    DailyAutopilotRunRecord,
+    OperationRunRecord,
+    SourceCatalogRefreshMemberRecord,
+)
 from newsradar.operations.commands import OperationCommandService
 from newsradar.settings import Settings
 from newsradar.sources.catalog_refresh import (
@@ -161,6 +167,59 @@ def test_enqueue_catalog_refresh_freezes_members_and_scope() -> None:
             .order_by(SourceCatalogRefreshMemberRecord.source_id)
         )
         assert [member.source_id for member in members] == ["a", "b"]
+
+
+def test_enqueue_daily_autopilot_freezes_catalog_plan_and_continuation() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        run_id = OperationCommandService(
+            db,
+            utcnow=lambda: now,
+            settings=Settings(operation_timeout_seconds=30),
+        ).enqueue_daily_autopilot(
+            plan=catalog_plan(catalog_member("b"), catalog_member("a")),
+            window_hours=24,
+            trigger="web",
+        )
+
+        run = db.get(DailyAutopilotRunRecord, run_id)
+        assert run is not None
+        assert run.stage == DailyAutopilotStage.ENQUEUE_SOURCE_REFRESH.value
+        assert run.status == "queued"
+        assert run.requested_scope["catalog_plan"]["members"] == [
+            {
+                "source_id": "a",
+                "provider_id": "provider",
+                "definition_hash": "hash-a",
+                "provider_definition_hash": None,
+                "availability": "ready",
+                "coverage_mode": "direct",
+                "access_kind": "rss",
+                "lane": "content",
+                "initial_result_code": None,
+            },
+            {
+                "source_id": "b",
+                "provider_id": "provider",
+                "definition_hash": "hash-b",
+                "provider_definition_hash": None,
+                "availability": "ready",
+                "coverage_mode": "direct",
+                "access_kind": "rss",
+                "lane": "content",
+                "initial_result_code": None,
+            },
+        ]
+        operation = db.scalar(
+            select(OperationRunRecord).where(
+                OperationRunRecord.operation_type == "daily_autopilot"
+            )
+        )
+        assert operation is not None
+        assert operation.requested_scope == {
+            "daily_autopilot_run_id": run_id,
+            "stage": "enqueue_source_refresh",
+        }
 
 
 @pytest.mark.parametrize(

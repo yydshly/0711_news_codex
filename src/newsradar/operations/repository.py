@@ -49,6 +49,7 @@ class OperationRepository:
         trigger: str = "manual",
         *,
         in_transaction: bool = False,
+        not_before: datetime | None = None,
     ) -> OperationRunRecord:
         if (
             not isinstance(trigger, str)
@@ -65,7 +66,7 @@ class OperationRepository:
                 requested_scope=requested_scope,
                 result_summary={},
                 attempt_count=0,
-                next_attempt_at=func.now(),
+                next_attempt_at=not_before or func.now(),
             )
             self.session.add(record)
             self.session.flush()

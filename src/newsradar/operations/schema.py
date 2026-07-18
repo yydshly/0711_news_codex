@@ -18,6 +18,7 @@ class OperationType(StrEnum):
     EVENT_SPLIT = "event_split"
     EVENT_EXCLUDE = "event_exclude"
     DAILY_REPORT_AUDIO = "daily_report_audio"
+    DAILY_AUTOPILOT = "daily_autopilot"
 
 
 class OperationStatus(StrEnum):
