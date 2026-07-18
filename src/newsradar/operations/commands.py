@@ -126,6 +126,67 @@ class OperationCommandService:
                 trigger=trigger,
             )
 
+    def archive_and_enqueue_daily_report_audios(
+        self, *, report_id: int, trigger: str
+    ) -> tuple[int, int]:
+        """Publish a complete decision/overview audio package in one transaction."""
+        from newsradar.daily_reports.repository import DailyReportRepository
+
+        if isinstance(report_id, bool) or not isinstance(report_id, int) or report_id <= 0:
+            raise ValueError("invalid_daily_report_audio_report_id")
+        if self.session.in_transaction():
+            self.session.commit()
+        with self.session.begin():
+            report = self.session.scalar(
+                select(DailyReportRecord)
+                .where(DailyReportRecord.id == report_id)
+                .with_for_update()
+            )
+            if report is None:
+                raise LookupError("daily_report_not_found")
+            if report.status == "archived":
+                existing = (
+                    self._daily_report_audio_operation_id(report_id, "decision"),
+                    self._daily_report_audio_operation_id(report_id, "overview"),
+                )
+                if all(operation_id is not None for operation_id in existing):
+                    return int(existing[0]), int(existing[1])
+                raise ValueError("daily_report_audio_package_incomplete")
+            reports = DailyReportRepository(self.session, utcnow=self._utcnow)
+            reports.assert_audio_package_ready(report_id)
+            reports.archive(report_id, commit=False)
+            decision_id = self._enqueue_daily_report_audio(
+                report_id=report_id,
+                rendition="decision",
+                trigger=trigger,
+            )
+            overview_id = self._enqueue_daily_report_audio(
+                report_id=report_id,
+                rendition="overview",
+                trigger=trigger,
+            )
+            return decision_id, overview_id
+
+    def _daily_report_audio_operation_id(
+        self, report_id: int, rendition: str
+    ) -> int | None:
+        for record in self.session.scalars(
+            select(OperationRunRecord)
+            .where(
+                OperationRunRecord.operation_type
+                == OperationType.DAILY_REPORT_AUDIO.value
+            )
+            .order_by(OperationRunRecord.id.desc())
+        ):
+            scope = record.requested_scope
+            if (
+                isinstance(scope, dict)
+                and scope.get("daily_report_id") == report_id
+                and scope.get("rendition") == rendition
+            ):
+                return record.id
+        return None
+
     def _enqueue_daily_report_audio(
         self, *, report_id: int, rendition: str, trigger: str
     ) -> int:

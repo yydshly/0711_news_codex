@@ -385,17 +385,12 @@ class DailyAutopilotHandler:
         checkpoint("daily_autopilot:archive_report")
         decision_id = run.decision_audio_operation_id
         overview_id = run.overview_audio_operation_id
-        with self._create_session() as session:
-            commands = OperationCommandService(session, utcnow=self._utcnow)
-            if decision_id is None:
-                decision_id = commands.archive_and_enqueue_daily_report_audio(
+        if decision_id is None or overview_id is None:
+            with self._create_session() as session:
+                decision_id, overview_id = OperationCommandService(
+                    session, utcnow=self._utcnow
+                ).archive_and_enqueue_daily_report_audios(
                     report_id=run.daily_report_id,
-                    trigger="autopilot",
-                )
-            if overview_id is None:
-                overview_id = commands.enqueue_daily_report_audio(
-                    report_id=run.daily_report_id,
-                    rendition="overview",
                     trigger="autopilot",
                 )
         self._transition_and_continue(
@@ -508,9 +503,17 @@ def _summary_count(summary: dict[str, Any], key: str) -> int | None:
 def _diagnostic_message(code: str) -> str:
     messages = {
         "complete_event_snapshot_required": "事件处理尚未形成可用于日报的完整快照。",
+        "daily_autopilot_event_operation_missing": "自动日报缺少本次真实抓取任务，不能生成报告。",
         "daily_report_not_found": "自动日报关联的报告不存在。",
+        "daily_report_decision_has_no_items": "决策简报没有可审核条目，不能生成语音。",
+        "daily_report_decision_review_incomplete": "决策简报尚未完成全部中文审核。",
+        "daily_report_decision_has_no_included_items": "决策简报审核后没有可播报条目。",
+        "daily_report_overview_has_no_items": "情报全览没有可审核条目，不能生成语音。",
         "daily_report_overview_review_incomplete": "情报全览尚未完成审核，不能生成音频。",
         "daily_report_overview_has_no_included_items": "情报全览没有可播报条目。",
+        "daily_report_audio_package_incomplete": (
+            "日报双版本语音任务不完整，请使用单版本恢复入口处理。"
+        ),
         "daily_report_must_be_archived_for_audio": "日报尚未归档，不能生成音频。",
     }
     return messages.get(code, "自动日报处理失败，请查看关联任务的中文诊断。")

@@ -1,20 +1,31 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from json import dumps
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from newsradar.daily_reports.autopilot import (
     DailyAutopilotStage,
     deserialize_wave_plan,
 )
+from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.schema import (
+    DailyReportDraft,
+    DailyReportEditorialReviewDraft,
+    DailyReportItemDraft,
+    DailyReportOverviewEditorialReviewDraft,
+    DailyReportOverviewItemDraft,
+    ReportSection,
+)
 from newsradar.db.models import (
     Base,
     DailyAutopilotRunRecord,
+    DailyReportRecord,
+    EventRecord,
     OperationRunRecord,
     SourceCatalogRefreshMemberRecord,
 )
@@ -67,6 +78,143 @@ def wave_member(source_id: str, *, fetchable: bool = True) -> WaveMemberSnapshot
     return WaveMemberSnapshot(
         source_id, "provider", f"hash-{source_id}", ("discovery",), "ready", "rss", fetchable, None
     )
+
+
+def reviewed_daily_report(db: Session, *, reviewed: bool = True) -> int:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    operation = OperationRunRecord(
+        operation_type="event_pipeline",
+        trigger="test",
+        status="succeeded",
+        requested_scope={},
+        result_summary={},
+        created_at=now,
+        finished_at=now,
+    )
+    event = EventRecord(
+        canonical_key=f"audio-package-{reviewed}",
+        status="confirmed",
+        current_version_number=1,
+        occurred_at=now,
+    )
+    db.add_all((operation, event))
+    db.commit()
+    repository = DailyReportRepository(db, utcnow=lambda: now)
+    report = repository.create_draft(
+        DailyReportDraft(
+            report_date=date(2026, 7, 18),
+            window_hours=24,
+            window_start=now - timedelta(hours=24),
+            window_end=now,
+            source_operation_id=operation.id,
+            generation_summary={},
+            items=(
+                DailyReportItemDraft(
+                    event_id=event.id,
+                    event_version_number=1,
+                    section=ReportSection.CONFIRMED,
+                    position=1,
+                    snapshot={"zh_title": "确认事件", "status": "confirmed"},
+                ),
+            ),
+            overview_items=(
+                DailyReportOverviewItemDraft(
+                    event_id=event.id,
+                    event_version_number=1,
+                    position=1,
+                    snapshot={"zh_title": "确认事件", "status": "confirmed"},
+                    decision_event_id=event.id,
+                ),
+            ),
+        )
+    )
+    if reviewed:
+        repository.save_editorial_review(
+            report.id,
+            repository.items(report.id)[0].id,
+            DailyReportEditorialReviewDraft.create(
+                decision="keep",
+                zh_title="确认事件",
+                zh_summary="中文概述。",
+                review_recommendation="建议继续跟踪。",
+                evidence_assessment="已有公开证据。",
+            ),
+        )
+        repository.save_overview_editorial_review(
+            report.id,
+            repository.overview_items(report.id)[0].id,
+            DailyReportOverviewEditorialReviewDraft.create(
+                decision="keep",
+                zh_title="确认事件",
+                zh_summary="中文概述。",
+                review_recommendation="建议继续跟踪。",
+                evidence_assessment="已有公开证据。",
+            ),
+        )
+    return report.id
+
+
+def test_archive_and_enqueue_daily_report_audios_is_atomic() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db)
+
+        decision_id, overview_id = OperationCommandService(
+            db
+        ).archive_and_enqueue_daily_report_audios(report_id=report_id, trigger="autopilot")
+
+        report = db.get(DailyReportRecord, report_id)
+        operations = list(
+            db.scalars(
+                select(OperationRunRecord).where(
+                    OperationRunRecord.operation_type == "daily_report_audio"
+                )
+            )
+        )
+        assert report is not None and report.status == "archived"
+        assert {operation.id for operation in operations} == {decision_id, overview_id}
+        assert {
+            operation.requested_scope["rendition"] for operation in operations
+        } == {"decision", "overview"}
+
+
+def test_archive_and_enqueue_daily_report_audios_recovers_committed_pair() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db)
+        service = OperationCommandService(db)
+        first = service.archive_and_enqueue_daily_report_audios(
+            report_id=report_id, trigger="autopilot"
+        )
+
+        second = service.archive_and_enqueue_daily_report_audios(
+            report_id=report_id, trigger="autopilot"
+        )
+
+        assert second == first
+        assert db.scalar(
+            select(func.count()).select_from(OperationRunRecord).where(
+                OperationRunRecord.operation_type == "daily_report_audio"
+            )
+        ) == 2
+
+
+def test_archive_and_enqueue_daily_report_audios_rejects_incomplete_package_without_writes(
+) -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db, reviewed=False)
+
+        with pytest.raises(ValueError, match="daily_report_decision_review_incomplete"):
+            OperationCommandService(db).archive_and_enqueue_daily_report_audios(
+                report_id=report_id,
+                trigger="autopilot",
+            )
+
+        report = db.get(DailyReportRecord, report_id)
+        assert report is not None and report.status == "draft"
+        assert db.scalar(
+            select(func.count()).select_from(OperationRunRecord).where(
+                OperationRunRecord.operation_type == "daily_report_audio"
+            )
+        ) == 0
 
 
 def test_enqueue_wave_freezes_plan_atomically() -> None:

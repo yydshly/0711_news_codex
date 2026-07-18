@@ -220,6 +220,83 @@ def test_generate_report_rejects_missing_content_operation() -> None:
         )
 
 
+def test_archive_stage_enqueues_both_audio_renditions_as_one_package(monkeypatch) -> None:
+    class SessionContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    calls: list[tuple[int, str]] = []
+
+    class Commands:
+        def __init__(self, _session, **_kwargs) -> None:
+            pass
+
+        def archive_and_enqueue_daily_report_audios(
+            self, *, report_id: int, trigger: str
+        ) -> tuple[int, int]:
+            calls.append((report_id, trigger))
+            return 51, 52
+
+    handler = DailyAutopilotHandler(lambda: SessionContext())
+    transitions: list[tuple[int, DailyAutopilotStage, dict[str, int | bool]]] = []
+    monkeypatch.setattr(autopilot_runtime, "OperationCommandService", Commands)
+    monkeypatch.setattr(
+        handler,
+        "_transition_and_continue",
+        lambda run_id, stage, **ids: transitions.append((run_id, stage, ids)),
+    )
+
+    result = handler._archive_and_enqueue_audio(
+        SimpleNamespace(
+            id=9,
+            daily_report_id=41,
+            decision_audio_operation_id=None,
+            overview_audio_operation_id=None,
+        ),
+        lambda _boundary: None,
+    )
+
+    assert result.status is OperationStatus.SUCCEEDED
+    assert calls == [(41, "autopilot")]
+    assert transitions == [
+        (
+            9,
+            DailyAutopilotStage.WAIT_AUDIO,
+            {
+                "decision_audio_operation_id": 51,
+                "overview_audio_operation_id": 52,
+                "delayed": True,
+            },
+        )
+    ]
+
+
+def test_archive_stage_is_idempotent_for_existing_audio_pair(monkeypatch) -> None:
+    handler = DailyAutopilotHandler(lambda: pytest.fail("must not open a session"))
+    transitions: list[tuple[int, DailyAutopilotStage, dict[str, int | bool]]] = []
+    monkeypatch.setattr(
+        handler,
+        "_transition_and_continue",
+        lambda run_id, stage, **ids: transitions.append((run_id, stage, ids)),
+    )
+
+    handler._archive_and_enqueue_audio(
+        SimpleNamespace(
+            id=9,
+            daily_report_id=41,
+            decision_audio_operation_id=51,
+            overview_audio_operation_id=52,
+        ),
+        lambda _boundary: None,
+    )
+
+    assert transitions[0][2]["decision_audio_operation_id"] == 51
+    assert transitions[0][2]["overview_audio_operation_id"] == 52
+
+
 def test_unexpected_stage_error_marks_autopilot_run_failed(monkeypatch) -> None:
     factory = _session_factory()
     with factory() as db:

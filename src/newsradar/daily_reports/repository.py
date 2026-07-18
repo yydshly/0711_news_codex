@@ -254,6 +254,40 @@ class DailyReportRepository:
             ),
         )
 
+    def assert_audio_package_ready(self, report_id: int) -> None:
+        """Validate both report renditions without archiving or committing."""
+        report = self.session.get(DailyReportRecord, report_id)
+        if report is None:
+            raise LookupError("daily_report_not_found")
+        if report.status != ReportStatus.DRAFT.value:
+            raise ValueError("daily_report_archived")
+        decision_items = self.items(report_id)
+        overview_items = self.overview_items(report_id)
+        if not decision_items:
+            raise ValueError("daily_report_decision_has_no_items")
+        if not overview_items:
+            raise ValueError("daily_report_overview_has_no_items")
+        decision_reviews = tuple(
+            self._latest_editorial_review(item.id) for item in decision_items
+        )
+        if any(review is None for review in decision_reviews):
+            raise ValueError("daily_report_decision_review_incomplete")
+        included_decisions = {
+            EditorialDecision.KEEP.value,
+            EditorialDecision.NEEDS_EVIDENCE.value,
+        }
+        if not any(
+            review is not None and review.decision in included_decisions
+            for review in decision_reviews
+        ):
+            raise ValueError("daily_report_decision_has_no_included_items")
+        overview = self.overview_audio_readiness(report_id)
+        if overview.reviewed_count != overview.total_count:
+            raise ValueError("daily_report_overview_review_incomplete")
+        if overview.included_count == 0:
+            raise ValueError("daily_report_overview_has_no_included_items")
+        self.assert_text_integrity(report_id)
+
     def set_included(
         self,
         report_id: int,

@@ -1,5 +1,6 @@
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -57,6 +58,13 @@ OVERVIEW_NEEDS_EVIDENCE = DailyReportOverviewEditorialReviewDraft.create(
     zh_summary="全览待补证概述",
     review_recommendation="寻找第二条独立证据",
     evidence_assessment="目前只有单一来源。",
+)
+OVERVIEW_EXCLUDE = DailyReportOverviewEditorialReviewDraft.create(
+    decision="exclude",
+    zh_title="全览排除标题",
+    zh_summary="全览排除概述",
+    review_recommendation="不纳入本期全览",
+    evidence_assessment="当前材料不满足收录要求。",
 )
 
 
@@ -146,6 +154,111 @@ def _file_engine(tmp_path: Path):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'daily-reports.db'}")
     Base.metadata.create_all(engine)
     return engine
+
+
+def _review_audio_package(
+    repository: DailyReportRepository,
+    report_id: int,
+    *,
+    decision_review: DailyReportEditorialReviewDraft = REVIEW_KEEP,
+    overview_review: DailyReportOverviewEditorialReviewDraft = OVERVIEW_KEEP,
+) -> None:
+    for item in repository.items(report_id):
+        repository.save_editorial_review(report_id, item.id, decision_review)
+    for item in repository.overview_items(report_id):
+        repository.save_overview_editorial_review(report_id, item.id, overview_review)
+
+
+@pytest.mark.parametrize(
+    ("empty_section", "error_code"),
+    [
+        ("decision", "daily_report_decision_has_no_items"),
+        ("overview", "daily_report_overview_has_no_items"),
+    ],
+)
+def test_audio_package_readiness_rejects_empty_sections(
+    db_session: Session,
+    empty_section: str,
+    error_code: str,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    draft = _draft(db_session)
+    if empty_section == "decision":
+        draft = replace(
+            draft,
+            items=(),
+            overview_items=tuple(
+                replace(item, decision_event_id=None) for item in draft.overview_items
+            ),
+        )
+    else:
+        draft = replace(draft, overview_items=())
+    report = repository.create_draft(draft)
+
+    with pytest.raises(ValueError, match=error_code):
+        repository.assert_audio_package_ready(report.id)
+
+
+def test_audio_package_readiness_requires_every_decision_and_overview_review(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    report = repository.create_draft(_draft(db_session))
+
+    with pytest.raises(ValueError, match="daily_report_decision_review_incomplete"):
+        repository.assert_audio_package_ready(report.id)
+
+    for item in repository.items(report.id):
+        repository.save_editorial_review(report.id, item.id, REVIEW_KEEP)
+    with pytest.raises(ValueError, match="daily_report_overview_review_incomplete"):
+        repository.assert_audio_package_ready(report.id)
+
+
+@pytest.mark.parametrize(
+    ("excluded_section", "error_code"),
+    [
+        ("decision", "daily_report_decision_has_no_included_items"),
+        ("overview", "daily_report_overview_has_no_included_items"),
+    ],
+)
+def test_audio_package_readiness_requires_included_items_in_both_renditions(
+    db_session: Session,
+    excluded_section: str,
+    error_code: str,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    report = repository.create_draft(_draft(db_session))
+    _review_audio_package(
+        repository,
+        report.id,
+        decision_review=(
+            REVIEW_DUPLICATE if excluded_section == "decision" else REVIEW_KEEP
+        ),
+        overview_review=(
+            OVERVIEW_EXCLUDE if excluded_section == "overview" else OVERVIEW_KEEP
+        ),
+    )
+
+    with pytest.raises(ValueError, match=error_code):
+        repository.assert_audio_package_ready(report.id)
+
+
+def test_audio_package_readiness_is_read_only_and_checks_text_integrity(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    report = repository.create_draft(_draft(db_session))
+    _review_audio_package(repository, report.id)
+
+    repository.assert_audio_package_ready(report.id)
+
+    assert db_session.get(DailyReportRecord, report.id).status == "draft"
+    overview = repository.overview_items(report.id)[0]
+    review = repository.overview_editorial_reviews(overview.id)[-1]
+    review.review_recommendation = "????"
+    db_session.commit()
+    with pytest.raises(ValueError, match="daily_report_text_corrupted"):
+        repository.assert_audio_package_ready(report.id)
 
 
 def _integrity_error(*, unique: bool) -> IntegrityError:
