@@ -3,6 +3,11 @@
 Audited source intelligence registry for AI and developer news. Phase one validates, probes,
 versions, and reports on sources before downstream summarization is enabled.
 
+## Project handoff
+
+当前项目状态、下一步、启动命令、Windows 打包和安全注意事项见
+[中文项目交接手册](docs/HANDOFF.md)。
+
 ## Requirements
 
 - Python 3.12+
