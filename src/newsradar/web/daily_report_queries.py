@@ -20,6 +20,7 @@ from newsradar.daily_reports.intelligence import (
     build_decision_script,
     build_overview_script,
 )
+from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.retention import report_local_date
 from newsradar.daily_reports.text_integrity import has_suspicious_question_run
 from newsradar.db.models import (
@@ -432,6 +433,14 @@ class DailyReportCoverageView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyCumulativeContextView:
+    report_id: int
+    operation_event_count: int
+    cumulative_event_count: int
+    carried_event_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
@@ -480,6 +489,58 @@ class DailyReportQueryService:
             .limit(max(1, min(limit, 100)))
         )
         return tuple(self._summary(record) for record in records)
+
+    def cumulative_context_for_operation(
+        self,
+        *,
+        operation_id: int,
+        window_end: datetime,
+    ) -> DailyCumulativeContextView | None:
+        snapshot = event_snapshot_by_id(self.session, operation_id, now=window_end)
+        if snapshot is None:
+            return None
+        report = self.session.scalar(
+            select(DailyReportRecord)
+            .where(
+                DailyReportRecord.report_date == report_local_date(window_end),
+                DailyReportRecord.deleted_at.is_(None),
+                DailyReportRecord.status.in_(("draft", "archived")),
+                DailyReportRecord.window_end <= window_end,
+            )
+            .order_by(
+                case((DailyReportRecord.status == "draft", 0), else_=1),
+                DailyReportRecord.window_end.desc(),
+                DailyReportRecord.revision.desc(),
+                DailyReportRecord.id.desc(),
+            )
+            .limit(1)
+        )
+        if report is None:
+            return None
+        report_event_ids = {
+            row.event_id
+            for row in self.session.scalars(
+                select(DailyReportOverviewItemRecord).where(
+                    DailyReportOverviewItemRecord.daily_report_id == report.id
+                )
+            )
+        }
+        operation_event_ids = {ref.event_id for ref in snapshot.event_versions}
+        survivors = DailyReportRepository(self.session).applied_event_survivors(
+            report_event_ids | operation_event_ids
+        )
+        cumulative_ids = {
+            survivors.get(event_id, event_id) for event_id in report_event_ids
+        }
+        operation_ids = {
+            survivors.get(event_id, event_id) for event_id in operation_event_ids
+        }
+        return DailyCumulativeContextView(
+            report_id=report.id,
+            operation_event_count=len(operation_ids),
+            cumulative_event_count=len(cumulative_ids),
+            carried_event_count=len(cumulative_ids - operation_ids),
+        )
 
     def trash_reports(
         self, *, page: int, page_size: int

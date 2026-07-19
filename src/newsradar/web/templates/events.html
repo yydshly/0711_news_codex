@@ -16,6 +16,7 @@
 <section class="panel" role="status">
   <strong>最新完整运行快照 · Operation #{{ event_page.snapshot.operation_id }}</strong>
   <p>窗口截至 {{ event_page.snapshot.window_end|format_datetime_zh }}，完成于 {{ event_page.snapshot.finished_at|format_datetime_zh }}。列表和详情均固定到该次运行的事件版本。</p>
+  {% if daily_cumulative %}<p class="snapshot-scope-comparison"><strong>最新运行事件 {{ daily_cumulative.operation_event_count }} 条 · 今日累计日报 {{ daily_cumulative.cumulative_event_count }} 条 · 沿用历史 {{ daily_cumulative.carried_event_count }} 条</strong> · <a href="/daily-reports/{{ daily_cumulative.report_id }}">查看今日累计日报</a></p>{% endif %}
   {% if event_page.snapshot.skipped_newer_count %}<p>已跳过 {{ event_page.snapshot.skipped_newer_count }} 次较新的不完整运行。</p>{% endif %}
 </section>
 {% elif is_legacy %}

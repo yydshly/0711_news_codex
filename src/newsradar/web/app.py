@@ -566,9 +566,17 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def events_home(request: Request) -> HTMLResponse:
+        daily_cumulative = None
         try:
             with create_session() as session:
                 event_home = EventQueryService(session).latest_operation_home()
+                if event_home is not None and event_home.snapshot is not None:
+                    daily_cumulative = DailyReportQueryService(
+                        session
+                    ).cumulative_context_for_operation(
+                        operation_id=event_home.snapshot.operation_id,
+                        window_end=event_home.snapshot.window_end,
+                    )
         except (OperationalError, ProgrammingError) as error:
             return database_error_response(request, error)
         return templates.TemplateResponse(
@@ -576,6 +584,7 @@ def create_app(
             name="events_home.html",
             context={
                 "event_home": event_home,
+                "daily_cumulative": daily_cumulative,
                 "action_token": issue_action_token(request),
                 "snapshot_unavailable": event_home is None,
                 "database_status": "数据库已连接",
@@ -634,12 +643,20 @@ def create_app(
         )
         if hours is not None:
             filters["hours"] = hours
+        daily_cumulative = None
         try:
             with create_session() as session:
                 service = EventQueryService(session)
                 if scope == "latest" and visibility == "current":
                     event_page = service.latest_operation_page(filters, now=query_now)
                     snapshot_unavailable = event_page is None
+                    if event_page is not None:
+                        daily_cumulative = DailyReportQueryService(
+                            session
+                        ).cumulative_context_for_operation(
+                            operation_id=event_page.snapshot.operation_id,
+                            window_end=event_page.snapshot.window_end,
+                        )
                 else:
                     filters["visibility"] = visibility
                     filters["until"] = query_now
@@ -654,6 +671,7 @@ def create_app(
             name="events.html",
             context={
                 "event_page": event_page,
+                "daily_cumulative": daily_cumulative,
                 "event_scope": scope,
                 "snapshot_unavailable": snapshot_unavailable,
                 "action_token": issue_action_token(request),

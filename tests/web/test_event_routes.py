@@ -1,7 +1,14 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from newsradar.daily_reports.repository import DailyReportRepository
+from newsradar.daily_reports.schema import (
+    REPORT_TIMEZONE,
+    DailyReportDraft,
+    DailyReportOverviewItemDraft,
+)
 from newsradar.db.models import (
     EventRecord,
     EventScoreRecord,
@@ -110,6 +117,63 @@ def _add_pipeline_snapshot(session, refs: list[tuple[int, int]]):
     session.add(operation)
     session.commit()
     return operation.id
+
+
+def _add_cumulative_report(session, operation_id: int, event_ids: tuple[int, ...]) -> int:
+    operation = session.get(OperationRunRecord, operation_id)
+    window_end = datetime.fromisoformat(operation.requested_scope["window_end"])
+    report = DailyReportRepository(session).create_draft(
+        DailyReportDraft(
+            report_date=window_end.astimezone(ZoneInfo(REPORT_TIMEZONE)).date(),
+            window_hours=72,
+            window_start=window_end - timedelta(hours=72),
+            window_end=window_end,
+            source_operation_id=operation_id,
+            generation_summary={"overview_count": len(event_ids)},
+            items=(),
+            overview_items=tuple(
+                DailyReportOverviewItemDraft(
+                    event_id=event_id,
+                    event_version_number=1,
+                    position=position,
+                    snapshot={
+                        "zh_title": f"累计事件 {event_id}",
+                        "zh_summary": "累计日报固定事件。",
+                        "status": "confirmed",
+                        "display_tier": "hotspot",
+                        "rank_score": 80,
+                    },
+                )
+                for position, event_id in enumerate(event_ids, start=1)
+            ),
+        )
+    )
+    return report.id
+
+
+def test_event_pages_distinguish_latest_operation_from_daily_cumulative(
+    db_session, monkeypatch
+):
+    event_ids = tuple(range(101, 111))
+    for event_id in event_ids:
+        _add_event(db_session, event_id, title=f"事件 {event_id}")
+    operation_id = _add_pipeline_snapshot(
+        db_session, [(event_id, 1) for event_id in event_ids[:6]]
+    )
+    report_id = _add_cumulative_report(db_session, operation_id, event_ids)
+    monkeypatch.setattr("newsradar.web.app.create_session", lambda: db_session)
+
+    with TestClient(create_app()) as client:
+        home = client.get("/")
+        events = client.get("/events")
+
+    for response in (home, events):
+        assert response.status_code == 200
+        assert "最新运行事件 6 条 · 今日累计日报 10 条 · 沿用历史 4 条" in response.text
+        assert f'href="/daily-reports/{report_id}"' in response.text
+        assert "事件 101" in response.text
+        assert "事件 106" in response.text
+        assert "事件 107" not in response.text
 
 
 def test_home_separates_confirmed_events_from_early_social_signals(db_session, monkeypatch):
