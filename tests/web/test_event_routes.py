@@ -27,8 +27,9 @@ def _add_event(
     visibility="current",
     display_tier=None,
     rank_score=80,
+    occurred_at=None,
 ):
-    occurred_at = datetime.now(UTC)
+    occurred_at = occurred_at or datetime.now(UTC)
     session.add(
         EventRecord(
             id=event_id,
@@ -155,8 +156,14 @@ def test_event_pages_distinguish_latest_operation_from_daily_cumulative(
     db_session, monkeypatch
 ):
     event_ids = tuple(range(101, 111))
+    occurred_at = datetime.now(UTC) - timedelta(seconds=1)
     for event_id in event_ids:
-        _add_event(db_session, event_id, title=f"事件 {event_id}")
+        _add_event(
+            db_session,
+            event_id,
+            title=f"事件 {event_id}",
+            occurred_at=occurred_at,
+        )
     operation_id = _add_pipeline_snapshot(
         db_session, [(event_id, 1) for event_id in event_ids[:6]]
     )

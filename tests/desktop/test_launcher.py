@@ -54,3 +54,20 @@ def test_main_starts_desktop_window_when_not_handling_internal_command(monkeypat
     launcher.main()
 
     assert started == [8767]
+
+
+def test_windowed_streams_support_uvicorn_logging(monkeypatch, tmp_path: Path) -> None:
+    from uvicorn.logging import DefaultFormatter
+
+    from newsradar.desktop import launcher
+
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    launcher.ensure_standard_streams(project_root)
+    DefaultFormatter("%(message)s")
+
+    assert sys.stdout is not None and sys.stdout.isatty() is False
+    assert sys.stderr is not None and sys.stderr.isatty() is False
+    assert (project_root / ".local" / "logs" / "news-codex-desktop.log").exists()

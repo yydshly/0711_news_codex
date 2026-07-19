@@ -27,8 +27,26 @@ def find_project_root(anchor: Path) -> Path:
     return Path.cwd()
 
 
+def ensure_standard_streams(project_root: Path) -> None:
+    """Provide file-backed streams when a windowed executable has no console."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log_path = project_root / ".local" / "logs" / "news-codex-desktop.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    stream = log_path.open("a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def main() -> None:
     """Entrypoint used by the branded Windows executable."""
+    if is_packaged():
+        project_root = find_project_root(Path(sys.executable))
+        os.chdir(project_root)
+        ensure_standard_streams(project_root)
+
     arguments = sys.argv[1:]
     if arguments and arguments[0] == INTERNAL_COMMAND_MARKER:
         sys.argv = [sys.argv[0], *arguments[1:]]
@@ -37,8 +55,6 @@ def main() -> None:
         app()
         return
 
-    if is_packaged():
-        os.chdir(find_project_root(Path(sys.executable)))
     from newsradar.desktop.app import run_desktop
 
     run_desktop(port=8767)
