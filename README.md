@@ -91,6 +91,18 @@ uv run newsradar serve --host 127.0.0.1 --port 8767
 uv run newsradar desktop run --port 8767
 ```
 
+上面的命令适合开发与排错，但窗口运行在 `python.exe` 下，所以 Windows 任务栏会显示 Python
+图标。日常使用时，请在项目根目录执行一次本地桌面启动器构建：
+
+```powershell
+uv run --extra dev python tools\build_windows_desktop.py
+```
+
+之后双击 `dist\NewsCodex\NewsCodex.exe` 启动。它继续使用同一份本地项目配置、来源目录和数据库，
+但 Windows 的任务栏、最小化窗口和 Alt+Tab 会显示 News Codex 图标。生成的 `build/` 和 `dist/`
+不提交到 Git；项目代码更新后重新执行一次构建命令即可。使用打包版启用开机启动时，Windows 会记录
+`NewsCodex.exe` 本身。
+
 桌面窗口默认显示日报页；点击窗口关闭按钮只会**隐藏到右下角**，不会停止抓取或日报任务。右下角托盘菜单可显示或隐藏窗口，并可启动、停止桌面应用自己启动的本地服务，选择“退出 News Codex”才会退出窗口。若 `8767` 端口已经有你手工启动的 `serve` 服务，桌面应用只会连接它，退出时绝不会停止该外部服务。
 
 如需在登录 Windows 后自动打开桌面窗口，可由你主动执行：

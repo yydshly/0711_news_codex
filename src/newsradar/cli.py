@@ -138,10 +138,16 @@ SCHEDULE_CHECK_SECONDS = 60.0
 
 
 def _desktop_autostart_command() -> str:
-    desktop_command = subprocess.list2cmdline(
-        [sys.executable, "-c", "from newsradar.cli import app; app()", "desktop", "run"]
-    )
-    project_root = Path(__file__).resolve().parents[2]
+    from newsradar.desktop.launcher import find_project_root, is_packaged
+
+    if is_packaged():
+        desktop_command = subprocess.list2cmdline([sys.executable])
+        project_root = find_project_root(Path(sys.executable))
+    else:
+        desktop_command = subprocess.list2cmdline(
+            [sys.executable, "-c", "from newsradar.cli import app; app()", "desktop", "run"]
+        )
+        project_root = Path(__file__).resolve().parents[2]
     return _command_with_project_directory(project_root, desktop_command)
 
 

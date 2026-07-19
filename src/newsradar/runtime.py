@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import signal
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
+
+from newsradar.desktop.launcher import runtime_command
 
 
 class ManagedProcess(Protocol):
@@ -85,18 +86,14 @@ class RuntimeSupervisor:
         return subprocess.Popen(args)  # noqa: S603
 
     def specifications(self) -> tuple[ChildSpec, ChildSpec]:
-        invoke_cli = "from newsradar.cli import app; app()"
-        worker_args = [sys.executable, "-c", invoke_cli, "worker"]
+        worker_args = list(runtime_command("worker"))
         if self.worker_id:
             worker_args.extend(["--worker-id", self.worker_id])
         worker_args.append("--forever")
         return (
             ChildSpec(
                 "web",
-                (
-                    sys.executable,
-                    "-c",
-                    invoke_cli,
+                runtime_command(
                     "web",
                     "--host",
                     self.host,

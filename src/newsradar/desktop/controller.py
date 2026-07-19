@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
 import httpx
+
+from newsradar.desktop.launcher import runtime_command
 
 
 class ManagedProcess(Protocol):
@@ -107,10 +108,7 @@ class DesktopController:
         return response.status_code == 200
 
     def _service_command(self) -> tuple[str, ...]:
-        return (
-            sys.executable,
-            "-c",
-            "from newsradar.cli import app; app()",
+        return runtime_command(
             "serve",
             "--host",
             "127.0.0.1",

@@ -53,10 +53,27 @@ def test_desktop_autostart_command_uses_project_directory_without_secrets() -> N
     assert "DATABASE_URL" not in command
 
 
+def test_desktop_autostart_command_reuses_packaged_desktop_executable(
+    monkeypatch, tmp_path
+) -> None:
+    from newsradar import cli
+
+    executable = tmp_path / "NewsCodex.exe"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    command = cli._desktop_autostart_command()
+
+    assert str(executable) in command
+    assert "desktop run" not in command
+
+
 def test_readme_documents_desktop_runtime_controls() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert "newsradar desktop run" in readme
+    assert "build_windows_desktop.py" in readme
+    assert "NewsCodex.exe" in readme
     assert "隐藏到右下角" in readme
 
 
