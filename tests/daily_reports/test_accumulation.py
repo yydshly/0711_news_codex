@@ -129,6 +129,21 @@ def test_accumulate_resets_prior_disposition_for_strictly_newer_complete_version
     assert "daily_disposition" not in result.items[0].snapshot
 
 
+def test_accumulate_resets_visible_duplicate_for_strictly_newer_complete_version() -> None:
+    previous = (_draft(1), _draft(12))
+
+    result = accumulate_daily_overview(
+        previous,
+        (_draft(12, version=2),),
+        canonical_event_ids={1: 1, 12: 1},
+        previous_decisions={(12, 1): EditorialDecision.DUPLICATE},
+    )
+
+    duplicate = next(item for item in result.items if item.event_id == 12)
+    assert duplicate.event_version_number == 2
+    assert "daily_disposition" not in duplicate.snapshot
+
+
 def test_accumulate_merges_only_new_duplicate_evidence_into_canonical_survivor() -> None:
     survivor = _draft(
         1,

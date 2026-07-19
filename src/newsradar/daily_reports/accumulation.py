@@ -43,6 +43,7 @@ def accumulate_daily_overview(
     new_count = 0
     deduplicated_count = 0
     invalidated_count = 0
+    reset_disposition_event_ids: set[int] = set()
 
     for index, item in enumerate(tuple(rows)):
         decision = previous_decisions.get((item.event_id, item.event_version_number))
@@ -93,6 +94,8 @@ def accumulate_daily_overview(
                 )
             if can_replace:
                 rows[exact_index] = replace(item, snapshot=deepcopy(item.snapshot))
+                if is_prior_editorial_disposition:
+                    reset_disposition_event_ids.add(item.event_id)
             updated_count += 1
             continue
 
@@ -110,7 +113,11 @@ def accumulate_daily_overview(
     represented = set(index_by_canonical)
     for index, item in enumerate(tuple(rows)):
         canonical_id = canonical_event_ids.get(item.event_id, item.event_id)
-        if canonical_id != item.event_id and canonical_id in represented:
+        if (
+            canonical_id != item.event_id
+            and canonical_id in represented
+            and item.event_id not in reset_disposition_event_ids
+        ):
             rows[index] = _with_disposition(
                 item,
                 status="excluded",
