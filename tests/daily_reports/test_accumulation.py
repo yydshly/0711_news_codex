@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from newsradar.daily_reports.accumulation import accumulate_daily_overview
+from newsradar.daily_reports.accumulation import (
+    DailyOverviewBaseline,
+    accumulate_daily_overview,
+    accumulate_daily_overview_baselines,
+)
 from newsradar.daily_reports.schema import (
     DailyReportOverviewItemDraft,
     EditorialDecision,
@@ -45,6 +49,41 @@ def test_accumulate_adds_three_unique_events_from_four_current_candidates() -> N
     assert result.stats.inherited_count == 8
     assert result.stats.new_count == 3
     assert result.stats.updated_count == 1
+
+
+def test_accumulate_baselines_folds_disconnected_heads_before_current() -> None:
+    result = accumulate_daily_overview_baselines(
+        (
+            DailyOverviewBaseline(tuple(_draft(event_id) for event_id in (1, 2, 3, 4)), {}),
+            DailyOverviewBaseline(tuple(_draft(event_id) for event_id in (4, 5)), {}),
+        ),
+        tuple(_draft(event_id) for event_id in (5, 6, 7, 8, 9, 10)),
+        canonical_event_ids={event_id: event_id for event_id in range(1, 11)},
+    )
+
+    assert [item.event_id for item in result.items] == list(range(1, 11))
+    assert result.stats.inherited_count == 4
+    assert result.stats.new_count == 5
+    assert result.stats.deduplicated_count == 2
+
+
+def test_accumulate_baselines_prefers_newer_explicit_review() -> None:
+    result = accumulate_daily_overview_baselines(
+        (
+            DailyOverviewBaseline(
+                (_draft(7),),
+                {(7, 1): EditorialDecision.EXCLUDE},
+            ),
+            DailyOverviewBaseline(
+                (_draft(7),),
+                {(7, 1): EditorialDecision.KEEP},
+            ),
+        ),
+        (),
+        canonical_event_ids={7: 7},
+    )
+
+    assert "daily_disposition" not in result.items[0].snapshot
 
 
 def test_accumulate_does_not_add_a_new_applied_duplicate() -> None:

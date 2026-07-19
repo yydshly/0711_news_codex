@@ -29,6 +29,71 @@ class DailyOverviewAccumulation:
     stats: DailyOverviewAccumulationStats
 
 
+@dataclass(frozen=True, slots=True)
+class DailyOverviewBaseline:
+    items: tuple[DailyReportOverviewItemDraft, ...]
+    decisions: Mapping[tuple[int, int], EditorialDecision]
+
+
+def accumulate_daily_overview_baselines(
+    baselines: tuple[DailyOverviewBaseline, ...],
+    current: tuple[DailyReportOverviewItemDraft, ...],
+    *,
+    canonical_event_ids: Mapping[int, int],
+) -> DailyOverviewAccumulation:
+    """Fold disconnected report heads before merging one current operation."""
+    merged: tuple[DailyReportOverviewItemDraft, ...] = ()
+    decisions: dict[tuple[int, int], EditorialDecision] = {}
+    updated_count = 0
+    invalidated_count = 0
+    historical_ids: set[int] = set()
+    merge_input_count = len(current)
+    for baseline in baselines:
+        merge_input_count += len(baseline.items)
+        historical_ids.update(
+            canonical_event_ids.get(item.event_id, item.event_id)
+            for item in baseline.items
+        )
+        prior_decisions = {
+            key: decision
+            for key, decision in decisions.items()
+            if key not in baseline.decisions
+        }
+        folded = accumulate_daily_overview(
+            merged,
+            baseline.items,
+            canonical_event_ids=canonical_event_ids,
+            previous_decisions=prior_decisions,
+        )
+        merged = folded.items
+        updated_count += folded.stats.updated_count
+        invalidated_count += folded.stats.invalidated_count
+        decisions.update(baseline.decisions)
+    accumulated = accumulate_daily_overview(
+        merged,
+        current,
+        canonical_event_ids=canonical_event_ids,
+        previous_decisions=decisions,
+    )
+    current_ids = {
+        canonical_event_ids.get(item.event_id, item.event_id) for item in current
+    }
+    final_ids = {
+        canonical_event_ids.get(item.event_id, item.event_id)
+        for item in accumulated.items
+    }
+    return DailyOverviewAccumulation(
+        items=accumulated.items,
+        stats=DailyOverviewAccumulationStats(
+            inherited_count=len(historical_ids - current_ids),
+            new_count=len(current_ids - historical_ids),
+            updated_count=updated_count + accumulated.stats.updated_count,
+            deduplicated_count=max(merge_input_count - len(final_ids), 0),
+            invalidated_count=invalidated_count + accumulated.stats.invalidated_count,
+        ),
+    )
+
+
 def accumulate_daily_overview(
     previous: tuple[DailyReportOverviewItemDraft, ...],
     current: tuple[DailyReportOverviewItemDraft, ...],

@@ -61,6 +61,7 @@ EXPECTED_SNAPSHOT_KEYS = {
     "enrichment_origin",
     "limitations",
     "evidence",
+    "daily_accumulation_origin",
 }
 EXPECTED_OVERVIEW_SNAPSHOT_KEYS = EXPECTED_SNAPSHOT_KEYS | {"daily_disposition"}
 EXPECTED_EVIDENCE_KEYS = {
@@ -604,6 +605,49 @@ def test_create_cumulative_draft_links_predecessor_and_copies_matching_review(
     )
 
 
+def test_create_cumulative_draft_copies_newest_review_from_all_baseline_heads(
+    db_session: Session,
+) -> None:
+    older = _archived_report(
+        db_session,
+        revision=1,
+        overview_event_versions=((101, 1),),
+        reviewed_event_version=(101, 1),
+    )
+    newer = _archived_report(
+        db_session,
+        revision=2,
+        overview_event_versions=((101, 1),),
+        reviewed_event_version=(101, 1),
+    )
+    repository = DailyReportRepository(db_session)
+    older_review = repository.overview_editorial_reviews(
+        repository.overview_items(older.id)[0].id
+    )[0]
+    newer_review = repository.overview_editorial_reviews(
+        repository.overview_items(newer.id)[0].id
+    )[0]
+    older_review.zh_title = "Older reviewed title"
+    newer_review.zh_title = "Newer reviewed title"
+    db_session.commit()
+    draft = _daily_report_draft(
+        db_session,
+        source_operation_id=2402,
+        supersedes_report_id=newer.id,
+        overview_event_versions=((101, 1),),
+    )
+
+    successor = repository.create_cumulative_draft(
+        draft,
+        baseline_report_ids=(older.id, newer.id),
+    )
+
+    copied_item = repository.overview_items(successor.id)[0]
+    copied_review = repository.overview_editorial_reviews(copied_item.id)[0]
+    assert copied_review.zh_title == "Newer reviewed title"
+    assert copied_review.copied_from_editorial_review_id == newer_review.id
+
+
 def test_create_cumulative_draft_keeps_one_chain_across_window_sizes(
     db_session: Session,
 ) -> None:
@@ -1096,6 +1140,101 @@ def test_second_same_day_report_accumulates_eleven_and_reranks_decisions(
         8,
     ]
     assert second.generation_summary["overview_count"] == 11
+
+
+def test_generation_merges_disconnected_same_day_heads_with_current_operation(
+    db_session: Session,
+) -> None:
+    report_date = NOW.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
+    for index, event_id in enumerate(range(1, 11)):
+        _seed_snapshot_event(
+            db_session,
+            event_id=event_id,
+            status="confirmed",
+            display_tier="hotspot",
+            rank_score=100 - index,
+            occurred_at=NOW - timedelta(minutes=index + 1),
+        )
+    chain_a_head = _archived_report(
+        db_session,
+        report_date=report_date,
+        revision=1,
+        overview_event_versions=((1, 1), (2, 1), (3, 1), (4, 1)),
+    )
+    chain_b_head = _archived_report(
+        db_session,
+        report_date=report_date,
+        revision=2,
+        overview_event_versions=((4, 1), (5, 1)),
+    )
+    operation_id = _seed_operation_with_ids(
+        db_session,
+        2402,
+        (5, 6, 7, 8, 9, 10),
+        NOW + timedelta(hours=1),
+    )
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+
+    report = DailyReportService(
+        db_session,
+        utcnow=lambda: NOW + timedelta(hours=1),
+    ).generate_from_operation(
+        operation_id,
+        24,
+        now=NOW + timedelta(hours=1),
+    )
+
+    assert [row.event_id for row in repository.overview_items(report.id)] == list(
+        range(1, 11)
+    )
+    assert report.supersedes_report_id == chain_b_head.id
+    assert report.supersedes_report_id != chain_a_head.id
+    assert report.generation_summary["current_operation_event_count"] == 6
+    assert report.generation_summary["same_day_report_head_count"] == 2
+    assert report.generation_summary["same_day_historical_candidate_count"] == 6
+    assert report.generation_summary["merge_input_count"] == 12
+    assert report.generation_summary["overview_count"] == 10
+    assert report.generation_summary["inherited_count"] == 4
+    assert report.generation_summary["deduplicated_count"] == 2
+
+
+def test_generation_skips_one_corrupt_historical_overview_item(
+    db_session: Session,
+) -> None:
+    report_date = NOW.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
+    head = _archived_report(
+        db_session,
+        report_date=report_date,
+        revision=1,
+        overview_event_versions=((1, 1), (2, 1)),
+    )
+    repository = DailyReportRepository(db_session)
+    broken, _valid = repository.overview_items(head.id)
+    broken.snapshot = "broken"  # type: ignore[assignment]
+    _seed_snapshot_event(
+        db_session,
+        event_id=3,
+        status="confirmed",
+        display_tier="hotspot",
+        rank_score=90,
+        occurred_at=NOW,
+    )
+    db_session.commit()
+    operation_id = _seed_operation_with_ids(
+        db_session,
+        2402,
+        (3,),
+        NOW + timedelta(hours=1),
+    )
+
+    report = DailyReportService(db_session).generate_from_operation(
+        operation_id,
+        24,
+        now=NOW + timedelta(hours=1),
+    )
+
+    assert [item.event_id for item in repository.overview_items(report.id)] == [2, 3]
+    assert report.generation_summary["skipped_invalid_historical_overview_event"] == 1
 
 
 def test_different_operation_cannot_publish_while_same_day_report_is_draft(

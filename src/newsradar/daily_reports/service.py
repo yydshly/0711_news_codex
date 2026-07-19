@@ -12,7 +12,11 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from newsradar.daily_reports.accumulation import accumulate_daily_overview
+from newsradar.daily_reports.accumulation import (
+    DailyOverviewBaseline,
+    accumulate_daily_overview,
+    accumulate_daily_overview_baselines,
+)
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     MAX_ITEMS_PER_SECTION,
@@ -20,6 +24,7 @@ from newsradar.daily_reports.schema import (
     DailyReportDraft,
     DailyReportItemDraft,
     DailyReportOverviewItemDraft,
+    EditorialDecision,
     ReportSection,
     validate_window_hours,
 )
@@ -254,6 +259,39 @@ def _overview_record_drafts(
     )
 
 
+def _overview_head_baseline(
+    head: DailyReportRecord,
+    rows: tuple[DailyReportOverviewItemRecord, ...],
+    decisions: dict[tuple[int, int], EditorialDecision],
+) -> tuple[DailyOverviewBaseline, int]:
+    drafts: list[DailyReportOverviewItemDraft] = []
+    skipped = 0
+    for row in rows:
+        try:
+            if not isinstance(row.snapshot, dict):
+                raise TypeError("invalid historical overview snapshot")
+            snapshot = dict(row.snapshot)
+            snapshot["daily_accumulation_origin"] = {
+                "report_id": head.id,
+                "operation_id": head.source_operation_id,
+                "window_end": head.window_end.isoformat(),
+            }
+            drafts.append(
+                DailyReportOverviewItemDraft(
+                    event_id=row.event_id,
+                    event_version_number=row.event_version_number,
+                    position=row.position,
+                    snapshot=snapshot,
+                    decision_event_id=(
+                        row.event_id if row.decision_item_id is not None else None
+                    ),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            skipped += 1
+    return DailyOverviewBaseline(tuple(drafts), decisions), skipped
+
+
 def _snapshot_missing_time_count(
     session: Session,
     snapshot: OperationSnapshotRef,
@@ -410,9 +448,24 @@ class DailyReportService:
             snapshot,
             checked_at=checked_at,
         )
+        current_overview_count = len(overview_drafts)
         window_end = page.snapshot.window_end
+        overview_drafts = tuple(
+            replace(
+                item,
+                snapshot={
+                    **item.snapshot,
+                    "daily_accumulation_origin": {
+                        "report_id": None,
+                        "operation_id": page.snapshot.operation_id,
+                        "window_end": window_end.isoformat(),
+                    },
+                },
+            )
+            for item in overview_drafts
+        )
         report_date = window_end.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
-        existing, predecessor, _baseline_heads = self._reports.begin_publication(
+        existing, predecessor, baseline_heads = self._reports.begin_publication(
             report_date,
             source_operation_id=page.snapshot.operation_id,
             window_end=window_end,
@@ -420,26 +473,44 @@ class DailyReportService:
         if existing is not None:
             self.session.commit()
             return existing
-        previous_overview = (
-            _overview_record_drafts(self._reports.overview_items(predecessor.id))
-            if predecessor is not None
-            else ()
-        )
-        previous_decisions = (
-            self._reports.overview_decisions(predecessor.id)
-            if predecessor is not None
-            else {}
-        )
+        baselines: list[DailyOverviewBaseline] = []
+        skipped_historical = 0
+        historical_input_count = 0
+        for head in baseline_heads:
+            rows = self._reports.overview_items(head.id)
+            historical_input_count += len(rows)
+            baseline, skipped = _overview_head_baseline(
+                head,
+                rows,
+                self._reports.overview_decisions(head.id),
+            )
+            baselines.append(baseline)
+            skipped_historical += skipped
         involved_event_ids = {
-            item.event_id for item in (*previous_overview, *overview_drafts)
+            item.event_id
+            for item in (
+                *(item for baseline in baselines for item in baseline.items),
+                *overview_drafts,
+            )
         }
         survivors = self._reports.applied_event_survivors(involved_event_ids)
-        accumulated = accumulate_daily_overview(
-            previous_overview,
+        accumulated = accumulate_daily_overview_baselines(
+            tuple(baselines),
             overview_drafts,
             canonical_event_ids=survivors,
-            previous_decisions=previous_decisions,
         )
+        final_canonical_ids = {
+            survivors.get(item.event_id, item.event_id) for item in accumulated.items
+        }
+        if any(
+            {
+                survivors.get(item.event_id, item.event_id)
+                for item in baseline.items
+            }
+            - final_canonical_ids
+            for baseline in baselines
+        ):
+            raise RuntimeError("daily_report_cumulative_regression")
         decision_drafts = _decision_drafts(accumulated.items)
         overview_drafts = _overview_with_dispositions(
             accumulated.items,
@@ -464,6 +535,10 @@ class DailyReportService:
             generation_summary={
                 "decision_count": len(decision_drafts),
                 "overview_count": len(accumulated.items),
+                "current_operation_event_count": len(snapshot.event_versions),
+                "same_day_report_head_count": len(baseline_heads),
+                "same_day_historical_candidate_count": historical_input_count,
+                "merge_input_count": historical_input_count + current_overview_count,
                 "omitted_from_decision_count": (
                     len(accumulated.items) - len(decision_drafts)
                 ),
@@ -482,6 +557,7 @@ class DailyReportService:
                 ),
                 "skipped_invalid_event": skipped_invalid,
                 "skipped_invalid_overview_event": skipped_invalid_overview,
+                "skipped_invalid_historical_overview_event": skipped_historical,
                 "skipped_missing_time": skipped_missing_time,
                 "minimax_degraded": any(
                     item.snapshot.get("enrichment_origin") != "model"
@@ -493,7 +569,10 @@ class DailyReportService:
             supersedes_report_id=predecessor.id if predecessor else None,
         )
         return (
-            self._reports.create_cumulative_draft(draft)
+            self._reports.create_cumulative_draft(
+                draft,
+                baseline_report_ids=tuple(head.id for head in baseline_heads),
+            )
             if predecessor is not None
             else self._reports.create_draft(draft)
         )

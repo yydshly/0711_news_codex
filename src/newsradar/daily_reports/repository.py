@@ -133,11 +133,19 @@ class DailyReportRepository:
         predecessor = heads[-1] if heads else None
         return None, predecessor, heads
 
-    def create_cumulative_draft(self, draft: DailyReportDraft) -> DailyReportRecord:
+    def create_cumulative_draft(
+        self,
+        draft: DailyReportDraft,
+        *,
+        baseline_report_ids: tuple[int, ...] | None = None,
+    ) -> DailyReportRecord:
         if draft.supersedes_report_id is None:
             raise ValueError("daily_report_cumulative_predecessor_required")
+        expected_baseline_ids = baseline_report_ids or (draft.supersedes_report_id,)
+        baseline_heads: tuple[DailyReportRecord, ...] = ()
 
         def match_or_validate_predecessor() -> DailyReportRecord:
+            nonlocal baseline_heads
             self._lock_report_day(draft.report_date)
             existing = self._matching_report(
                 draft,
@@ -145,14 +153,16 @@ class DailyReportRepository:
             )
             if existing is not None:
                 return existing
-            predecessor = self.latest_archived_for_day(
+            baseline_heads = self.archived_heads_for_day(
                 draft.report_date,
                 excluding_operation_id=draft.source_operation_id,
                 window_end=draft.window_end,
             )
+            predecessor = baseline_heads[-1] if baseline_heads else None
             if (
                 predecessor is None
                 or predecessor.id != draft.supersedes_report_id
+                or tuple(head.id for head in baseline_heads) != expected_baseline_ids
             ):
                 self.session.rollback()
                 raise RuntimeError("daily_report_cumulative_chain_changed")
@@ -172,7 +182,8 @@ class DailyReportRepository:
             self.session.commit()
             return report
         try:
-            self._copy_revision_reviews(predecessor, report)
+            for baseline in reversed(baseline_heads):
+                self._copy_revision_reviews(baseline, report)
             self.session.commit()
         except Exception:
             self.session.rollback()
