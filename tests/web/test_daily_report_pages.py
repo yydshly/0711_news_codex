@@ -1464,6 +1464,10 @@ def test_detail_projects_all_overview_candidates_but_scripts_only_reviewed_inclu
         )
     db_session.commit()
     items = repository.overview_items(report.id)
+    incompatible_snapshot = dict(items[1].snapshot)
+    incompatible_snapshot["display_tier"] = "audit_only"
+    items[1].snapshot = incompatible_snapshot
+    db_session.commit()
 
     repository.save_overview_editorial_review(
         report.id,
@@ -1522,6 +1526,22 @@ def test_detail_projects_all_overview_candidates_but_scripts_only_reviewed_inclu
     assert detail.overview.summary.excluded_count == 1
     assert detail.overview.summary.duplicate_count == 1
     assert detail.overview.summary.unreviewed_count == 1
+    assert len(detail.overview.included) == 2
+    assert sum(
+        len(group)
+        for group in (
+            detail.overview.included_confirmed,
+            detail.overview.included_hotspots,
+            detail.overview.included_signals,
+        )
+    ) == 2
+    degraded = next(
+        item for item in detail.overview.included if item.event_id == items[1].event_id
+    )
+    assert degraded.display_tier == "signal"
+    assert degraded.snapshot["overview_display_diagnostic_zh"] == (
+        "全览展示层级缺失或不兼容，已降级为新兴信号。"
+    )
     assert "人工保留标题" in detail.overview.script
     assert "尚待进一步确认：人工待补证标题" in detail.overview.script
     assert "人工排除标题" not in detail.overview.script

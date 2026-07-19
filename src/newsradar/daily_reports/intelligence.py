@@ -116,6 +116,8 @@ def _overview_section(item: OverviewReportItem) -> str | None:
         return "hotspot"
     if item.display_tier == "signal":
         return "signal"
+    if item.decision in {"keep", "needs_evidence"}:
+        return "signal"
     return None
 
 

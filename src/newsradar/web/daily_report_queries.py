@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import case, select
@@ -365,6 +365,23 @@ class DailyReportOverviewView:
     script: str
     summary: DailyReportOverviewEditorialSummaryView
     legacy_unreviewed: bool
+
+
+def _normalize_included_overview_item(
+    item: DailyReportOverviewItemView,
+) -> DailyReportOverviewItemView:
+    if item.status == "confirmed" or item.display_tier in {"hotspot", "signal"}:
+        return item
+    return replace(
+        item,
+        display_tier="signal",
+        snapshot={
+            **item.snapshot,
+            "overview_display_diagnostic_zh": (
+                "全览展示层级缺失或不兼容，已降级为新兴信号。"
+            ),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -939,7 +956,7 @@ class DailyReportQueryService:
             if item.status != "confirmed" and item.display_tier == "signal"
         )
         included = tuple(
-            item
+            _normalize_included_overview_item(item)
             for item in items
             if item.editorial_review is not None
             and item.editorial_review.decision in {"keep", "needs_evidence"}
@@ -991,16 +1008,12 @@ class DailyReportQueryService:
                             else None
                         ),
                     )
-                    for item in items
+                    for item in included
                 ),
             ),
             summary=DailyReportOverviewEditorialSummaryView(
                 total_count=len(items),
-                included_count=sum(
-                    item.editorial_review is not None
-                    and item.editorial_review.decision in {"keep", "needs_evidence"}
-                    for item in items
-                ),
+                included_count=len(included),
                 needs_evidence_count=sum(
                     item.editorial_review is not None
                     and item.editorial_review.decision == "needs_evidence"

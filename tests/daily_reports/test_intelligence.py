@@ -148,3 +148,25 @@ def test_overview_script_only_speaks_reviewed_included_items_and_marks_risk() ->
     assert all(
         title not in script for title in ("排除事件", "重复事件", "未审核事件")
     )
+
+
+def test_overview_script_degrades_included_unknown_tier_to_signal() -> None:
+    script = build_overview_script(
+        report_date=date(2026, 7, 17),
+        items=(
+            OverviewReportItem(
+                event_id=7,
+                status="emerging",
+                display_tier="audit_only",
+                rank_score=70,
+                zh_title="历史保留线索",
+                zh_summary="历史层级不兼容。",
+                why_it_matters="仍需持续跟踪。",
+                confirmation_summary="当前仍待补证。",
+                decision="keep",
+            ),
+        ),
+    )
+
+    assert "新兴信号" in script
+    assert script.count("历史保留线索") == 1
