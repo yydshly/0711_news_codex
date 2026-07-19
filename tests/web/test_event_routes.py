@@ -168,9 +168,10 @@ def test_event_pages_distinguish_latest_operation_from_daily_cumulative(
         db_session, [(event_id, 1) for event_id in event_ids[:6]]
     )
     operation = db_session.get(OperationRunRecord, operation_id)
+    window_end = datetime.now(UTC) - timedelta(milliseconds=1)
     operation.requested_scope = {
         **operation.requested_scope,
-        "window_end": (operation.finished_at - timedelta(milliseconds=1)).isoformat(),
+        "window_end": window_end.isoformat(),
     }
     db_session.commit()
     report_id = _add_cumulative_report(db_session, operation_id, event_ids)
