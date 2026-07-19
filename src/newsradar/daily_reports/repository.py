@@ -92,8 +92,14 @@ class DailyReportRepository:
         if draft.supersedes_report_id is None:
             raise ValueError("daily_report_cumulative_predecessor_required")
 
-        def validate_predecessor() -> DailyReportRecord:
+        def match_or_validate_predecessor() -> DailyReportRecord:
             self._lock_report_day(draft.report_date)
+            existing = self._matching_report(
+                draft,
+                match_source_operation=True,
+            )
+            if existing is not None:
+                return existing
             predecessor = self.latest_archived_for_day(
                 draft.report_date,
                 excluding_operation_id=draft.source_operation_id,
@@ -106,12 +112,15 @@ class DailyReportRepository:
                 raise RuntimeError("daily_report_cumulative_chain_changed")
             return predecessor
 
-        predecessor = validate_predecessor()
+        predecessor = match_or_validate_predecessor()
+        if predecessor.id != draft.supersedes_report_id:
+            self.session.commit()
+            return predecessor
         report, created = self._create_draft(
             draft,
             commit=False,
             match_source_operation=True,
-            before_match=validate_predecessor,
+            before_match=match_or_validate_predecessor,
         )
         if not created:
             self.session.commit()

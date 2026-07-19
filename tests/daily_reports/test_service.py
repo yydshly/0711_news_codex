@@ -589,6 +589,33 @@ def test_create_cumulative_draft_does_not_reuse_other_operation_successor(
         )
 
 
+def test_create_cumulative_draft_reuses_exact_child_after_head_advances(
+    db_session: Session,
+) -> None:
+    predecessor = _archived_report(db_session, revision=1)
+    repository = DailyReportRepository(db_session)
+    original_draft = _daily_report_draft(
+        db_session,
+        source_operation_id=2402,
+        supersedes_report_id=predecessor.id,
+    )
+    first_successor = repository.create_cumulative_draft(original_draft)
+    repository.archive(first_successor.id)
+    later_successor = repository.create_cumulative_draft(
+        _daily_report_draft(
+            db_session,
+            source_operation_id=2403,
+            supersedes_report_id=first_successor.id,
+        )
+    )
+    repository.archive(later_successor.id)
+
+    retried = repository.create_cumulative_draft(original_draft)
+
+    assert retried.id == first_successor.id
+    assert retried.source_operation_id == 2402
+
+
 def test_overview_decisions_are_keyed_by_exact_event_version(
     db_session: Session,
 ) -> None:
