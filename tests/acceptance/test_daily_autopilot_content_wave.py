@@ -86,7 +86,7 @@ def _autopilot_lease(run_id: int, stage: DailyAutopilotStage) -> OperationLease:
     )
 
 
-def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
+def test_daily_autopilot_turns_real_wave_items_into_reviewed_decision_audio_package(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -314,10 +314,8 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
                 )
             )
         )
-        assert {row.requested_scope["rendition"] for row in queued} == {
-            "decision",
-            "overview",
-        }
+        assert {row.requested_scope["rendition"] for row in queued} == {"decision"}
+        assert run.overview_audio_operation_id is None
         audio_operations = tuple((row.id, dict(row.requested_scope)) for row in queued)
         members = {
             row.source_id: row.state
@@ -364,8 +362,10 @@ def test_daily_autopilot_turns_real_wave_items_into_reviewed_dual_audio_package(
     )
     assert wait_result.status is OperationStatus.SUCCEEDED
     with factory() as db:
+        run = DailyAutopilotRepository(db).get(run_id)
         decision_audio = db.get(OperationRunRecord, run.decision_audio_operation_id)
-        overview_audio = db.get(OperationRunRecord, run.overview_audio_operation_id)
         assert decision_audio is not None and decision_audio.status == "succeeded"
-        assert overview_audio is not None and overview_audio.status == "succeeded"
+        assert run.overview_audio_operation_id is None
+        assert run.result_summary["audio_count"] == 1
+        assert run.result_summary["overview_audio"] == "on_demand"
     engine.dispose()
