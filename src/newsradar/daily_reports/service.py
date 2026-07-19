@@ -339,6 +339,11 @@ class DailyReportService:
                 window_end=window_end,
                 source_operation_id=page.snapshot.operation_id,
                 generation_summary={
+                    "decision_count": len(drafts),
+                    "overview_count": len(overview_drafts),
+                    "omitted_from_decision_count": (
+                        len(overview_drafts) - len(decision_event_ids)
+                    ),
                     "confirmed_count": sum(
                         item.section is ReportSection.CONFIRMED for item in drafts
                     ),
@@ -348,7 +353,6 @@ class DailyReportService:
                     "skipped_invalid_event": skipped_invalid,
                     "skipped_invalid_overview_event": skipped_invalid_overview,
                     "skipped_missing_time": skipped_missing_time,
-                    "overview_count": len(overview_drafts),
                     "minimax_degraded": any(
                         item.snapshot["enrichment_origin"] != "model" for item in drafts
                     ),
@@ -423,8 +427,6 @@ class DailyReportService:
             ref.event_id: ref.version_number for ref in snapshot.event_versions
         }
         for row in self._events._operation_rows(snapshot):
-            if row.status != "confirmed" and row.display_tier not in {"hotspot", "signal"}:
-                continue
             version_number = version_by_event[row.event_id]
             try:
                 detail = self._events.get_operation_event(

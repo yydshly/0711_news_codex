@@ -215,6 +215,7 @@ def seed_complete_snapshot(
     *,
     confirmed: tuple[int, ...] = (101, 102),
     emerging: tuple[int, ...] = (201, 202),
+    audit_only: tuple[int, ...] | None = None,
 ) -> int:
     refs: list[tuple[int, int]] = []
     for index, event_id in enumerate(confirmed):
@@ -238,20 +239,32 @@ def seed_complete_snapshot(
             enrichment_origin="rule_fallback" if index == 0 else "model",
         )
         refs.append((event_id, 1))
-    for event_id, tier, occurred_at in (
-        (301, "audit_only", NOW - timedelta(hours=1)),
-        (302, "signal", NOW - timedelta(hours=25)),
-        (303, "signal", None),
-    ):
-        _seed_snapshot_event(
-            session,
-            event_id=event_id,
-            status="emerging",
-            display_tier=tier,
-            rank_score=70,
-            occurred_at=occurred_at,
-        )
-        refs.append((event_id, 1))
+    if audit_only is None:
+        for event_id, tier, occurred_at in (
+            (301, "audit_only", NOW - timedelta(hours=1)),
+            (302, "signal", NOW - timedelta(hours=25)),
+            (303, "signal", None),
+        ):
+            _seed_snapshot_event(
+                session,
+                event_id=event_id,
+                status="emerging",
+                display_tier=tier,
+                rank_score=70,
+                occurred_at=occurred_at,
+            )
+            refs.append((event_id, 1))
+    else:
+        for index, event_id in enumerate(audit_only):
+            _seed_snapshot_event(
+                session,
+                event_id=event_id,
+                status="emerging",
+                display_tier="audit_only",
+                rank_score=70 - index,
+                occurred_at=NOW - timedelta(hours=index + 1),
+            )
+            refs.append((event_id, 1))
     session.add(
         OperationRunRecord(
             id=SEEDED_OPERATION_ID,
@@ -259,7 +272,7 @@ def seed_complete_snapshot(
             trigger="test",
             status="succeeded",
             requested_scope={
-                "window_hours": 72,
+                "window_hours": 24 if audit_only is not None else 72,
                 "window_end": NOW.isoformat(),
                 "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
             },
@@ -356,6 +369,28 @@ def test_generate_from_operation_uses_exact_snapshot(db_session: Session) -> Non
     assert DailyReportRepository(db_session).items(report.id)
 
 
+def test_generate_keeps_all_eight_events_in_overview_but_only_two_in_decision(
+    db_session: Session,
+) -> None:
+    operation_id = seed_complete_snapshot(
+        db_session,
+        confirmed=(),
+        emerging=(201, 202),
+        audit_only=(301, 302, 303, 304, 305, 306),
+    )
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate_from_operation(
+        operation_id, 24, now=NOW
+    )
+    repository = DailyReportRepository(db_session)
+
+    assert len(repository.items(report.id)) == 2
+    assert len(repository.overview_items(report.id)) == 8
+    assert report.generation_summary["decision_count"] == 2
+    assert report.generation_summary["overview_count"] == 8
+    assert report.generation_summary["omitted_from_decision_count"] == 6
+
+
 def test_generate_persists_every_displayable_operation_event_for_overview(
     db_session: Session,
 ) -> None:
@@ -364,13 +399,13 @@ def test_generate_persists_every_displayable_operation_event_for_overview(
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
     rows = DailyReportRepository(db_session).overview_items(report.id)
 
-    assert [row.event_id for row in rows] == [101, 102, 201, 202, 302]
-    assert [row.position for row in rows] == list(range(1, 6))
+    assert [row.event_id for row in rows] == [101, 102, 201, 202, 301, 302]
+    assert [row.position for row in rows] == list(range(1, 7))
     assert all(set(row.snapshot) == EXPECTED_SNAPSHOT_KEYS for row in rows)
     assert {
         row.event_id for row in rows if row.decision_item_id is not None
     } == {101, 102, 201, 202}
-    assert report.generation_summary["overview_count"] == 5
+    assert report.generation_summary["overview_count"] == 6
 
 
 def test_generate_keeps_invalid_overview_event_as_degraded_item(
@@ -391,7 +426,7 @@ def test_generate_keeps_invalid_overview_event_as_degraded_item(
 
     rows = DailyReportRepository(db_session).overview_items(report.id)
 
-    assert [row.event_id for row in rows] == [101, 102, 201, 202, 302]
+    assert [row.event_id for row in rows] == [101, 102, 201, 202, 301, 302]
     assert rows[-1].snapshot["display_degradation_reason"] == "event_detail_unavailable"
     assert report.generation_summary["skipped_invalid_overview_event"] == 1
     assert len(DailyReportRepository(db_session).items(report.id)) == 4
