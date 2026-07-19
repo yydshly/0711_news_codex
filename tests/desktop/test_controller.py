@@ -78,8 +78,58 @@ def test_controller_returns_failed_status_when_orphan_cleanup_fails() -> None:
         orphan_cleaner=lambda: ProcessCleanupResult(failed_pids=(123,)),
     )
 
-    assert controller.start_service().state == "failed"
+    status = controller.start_service()
+
+    assert status.state == "failed"
+    assert status.message_zh == "检测到无法清理的 News Codex 遗留进程，请退出旧实例后重试。"
     assert probe_called is False
+
+
+def test_controller_cleans_exited_supervisor_before_reporting_startup_failure() -> None:
+    process = FakeProcess(pid=321, exit_code=17)
+    calls: list[str] = []
+    controller = DesktopController(
+        process_factory=lambda _command: process,
+        probe=lambda _url: False,
+        tree_stopper=lambda pid: calls.append(f"tree:{pid}")
+        or ProcessCleanupResult((pid,), (pid,), ()),
+        orphan_cleaner=lambda: calls.append("orphans") or ProcessCleanupResult(),
+    )
+
+    status = controller.start_service()
+
+    assert status.state == "failed"
+    assert calls == ["orphans", "tree:321", "orphans"]
+    assert controller._owned_process is None
+
+
+def test_controller_keeps_exited_supervisor_for_retry_when_cleanup_fails() -> None:
+    process = FakeProcess(pid=321, exit_code=17)
+    orphan_cleanup_results = iter(
+        [
+            ProcessCleanupResult(),
+            ProcessCleanupResult(failed_pids=(process.pid,)),
+            ProcessCleanupResult(),
+        ]
+    )
+    calls: list[str] = []
+    controller = DesktopController(
+        process_factory=lambda _command: process,
+        probe=lambda _url: False,
+        tree_stopper=lambda pid: calls.append(f"tree:{pid}")
+        or ProcessCleanupResult((pid,), (pid,), ()),
+        orphan_cleaner=lambda: calls.append("orphans") or next(orphan_cleanup_results),
+    )
+
+    startup_status = controller.start_service()
+    assert controller._owned_process is process
+
+    retry_status = controller.stop_service()
+
+    assert startup_status.state == "failed"
+    assert controller._owned_process is None
+    assert retry_status.state == "stopped"
+    assert calls == ["orphans", "tree:321", "orphans", "tree:321", "orphans"]
 
 
 def test_controller_stops_the_complete_owned_tree() -> None:

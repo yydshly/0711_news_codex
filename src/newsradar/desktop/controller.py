@@ -26,6 +26,9 @@ ProcessFactory = Callable[[tuple[str, ...]], ManagedProcess]
 HealthProbe = Callable[[str], bool]
 ProcessTreeStopper = Callable[[int], ProcessCleanupResult]
 OrphanCleaner = Callable[[], ProcessCleanupResult]
+_ORPHAN_CLEANUP_FAILED_MESSAGE = (
+    "检测到无法清理的 News Codex 遗留进程，请退出旧实例后重试。"
+)
 
 
 @dataclass(frozen=True)
@@ -76,11 +79,7 @@ class DesktopController:
             self._initial_orphan_cleanup_done = True
             cleanup = self._orphan_cleaner()
             if not cleanup.succeeded:
-                return DesktopStatus(
-                    "failed",
-                    "妫€娴嬪埌鏃犳硶娓呯悊鐨?News Codex "
-                    "閬楃暀杩涚▼锛岃閫€鍑烘棫瀹炰緥鍚庨噸璇曘€?",
-                )
+                return DesktopStatus("failed", _ORPHAN_CLEANUP_FAILED_MESSAGE)
         current = self.status()
         if current.state in {"running", "external_running"}:
             return current
@@ -89,7 +88,7 @@ class DesktopController:
             if self._probe(self.url):
                 return DesktopStatus("running", "News Codex 已启动。")
             if self._owned_process.poll() is not None:
-                self._owned_process = None
+                self._cleanup_owned_process()
                 return DesktopStatus("failed", "News Codex 服务启动失败，请查看本地运行日志。")
             if attempt < self._health_attempts - 1:
                 self._sleeper(self._health_interval_seconds)
@@ -101,16 +100,23 @@ class DesktopController:
             if self._probe(self.url):
                 return DesktopStatus("external_running", "服务由其他进程运行，桌面窗口不会停止它。")
             return DesktopStatus("stopped", "News Codex 已停止。")
-        process = self._owned_process
-        tree_cleanup = self._tree_stopper(process.pid)
-        orphan_cleanup = self._orphan_cleaner()
-        if not tree_cleanup.succeeded or not orphan_cleanup.succeeded:
+        if not self._cleanup_owned_process():
             return DesktopStatus("failed", "News Codex 服务停止失败，请重试。")
-        self._owned_process = None
         return DesktopStatus("stopped", "News Codex 已停止。")
 
     def shutdown(self) -> DesktopStatus:
         return self.stop_service()
+
+    def _cleanup_owned_process(self) -> bool:
+        process = self._owned_process
+        if process is None:
+            return True
+        tree_cleanup = self._tree_stopper(process.pid)
+        orphan_cleanup = self._orphan_cleaner()
+        if not tree_cleanup.succeeded or not orphan_cleanup.succeeded:
+            return False
+        self._owned_process = None
+        return True
 
     @staticmethod
     def _spawn(command: tuple[str, ...]) -> ManagedProcess:
