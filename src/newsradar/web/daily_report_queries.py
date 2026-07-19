@@ -496,7 +496,7 @@ class DailyReportQueryService:
         operation_id: int,
         window_end: datetime,
     ) -> DailyCumulativeContextView | None:
-        snapshot = event_snapshot_by_id(self.session, operation_id, now=window_end)
+        snapshot = event_snapshot_by_id(self.session, operation_id)
         if snapshot is None:
             return None
         report = self.session.scalar(
