@@ -1975,6 +1975,9 @@ def test_draft_actions_redirect_and_archive_locks_editing(
     item = DailyReportRepository(db_session).items(report.id)[0]
     report_id, item_id = report.id, item.id
     client, token = safe_client_with_token(db_session, monkeypatch)
+    draft_page = client.get(f"/daily-reports/{report_id}")
+    assert "归档定稿" in draft_page.text
+    assert "创建修订版" not in draft_page.text
     toggled = client.post(
         f"/daily-reports/{report_id}/items/{item_id}/included",
         data={"action_token": token, "included": "false"},
@@ -1990,6 +1993,7 @@ def test_draft_actions_redirect_and_archive_locks_editing(
     assert archived.status_code == 303
     page = client.get(f"/daily-reports/{report_id}")
     assert "创建修订版" in page.text
+    assert "归档定稿" not in page.text
     assert "上移" not in page.text
     assert '<option value="exclude"' not in page.text
 
@@ -2060,6 +2064,52 @@ def test_revise_route_from_older_parent_creates_draft_from_latest_archived_head(
             select(DailyReportRecord).where(DailyReportRecord.supersedes_report_id == parent_id)
         )
     ] == [child_id]
+
+
+def test_revise_route_from_archived_ancestor_redirects_to_current_active_draft(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = seed_daily_report(db_session)
+    parent_id = parent.id
+    repository.archive(parent_id)
+    active = repository.revise(parent_id)
+    active_id = active.id
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{parent_id}/revise",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/daily-reports/{active_id}"
+
+
+def test_revise_route_never_redirects_to_trashed_child(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = seed_daily_report(db_session)
+    parent_id = parent.id
+    repository.archive(parent_id)
+    abandoned = repository.revise(parent_id)
+    abandoned_id = abandoned.id
+    repository.move_to_trash(abandoned_id)
+    replacement = repository.revise(parent_id)
+    replacement_id = replacement.id
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{parent_id}/revise",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/daily-reports/{replacement_id}"
+    assert response.headers["location"] != f"/daily-reports/{abandoned_id}"
 
 
 def test_archive_page_shows_pin_and_trash_controls(
@@ -2153,6 +2203,91 @@ def test_safe_bulk_trash_and_restore_reach_their_static_handlers(
         db_session.get(DailyReportRecord, report_id).deleted_at is None
         for report_id in report_ids
     )
+
+
+def test_single_restore_active_revision_conflict_renders_allowlisted_reason(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = seed_daily_report(db_session)
+    repository.archive(parent.id)
+    abandoned = repository.revise(parent.id)
+    abandoned_id = abandoned.id
+    repository.move_to_trash(abandoned_id)
+    repository.revise(parent.id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{abandoned_id}/restore",
+        data={"action_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "blocked=1" in response.headers["location"]
+    assert "reason=active_revision_exists" in response.headers["location"]
+    page = client.get(response.headers["location"])
+    assert page.status_code == 200
+    assert "受阻 1 份" in page.text
+    assert "该日报已有新的有效修订版，不能直接恢复。请打开当前有效版本继续处理。" in page.text
+
+
+def test_bulk_restore_active_revision_conflict_renders_allowlisted_reason(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    parent = seed_daily_report(db_session)
+    repository.archive(parent.id)
+    abandoned = repository.revise(parent.id)
+    abandoned_id = abandoned.id
+    repository.move_to_trash(abandoned_id)
+    repository.revise(parent.id)
+    ordinary = seed_daily_report(
+        db_session,
+        report_date=date(2026, 7, 17),
+        operation_id=4102,
+    )
+    ordinary_id = ordinary.id
+    repository.move_to_trash(ordinary_id)
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        "/daily-reports/bulk/restore",
+        content=urlencode(
+            [
+                ("action_token", token),
+                ("report_ids", str(abandoned_id)),
+                ("report_ids", str(ordinary_id)),
+            ]
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "changed=1" in response.headers["location"]
+    assert "blocked=1" in response.headers["location"]
+    assert "reason=active_revision_exists" in response.headers["location"]
+    page = client.get(response.headers["location"])
+    assert "该日报已有新的有效修订版，不能直接恢复。请打开当前有效版本继续处理。" in page.text
+
+
+@pytest.mark.parametrize("reason", ("unknown", "<script>alert(1)</script>"))
+def test_retention_notice_never_renders_unallowlisted_query_reason(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(
+        "/daily-reports/trash",
+        params={"blocked": "1", "reason": reason},
+    )
+
+    assert response.status_code == 200
+    assert reason not in response.text
+    assert "该日报已有新的有效修订版，不能直接恢复。" not in response.text
 
 
 def test_trash_page_purge_requires_confirmation_and_enqueues_only(
@@ -2314,6 +2449,32 @@ def test_daily_report_routes_translate_exact_revision_conflict_only(
     assert "daily_report_revision_conflict" not in response.text
 
 
+def test_revise_route_translates_revision_chain_change_to_refresh_diagnostic(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    DailyReportRepository(db_session).archive(report_id)
+
+    def reject_chain_change(*args, **kwargs):
+        raise RuntimeError("daily_report_revision_chain_changed")
+
+    monkeypatch.setattr(
+        "newsradar.daily_reports.service.DailyReportService.revise",
+        reject_chain_change,
+    )
+    client, token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.post(
+        f"/daily-reports/{report_id}/revise",
+        data={"action_token": token},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "日报版本在生成期间发生变化，请刷新页面后重试。"
+    assert "daily_report_revision_chain_changed" not in response.text
+
+
 @pytest.mark.parametrize("route", ("generate", "revise"))
 def test_daily_report_routes_do_not_swallow_unknown_runtime_error(
     db_session: Session,
@@ -2366,3 +2527,35 @@ def test_archived_page_does_not_follow_event_current_pointer(
     page = client.get(f"/daily-reports/{archived_id}")
     assert "确认事件" in page.text
     assert "后来修改的事件标题" not in page.text
+
+
+def test_detail_warns_only_for_archived_report_snapshot_revision_overview(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warning = "历史操作快照缺失，本修订版沿用归档版固定条目；系统没有重新抓取或混入当前事件。"
+    report = seed_daily_report(db_session)
+    report_id = report.id
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    ordinary = client.get(f"/daily-reports/{report_id}")
+    assert warning not in ordinary.text
+
+    stored = db_session.get(DailyReportRecord, report_id)
+    assert stored is not None
+    stored.generation_summary = {
+        **stored.generation_summary,
+        "revision_overview_source": "archived_report_snapshot",
+    }
+    db_session.commit()
+    legacy = client.get(f"/daily-reports/{report_id}")
+    assert warning in legacy.text
+
+    stored = db_session.get(DailyReportRecord, report_id)
+    assert stored is not None
+    stored.generation_summary = {
+        **stored.generation_summary,
+        "revision_overview_source": "event_snapshot",
+    }
+    db_session.commit()
+    modern = client.get(f"/daily-reports/{report_id}")
+    assert warning not in modern.text

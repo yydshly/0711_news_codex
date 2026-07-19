@@ -22,7 +22,7 @@ from newsradar.credentials import SettingsCredentials
 from newsradar.daily_reports.automation_repository import DailyAutomationRepository
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.daily_reports.repository import DailyReportRepository
-from newsradar.daily_reports.retention import TRASH_BATCH_LIMIT
+from newsradar.daily_reports.retention import TRASH_BATCH_LIMIT, RetentionActionResult
 from newsradar.daily_reports.schema import (
     DailyReportEditorialReviewDraft,
     DailyReportOverviewEditorialReviewDraft,
@@ -125,6 +125,10 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
     "daily_report_archived": (409, "该日报已归档，不能再修改。"),
     "daily_report_must_be_archived": (409, "仅已归档的日报可以创建修订版。"),
     "daily_report_revision_conflict": (409, "日报修订发生冲突，请刷新页面后重试。"),
+    "daily_report_revision_chain_changed": (
+        409,
+        "日报版本在生成期间发生变化，请刷新页面后重试。",
+    ),
     "invalid_daily_report_editorial_decision": (
         422,
         "审核结论仅支持保留、待补证、排除或合并重复。",
@@ -166,6 +170,12 @@ _DAILY_REPORT_ERRORS: dict[str, tuple[int, str]] = {
         "情报全览没有可播报的保留或需补证条目。",
     ),
     "active_daily_autopilot_exists": (409, "已有自动日报正在执行，请先查看当前任务。"),
+}
+_ACTIVE_REVISION_BLOCK_DIAGNOSTIC = "该日报已有新的有效修订版，不能直接恢复。"
+_RETENTION_REASON_LABELS = {
+    "active_revision_exists": (
+        "该日报已有新的有效修订版，不能直接恢复。请打开当前有效版本继续处理。"
+    )
 }
 
 _PROVIDER_CATEGORIES = (
@@ -233,7 +243,10 @@ def _daily_report_http_error(error: Exception, *, default_status: int) -> HTTPEx
 
 
 def _daily_report_revision_conflict(error: RuntimeError) -> HTTPException:
-    if str(error) != "daily_report_revision_conflict":
+    if str(error) not in {
+        "daily_report_revision_conflict",
+        "daily_report_revision_chain_changed",
+    }:
         raise error
     return _daily_report_http_error(error, default_status=409)
 
@@ -424,23 +437,34 @@ def create_app(
         except UnsafeWrite as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
-    def retention_notice(request: Request) -> dict[str, int]:
-        return {
+    def retention_notice(request: Request) -> dict[str, int | str | None]:
+        counts = {
             name: max(0, min(50, int(request.query_params.get(name, "0"))))
             if request.query_params.get(name, "0").isdigit()
             else 0
             for name in ("changed", "blocked", "unchanged", "missing")
         }
+        return {
+            **counts,
+            "reason_label": _RETENTION_REASON_LABELS.get(
+                request.query_params.get("reason", "")
+            ),
+        }
 
     def retention_redirect(
-        destination: str, outcomes: dict[str, int]
+        destination: str,
+        outcomes: dict[str, int],
+        *,
+        reason: str | None = None,
     ) -> RedirectResponse:
-        safe_counts = {
+        safe_params: dict[str, int | str] = {
             name: max(0, min(50, outcomes.get(name, 0)))
             for name in ("changed", "blocked", "unchanged", "missing")
         }
+        if reason in _RETENTION_REASON_LABELS:
+            safe_params["reason"] = reason
         return RedirectResponse(
-            url=f"{destination}?{urlencode(safe_counts)}", status_code=303
+            url=f"{destination}?{urlencode(safe_params)}", status_code=303
         )
 
     def parse_report_ids(value: str) -> tuple[int, ...]:
@@ -467,6 +491,15 @@ def create_app(
             "unchanged": results.count("unchanged"),
             "missing": results.count("missing"),
         }
+
+    def retention_reason(results: list[RetentionActionResult]) -> str | None:
+        if any(
+            result.outcome == "blocked"
+            and result.diagnostic_zh == _ACTIVE_REVISION_BLOCK_DIAGNOSTIC
+            for result in results
+        ):
+            return "active_revision_exists"
+        return None
 
     async def require_daily_automation_action(request: Request) -> dict[str, str]:
         try:
@@ -880,18 +913,25 @@ def create_app(
         values = await require_safe_action(request)
         report_ids = parse_report_ids(values.get("report_ids", ""))
         outcomes: list[str] = []
+        results: list[RetentionActionResult] = []
         try:
             with create_session() as session:
                 repository = DailyReportRepository(session)
                 for report_id in report_ids:
                     try:
-                        outcomes.append(repository.restore(report_id).outcome)
+                        result = repository.restore(report_id)
+                        results.append(result)
+                        outcomes.append(result.outcome)
                     except LookupError:
                         outcomes.append("missing")
         except SQLAlchemyError as error:
             logger.exception("daily report bulk restore failed", exc_info=error)
             return retention_database_error_response(request, error)  # type: ignore[return-value]
-        return retention_redirect("/daily-reports/trash", retention_outcomes(outcomes))
+        return retention_redirect(
+            "/daily-reports/trash",
+            retention_outcomes(outcomes),
+            reason=retention_reason(results),
+        )
 
     @app.post("/daily-reports/{report_id}/pin")
     async def pin_daily_report(request: Request, report_id: int) -> RedirectResponse:
@@ -942,7 +982,9 @@ def create_app(
             logger.exception("daily report restore failed", exc_info=error)
             return retention_database_error_response(request, error)  # type: ignore[return-value]
         return retention_redirect(
-            "/daily-reports/trash", retention_outcomes([result.outcome])
+            "/daily-reports/trash",
+            retention_outcomes([result.outcome]),
+            reason=retention_reason([result]),
         )
 
     @app.post("/daily-reports/{report_id}/purge")

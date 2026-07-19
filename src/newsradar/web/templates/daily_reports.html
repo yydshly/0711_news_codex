@@ -123,7 +123,7 @@
   </div>
   <p class="metric-note">自动保留最近 90 天；置顶保护的日报不会被自动清理。移入回收站后可在 30 天内恢复。</p>
   {% if retention_notice.changed or retention_notice.blocked or retention_notice.unchanged or retention_notice.missing %}
-  <p class="retention-notice" role="status">操作结果：已处理 {{ retention_notice.changed }} 份；受阻 {{ retention_notice.blocked }} 份；未变更 {{ retention_notice.unchanged }} 份；未找到 {{ retention_notice.missing }} 份。</p>
+  <p class="retention-notice" role="status">操作结果：已处理 {{ retention_notice.changed }} 份；受阻 {{ retention_notice.blocked }} 份；未变更 {{ retention_notice.unchanged }} 份；未找到 {{ retention_notice.missing }} 份。{% if retention_notice.reason_label %}{{ retention_notice.reason_label }}{% endif %}</p>
   {% endif %}
   <form class="filter-form retention-filter" method="get" action="/daily-reports">
     <label>保留范围
