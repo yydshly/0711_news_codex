@@ -233,7 +233,8 @@
 <nav class="daily-report-jump-nav" aria-label="日报内容定位">
   <a href="#decision-brief-heading">决策简报</a>
   <a href="#overview-heading">情报全览</a>
-  <a href="#complete-report-heading">完整报告与证据</a>
+  <a href="#overview-audit-heading">审核与证据</a>
+  <a href="#daily-report-meta-heading">版本与操作</a>
 </nav>
 {% if daily_report.text_integrity.corrupted_review_count %}
 <p class="diagnostic-warning"><strong>检测到疑似编码损坏：</strong>本版有 {{ daily_report.text_integrity.corrupted_review_count }} 条人工审核记录包含连续问号。{% if daily_report.report.status == 'archived' %}请创建修订版后修正，当前历史版不应作为最终报告或重新生成音频。{% else %}请修正中文审核内容后再归档或生成音频。{% endif %}</p>
@@ -244,16 +245,15 @@
     <span class="scope-label">每个栏目最多 20 条</span>
   </div>
   <dl class="daily-report-metrics">
-    <div><dt>累计事件</dt><dd>{{ daily_report.coverage.cumulative_event_count }}</dd><small>本日累计固定事件</small></div>
-    <div><dt>决策版</dt><dd>{{ daily_report.coverage.decision_count }}</dd><small>进入决策简报</small></div>
-    <div><dt>全览版</dt><dd>{{ daily_report.coverage.overview_count }}</dd><small>保留全部候选</small></div>
-    <div><dt>未进入决策版</dt><dd>{{ daily_report.coverage.omitted_from_decision_count }}</dd><small>仍保留在情报全览</small></div>
-    <div><dt>本期条目</dt><dd>{{ daily_report.editorial_summary.total_count }}</dd><small>固定日报条目总数</small></div>
+    <div><dt>本次运行</dt><dd>{{ daily_report.coverage.current_operation_event_count }}</dd><small>当前 Operation 固定事件</small></div>
+    <div><dt>同日历史输入</dt><dd>{{ daily_report.coverage.same_day_historical_candidate_count }}</dd><small>所有有效日报头候选</small></div>
+    <div><dt>身份去重</dt><dd>{{ daily_report.coverage.deduplicated_count }}</dd><small>合并前 {{ daily_report.coverage.merge_input_count }} 条</small></div>
+    <div><dt>审核排除</dt><dd>{{ daily_report.coverage.excluded_count }}</dd><small>排除与重复项</small></div>
     <div><dt>决策收录</dt><dd>{{ daily_report.editorial_summary.included_count }}</dd><small>全部进入决策版</small></div>
-    <div><dt>待补证</dt><dd>{{ daily_report.editorial_summary.needs_evidence_count }}</dd><small>已收录但不能视为确认</small></div>
-    <div><dt>未收录</dt><dd>{{ daily_report.editorial_summary.excluded_count + daily_report.editorial_summary.duplicate_count }}</dd><small>排除 {{ daily_report.editorial_summary.excluded_count }} · 去重 {{ daily_report.editorial_summary.duplicate_count }}</small></div>
+    <div><dt>全览收录</dt><dd>{{ daily_report.coverage.overview_included_count }}</dd><small>正文、稿件和语音同一集合</small></div>
   </dl>
-  <p class="metric-note">累计事件 {{ daily_report.coverage.cumulative_event_count }} · 决策版 {{ daily_report.coverage.decision_count }} · 全览版 {{ daily_report.coverage.overview_count }} · 未进入决策版 {{ daily_report.coverage.omitted_from_decision_count }}</p>
+  <p class="metric-note">累计事件 {{ daily_report.coverage.cumulative_event_count }} · 本期条目 {{ daily_report.editorial_summary.total_count }} · 待补证 {{ daily_report.overview.summary.needs_evidence_count }} · 未收录 {{ daily_report.coverage.excluded_count }}。</p>
+  <p class="metric-note">决策版 {{ daily_report.coverage.decision_count }} · 全览版 {{ daily_report.coverage.overview_count }} · 未进入决策版 {{ daily_report.coverage.omitted_from_decision_count }}。</p>
   {% if daily_report.editorial_summary.unreviewed_count %}<p class="metric-note">尚有 {{ daily_report.editorial_summary.unreviewed_count }} 条未完成人工中文审核。</p>{% endif %}
 </section>
 
@@ -292,7 +292,7 @@
 
 <section class="panel" aria-labelledby="overview-heading">
   <p class="eyebrow">Intelligence Overview</p>
-  <h2 id="overview-heading">情报全览</h2>
+  <h2 id="overview-heading">今日情报全览</h2>
   <p>全部候选来自本日报固定快照；只有人工结论为“保留”或“需补证”的内容进入以下正文和语音。</p>
   <p class="metric-note"><strong>将播报全部 {{ daily_report.overview.summary.included_count }} 条已纳入全览的情报；排除和重复项不会播报。</strong></p>
   <dl class="overview-review-metrics" aria-label="情报全览审核统计">
@@ -305,48 +305,63 @@
   </dl>
   {% if daily_report.overview.summary.unreviewed_count %}<p class="metric-note">全览审核未完成，尚有 {{ daily_report.overview.summary.unreviewed_count }} 条未审核；这些内容不会进入正文或语音。</p>{% endif %}
   {% if daily_report.overview.legacy_unreviewed %}<p class="diagnostic-warning">这是上线前的历史日报，只读展示候选。创建修订版后才能保存全览审核。</p>{% endif %}
+  <div class="overview-audio-entry" aria-label="全览音频与播报稿">
+    {% if daily_report.report.status == 'archived' %}
+    {% set overview_audio = daily_report.audio.overview %}
+    {% set overview_operation_status = daily_report.audio.overview_operation_status %}
+    {% if overview_audio and overview_audio.status == 'succeeded' %}
+    <audio controls preload="none" src="/daily-reports/{{ daily_report.report.report_id }}/audio-artifacts/{{ overview_audio.artifact_id }}">您的浏览器不支持音频播放。</audio>
+    {% elif overview_audio and overview_audio.status == 'failed' %}
+    <p><strong>语音生成失败：</strong>{{ overview_audio.error_message }}（{{ overview_audio.error_code }}）</p>
+    {% endif %}
+    {% if overview_operation_status %}
+    <p><strong>语音任务{{ '正在生成' if overview_operation_status == 'running' else '已排队' }}</strong>，完成后刷新本页播放。</p>
+    {% elif daily_report.overview.legacy_unreviewed or daily_report.overview.summary.unreviewed_count %}
+    <p><strong>暂不能生成全览语音：</strong>请先在草稿修订版中完成全部候选审核。</p>
+    {% elif daily_report.overview.summary.included_count == 0 %}
+    <p><strong>暂不能生成全览语音：</strong>当前没有“保留”或“需补证”条目。</p>
+    {% else %}
+    <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/audio/overview">
+      <input type="hidden" name="action_token" value="{{ action_token }}">
+      <button type="submit">{{ '重新生成全览版语音' if overview_audio else '生成全览版语音' }}</button>
+    </form>
+    {% endif %}
+    {% endif %}
+    <details class="report-transcript">
+      <summary>查看全览版播报稿</summary>
+      <div class="decision-script">{{ daily_report.overview.script }}</div>
+    </details>
+  </div>
   <h3>可信全览正文</h3>
   {% if daily_report.overview.included %}
   {{ render_overview_group(daily_report.overview.included_confirmed, '已确认', 'overview-included-confirmed-heading', 'confirmed') }}
   {{ render_overview_group(daily_report.overview.included_hotspots, '热点关注', 'overview-included-hotspot-heading', 'hotspot') }}
   {{ render_overview_group(daily_report.overview.included_signals, '新兴信号', 'overview-included-signal-heading', 'signal') }}
   {% else %}<p class="empty-state">尚无经过人工审核并进入全览正文的条目。</p>{% endif %}
-  <details class="report-transcript">
-    <summary>查看全览版播报稿</summary>
-    <div class="decision-script">{{ daily_report.overview.script }}</div>
-  </details>
-  {% if daily_report.report.status == 'archived' %}
-  {% set overview_audio = daily_report.audio.overview %}
-  {% set overview_operation_status = daily_report.audio.overview_operation_status %}
-  {% if overview_audio and overview_audio.status == 'succeeded' %}
-  <audio controls preload="none" src="/daily-reports/{{ daily_report.report.report_id }}/audio-artifacts/{{ overview_audio.artifact_id }}">您的浏览器不支持音频播放。</audio>
-  {% elif overview_audio and overview_audio.status == 'failed' %}
-  <p><strong>语音生成失败：</strong>{{ overview_audio.error_message }}（{{ overview_audio.error_code }}）</p>
-  {% endif %}
-  {% if overview_operation_status %}
-  <p><strong>语音任务{{ '正在生成' if overview_operation_status == 'running' else '已排队' }}</strong>，完成后刷新本页播放。</p>
-  {% elif daily_report.overview.legacy_unreviewed or daily_report.overview.summary.unreviewed_count %}
-  <p><strong>暂不能生成全览语音：</strong>请先在草稿修订版中完成全部候选审核。</p>
-  {% elif daily_report.overview.summary.included_count == 0 %}
-  <p><strong>暂不能生成全览语音：</strong>当前没有“保留”或“需补证”条目。</p>
-  {% else %}
-  <form method="post" action="/daily-reports/{{ daily_report.report.report_id }}/audio/overview">
-    <input type="hidden" name="action_token" value="{{ action_token }}">
-    <button type="submit">{{ '重新生成全览版语音' if overview_audio else '生成全览版语音' }}</button>
-  </form>
-  {% endif %}
-  {% endif %}
-  <section class="overview-audit-section" aria-labelledby="overview-audit-heading">
-    <div class="section-heading"><div><p class="eyebrow">All Candidates</p><h3 id="overview-audit-heading">情报全览审核</h3></div><span class="scope-label">全部 {{ daily_report.overview.items|length }} 条</span></div>
+  <details class="overview-audit-section">
+    <summary id="overview-audit-heading">审核与证据附录 · 全部 {{ daily_report.overview.items|length }} 条候选</summary>
     {% if daily_report.overview.items %}
     <div class="overview-audit-list">{% for item in daily_report.overview.items %}{{ render_overview_audit_item(item, daily_report.overview.items) }}{% endfor %}</div>
     {% else %}<p class="empty-state">本快照暂无可展示的确认、热点或信号事件。</p>{% endif %}
-  </section>
+    <section class="decision-audit-list" aria-labelledby="decision-audit-heading">
+      <h3 id="decision-audit-heading">决策条目审核</h3>
+      <h4>今日确认要闻</h4>
+      {% for item in daily_report.confirmed %}
+      {{ render_item(item, '未命名事件', '暂无摘要') }}
+      {% else %}<p>本版暂无确认要闻。</p>{% endfor %}
+      <p><strong>尚未确认：</strong>以下内容是值得关注的早期线索，不应作为已确认事实传播。</p>
+      <h4>值得关注的线索</h4>
+      {% for item in daily_report.emerging %}
+      {{ render_item(item, '未命名线索', '暂无摘要') }}
+      {% else %}<p>本版暂无未确认线索。</p>{% endfor %}
+    </section>
+  </details>
 </section>
 
 <section class="panel" aria-labelledby="daily-report-meta-heading">
   <p class="eyebrow">固定日报快照 · Operation #{{ daily_report.report.source_operation_id }}</p>
-  <h2 id="daily-report-meta-heading">第 {{ daily_report.report.revision }} 版 · {{ '草稿' if daily_report.report.status == 'draft' else '已归档' }}</h2>
+  <h2 id="daily-report-meta-heading">日报版本与操作</h2>
+  <p><strong>第 {{ daily_report.report.revision }} 版 · {{ '草稿' if daily_report.report.status == 'draft' else '已归档' }}</strong></p>
   <p>时间窗口 {{ daily_report.report.window_hours }} 小时，截至 {{ daily_report.report.window_end|format_datetime_zh }}。本页只展示生成时固定的日报条目。</p>
   <p>确认 {{ daily_report.report.confirmed_count }} 条 · 线索 {{ daily_report.report.emerging_count }} 条{% if daily_report.generation_summary.get('skipped_invalid_event') %} · 跳过无效事件 {{ daily_report.generation_summary.get('skipped_invalid_event') }} 条{% endif %}</p>
   {% if daily_report.generation_summary.get('revision_overview_source') == 'archived_report_snapshot' %}
@@ -387,25 +402,5 @@
   <p class="metric-note">自动保留最近 90 天；移入回收站后可在 30 天内恢复。正在运行的日报、语音或清理任务会阻止删除。</p>
 </section>
 
-<section class="daily-report-complete" aria-labelledby="complete-report-heading">
-  <div class="section-heading">
-    <div><p class="eyebrow">Full Report</p><h2 id="complete-report-heading">完整报告与证据</h2></div>
-    <span class="scope-label">固定快照与审核历史</span>
-  </div>
-<section class="panel" aria-labelledby="confirmed-report-heading">
-  <h2 id="confirmed-report-heading">今日确认要闻</h2>
-  {% for item in daily_report.confirmed %}
-  {{ render_item(item, '未命名事件', '暂无摘要') }}
-  {% else %}<p>本版暂无确认要闻。</p>{% endfor %}
-</section>
-
-<section class="panel diagnostic-warning" aria-labelledby="emerging-report-heading">
-  <p><strong>尚未确认</strong>：以下内容是值得关注的早期线索，不应作为已确认事实传播。</p>
-  <h2 id="emerging-report-heading">值得关注的线索</h2>
-  {% for item in daily_report.emerging %}
-  {{ render_item(item, '未命名线索', '暂无摘要') }}
-  {% else %}<p>本版暂无未确认线索。</p>{% endfor %}
-</section>
-</section>
 </div>
 {% endblock %}

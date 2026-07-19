@@ -1032,6 +1032,14 @@ def test_daily_report_detail_renders_readable_summary_and_decision_cards(
     repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
     emerging = repository.items(report.id)[1]
     repository.save_editorial_review(report.id, emerging.id, REVIEW_NEEDS_EVIDENCE)
+    report.generation_summary = {
+        **report.generation_summary,
+        "current_operation_event_count": 2,
+        "same_day_historical_candidate_count": 2,
+        "merge_input_count": 4,
+        "deduplicated_count": 2,
+    }
+    db_session.commit()
     report_id = report.id
     client, _token = safe_client_with_token(db_session, monkeypatch)
 
@@ -1048,6 +1056,26 @@ def test_daily_report_detail_renders_readable_summary_and_decision_cards(
     assert "中文审核建议" in response.text
     assert "中文证据评价" in response.text
     assert "<summary>查看决策版播报稿</summary>" in response.text
+    assert all(
+        label in response.text
+        for label in (
+            "本次运行",
+            "同日历史输入",
+            "身份去重",
+            "审核排除",
+            "决策收录",
+            "全览收录",
+        )
+    )
+    assert response.text.index("日报一眼看懂") < response.text.index("今日决策简报")
+    assert response.text.index("今日决策简报") < response.text.index("今日情报全览")
+    assert response.text.index("今日情报全览") < response.text.index("审核与证据附录")
+    assert response.text.index("审核与证据附录") < response.text.index("日报版本与操作")
+    assert response.text.index("查看全览版播报稿") < response.text.index(
+        "可信全览正文"
+    )
+    assert '<details class="overview-audit-section"' in response.text
+    assert "完整报告与证据" not in response.text
 
     styles = client.get("/static/styles.css")
     assert styles.status_code == 200
@@ -1779,8 +1807,8 @@ def test_page_warns_about_corrupted_review_text_and_exposes_report_sections(
     assert "检测到疑似编码损坏" in page.text
     assert 'href="#decision-brief-heading"' in page.text
     assert 'href="#overview-heading"' in page.text
-    assert 'href="#complete-report-heading"' in page.text
-    assert "完整报告与证据" in page.text
+    assert 'href="#overview-audit-heading"' in page.text
+    assert "审核与证据附录" in page.text
 
 
 def test_overview_editorial_review_post_returns_chinese_integrity_error(

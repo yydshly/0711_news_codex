@@ -525,8 +525,30 @@ dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 }
 .overview-review-metrics dt { color: var(--muted); font-size: 0.82rem; }
 .overview-review-metrics dd { margin: 0.2rem 0 0; font-size: 1.55rem; font-weight: 700; }
-.overview-audit-section { margin-top: 1.75rem; }
+.overview-audio-entry {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--panel-2);
+}
+.overview-audio-entry .report-transcript { margin: 0; }
+.overview-audit-section {
+  margin-top: 1.75rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--panel-2), transparent 25%);
+}
+.overview-audit-section > summary {
+  cursor: pointer;
+  color: var(--info);
+  font-weight: 700;
+}
 .overview-audit-list { display: grid; gap: 1rem; margin-top: 1rem; }
+.decision-audit-list { display: grid; gap: 1rem; margin-top: 1.5rem; }
 .overview-audit-card { scroll-margin-top: 1rem; }
 .overview-audit-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.9rem 0; }
 .overview-audit-meta span {

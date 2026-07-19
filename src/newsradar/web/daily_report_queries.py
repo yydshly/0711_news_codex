@@ -423,6 +423,12 @@ class DailyReportCoverageView:
     decision_count: int
     overview_count: int
     omitted_from_decision_count: int
+    current_operation_event_count: int
+    same_day_historical_candidate_count: int
+    merge_input_count: int
+    deduplicated_count: int
+    excluded_count: int
+    overview_included_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,7 +639,7 @@ class DailyReportQueryService:
             ),
         )
         overview = self._overview(record, chinese_origins)
-        coverage = self._coverage(generation_summary, rows, overview.items)
+        coverage = self._coverage(generation_summary, rows, overview)
         return DailyReportDetailView(
             report=self._summary(record, rows=rows),
             generation_summary=generation_summary,
@@ -678,34 +684,46 @@ class DailyReportQueryService:
     def _coverage(
         generation_summary: dict[str, object],
         decision_rows: tuple[DailyReportItemRecord, ...],
-        overview_rows: tuple[DailyReportOverviewItemView, ...],
+        overview: DailyReportOverviewView,
     ) -> DailyReportCoverageView:
+        overview_rows = overview.items
+        overview_count = len(overview_rows) or _generation_count(
+            generation_summary, "overview_count", 0
+        )
+        decision_count = len(decision_rows) or _generation_count(
+            generation_summary, "decision_count", 0
+        )
+        common = {
+            "cumulative_event_count": overview_count,
+            "decision_count": decision_count,
+            "overview_count": overview_count,
+            "omitted_from_decision_count": _generation_count(
+                generation_summary,
+                "omitted_from_decision_count",
+                max(overview_count - decision_count, 0),
+            ),
+            "current_operation_event_count": _generation_count(
+                generation_summary, "current_operation_event_count", overview_count
+            ),
+            "same_day_historical_candidate_count": _generation_count(
+                generation_summary, "same_day_historical_candidate_count", 0
+            ),
+            "merge_input_count": _generation_count(
+                generation_summary, "merge_input_count", overview_count
+            ),
+            "deduplicated_count": _generation_count(
+                generation_summary, "deduplicated_count", 0
+            ),
+            "excluded_count": (
+                overview.summary.excluded_count + overview.summary.duplicate_count
+            ),
+            "overview_included_count": overview.summary.included_count,
+        }
         if overview_rows:
-            overview_count = len(overview_rows)
-            decision_count = len(decision_rows)
-            return DailyReportCoverageView(
-                cumulative_event_count=overview_count,
-                decision_count=decision_count,
-                overview_count=overview_count,
-                omitted_from_decision_count=max(overview_count - decision_count, 0),
+            common["omitted_from_decision_count"] = max(
+                overview_count - decision_count, 0
             )
-        overview_count = _generation_count(
-            generation_summary, "overview_count", len(overview_rows)
-        )
-        decision_count = _generation_count(
-            generation_summary, "decision_count", len(decision_rows)
-        )
-        omitted_from_decision_count = _generation_count(
-            generation_summary,
-            "omitted_from_decision_count",
-            max(overview_count - decision_count, 0),
-        )
-        return DailyReportCoverageView(
-            cumulative_event_count=overview_count,
-            decision_count=decision_count,
-            overview_count=overview_count,
-            omitted_from_decision_count=omitted_from_decision_count,
-        )
+        return DailyReportCoverageView(**common)
 
     @staticmethod
     def _review_has_suspicious_text(
