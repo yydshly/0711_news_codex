@@ -170,7 +170,7 @@ def test_accumulate_resets_prior_disposition_for_strictly_newer_complete_version
     assert "daily_disposition" not in result.items[0].snapshot
 
 
-def test_accumulate_resets_visible_duplicate_for_strictly_newer_complete_version() -> None:
+def test_accumulate_keeps_visible_duplicate_for_strictly_newer_complete_version() -> None:
     previous = (_draft(1), _draft(12))
 
     result = accumulate_daily_overview(
@@ -182,7 +182,49 @@ def test_accumulate_resets_visible_duplicate_for_strictly_newer_complete_version
 
     duplicate = next(item for item in result.items if item.event_id == 12)
     assert duplicate.event_version_number == 2
-    assert "daily_disposition" not in duplicate.snapshot
+    assert duplicate.snapshot["daily_disposition"]["reason_code"] == (
+        "duplicate_confirmed"
+    )
+
+
+def test_accumulate_keeps_historical_legacy_item_when_current_survivor_arrives() -> None:
+    legacy = _draft(
+        12,
+        evidence=[
+            {
+                "url": "https://example.com/legacy",
+                "title": "Legacy evidence",
+                "published_at": "2026-07-19T00:00:00+00:00",
+            }
+        ],
+    )
+    survivor = _draft(
+        1,
+        evidence=[
+            {
+                "url": "https://example.com/survivor",
+                "title": "Survivor evidence",
+                "published_at": "2026-07-19T01:00:00+00:00",
+            }
+        ],
+    )
+
+    result = accumulate_daily_overview(
+        (legacy,),
+        (survivor,),
+        canonical_event_ids={12: 1, 1: 1},
+        previous_decisions={},
+    )
+
+    assert [item.event_id for item in result.items] == [12, 1]
+    archived_legacy = result.items[0]
+    assert archived_legacy.snapshot["daily_disposition"]["reason_code"] == (
+        "duplicate_confirmed"
+    )
+    assert [evidence["url"] for evidence in result.items[1].snapshot["evidence"]] == [
+        "https://example.com/survivor",
+        "https://example.com/legacy",
+    ]
 
 
 def test_accumulate_merges_only_new_duplicate_evidence_into_canonical_survivor() -> None:

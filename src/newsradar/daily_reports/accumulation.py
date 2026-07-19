@@ -37,6 +37,7 @@ def accumulate_daily_overview(
     previous_decisions: Mapping[tuple[int, int], EditorialDecision],
 ) -> DailyOverviewAccumulation:
     rows = [replace(item, snapshot=deepcopy(item.snapshot)) for item in previous]
+    historical_event_ids = {item.event_id for item in previous}
     index_by_event = {item.event_id: index for index, item in enumerate(rows)}
     index_by_canonical = _canonical_indexes(rows, canonical_event_ids)
     updated_count = 0
@@ -94,7 +95,7 @@ def accumulate_daily_overview(
                 )
             if can_replace:
                 rows[exact_index] = replace(item, snapshot=deepcopy(item.snapshot))
-                if is_prior_editorial_disposition:
+                if is_prior_editorial_disposition and item.event_id == canonical_id:
                     reset_disposition_event_ids.add(item.event_id)
             updated_count += 1
             continue
@@ -106,9 +107,16 @@ def accumulate_daily_overview(
                 item.event_id == canonical_id
                 and representative.event_id != canonical_id
             ):
-                rows[canonical_index] = _merge_item_evidence(item, representative)
-                index_by_event.pop(representative.event_id, None)
-                index_by_event[item.event_id] = canonical_index
+                merged_survivor = _merge_item_evidence(item, representative)
+                if representative.event_id in historical_event_ids:
+                    rows.append(merged_survivor)
+                    index_by_event[item.event_id] = len(rows) - 1
+                    index_by_canonical[canonical_id] = len(rows) - 1
+                    new_count += 1
+                else:
+                    rows[canonical_index] = merged_survivor
+                    index_by_event.pop(representative.event_id, None)
+                    index_by_event[item.event_id] = canonical_index
             else:
                 rows[canonical_index] = _merge_item_evidence(representative, item)
             deduplicated_count += 1

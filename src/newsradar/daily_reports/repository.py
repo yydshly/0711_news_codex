@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import case, func, select, text
+from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -303,27 +303,67 @@ class DailyReportRepository:
         survivors = {event_id: event_id for event_id in requested}
         if not requested:
             return survivors
-        for record in self.session.scalars(
-            select(EventMergeCandidateRecord).where(
-                EventMergeCandidateRecord.status == "applied"
-            )
-        ):
-            try:
-                result = MergeApplyResult.model_validate(record.result_summary)
-            except (TypeError, ValidationError):
-                self._warn_invalid_merge_summary(record.id, "validation_error")
-                continue
-            if not self._complete_applied_merge_result(record, result):
-                self._warn_invalid_merge_summary(record.id, "incomplete_result")
-                continue
-            legacy_event_id = result.legacy_event_id
-            survivor_event_id = result.survivor_event_id
-            assert legacy_event_id is not None
-            assert survivor_event_id is not None
-            if legacy_event_id in requested and survivor_event_id in requested:
-                survivors[legacy_event_id] = survivor_event_id
-                survivors[survivor_event_id] = survivor_event_id
+        edges = self._applied_merge_edges_for(requested)
+        for event_id in requested:
+            resolved = self._resolve_merge_survivor(event_id, edges)
+            if resolved is not None:
+                survivors[event_id] = resolved
         return survivors
+
+    def _applied_merge_edges_for(self, event_ids: frozenset[int]) -> dict[int, int]:
+        """Load only merge records connected to the report's event frontier."""
+        edges: dict[int, int] = {}
+        conflicted_legacy_ids: set[int] = set()
+        frontier = set(event_ids)
+        visited: set[int] = set()
+        while frontier:
+            records = self.session.scalars(
+                select(EventMergeCandidateRecord).where(
+                    EventMergeCandidateRecord.status == "applied",
+                    or_(
+                        EventMergeCandidateRecord.left_event_id.in_(frontier),
+                        EventMergeCandidateRecord.right_event_id.in_(frontier),
+                    ),
+                )
+            )
+            connected: set[int] = set()
+            for record in records:
+                try:
+                    result = MergeApplyResult.model_validate(record.result_summary)
+                except (TypeError, ValidationError):
+                    self._warn_invalid_merge_summary(record.id, "validation_error")
+                    continue
+                if not self._complete_applied_merge_result(record, result):
+                    self._warn_invalid_merge_summary(record.id, "incomplete_result")
+                    continue
+                legacy_event_id = result.legacy_event_id
+                survivor_event_id = result.survivor_event_id
+                assert legacy_event_id is not None
+                assert survivor_event_id is not None
+                connected.update((legacy_event_id, survivor_event_id))
+                existing = edges.get(legacy_event_id)
+                if existing is not None and existing != survivor_event_id:
+                    conflicted_legacy_ids.add(legacy_event_id)
+                    edges.pop(legacy_event_id, None)
+                    self._warn_invalid_merge_summary(record.id, "conflicting_survivor")
+                elif legacy_event_id not in conflicted_legacy_ids:
+                    edges[legacy_event_id] = survivor_event_id
+            visited.update(frontier)
+            frontier = connected - visited
+        return edges
+
+    def _resolve_merge_survivor(
+        self, event_id: int, edges: dict[int, int]
+    ) -> int | None:
+        current = event_id
+        visited: set[int] = set()
+        while current in edges:
+            if current in visited:
+                self._warn_invalid_merge_summary(current, "cyclic_survivor")
+                return None
+            visited.add(current)
+            current = edges[current]
+        return current
 
     @staticmethod
     def _complete_applied_merge_result(

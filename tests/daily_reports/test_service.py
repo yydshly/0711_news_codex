@@ -806,6 +806,74 @@ def test_applied_event_survivors_accepts_published_result_versions(
     }
 
 
+def test_applied_event_survivors_resolves_transitive_merges_without_intermediate_request(
+    db_session: Session,
+) -> None:
+    _daily_report_draft(
+        db_session,
+        source_operation_id=2501,
+        overview_event_versions=((101, 1), (102, 1), (103, 1)),
+    )
+    db_session.add_all(
+        [
+            EventMergeCandidateRecord(
+                id=1,
+                left_event_id=101,
+                left_version_number=1,
+                right_event_id=102,
+                right_version_number=1,
+                candidate_type="legacy_identity",
+                status="applied",
+                algorithm_version="event-merge-v3",
+                input_fingerprint="d" * 64,
+                facts_snapshot={},
+                reason_codes=["exact_cross_algorithm_membership"],
+                zh_reason="Same event.",
+                zh_next_action="Use the survivor.",
+                generated_operation_id=2501,
+                result_summary=MergeApplyResult(
+                    status="applied",
+                    candidate_id=1,
+                    survivor_event_id=101,
+                    survivor_version_number=1,
+                    legacy_event_id=102,
+                    legacy_version_number=1,
+                ).model_dump(mode="json"),
+            ),
+            EventMergeCandidateRecord(
+                id=2,
+                left_event_id=102,
+                left_version_number=1,
+                right_event_id=103,
+                right_version_number=1,
+                candidate_type="legacy_identity",
+                status="applied",
+                algorithm_version="event-merge-v3",
+                input_fingerprint="e" * 64,
+                facts_snapshot={},
+                reason_codes=["exact_cross_algorithm_membership"],
+                zh_reason="Same event.",
+                zh_next_action="Use the survivor.",
+                generated_operation_id=2501,
+                result_summary=MergeApplyResult(
+                    status="applied",
+                    candidate_id=2,
+                    survivor_event_id=102,
+                    survivor_version_number=1,
+                    legacy_event_id=103,
+                    legacy_version_number=1,
+                ).model_dump(mode="json"),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert DailyReportRepository(db_session).applied_event_survivors({101, 103}) == {
+        101: 101,
+        103: 101,
+    }
+
+
 def test_applied_event_survivors_ignores_incomplete_summary(
     db_session: Session,
     caplog: pytest.LogCaptureFixture,
