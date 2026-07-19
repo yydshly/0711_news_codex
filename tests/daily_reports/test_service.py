@@ -11,13 +11,22 @@ from sqlalchemy.pool import StaticPool
 
 from newsradar.daily_reports import DailyReportService
 from newsradar.daily_reports.repository import DailyReportRepository
-from newsradar.daily_reports.schema import DailyReportOverviewEditorialReviewDraft
+from newsradar.daily_reports.schema import (
+    DailyReportDraft,
+    DailyReportEditorialReviewDraft,
+    DailyReportItemDraft,
+    DailyReportOverviewEditorialReviewDraft,
+    DailyReportOverviewItemDraft,
+    EditorialDecision,
+    ReportSection,
+)
 from newsradar.daily_reports.service import _public_url
 from newsradar.db.models import (
     Base,
     DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventItemRecord,
+    EventMergeCandidateRecord,
     EventRecord,
     EventScoreRecord,
     EventVersionRecord,
@@ -26,6 +35,7 @@ from newsradar.db.models import (
     RawItemRecord,
     SourceDefinitionRecord,
 )
+from newsradar.event_merges.schema import MergeApplyResult
 from newsradar.events.versions import EVENT_ALGORITHM_VERSIONS
 from newsradar.web.event_queries import EventQueryService
 
@@ -300,6 +310,417 @@ def seed_ranked_snapshot(
         session,
         confirmed=tuple(range(1001, 1001 + confirmed_count)),
         emerging=tuple(range(2001, 2001 + emerging_count)),
+    )
+
+
+def _daily_report_draft(
+    session: Session,
+    *,
+    source_operation_id: int,
+    report_date: date = date(2026, 7, 19),
+    window_hours: int = 24,
+    supersedes_report_id: int | None = None,
+    decision_event_versions: tuple[tuple[int, int], ...] = (),
+    overview_event_versions: tuple[tuple[int, int], ...] = (),
+) -> DailyReportDraft:
+    if session.get(OperationRunRecord, source_operation_id) is None:
+        session.add(
+            OperationRunRecord(
+                id=source_operation_id,
+                operation_type="event_pipeline",
+                trigger="test",
+                status="succeeded",
+                requested_scope={},
+                result_summary={},
+                created_at=NOW,
+                finished_at=NOW,
+            )
+        )
+    for event_id, version_number in {
+        *decision_event_versions,
+        *overview_event_versions,
+    }:
+        event = session.get(EventRecord, event_id)
+        if event is None:
+            session.add(
+                EventRecord(
+                    id=event_id,
+                    canonical_key=f"daily-report-lifecycle-{event_id}",
+                    status="confirmed",
+                    current_version_number=version_number,
+                    occurred_at=NOW,
+                )
+            )
+        elif event.current_version_number < version_number:
+            event.current_version_number = version_number
+    session.commit()
+    return DailyReportDraft(
+        report_date=report_date,
+        window_hours=window_hours,
+        window_start=NOW - timedelta(hours=window_hours),
+        window_end=NOW,
+        source_operation_id=source_operation_id,
+        generation_summary={},
+        supersedes_report_id=supersedes_report_id,
+        items=tuple(
+            DailyReportItemDraft(
+                event_id=event_id,
+                event_version_number=version_number,
+                section=ReportSection.CONFIRMED,
+                position=position,
+                snapshot={"zh_title": f"Event {event_id} v{version_number}"},
+            )
+            for position, (event_id, version_number) in enumerate(
+                decision_event_versions, start=1
+            )
+        ),
+        overview_items=tuple(
+            DailyReportOverviewItemDraft(
+                event_id=event_id,
+                event_version_number=version_number,
+                position=position,
+                snapshot={"zh_title": f"Event {event_id} v{version_number}"},
+            )
+            for position, (event_id, version_number) in enumerate(
+                overview_event_versions, start=1
+            )
+        ),
+    )
+
+
+def _archived_report(
+    session: Session,
+    *,
+    report_date: date = date(2026, 7, 19),
+    revision: int,
+    window_hours: int = 24,
+    decision_event_versions: tuple[tuple[int, int], ...] = (),
+    overview_event_versions: tuple[tuple[int, int], ...] = (),
+    reviewed_decision_event_version: tuple[int, int] | None = None,
+    reviewed_event_version: tuple[int, int] | None = None,
+) -> DailyReportRecord:
+    source_operation_id = int(report_date.strftime("%m%d")) * 100 + revision
+    repository = DailyReportRepository(session, utcnow=lambda: NOW)
+    report = repository.create_draft(
+        _daily_report_draft(
+            session,
+            source_operation_id=source_operation_id,
+            report_date=report_date,
+            window_hours=window_hours,
+            decision_event_versions=decision_event_versions,
+            overview_event_versions=overview_event_versions,
+        )
+    )
+    assert report.revision == revision
+    if reviewed_decision_event_version is not None:
+        reviewed_item = next(
+            item
+            for item in repository.items(report.id)
+            if (item.event_id, item.event_version_number)
+            == reviewed_decision_event_version
+        )
+        repository.save_editorial_review(
+            report.id,
+            reviewed_item.id,
+            DailyReportEditorialReviewDraft.create(
+                decision="keep",
+                zh_title="Reviewed title",
+                zh_summary="Reviewed summary",
+                review_recommendation="Keep this event.",
+                evidence_assessment="Evidence is sufficient.",
+            ),
+        )
+    if reviewed_event_version is not None:
+        reviewed_item = next(
+            item
+            for item in repository.overview_items(report.id)
+            if (item.event_id, item.event_version_number) == reviewed_event_version
+        )
+        repository.save_overview_editorial_review(
+            report.id,
+            reviewed_item.id,
+            DailyReportOverviewEditorialReviewDraft.create(
+                decision="keep",
+                zh_title="Reviewed title",
+                zh_summary="Reviewed summary",
+                review_recommendation="Keep this event.",
+                evidence_assessment="Evidence is sufficient.",
+            ),
+        )
+    return repository.archive(report.id)
+
+
+def _archived_report_with_review(
+    session: Session,
+    *,
+    event_id: int,
+    version: int,
+) -> DailyReportRecord:
+    return _archived_report(
+        session,
+        revision=1,
+        overview_event_versions=((event_id, version),),
+        reviewed_event_version=(event_id, version),
+    )
+
+
+def test_latest_archived_for_day_returns_only_latest_eligible_report(
+    db_session: Session,
+) -> None:
+    older = _archived_report(db_session, revision=1)
+    latest = _archived_report(db_session, revision=2)
+    deleted = _archived_report(db_session, revision=3)
+    deleted.deleted_at = NOW
+    other_day = _archived_report(
+        db_session, report_date=date(2026, 7, 18), revision=1
+    )
+    db_session.commit()
+
+    selected = DailyReportRepository(db_session).latest_archived_for_day(
+        date(2026, 7, 19), excluding_operation_id=9999
+    )
+
+    assert selected is not None
+    assert selected.id == latest.id
+    assert selected.id not in {older.id, deleted.id, other_day.id}
+
+
+def test_create_cumulative_draft_links_predecessor_and_copies_matching_review(
+    db_session: Session,
+) -> None:
+    predecessor = _archived_report_with_review(db_session, event_id=101, version=1)
+    draft = _daily_report_draft(
+        db_session,
+        source_operation_id=2402,
+        supersedes_report_id=predecessor.id,
+        overview_event_versions=((101, 1), (102, 1)),
+    )
+
+    successor = DailyReportRepository(db_session).create_cumulative_draft(draft)
+    copied = DailyReportRepository(db_session).overview_items(successor.id)
+
+    assert successor.supersedes_report_id == predecessor.id
+    assert successor.revision == predecessor.revision + 1
+    assert len(
+        DailyReportRepository(db_session).overview_editorial_reviews(copied[0].id)
+    ) == 1
+    assert (
+        DailyReportRepository(db_session).overview_editorial_reviews(copied[1].id)
+        == ()
+    )
+
+
+def test_create_cumulative_draft_keeps_one_chain_across_window_sizes(
+    db_session: Session,
+) -> None:
+    predecessor = _archived_report(db_session, revision=1, window_hours=72)
+    draft = _daily_report_draft(
+        db_session,
+        source_operation_id=2402,
+        window_hours=24,
+        supersedes_report_id=predecessor.id,
+    )
+
+    successor = DailyReportRepository(db_session).create_cumulative_draft(draft)
+
+    assert successor.supersedes_report_id == predecessor.id
+    assert successor.revision == predecessor.revision + 1
+
+
+def test_create_cumulative_draft_does_not_copy_review_to_new_event_version(
+    db_session: Session,
+) -> None:
+    predecessor = _archived_report_with_review(db_session, event_id=101, version=1)
+    draft = _daily_report_draft(
+        db_session,
+        source_operation_id=2402,
+        supersedes_report_id=predecessor.id,
+        overview_event_versions=((101, 2),),
+    )
+
+    successor = DailyReportRepository(db_session).create_cumulative_draft(draft)
+    item = DailyReportRepository(db_session).overview_items(successor.id)[0]
+
+    assert DailyReportRepository(db_session).overview_editorial_reviews(item.id) == ()
+
+
+def test_create_cumulative_draft_copies_decision_review_by_event_version(
+    db_session: Session,
+) -> None:
+    predecessor = _archived_report(
+        db_session,
+        revision=1,
+        decision_event_versions=((101, 1), (102, 1)),
+        reviewed_decision_event_version=(102, 1),
+    )
+    draft = _daily_report_draft(
+        db_session,
+        source_operation_id=2402,
+        supersedes_report_id=predecessor.id,
+        decision_event_versions=((102, 1),),
+    )
+
+    successor = DailyReportRepository(db_session).create_cumulative_draft(draft)
+    item = DailyReportRepository(db_session).items(successor.id)[0]
+
+    assert len(DailyReportRepository(db_session).editorial_reviews(item.id)) == 1
+
+
+def test_create_cumulative_draft_does_not_reuse_other_operation_successor(
+    db_session: Session,
+) -> None:
+    predecessor = _archived_report(db_session, revision=1)
+    repository = DailyReportRepository(db_session)
+    repository.create_cumulative_draft(
+        _daily_report_draft(
+            db_session,
+            source_operation_id=2402,
+            supersedes_report_id=predecessor.id,
+        )
+    )
+
+    with pytest.raises(RuntimeError):
+        repository.create_cumulative_draft(
+            _daily_report_draft(
+                db_session,
+                source_operation_id=2403,
+                supersedes_report_id=predecessor.id,
+            )
+        )
+
+
+def test_overview_decisions_are_keyed_by_exact_event_version(
+    db_session: Session,
+) -> None:
+    predecessor = _archived_report_with_review(db_session, event_id=101, version=1)
+
+    assert DailyReportRepository(db_session).overview_decisions(predecessor.id) == {
+        (101, 1): EditorialDecision.KEEP
+    }
+
+
+def test_applied_event_survivors_maps_legacy_to_survivor(
+    db_session: Session,
+) -> None:
+    _daily_report_draft(
+        db_session,
+        source_operation_id=2501,
+        overview_event_versions=((101, 2), (102, 1)),
+    )
+    db_session.add(
+        EventMergeCandidateRecord(
+            id=1,
+            left_event_id=101,
+            left_version_number=2,
+            right_event_id=102,
+            right_version_number=1,
+            candidate_type="legacy_identity",
+            status="applied",
+            algorithm_version="event-merge-v3",
+            input_fingerprint="a" * 64,
+            facts_snapshot={},
+            reason_codes=["exact_cross_algorithm_membership"],
+            zh_reason="Same event.",
+            zh_next_action="Use the survivor.",
+            generated_operation_id=2501,
+            result_summary=MergeApplyResult(
+                status="applied",
+                candidate_id=1,
+                survivor_event_id=101,
+                survivor_version_number=2,
+                legacy_event_id=102,
+                legacy_version_number=1,
+            ).model_dump(mode="json"),
+        )
+    )
+    db_session.commit()
+
+    assert DailyReportRepository(db_session).applied_event_survivors({101, 102}) == {
+        102: 101,
+        101: 101,
+    }
+
+
+def test_applied_event_survivors_accepts_published_result_versions(
+    db_session: Session,
+) -> None:
+    _daily_report_draft(
+        db_session,
+        source_operation_id=2501,
+        overview_event_versions=((101, 1), (102, 1)),
+    )
+    db_session.add(
+        EventMergeCandidateRecord(
+            id=1,
+            left_event_id=101,
+            left_version_number=1,
+            right_event_id=102,
+            right_version_number=1,
+            candidate_type="legacy_identity",
+            status="applied",
+            algorithm_version="event-merge-v3",
+            input_fingerprint="c" * 64,
+            facts_snapshot={},
+            reason_codes=["exact_cross_algorithm_membership"],
+            zh_reason="Same event.",
+            zh_next_action="Use the survivor.",
+            generated_operation_id=2501,
+            result_summary=MergeApplyResult(
+                status="succeeded",
+                candidate_id=1,
+                survivor_event_id=101,
+                survivor_version_number=2,
+                legacy_event_id=102,
+                legacy_version_number=2,
+            ).model_dump(mode="json"),
+        )
+    )
+    db_session.commit()
+
+    assert DailyReportRepository(db_session).applied_event_survivors({101, 102}) == {
+        102: 101,
+        101: 101,
+    }
+
+
+def test_applied_event_survivors_ignores_incomplete_summary(
+    db_session: Session,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _daily_report_draft(
+        db_session,
+        source_operation_id=2501,
+        overview_event_versions=((101, 1), (102, 1)),
+    )
+    db_session.add(
+        EventMergeCandidateRecord(
+            id=1,
+            left_event_id=101,
+            left_version_number=1,
+            right_event_id=102,
+            right_version_number=1,
+            candidate_type="legacy_identity",
+            status="applied",
+            algorithm_version="event-merge-v3",
+            input_fingerprint="b" * 64,
+            facts_snapshot={},
+            reason_codes=["exact_cross_algorithm_membership"],
+            zh_reason="Same event.",
+            zh_next_action="Use the survivor.",
+            generated_operation_id=2501,
+            result_summary={"status": "applied", "candidate_id": 1},
+        )
+    )
+    db_session.commit()
+
+    assert DailyReportRepository(db_session).applied_event_survivors({101, 102}) == {
+        101: 101,
+        102: 102,
+    }
+    assert any(
+        record.message == "invalid applied event merge result ignored"
+        and record.candidate_id == 1
+        for record in caplog.records
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -7,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 
+from pydantic import ValidationError
 from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -48,11 +50,14 @@ from newsradar.db.models import (
     DailyReportOverviewItemRecord,
     DailyReportRecord,
     DailyReportRevisionCounterRecord,
+    EventMergeCandidateRecord,
     ModelUsageRecord,
     OperationRunRecord,
 )
+from newsradar.event_merges.schema import MergeApplyResult
 
 MAX_REVISION_ATTEMPTS = 3
+logger = logging.getLogger(__name__)
 _DAILY_CHINESE_ENRICHMENT_PURPOSE = "daily_report_chinese_enrichment"
 _SAFE_DAILY_CHINESE_ORIGINS = frozenset(
     {"model", "model_partial", "rule_fallback", "budget_limit"}
@@ -83,19 +88,71 @@ class DailyReportRepository:
         report, _ = self._create_draft(draft, commit=True)
         return report
 
+    def create_cumulative_draft(self, draft: DailyReportDraft) -> DailyReportRecord:
+        if draft.supersedes_report_id is None:
+            raise ValueError("daily_report_cumulative_predecessor_required")
+
+        def validate_predecessor() -> DailyReportRecord:
+            self._lock_report_day(draft.report_date)
+            predecessor = self.latest_archived_for_day(
+                draft.report_date,
+                excluding_operation_id=draft.source_operation_id,
+            )
+            if (
+                predecessor is None
+                or predecessor.id != draft.supersedes_report_id
+            ):
+                self.session.rollback()
+                raise RuntimeError("daily_report_cumulative_chain_changed")
+            return predecessor
+
+        predecessor = validate_predecessor()
+        report, created = self._create_draft(
+            draft,
+            commit=False,
+            match_source_operation=True,
+            before_match=validate_predecessor,
+        )
+        if not created:
+            self.session.commit()
+            return report
+        try:
+            self._copy_revision_reviews(predecessor, report)
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+        return report
+
     def _create_draft(
-        self, draft: DailyReportDraft, *, commit: bool
+        self,
+        draft: DailyReportDraft,
+        *,
+        commit: bool,
+        match_source_operation: bool = False,
+        before_match: Callable[[], object] | None = None,
     ) -> tuple[DailyReportRecord, bool]:
         validate_window_hours(draft.window_hours)
         for attempt in range(MAX_REVISION_ATTEMPTS):
+            if before_match is not None:
+                before_match()
             self._lock_revision(draft.report_date, draft.window_hours)
-            existing = self._matching_report(draft)
+            existing = self._matching_report(
+                draft,
+                match_source_operation=match_source_operation,
+            )
             if existing is not None:
                 if commit:
                     self.session.commit()
                 return existing, False
 
             revision = self._next_revision(draft.report_date, draft.window_hours)
+            if draft.supersedes_report_id is not None:
+                predecessor = self.session.get(
+                    DailyReportRecord, draft.supersedes_report_id
+                )
+                if predecessor is not None:
+                    revision = max(revision, predecessor.revision + 1)
             report = DailyReportRecord(
                 report_date=draft.report_date,
                 timezone=REPORT_TIMEZONE,
@@ -159,8 +216,13 @@ class DailyReportRepository:
                 self.session.rollback()
                 if not self._is_revision_conflict(error):
                     raise
+                if before_match is not None:
+                    before_match()
                 self._lock_revision(draft.report_date, draft.window_hours)
-                existing = self._matching_report(draft)
+                existing = self._matching_report(
+                    draft,
+                    match_source_operation=match_source_operation,
+                )
                 if existing is not None:
                     if commit:
                         self.session.commit()
@@ -170,6 +232,81 @@ class DailyReportRepository:
                     raise RuntimeError("daily_report_revision_conflict") from error
 
         raise RuntimeError("daily_report_revision_conflict")
+
+    def latest_archived_for_day(
+        self,
+        report_date: date,
+        *,
+        excluding_operation_id: int,
+    ) -> DailyReportRecord | None:
+        return self.session.scalar(
+            select(DailyReportRecord)
+            .where(
+                DailyReportRecord.report_date == report_date,
+                DailyReportRecord.status == ReportStatus.ARCHIVED.value,
+                DailyReportRecord.deleted_at.is_(None),
+                DailyReportRecord.source_operation_id != excluding_operation_id,
+            )
+            .order_by(DailyReportRecord.revision.desc(), DailyReportRecord.id.desc())
+            .limit(1)
+        )
+
+    def applied_event_survivors(self, event_ids: set[int]) -> dict[int, int]:
+        requested = frozenset(event_ids)
+        survivors = {event_id: event_id for event_id in requested}
+        if not requested:
+            return survivors
+        for record in self.session.scalars(
+            select(EventMergeCandidateRecord).where(
+                EventMergeCandidateRecord.status == "applied"
+            )
+        ):
+            try:
+                result = MergeApplyResult.model_validate(record.result_summary)
+            except (TypeError, ValidationError):
+                self._warn_invalid_merge_summary(record.id, "validation_error")
+                continue
+            if not self._complete_applied_merge_result(record, result):
+                self._warn_invalid_merge_summary(record.id, "incomplete_result")
+                continue
+            legacy_event_id = result.legacy_event_id
+            survivor_event_id = result.survivor_event_id
+            assert legacy_event_id is not None
+            assert survivor_event_id is not None
+            if legacy_event_id in requested and survivor_event_id in requested:
+                survivors[legacy_event_id] = survivor_event_id
+                survivors[survivor_event_id] = survivor_event_id
+        return survivors
+
+    @staticmethod
+    def _complete_applied_merge_result(
+        record: EventMergeCandidateRecord,
+        result: MergeApplyResult,
+    ) -> bool:
+        if (
+            result.status not in {"applied", "succeeded"}
+            or result.candidate_id != record.id
+            or result.survivor_event_id is None
+            or result.survivor_version_number is None
+            or result.legacy_event_id is None
+            or result.legacy_version_number is None
+            or result.survivor_event_id <= 0
+            or result.survivor_version_number <= 0
+            or result.legacy_event_id <= 0
+            or result.legacy_version_number <= 0
+        ):
+            return False
+        return {result.survivor_event_id, result.legacy_event_id} == {
+            record.left_event_id,
+            record.right_event_id,
+        }
+
+    @staticmethod
+    def _warn_invalid_merge_summary(candidate_id: int, error_code: str) -> None:
+        logger.warning(
+            "invalid applied event merge result ignored",
+            extra={"candidate_id": candidate_id, "error_code": error_code},
+        )
 
     def pin(self, report_id: int) -> RetentionActionResult:
         report = self._report_for_update(report_id)
@@ -290,6 +427,15 @@ class DailyReportRepository:
                 .execution_options(populate_existing=True)
             )
         )
+
+    def overview_decisions(
+        self, report_id: int
+    ) -> dict[tuple[int, int], EditorialDecision]:
+        return {
+            (item.event_id, item.event_version_number): EditorialDecision(review.decision)
+            for item in self.overview_items(report_id)
+            if (review := self._latest_overview_editorial_review(item.id)) is not None
+        }
 
     def chinese_enrichment_candidates(
         self, report_id: int
@@ -746,9 +892,18 @@ class DailyReportRepository:
     def _copy_revision_reviews(
         self, original: DailyReportRecord, revision: DailyReportRecord
     ) -> None:
-        for original_item, revision_item in zip(
-            self.items(original.id), self.items(revision.id), strict=True
-        ):
+        original_decision_by_event = {
+            (row.event_id, row.event_version_number): row
+            for row in self.items(original.id)
+        }
+        revision_decision_by_event = {
+            (row.event_id, row.event_version_number): row
+            for row in self.items(revision.id)
+        }
+        for event_key, original_item in original_decision_by_event.items():
+            revision_item = revision_decision_by_event.get(event_key)
+            if revision_item is None:
+                continue
             latest_review = self._latest_editorial_review(original_item.id)
             if latest_review is None or self._latest_editorial_review(revision_item.id) is not None:
                 continue
@@ -851,6 +1006,14 @@ class DailyReportRepository:
         self.session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
             {"key": f"newsradar:daily-report:{report_date.isoformat()}:{window_hours}"},
+        )
+
+    def _lock_report_day(self, report_date: date) -> None:
+        if self.session.get_bind().dialect.name != "postgresql":
+            return
+        self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"newsradar:daily-report-day:{report_date.isoformat()}"},
         )
 
     def _next_revision(self, report_date: date, window_hours: int) -> int:
@@ -1064,14 +1227,22 @@ class DailyReportRepository:
         )
         return decision_complete and overview_complete
 
-    def _matching_report(self, draft: DailyReportDraft) -> DailyReportRecord | None:
+    def _matching_report(
+        self,
+        draft: DailyReportDraft,
+        *,
+        match_source_operation: bool = False,
+    ) -> DailyReportRecord | None:
         if draft.supersedes_report_id is not None:
-            return self.session.scalar(
-                select(DailyReportRecord).where(
-                    DailyReportRecord.supersedes_report_id == draft.supersedes_report_id,
-                    DailyReportRecord.deleted_at.is_(None),
-                )
+            statement = select(DailyReportRecord).where(
+                DailyReportRecord.supersedes_report_id == draft.supersedes_report_id,
+                DailyReportRecord.deleted_at.is_(None),
             )
+            if match_source_operation:
+                statement = statement.where(
+                    DailyReportRecord.source_operation_id == draft.source_operation_id
+                )
+            return self.session.scalar(statement)
         return self.session.scalar(
             select(DailyReportRecord).where(
                 DailyReportRecord.report_date == draft.report_date,
