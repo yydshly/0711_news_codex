@@ -17,14 +17,21 @@ class FakeProcess:
     executable: Path
     command: list[str]
     child_processes: list[FakeProcess] = field(default_factory=list)
+    created_at: float = 1.0
     survives_terminate: bool = False
     terminate_error: Exception | None = None
+    parent_error: Exception | None = None
     running: bool = True
     terminate_calls: int = 0
     kill_calls: int = 0
 
     def ppid(self) -> int:
+        if self.parent_error is not None:
+            raise self.parent_error
         return self.parent_pid
+
+    def create_time(self) -> float:
+        return self.created_at
 
     def exe(self) -> str:
         return str(self.executable)
@@ -57,7 +64,12 @@ class FakeProcess:
         return self.running
 
 
-def install_fake_backend(monkeypatch, processes_by_pid: list[FakeProcess]) -> None:
+def install_fake_backend(
+    monkeypatch,
+    processes_by_pid: list[FakeProcess],
+    *,
+    iter_processes: list[FakeProcess] | None = None,
+) -> None:
     by_pid = {process.pid: process for process in processes_by_pid}
 
     def fake_process(pid: int) -> FakeProcess:
@@ -74,7 +86,11 @@ def install_fake_backend(monkeypatch, processes_by_pid: list[FakeProcess]) -> No
             [process for process in candidates if process.is_running()],
         )
 
-    monkeypatch.setattr(processes.psutil, "process_iter", lambda: iter(processes_by_pid))
+    monkeypatch.setattr(
+        processes.psutil,
+        "process_iter",
+        lambda: iter(processes_by_pid if iter_processes is None else iter_processes),
+    )
     monkeypatch.setattr(processes.psutil, "Process", fake_process)
     monkeypatch.setattr(processes.psutil, "wait_procs", fake_wait_procs)
 
@@ -117,6 +133,81 @@ def test_cleanup_reports_a_matched_process_that_cannot_be_terminated(
     assert result.matched_pids == (201,)
     assert result.failed_pids == (201,)
     assert result.succeeded is False
+
+
+def test_cleanup_keeps_an_uninspectable_parent_candidate_matched_and_untouched(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    candidate = FakeProcess(
+        201,
+        999,
+        executable,
+        [str(executable), MARKER, "worker"],
+        parent_error=psutil.AccessDenied(999),
+    )
+    install_fake_backend(monkeypatch, [candidate])
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result.matched_pids == (201,)
+    assert result.failed_pids == (201,)
+    assert candidate.terminate_calls == 0
+
+
+def test_cleanup_leaves_foreign_descendants_of_an_orphaned_branded_process_running(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    orphan_web = FakeProcess(201, 999, executable, [str(executable), MARKER, "web"])
+    branded_worker = FakeProcess(202, 201, executable, [str(executable), MARKER, "worker"])
+    manual_python = FakeProcess(203, 201, tmp_path / "python.exe", ["python", "-m", "newsradar"])
+    postgres = FakeProcess(204, 201, tmp_path / "postgres.exe", ["postgres", "-D", "data"])
+    orphan_web.child_processes = [branded_worker, manual_python, postgres]
+    install_fake_backend(
+        monkeypatch,
+        [orphan_web, branded_worker, manual_python, postgres],
+        iter_processes=[orphan_web, manual_python, postgres],
+    )
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result.stopped_pids == (202, 201)
+    assert branded_worker.terminate_calls == 1
+    assert manual_python.terminate_calls == 0
+    assert postgres.terminate_calls == 0
+
+
+def test_cleanup_fails_closed_when_a_selected_pid_has_been_reused(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    selected = FakeProcess(
+        201, 999, executable, [str(executable), MARKER, "web"], created_at=1.0
+    )
+    reused = FakeProcess(
+        201,
+        999,
+        tmp_path / "python.exe",
+        ["python", "-m", "newsradar"],
+        created_at=2.0,
+    )
+    install_fake_backend(monkeypatch, [selected])
+
+    original_process = processes.psutil.Process
+
+    def process_after_reuse(pid: int) -> FakeProcess:
+        if pid == selected.pid:
+            return reused
+        return original_process(pid)
+
+    monkeypatch.setattr(processes.psutil, "Process", process_after_reuse)
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result.matched_pids == (201,)
+    assert result.failed_pids == (201,)
+    assert reused.terminate_calls == 0
 
 
 def test_stop_owned_process_tree_kills_termination_survivors(monkeypatch, tmp_path: Path) -> None:

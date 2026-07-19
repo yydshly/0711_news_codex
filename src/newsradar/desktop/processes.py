@@ -13,6 +13,7 @@ from newsradar.desktop.launcher import INTERNAL_COMMAND_MARKER
 
 _PROCESS_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess)
 _INTERNAL_CHILD_ROLES = frozenset({"web", "worker"})
+_BRANDED_ROLES = _INTERNAL_CHILD_ROLES | {"serve"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,12 @@ class ProcessCleanupResult:
     @property
     def succeeded(self) -> bool:
         return not self.failed_pids
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessIdentity:
+    pid: int
+    create_time: float
 
 
 def _normalized_executable(path: str | Path) -> str:
@@ -49,6 +56,33 @@ def _is_running(process: psutil.Process) -> bool | None:
         return None
 
 
+def _identity_for(process: psutil.Process) -> _ProcessIdentity | None:
+    try:
+        return _ProcessIdentity(process.pid, process.create_time())
+    except _PROCESS_ERRORS:
+        return None
+
+
+def _process_for_identity(identity: _ProcessIdentity) -> psutil.Process | None:
+    try:
+        process = psutil.Process(identity.pid)
+        if process.create_time() != identity.create_time:
+            return None
+        return process
+    except _PROCESS_ERRORS:
+        return None
+
+
+def _is_branded_process(process: psutil.Process, executable: str) -> bool | None:
+    try:
+        return (
+            _normalized_executable(process.exe()) == executable
+            and _internal_role(process.cmdline()) in _BRANDED_ROLES
+        )
+    except _PROCESS_ERRORS:
+        return None
+
+
 def _result_for_processes(
     matched: list[psutil.Process],
     failed: set[int],
@@ -65,16 +99,9 @@ def _result_for_processes(
     return ProcessCleanupResult(matched_pids, tuple(stopped), tuple(sorted(failed)))
 
 
-def stop_owned_process_tree(root_pid: int, timeout_seconds: float = 5.0) -> ProcessCleanupResult:
-    """Stop a root process and its snapshot descendants within the supplied timeout."""
-    try:
-        root = psutil.Process(root_pid)
-        processes = [*root.children(recursive=True), root]
-    except psutil.NoSuchProcess:
-        return ProcessCleanupResult((root_pid,), (root_pid,))
-    except (psutil.AccessDenied, psutil.ZombieProcess):
-        return ProcessCleanupResult((root_pid,), (), (root_pid,))
-
+def _stop_processes(
+    processes: list[psutil.Process], timeout_seconds: float
+) -> ProcessCleanupResult:
     failed: set[int] = set()
     terminable: list[psutil.Process] = []
     for process in processes:
@@ -99,6 +126,19 @@ def stop_owned_process_tree(root_pid: int, timeout_seconds: float = 5.0) -> Proc
     psutil.wait_procs(killable, timeout=max(timeout_seconds, 0.0))
 
     return _result_for_processes(processes, failed)
+
+
+def stop_owned_process_tree(root_pid: int, timeout_seconds: float = 5.0) -> ProcessCleanupResult:
+    """Stop a root process and its snapshot descendants within the supplied timeout."""
+    try:
+        root = psutil.Process(root_pid)
+        processes = [*root.children(recursive=True), root]
+    except psutil.NoSuchProcess:
+        return ProcessCleanupResult((root_pid,), (root_pid,))
+    except (psutil.AccessDenied, psutil.ZombieProcess):
+        return ProcessCleanupResult((root_pid,), (), (root_pid,))
+
+    return _stop_processes(processes, timeout_seconds)
 
 
 def _parent_protection_status(process: psutil.Process, executable: str) -> bool | None:
@@ -129,6 +169,28 @@ def _parent_protection_status(process: psutil.Process, executable: str) -> bool 
         return None
 
 
+def _stop_selected_branded_tree(
+    identity: _ProcessIdentity,
+    executable: str,
+    timeout_seconds: float,
+) -> ProcessCleanupResult:
+    root = _process_for_identity(identity)
+    if root is None or _is_branded_process(root, executable) is not True:
+        return ProcessCleanupResult((identity.pid,), (), (identity.pid,))
+    try:
+        snapshot = [*root.children(recursive=True), root]
+    except _PROCESS_ERRORS:
+        return ProcessCleanupResult((identity.pid,), (), (identity.pid,))
+    branded = [
+        process for process in snapshot if _is_branded_process(process, executable) is True
+    ]
+    return _stop_processes(branded, timeout_seconds)
+
+
+def _ordered_unique(pids: list[int]) -> tuple[int, ...]:
+    return tuple(dict.fromkeys(pids))
+
+
 def cleanup_orphaned_internal_processes(
     executable_path: Path,
     current_pid: int | None = None,
@@ -137,8 +199,9 @@ def cleanup_orphaned_internal_processes(
     """Stop orphaned internal web and worker processes for one executable only."""
     executable = _normalized_executable(executable_path)
     current_pid = os.getpid() if current_pid is None else current_pid
-    targets: list[psutil.Process] = []
-    failed: set[int] = set()
+    targets: list[_ProcessIdentity] = []
+    matched: list[int] = []
+    failed: list[int] = []
 
     for process in psutil.process_iter():
         if process.pid == current_pid:
@@ -151,22 +214,31 @@ def cleanup_orphaned_internal_processes(
         if not same_executable or role not in _INTERNAL_CHILD_ROLES:
             continue
 
+        identity = _identity_for(process)
+        if identity is None:
+            matched.append(process.pid)
+            failed.append(process.pid)
+            continue
         protection = _parent_protection_status(process, executable)
         if protection is True:
             continue
+        matched.append(process.pid)
         if protection is None:
-            failed.add(process.pid)
+            failed.append(process.pid)
             continue
-        targets.append(process)
+        targets.append(identity)
 
-    matched_pids = tuple(process.pid for process in targets)
     stopped: list[int] = []
-    for process in targets:
-        result = stop_owned_process_tree(process.pid, timeout_seconds)
+    for identity in targets:
+        result = _stop_selected_branded_tree(identity, executable, timeout_seconds)
         stopped.extend(result.stopped_pids)
-        failed.update(result.failed_pids)
+        failed.extend(result.failed_pids)
 
-    return ProcessCleanupResult(matched_pids, tuple(stopped), tuple(sorted(failed)))
+    return ProcessCleanupResult(
+        _ordered_unique(matched),
+        _ordered_unique(stopped),
+        _ordered_unique(failed),
+    )
 
 
 def cleanup_current_packaged_orphans() -> ProcessCleanupResult:
