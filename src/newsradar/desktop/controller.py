@@ -9,18 +9,23 @@ from typing import Literal, Protocol
 import httpx
 
 from newsradar.desktop.launcher import runtime_command
+from newsradar.desktop.processes import (
+    ProcessCleanupResult,
+    cleanup_current_packaged_orphans,
+    stop_owned_process_tree,
+)
 
 
 class ManagedProcess(Protocol):
+    pid: int
+
     def poll(self) -> int | None: ...
-
-    def terminate(self) -> None: ...
-
-    def wait(self, timeout: float | None = None) -> int: ...
 
 
 ProcessFactory = Callable[[tuple[str, ...]], ManagedProcess]
 HealthProbe = Callable[[str], bool]
+ProcessTreeStopper = Callable[[int], ProcessCleanupResult]
+OrphanCleaner = Callable[[], ProcessCleanupResult]
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,8 @@ class DesktopController:
         port: int = 8767,
         process_factory: ProcessFactory | None = None,
         probe: HealthProbe | None = None,
+        tree_stopper: ProcessTreeStopper = stop_owned_process_tree,
+        orphan_cleaner: OrphanCleaner = cleanup_current_packaged_orphans,
         sleeper: Callable[[float], None] = time.sleep,
         health_attempts: int = 20,
         health_interval_seconds: float = 0.5,
@@ -45,10 +52,13 @@ class DesktopController:
         self.port = port
         self._process_factory = process_factory or self._spawn
         self._probe = probe or self._http_probe
+        self._tree_stopper = tree_stopper
+        self._orphan_cleaner = orphan_cleaner
         self._sleeper = sleeper
         self._health_attempts = health_attempts
         self._health_interval_seconds = health_interval_seconds
         self._owned_process: ManagedProcess | None = None
+        self._initial_orphan_cleanup_done = False
 
     @property
     def url(self) -> str:
@@ -62,6 +72,15 @@ class DesktopController:
         return DesktopStatus("stopped", "News Codex 当前未运行。")
 
     def start_service(self) -> DesktopStatus:
+        if not self._initial_orphan_cleanup_done:
+            self._initial_orphan_cleanup_done = True
+            cleanup = self._orphan_cleaner()
+            if not cleanup.succeeded:
+                return DesktopStatus(
+                    "failed",
+                    "妫€娴嬪埌鏃犳硶娓呯悊鐨?News Codex "
+                    "閬楃暀杩涚▼锛岃閫€鍑烘棫瀹炰緥鍚庨噸璇曘€?",
+                )
         current = self.status()
         if current.state in {"running", "external_running"}:
             return current
@@ -83,12 +102,10 @@ class DesktopController:
                 return DesktopStatus("external_running", "服务由其他进程运行，桌面窗口不会停止它。")
             return DesktopStatus("stopped", "News Codex 已停止。")
         process = self._owned_process
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                return DesktopStatus("failed", "服务停止超时，请检查本地运行日志。")
+        tree_cleanup = self._tree_stopper(process.pid)
+        orphan_cleanup = self._orphan_cleaner()
+        if not tree_cleanup.succeeded or not orphan_cleanup.succeeded:
+            return DesktopStatus("failed", "News Codex 服务停止失败，请重试。")
         self._owned_process = None
         return DesktopStatus("stopped", "News Codex 已停止。")
 
