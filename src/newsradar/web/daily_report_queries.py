@@ -62,6 +62,13 @@ def _is_non_negative_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _generation_count(
+    generation_summary: dict[str, object], key: str, fallback: int
+) -> int:
+    value = generation_summary.get(key)
+    return value if _is_non_negative_integer(value) else fallback
+
+
 @dataclass(frozen=True, slots=True)
 class DailyReportChineseOriginView:
     origin: str
@@ -394,9 +401,18 @@ class DailyReportTextIntegrityView:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyReportCoverageView:
+    cumulative_event_count: int
+    decision_count: int
+    overview_count: int
+    omitted_from_decision_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportDetailView:
     report: DailyReportSummaryView
     generation_summary: dict[str, object]
+    coverage: DailyReportCoverageView
     chinese_enrichment: DailyReportChineseEnrichmentView
     decision_script: str
     editorial_summary: DailyReportEditorialSummaryView
@@ -600,9 +616,11 @@ class DailyReportQueryService:
             ),
         )
         overview = self._overview(record, chinese_origins)
+        coverage = self._coverage(generation_summary, rows, overview.items)
         return DailyReportDetailView(
             report=self._summary(record, rows=rows),
             generation_summary=generation_summary,
+            coverage=coverage,
             chinese_enrichment=chinese_enrichment,
             decision_script=decision_script,
             editorial_summary=DailyReportEditorialSummaryView(
@@ -637,6 +655,30 @@ class DailyReportQueryService:
             archived_at=record.archived_at,
             confirmed=tuple(row for row in views if row.section == "confirmed"),
             emerging=tuple(row for row in views if row.section == "emerging"),
+        )
+
+    @staticmethod
+    def _coverage(
+        generation_summary: dict[str, object],
+        decision_rows: tuple[DailyReportItemRecord, ...],
+        overview_rows: tuple[DailyReportOverviewItemView, ...],
+    ) -> DailyReportCoverageView:
+        overview_count = _generation_count(
+            generation_summary, "overview_count", len(overview_rows)
+        )
+        decision_count = _generation_count(
+            generation_summary, "decision_count", len(decision_rows)
+        )
+        omitted_from_decision_count = _generation_count(
+            generation_summary,
+            "omitted_from_decision_count",
+            max(overview_count - decision_count, 0),
+        )
+        return DailyReportCoverageView(
+            cumulative_event_count=overview_count,
+            decision_count=decision_count,
+            overview_count=overview_count,
+            omitted_from_decision_count=omitted_from_decision_count,
         )
 
     @staticmethod

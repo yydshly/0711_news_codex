@@ -159,6 +159,10 @@
     <span>独立证据根 {{ item.snapshot.get('independent_root_count', 0) }}</span>
     <span>{{ '已进入决策简报' if item.included_in_decision else '仅在情报全览候选中' }}</span>
   </div>
+  {% if not item.included_in_decision %}
+  {% set disposition = item.snapshot.get('daily_disposition', {}) %}
+  <p class="metric-note">中文原因：{{ disposition.get('reason_zh', '该条目未进入当前决策简报，但仍保留在情报全览中。') }}</p>
+  {% endif %}
   {% if review %}
   <div class="report-field"><strong>中文审核建议</strong><p>{{ review.review_recommendation }}</p></div>
   <div class="report-field"><strong>中文证据评价</strong><p>{{ review.evidence_assessment }}</p></div>
@@ -238,11 +242,16 @@
     <span class="scope-label">每个栏目最多 20 条</span>
   </div>
   <dl class="daily-report-metrics">
+    <div><dt>累计事件</dt><dd>{{ daily_report.coverage.cumulative_event_count }}</dd><small>本日累计固定事件</small></div>
+    <div><dt>决策版</dt><dd>{{ daily_report.coverage.decision_count }}</dd><small>进入决策简报</small></div>
+    <div><dt>全览版</dt><dd>{{ daily_report.coverage.overview_count }}</dd><small>保留全部候选</small></div>
+    <div><dt>未进入决策版</dt><dd>{{ daily_report.coverage.omitted_from_decision_count }}</dd><small>仍保留在情报全览</small></div>
     <div><dt>本期条目</dt><dd>{{ daily_report.editorial_summary.total_count }}</dd><small>固定日报条目总数</small></div>
     <div><dt>决策收录</dt><dd>{{ daily_report.editorial_summary.included_count }}</dd><small>全部进入决策版</small></div>
     <div><dt>待补证</dt><dd>{{ daily_report.editorial_summary.needs_evidence_count }}</dd><small>已收录但不能视为确认</small></div>
     <div><dt>未收录</dt><dd>{{ daily_report.editorial_summary.excluded_count + daily_report.editorial_summary.duplicate_count }}</dd><small>排除 {{ daily_report.editorial_summary.excluded_count }} · 去重 {{ daily_report.editorial_summary.duplicate_count }}</small></div>
   </dl>
+  <p class="metric-note">累计事件 {{ daily_report.coverage.cumulative_event_count }} · 决策版 {{ daily_report.coverage.decision_count }} · 全览版 {{ daily_report.coverage.overview_count }} · 未进入决策版 {{ daily_report.coverage.omitted_from_decision_count }}</p>
   {% if daily_report.editorial_summary.unreviewed_count %}<p class="metric-note">尚有 {{ daily_report.editorial_summary.unreviewed_count }} 条未完成人工中文审核。</p>{% endif %}
 </section>
 

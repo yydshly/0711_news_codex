@@ -819,6 +819,93 @@ def test_daily_report_detail_separates_confirmed_and_unconfirmed(
     assert 'target="_blank" rel="noopener noreferrer"' in response.text
 
 
+def test_daily_report_detail_renders_cumulative_counts_and_disposition_reason(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operation_id = 4901
+    db_session.add(
+        OperationRunRecord(
+            id=operation_id,
+            operation_type="event_pipeline",
+            trigger="test",
+            status="succeeded",
+            requested_scope={},
+            result_summary={},
+            created_at=NOW,
+            finished_at=NOW,
+        )
+    )
+    event_ids = tuple(operation_id * 10 + index for index in range(1, 9))
+    db_session.add_all(
+        EventRecord(
+            id=event_id,
+            canonical_key=f"daily-report-coverage-{event_id}",
+            status="confirmed",
+            current_version_number=1,
+            occurred_at=NOW,
+        )
+        for event_id in event_ids
+    )
+    db_session.commit()
+    report = DailyReportRepository(db_session, utcnow=lambda: NOW).create_draft(
+        DailyReportDraft(
+            report_date=date(2026, 7, 16),
+            window_hours=24,
+            window_start=NOW - timedelta(hours=24),
+            window_end=NOW,
+            source_operation_id=operation_id,
+            generation_summary={"minimax_degraded": True},
+            items=tuple(
+                DailyReportItemDraft(
+                    event_id=event_id,
+                    event_version_number=1,
+                    section=ReportSection.CONFIRMED,
+                    position=position,
+                    snapshot={"zh_title": f"决策事件 {position}", "zh_summary": "决策摘要"},
+                )
+                for position, event_id in enumerate(event_ids[:2], start=1)
+            ),
+            overview_items=tuple(
+                DailyReportOverviewItemDraft(
+                    event_id=event_id,
+                    event_version_number=1,
+                    position=position,
+                    snapshot={
+                        "zh_title": f"全览事件 {position}",
+                        "zh_summary": "全览摘要",
+                        "status": "confirmed",
+                        "display_tier": "hotspot",
+                        "rank_score": float(100 - position),
+                        **(
+                            {
+                                "daily_disposition": {
+                                    "reason_zh": "当前决策优先级较低，仍保留在情报全览中。"
+                                }
+                            }
+                            if position == 3
+                            else {}
+                        ),
+                    },
+                    decision_event_id=event_id if position <= 2 else None,
+                )
+                for position, event_id in enumerate(event_ids, start=1)
+            ),
+        )
+    )
+    report_id = report.id
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert "累计事件 8" in response.text
+    assert "决策版 2" in response.text
+    assert "全览版 8" in response.text
+    assert "未进入决策版 6" in response.text
+    assert "当前决策优先级较低，仍保留在情报全览中。" in response.text
+    assert "该条目未进入当前决策简报，但仍保留在情报全览中。" in response.text
+
+
 def test_detail_projects_latest_editorial_review_and_ordered_history(
     db_session: Session,
 ) -> None:
