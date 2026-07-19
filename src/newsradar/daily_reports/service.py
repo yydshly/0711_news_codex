@@ -412,9 +412,10 @@ class DailyReportService:
         )
         window_end = page.snapshot.window_end
         report_date = window_end.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
-        existing, predecessor = self._reports.begin_publication(
+        existing, predecessor, _baseline_heads = self._reports.begin_publication(
             report_date,
             source_operation_id=page.snapshot.operation_id,
+            window_end=window_end,
         )
         if existing is not None:
             self.session.commit()

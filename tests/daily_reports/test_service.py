@@ -371,6 +371,7 @@ def _daily_report_draft(
     source_operation_id: int,
     report_date: date = date(2026, 7, 19),
     window_hours: int = 24,
+    window_end: datetime = NOW,
     supersedes_report_id: int | None = None,
     decision_event_versions: tuple[tuple[int, int], ...] = (),
     overview_event_versions: tuple[tuple[int, int], ...] = (),
@@ -409,8 +410,8 @@ def _daily_report_draft(
     return DailyReportDraft(
         report_date=report_date,
         window_hours=window_hours,
-        window_start=NOW - timedelta(hours=window_hours),
-        window_end=NOW,
+        window_start=window_end - timedelta(hours=window_hours),
+        window_end=window_end,
         source_operation_id=source_operation_id,
         generation_summary={},
         supersedes_report_id=supersedes_report_id,
@@ -446,6 +447,8 @@ def _archived_report(
     report_date: date = date(2026, 7, 19),
     revision: int,
     window_hours: int = 24,
+    window_end: datetime = NOW,
+    supersedes_report_id: int | None = None,
     decision_event_versions: tuple[tuple[int, int], ...] = (),
     overview_event_versions: tuple[tuple[int, int], ...] = (),
     reviewed_decision_event_version: tuple[int, int] | None = None,
@@ -459,6 +462,8 @@ def _archived_report(
             source_operation_id=source_operation_id,
             report_date=report_date,
             window_hours=window_hours,
+            window_end=window_end,
+            supersedes_report_id=supersedes_report_id,
             decision_event_versions=decision_event_versions,
             overview_event_versions=overview_event_versions,
         )
@@ -500,6 +505,43 @@ def _archived_report(
             ),
         )
     return repository.archive(report.id)
+
+
+def test_archived_heads_for_day_returns_one_head_per_disconnected_chain(
+    db_session: Session,
+) -> None:
+    chain_a_root = _archived_report(db_session, revision=1)
+    chain_a_head = _archived_report(
+        db_session,
+        revision=2,
+        supersedes_report_id=chain_a_root.id,
+    )
+    chain_b_head = _archived_report(db_session, revision=3)
+    deleted = _archived_report(db_session, revision=4)
+    deleted.deleted_at = NOW
+    future = _archived_report(
+        db_session,
+        revision=5,
+        window_end=NOW + timedelta(hours=2),
+    )
+    other_day = _archived_report(
+        db_session,
+        report_date=date(2026, 7, 18),
+        revision=1,
+    )
+    db_session.commit()
+
+    heads = DailyReportRepository(db_session).archived_heads_for_day(
+        date(2026, 7, 19),
+        excluding_operation_id=9999,
+        window_end=NOW + timedelta(hours=1),
+    )
+
+    assert [row.id for row in heads] == [chain_a_head.id, chain_b_head.id]
+    assert chain_a_root.id not in {row.id for row in heads}
+    assert deleted.id not in {row.id for row in heads}
+    assert future.id not in {row.id for row in heads}
+    assert other_day.id not in {row.id for row in heads}
 
 
 def _archived_report_with_review(
@@ -1146,13 +1188,17 @@ def test_publication_lock_is_acquired_before_predecessor_selection(
     monkeypatch.setattr(repository, "_lock_report_day", lambda _date: calls.append("lock"))
     monkeypatch.setattr(
         repository,
-        "latest_archived_for_day",
-        lambda *_args, **_kwargs: calls.append("predecessor"),
+        "archived_heads_for_day",
+        lambda *_args, **_kwargs: calls.append("heads") or (),
     )
 
-    repository.begin_publication(date(2026, 7, 19), source_operation_id=2401)
+    repository.begin_publication(
+        date(2026, 7, 19),
+        source_operation_id=2401,
+        window_end=NOW,
+    )
 
-    assert calls == ["lock", "predecessor"]
+    assert calls == ["lock", "heads"]
 
 
 def test_second_same_day_report_with_only_old_events_does_not_shrink(

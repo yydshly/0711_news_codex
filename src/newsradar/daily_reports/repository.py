@@ -9,9 +9,9 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import case, func, or_, select, text
+from sqlalchemy import case, exists, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from newsradar.ai.minimax import bounded_token_count
 from newsradar.daily_reports.chinese_enrichment import (
@@ -93,7 +93,12 @@ class DailyReportRepository:
         report_date: date,
         *,
         source_operation_id: int,
-    ) -> tuple[DailyReportRecord | None, DailyReportRecord | None]:
+        window_end: datetime,
+    ) -> tuple[
+        DailyReportRecord | None,
+        DailyReportRecord | None,
+        tuple[DailyReportRecord, ...],
+    ]:
         """Lock one report day and resolve its idempotent draft or archived head."""
         self._lock_report_day(report_date)
         active_drafts = tuple(
@@ -116,15 +121,17 @@ class DailyReportRepository:
             None,
         )
         if existing is not None:
-            return existing, None
+            return existing, None, ()
         if active_drafts:
             self.session.rollback()
             raise RuntimeError("daily_report_publication_in_progress")
-        predecessor = self.latest_archived_for_day(
+        heads = self.archived_heads_for_day(
             report_date,
             excluding_operation_id=source_operation_id,
+            window_end=window_end,
         )
-        return None, predecessor
+        predecessor = heads[-1] if heads else None
+        return None, predecessor, heads
 
     def create_cumulative_draft(self, draft: DailyReportDraft) -> DailyReportRecord:
         if draft.supersedes_report_id is None:
@@ -141,6 +148,7 @@ class DailyReportRepository:
             predecessor = self.latest_archived_for_day(
                 draft.report_date,
                 excluding_operation_id=draft.source_operation_id,
+                window_end=draft.window_end,
             )
             if (
                 predecessor is None
@@ -285,17 +293,61 @@ class DailyReportRepository:
         report_date: date,
         *,
         excluding_operation_id: int,
+        window_end: datetime | None = None,
     ) -> DailyReportRecord | None:
-        return self.session.scalar(
-            select(DailyReportRecord)
-            .where(
-                DailyReportRecord.report_date == report_date,
-                DailyReportRecord.status == ReportStatus.ARCHIVED.value,
-                DailyReportRecord.deleted_at.is_(None),
-                DailyReportRecord.source_operation_id != excluding_operation_id,
+        heads = self.archived_heads_for_day(
+            report_date,
+            excluding_operation_id=excluding_operation_id,
+            window_end=window_end,
+        )
+        return heads[-1] if heads else None
+
+    def archived_heads_for_day(
+        self,
+        report_date: date,
+        *,
+        excluding_operation_id: int,
+        window_end: datetime | None,
+    ) -> tuple[DailyReportRecord, ...]:
+        """Return every eligible unsuperseded archived head for one report day."""
+        child = aliased(DailyReportRecord)
+        candidate_filters = (
+            DailyReportRecord.report_date == report_date,
+            DailyReportRecord.status == ReportStatus.ARCHIVED.value,
+            DailyReportRecord.deleted_at.is_(None),
+            DailyReportRecord.source_operation_id != excluding_operation_id,
+        )
+        child_filters = (
+            child.report_date == report_date,
+            child.status == ReportStatus.ARCHIVED.value,
+            child.deleted_at.is_(None),
+            child.source_operation_id != excluding_operation_id,
+        )
+        if window_end is not None:
+            candidate_filters = (
+                *candidate_filters,
+                DailyReportRecord.window_end <= window_end,
             )
-            .order_by(DailyReportRecord.revision.desc(), DailyReportRecord.id.desc())
-            .limit(1)
+            child_filters = (*child_filters, child.window_end <= window_end)
+        return tuple(
+            self.session.scalars(
+                select(DailyReportRecord)
+                .where(
+                    *candidate_filters,
+                    ~exists(
+                        select(child.id).where(
+                            *child_filters,
+                            child.supersedes_report_id == DailyReportRecord.id,
+                        )
+                    ),
+                )
+                .order_by(
+                    DailyReportRecord.window_end,
+                    DailyReportRecord.archived_at,
+                    DailyReportRecord.generated_at,
+                    DailyReportRecord.id,
+                )
+            )
         )
 
     def applied_event_survivors(self, event_ids: set[int]) -> dict[int, int]:
