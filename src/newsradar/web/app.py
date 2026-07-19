@@ -702,6 +702,11 @@ def create_app(
             },
         )
 
+    def web_console_url(request: Request) -> str:
+        if request.url.scheme not in {"http", "https"}:
+            raise HTTPException(status_code=400, detail="invalid_web_console_url_scheme")
+        return str(request.url.replace(path="/daily-reports", query="", fragment=""))
+
     @app.get("/daily-reports", response_class=HTMLResponse)
     def daily_reports(request: Request, period: str = "all") -> HTMLResponse:
         try:
@@ -729,6 +734,7 @@ def create_app(
                 "snapshot_available": snapshot_available,
                 "autopilot_runs": autopilot_runs,
                 "automation": automation,
+                "web_console_url": web_console_url(request),
                 "action_token": issue_action_token(request),
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",

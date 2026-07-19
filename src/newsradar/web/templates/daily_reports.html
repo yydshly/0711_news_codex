@@ -2,6 +2,22 @@
 {% block title %}中文日报 · News Codex{% endblock %}
 {% block header %}<h1>中文日报</h1>{% endblock %}
 {% block content %}
+<section class="panel" aria-labelledby="web-console-heading">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">本机入口 · 私有访问</p>
+      <h2 id="web-console-heading">本地网页控制台</h2>
+    </div>
+  </div>
+  <p class="metric-note">仅本机可访问；关闭桌面应用或停止服务后，该地址不会继续提供日报与自动任务。</p>
+  <p><a href="{{ web_console_url }}" target="_blank" rel="noopener">{{ web_console_url }}</a></p>
+  <div class="daily-automation-actions">
+    <a class="secondary-action" href="{{ web_console_url }}" target="_blank" rel="noopener">在默认浏览器打开</a>
+    <button type="button" data-copy-web-console-url="{{ web_console_url }}" aria-label="复制本机网页地址">复制地址</button>
+    <span data-copy-web-console-status role="status" aria-live="polite"></span>
+  </div>
+</section>
+
 <section class="panel daily-automation-console" aria-labelledby="daily-automation-heading"{% if automation.active_run %} data-active-daily-run="true"{% endif %}>
   <div class="daily-automation-heading">
     <div>

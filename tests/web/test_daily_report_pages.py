@@ -785,6 +785,20 @@ def test_daily_report_list_explains_generation_is_read_only(
     assert "24" in response.text and "48" in response.text and "72" in response.text
 
 
+def test_daily_report_index_shows_local_web_console_entry(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get("/daily-reports")
+
+    assert response.status_code == 200
+    assert "本地网页控制台" in response.text
+    assert 'href="http://127.0.0.1/daily-reports"' in response.text
+    assert 'data-copy-web-console-url="http://127.0.0.1/daily-reports"' in response.text
+    assert "仅本机可访问" in response.text
+
+
 def test_daily_report_list_orders_newest_first_and_counts_only_included(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
