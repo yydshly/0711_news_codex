@@ -906,6 +906,51 @@ def test_daily_report_detail_renders_cumulative_counts_and_disposition_reason(
     assert "该条目未进入当前决策简报，但仍保留在情报全览中。" in response.text
 
 
+def test_daily_report_detail_uses_persisted_rows_when_coverage_summary_is_stale(
+    db_session: Session,
+) -> None:
+    report = seed_daily_report(db_session)
+    report.generation_summary = {
+        **report.generation_summary,
+        "decision_count": 99,
+        "overview_count": 99,
+        "omitted_from_decision_count": 99,
+    }
+    db_session.commit()
+
+    detail = DailyReportQueryService(db_session).detail(report.id)
+
+    assert detail is not None
+    assert detail.coverage.decision_count == 2
+    assert detail.coverage.overview_count == 2
+    assert detail.coverage.omitted_from_decision_count == 0
+
+
+def test_daily_report_detail_renders_retained_complete_display_diagnostic(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = seed_daily_report(db_session)
+    overview = DailyReportRepository(db_session).overview_items(report.id)[0]
+    overview.snapshot = {
+        **overview.snapshot,
+        "retained_complete_display": {
+            "attempted_event_version_number": 2,
+            "reason_code": "event_detail_unavailable",
+            "reason_zh": "新版本展示数据不完整，已保留上一完整版本。",
+            "next_action_zh": "等待事件详情补齐后再生成修订版。",
+        },
+    }
+    db_session.commit()
+    report_id = report.id
+    client, _token = safe_client_with_token(db_session, monkeypatch)
+
+    response = client.get(f"/daily-reports/{report_id}")
+
+    assert response.status_code == 200
+    assert "已保留上一完整版本" in response.text
+    assert "等待事件详情补齐后再生成修订版。" in response.text
+
+
 def test_detail_projects_latest_editorial_review_and_ordered_history(
     db_session: Session,
 ) -> None:

@@ -719,6 +719,29 @@ def test_revise_copies_latest_overview_review_and_remaps_duplicate_target(
     assert copied_review.duplicate_of_overview_item_id == copied_by_event[target.event_id].id
 
 
+def test_revise_derives_coverage_counts_from_persisted_rows(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = repository.create_draft(
+        replace(
+            _draft(db_session),
+            generation_summary={
+                "decision_count": 99,
+                "overview_count": 99,
+                "omitted_from_decision_count": 0,
+            },
+        )
+    )
+    repository.archive(original.id)
+
+    revision = repository.revise(original.id)
+
+    assert revision.generation_summary["decision_count"] == 3
+    assert revision.generation_summary["overview_count"] == 3
+    assert revision.generation_summary["omitted_from_decision_count"] == 0
+
+
 def test_revise_copies_only_latest_editorial_review_without_mutating_history(
     db_session: Session,
 ) -> None:

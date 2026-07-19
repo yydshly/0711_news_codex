@@ -170,6 +170,24 @@ def test_accumulate_resets_prior_disposition_for_strictly_newer_complete_version
     assert "daily_disposition" not in result.items[0].snapshot
 
 
+def test_accumulate_retains_complete_item_and_records_newer_degraded_attempt() -> None:
+    result = accumulate_daily_overview(
+        (_draft(7, version=1),),
+        (_draft(7, version=2, degraded=True),),
+        canonical_event_ids={7: 7},
+        previous_decisions={},
+    )
+
+    retained = result.items[0]
+    assert retained.event_version_number == 1
+    assert retained.snapshot["retained_complete_display"] == {
+        "attempted_event_version_number": 2,
+        "reason_code": "event_detail_unavailable",
+        "reason_zh": "新版本展示数据不完整，已保留上一完整版本。",
+        "next_action_zh": "等待事件详情补齐后再生成修订版。",
+    }
+
+
 def test_accumulate_keeps_visible_duplicate_for_strictly_newer_complete_version() -> None:
     previous = (_draft(1), _draft(12))
 

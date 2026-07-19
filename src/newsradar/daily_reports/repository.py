@@ -937,6 +937,26 @@ class DailyReportRepository:
             if original_overview_items
             else legacy_overview_items
         )
+        decision_items = tuple(
+            DailyReportItemDraft(
+                event_id=row.event_id,
+                event_version_number=row.event_version_number,
+                section=ReportSection(row.section),
+                position=row.position,
+                snapshot=dict(row.snapshot),
+                included=row.included,
+            )
+            for row in self.items(original.id)
+        )
+        revised_summary = self._revised_generation_summary(
+            (
+                dict(generation_summary)
+                if generation_summary is not None
+                else dict(original.generation_summary)
+            ),
+            decision_items=decision_items,
+            overview_items=overview_items,
+        )
         revision, created = self._create_draft(
             DailyReportDraft(
                 report_date=original.report_date,
@@ -944,23 +964,9 @@ class DailyReportRepository:
                 window_start=original.window_start,
                 window_end=original.window_end,
                 source_operation_id=original.source_operation_id,
-                generation_summary=(
-                    dict(generation_summary)
-                    if generation_summary is not None
-                    else dict(original.generation_summary)
-                ),
+                generation_summary=revised_summary,
                 supersedes_report_id=original.id,
-                items=tuple(
-                    DailyReportItemDraft(
-                        event_id=row.event_id,
-                        event_version_number=row.event_version_number,
-                        section=ReportSection(row.section),
-                        position=row.position,
-                        snapshot=dict(row.snapshot),
-                        included=row.included,
-                    )
-                    for row in self.items(original.id)
-                ),
+                items=decision_items,
                 overview_items=overview_items,
             ),
             commit=False,
@@ -975,6 +981,31 @@ class DailyReportRepository:
             self.session.rollback()
             raise
         return revision
+
+    @staticmethod
+    def _revised_generation_summary(
+        generation_summary: dict[str, object],
+        *,
+        decision_items: tuple[DailyReportItemDraft, ...],
+        overview_items: tuple[DailyReportOverviewItemDraft, ...],
+    ) -> dict[str, object]:
+        summary = dict(generation_summary)
+        decision_count = len(decision_items)
+        overview_count = len(overview_items)
+        summary.update(
+            {
+                "decision_count": decision_count,
+                "overview_count": overview_count,
+                "omitted_from_decision_count": max(overview_count - decision_count, 0),
+                "confirmed_count": sum(
+                    item.section is ReportSection.CONFIRMED for item in decision_items
+                ),
+                "emerging_count": sum(
+                    item.section is ReportSection.EMERGING for item in decision_items
+                ),
+            }
+        )
+        return summary
 
     def _copy_revision_reviews(
         self, original: DailyReportRecord, revision: DailyReportRecord

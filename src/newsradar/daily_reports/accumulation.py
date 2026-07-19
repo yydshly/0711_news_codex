@@ -83,6 +83,15 @@ def accumulate_daily_overview(
             previous_is_degraded = (
                 "display_degradation_reason" in previous_item.snapshot
             )
+            if (
+                current_is_degraded
+                and not previous_is_degraded
+                and item.event_version_number > previous_item.event_version_number
+            ):
+                rows[exact_index] = _with_retained_complete_display(
+                    previous_item, item
+                )
+                continue
             can_replace = item.event_version_number >= previous_item.event_version_number
             can_replace = can_replace and (
                 not current_is_degraded or previous_is_degraded
@@ -190,6 +199,23 @@ def _with_disposition(
         "canonical_event_id": canonical_event_id,
     }
     return replace(item, snapshot=snapshot)
+
+
+def _with_retained_complete_display(
+    complete_item: DailyReportOverviewItemDraft,
+    degraded_item: DailyReportOverviewItemDraft,
+) -> DailyReportOverviewItemDraft:
+    snapshot = deepcopy(complete_item.snapshot)
+    reason_code = degraded_item.snapshot.get("display_degradation_reason")
+    snapshot["retained_complete_display"] = {
+        "attempted_event_version_number": degraded_item.event_version_number,
+        "reason_code": (
+            reason_code if isinstance(reason_code, str) else "display_data_degraded"
+        ),
+        "reason_zh": "新版本展示数据不完整，已保留上一完整版本。",
+        "next_action_zh": "等待事件详情补齐后再生成修订版。",
+    }
+    return replace(complete_item, snapshot=snapshot)
 
 
 def _merge_item_evidence(

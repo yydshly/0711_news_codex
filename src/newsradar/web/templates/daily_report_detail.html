@@ -123,6 +123,7 @@
     {% for item in items %}
     <article class="overview-brief-card">
       {% if item.snapshot.get('display_degradation_reason') %}<span class="overview-brief-warning">待补齐展示数据</span><p class="metric-note">中文原因：事件详情或展示字段不完整，已保留为全览线索。</p>{% endif %}
+      {% if item.snapshot.get('retained_complete_display') %}<span class="overview-brief-warning">已保留上一完整版本</span><p class="metric-note">中文原因：{{ item.snapshot['retained_complete_display'].get('reason_zh') }}</p><p class="metric-note">下一步：{{ item.snapshot['retained_complete_display'].get('next_action_zh') }}</p>{% endif %}
       {% if item.editorial_review and item.editorial_review.decision == 'needs_evidence' %}<span class="overview-brief-warning">尚待进一步确认</span>{% endif %}
       {% if item.chinese_origin %}<span class="chinese-origin chinese-origin-{{ item.chinese_origin.origin }}">中文增强：{{ item.chinese_origin.label_zh }}</span>{% endif %}
       <h4><a href="{{ item.detail_href }}">{{ item.zh_title }}</a></h4>
@@ -141,6 +142,7 @@
 {% set evidence_rows = item.snapshot.get('evidence', []) %}
 <article class="overview-audit-card overview-item-card{% if review and review.decision in ['exclude', 'duplicate'] %} muted{% endif %}"{% if item.item_id %} id="overview-item-{{ item.item_id }}"{% endif %}>
   {% if item.snapshot.get('display_degradation_reason') %}<p class="diagnostic-warning"><strong>待补齐展示数据：</strong>事件详情或展示字段不完整，已保留，未进入决策简报。</p>{% endif %}
+  {% if item.snapshot.get('retained_complete_display') %}<p class="diagnostic-warning"><strong>已保留上一完整版本：</strong>{{ item.snapshot['retained_complete_display'].get('reason_zh') }} 下一步：{{ item.snapshot['retained_complete_display'].get('next_action_zh') }}</p>{% endif %}
   <div class="report-card-heading">
     <p class="eyebrow">{{ '已确认' if item.status == 'confirmed' else ('热点' if item.display_tier == 'hotspot' else '信号') }} · 事件 #{{ item.event_id }} · 版本 {{ item.event_version_number }}</p>
     <span class="report-status report-status-{{ review.decision if review else 'unreviewed' }}">

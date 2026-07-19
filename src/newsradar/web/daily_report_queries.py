@@ -663,6 +663,15 @@ class DailyReportQueryService:
         decision_rows: tuple[DailyReportItemRecord, ...],
         overview_rows: tuple[DailyReportOverviewItemView, ...],
     ) -> DailyReportCoverageView:
+        if overview_rows:
+            overview_count = len(overview_rows)
+            decision_count = len(decision_rows)
+            return DailyReportCoverageView(
+                cumulative_event_count=overview_count,
+                decision_count=decision_count,
+                overview_count=overview_count,
+                omitted_from_decision_count=max(overview_count - decision_count, 0),
+            )
         overview_count = _generation_count(
             generation_summary, "overview_count", len(overview_rows)
         )
