@@ -47,6 +47,7 @@ class _RevisionTransitionPlan:
 class _RevisionReparentPlan:
     predecessor_id: int | None
     transitions: tuple[_RevisionTransitionPlan, ...]
+    draft_report_ids: tuple[int, ...]
 
 
 class DailyReportPurgeHandler:
@@ -161,7 +162,7 @@ class DailyReportPurgeHandler:
                         raise PurgeMemberError(
                             "daily_report_must_be_trashed_for_purge", False
                         )
-                    if report.status != "archived":
+                    if report.status not in {"draft", "archived"}:
                         raise PurgeMemberError(
                             "daily_report_must_be_archived_for_purge", False
                         )
@@ -455,6 +456,20 @@ class DailyReportPurgeHandler:
                     raise PurgeMemberError(
                         "daily_report_purge_persistence_failed", True
                     )
+        for draft_report_id in revision_plan.draft_report_ids:
+            updated = session.execute(
+                update(DailyReportRecord)
+                .where(
+                    DailyReportRecord.id == draft_report_id,
+                    DailyReportRecord.status == "draft",
+                    DailyReportRecord.supersedes_report_id == report.id,
+                )
+                .values(supersedes_report_id=revision_plan.predecessor_id)
+            )
+            if updated.rowcount != 1:
+                raise PurgeMemberError(
+                    "daily_report_purge_persistence_failed", True
+                )
         if item_review_ids:
             session.execute(
                 update(DailyReportItemEditorialReviewRecord)
@@ -508,7 +523,17 @@ class DailyReportPurgeHandler:
                 ).order_by(DailyReportRecord.id)
             )
         )
-        if any(child.status != "archived" for child in reparent_reports):
+        if report.status == "draft":
+            if reparent_reports:
+                raise PurgeMemberError(
+                    "daily_report_purge_persistence_failed", True
+                )
+            return _RevisionReparentPlan(
+                predecessor_id=report.supersedes_report_id,
+                transitions=(),
+                draft_report_ids=(),
+            )
+        if any(child.status not in {"draft", "archived"} for child in reparent_reports):
             raise PurgeMemberError(
                 "daily_report_purge_persistence_failed", True
             )
@@ -523,10 +548,14 @@ class DailyReportPurgeHandler:
                 ),
             )
             for child in reparent_reports
+            if child.status == "archived"
         )
         return _RevisionReparentPlan(
             predecessor_id=report.supersedes_report_id,
             transitions=transitions,
+            draft_report_ids=tuple(
+                child.id for child in reparent_reports if child.status == "draft"
+            ),
         )
 
     @staticmethod

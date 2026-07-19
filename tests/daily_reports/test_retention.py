@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from newsradar.daily_reports.repository import DailyReportRepository
@@ -27,6 +29,12 @@ NOW = datetime(2026, 7, 16, 4, tzinfo=UTC)
 
 def _sqlite_timestamp(value: datetime) -> datetime:
     return value.replace(tzinfo=None)
+
+
+def _sqlite_unique_error(columns: str) -> IntegrityError:
+    original = sqlite3.IntegrityError(f"UNIQUE constraint failed: {columns}")
+    original.sqlite_errorcode = sqlite3.SQLITE_CONSTRAINT_UNIQUE
+    return IntegrityError(None, None, original)
 
 
 @pytest.fixture
@@ -215,6 +223,81 @@ def test_restore_takes_identity_lock_before_final_row_lock(
 
     assert result.outcome == "restored"
     assert calls[:2] == ["identity_lock", "row_lock"]
+
+
+def test_restore_returns_blocked_when_sqlite_unique_race_has_a_winner(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = _report(db_session, report_date=date(2026, 7, 14))
+    abandoned = _revision_record(
+        db_session,
+        parent,
+        revision=2,
+        supersedes_report_id=parent.id,
+        deleted_at=NOW,
+    )
+    winner = _revision_record(
+        db_session,
+        parent,
+        revision=3,
+        supersedes_report_id=parent.id,
+        deleted_at=NOW,
+    )
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original_commit = db_session.commit
+    conflict_error = _sqlite_unique_error("daily_reports.supersedes_report_id")
+    injected = False
+
+    def commit_after_concurrent_winner() -> None:
+        nonlocal injected
+        if injected:
+            original_commit()
+            return
+        injected = True
+        db_session.rollback()
+        stored_winner = db_session.get(DailyReportRecord, winner.id)
+        assert stored_winner is not None
+        stored_winner.deleted_at = None
+        stored_winner.purge_after = None
+        original_commit()
+        raise conflict_error
+
+    monkeypatch.setattr(db_session, "commit", commit_after_concurrent_winner)
+
+    result = repository.restore(abandoned.id)
+
+    stored_abandoned = db_session.get(
+        DailyReportRecord, abandoned.id, populate_existing=True
+    )
+    stored_winner = db_session.get(DailyReportRecord, winner.id, populate_existing=True)
+    assert result.outcome == "blocked"
+    assert stored_abandoned is not None
+    assert stored_abandoned.deleted_at == _sqlite_timestamp(NOW)
+    assert stored_winner is not None
+    assert stored_winner.deleted_at is None
+
+
+def test_restore_rolls_back_and_propagates_unrelated_integrity_error(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _report(db_session, report_date=date(2026, 7, 14))
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    repository.move_to_trash(report.id)
+    unrelated_error = _sqlite_unique_error("daily_report_items.id")
+
+    def fail_commit() -> None:
+        db_session.flush()
+        raise unrelated_error
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+
+    with pytest.raises(IntegrityError) as captured:
+        repository.restore(report.id)
+
+    stored = db_session.get(DailyReportRecord, report.id, populate_existing=True)
+    assert captured.value is unrelated_error
+    assert stored is not None
+    assert stored.deleted_at == _sqlite_timestamp(NOW)
 
 
 def test_trash_candidates_exclude_pinned_and_limit_to_old_active_reports(

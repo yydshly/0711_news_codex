@@ -945,6 +945,24 @@ class DailyReportRecord(Base):
     purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DailyReportRevisionCounterRecord(Base):
+    __tablename__ = "daily_report_revision_counters"
+    __table_args__ = (
+        CheckConstraint(
+            "window_hours IN (24, 48, 72)",
+            name="ck_daily_report_revision_counter_window",
+        ),
+        CheckConstraint(
+            "highest_revision > 0",
+            name="ck_daily_report_revision_counter_positive",
+        ),
+    )
+
+    report_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    window_hours: Mapped[int] = mapped_column(Integer, primary_key=True)
+    highest_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class DailyReportPurgeTransitionRecord(Base):
     __tablename__ = "daily_report_purge_transitions"
 

@@ -17,12 +17,13 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, func, select, text
+from sqlalchemy import Engine, create_engine, delete, func, select, text
 from sqlalchemy.engine import URL, Connection, make_url
-from sqlalchemy.exc import ArgumentError, SQLAlchemyError
+from sqlalchemy.exc import ArgumentError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
 
+from newsradar.daily_reports.purge_runtime import DailyReportPurgeHandler
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     DailyReportDraft,
@@ -41,11 +42,13 @@ from newsradar.db.models import (
     EventRecord,
     OperationRunRecord,
 )
+from newsradar.operations.repository import OperationLease
+from newsradar.operations.schema import OperationStatus
 
 _RUN_POSTGRES_ENV = "NEWSRADAR_RUN_POSTGRES_ACCEPTANCE"
 _TEST_POSTGRES_URL_ENV = "NEWSRADAR_TEST_POSTGRES_URL"
 _TEST_SCHEMA_PATTERN = re.compile(r"newsradar_revision_test_[0-9a-f]{32}")
-_ALEMBIC_HEAD = "20260719_0031"
+_ALEMBIC_HEAD = "20260719_0032"
 _ROOT = Path(__file__).parents[2]
 NOW = datetime(2026, 7, 19, 4, tzinfo=UTC)
 
@@ -188,6 +191,82 @@ def postgres_engine() -> Iterator[PostgreSQLHarness]:
             except SQLAlchemyError as error:
                 _safe_fail("test_postgres_schema_cleanup_failed", error)
         admin_engine.dispose()
+
+
+def test_postgres_guard_allows_only_trashed_draft_purge(
+    postgres_engine: PostgreSQLHarness,
+    tmp_path: Path,
+) -> None:
+    with postgres_engine() as session:
+        operation = OperationRunRecord(
+            operation_type="event_pipeline",
+            trigger="acceptance",
+            status="succeeded",
+            requested_scope={},
+            result_summary={},
+            created_at=NOW,
+            finished_at=NOW,
+        )
+        session.add(operation)
+        session.flush()
+        draft = DailyReportRepository(session, utcnow=lambda: NOW).create_draft(
+            DailyReportDraft(
+                report_date=date(2026, 7, 20),
+                window_hours=24,
+                window_start=NOW - timedelta(hours=24),
+                window_end=NOW,
+                source_operation_id=operation.id,
+                generation_summary={"acceptance": "draft-purge-guard"},
+                items=(),
+            )
+        )
+        draft_id = draft.id
+        operation_id = operation.id
+
+    with postgres_engine() as session:
+        with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+            session.execute(
+                delete(DailyReportRecord).where(DailyReportRecord.id == draft_id)
+            )
+        session.rollback()
+
+    with postgres_engine() as session:
+        result = DailyReportRepository(session, utcnow=lambda: NOW).move_to_trash(
+            draft_id
+        )
+        assert result.outcome == "trashed"
+
+    purge_result = DailyReportPurgeHandler(
+        postgres_engine,
+        audio_root=tmp_path / "audio",
+    )(
+        OperationLease(
+            990_101,
+            990_102,
+            1,
+            "postgres-draft-purge-worker",
+            {"schema_version": 1, "report_ids": [draft_id]},
+            "daily_report_purge",
+        ),
+        lambda _boundary: None,
+    )
+
+    assert purge_result.status is OperationStatus.SUCCEEDED
+    with postgres_engine() as session:
+        assert session.get(DailyReportRecord, draft_id) is None
+        assert session.get(OperationRunRecord, operation_id) is not None
+        replacement = DailyReportRepository(session, utcnow=lambda: NOW).create_draft(
+            DailyReportDraft(
+                report_date=date(2026, 7, 20),
+                window_hours=24,
+                window_start=NOW - timedelta(hours=24),
+                window_end=NOW,
+                source_operation_id=operation_id,
+                generation_summary={"acceptance": "draft-purge-replacement"},
+                items=(),
+            )
+        )
+        assert replacement.revision == 2
 
 
 def _seed_archived_parent(session: Session) -> tuple[int, dict[str, object]]:

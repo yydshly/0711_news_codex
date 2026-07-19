@@ -257,13 +257,18 @@ def test_database_delete_guard_fails_before_irreversible_audio_unlink(tmp_path: 
     assert audio_path.read_bytes() == b"synthetic-guarded-audio"
 
 
-def test_purge_rejects_trashed_draft_before_audio_side_effects(tmp_path: Path) -> None:
+def test_purge_removes_trashed_draft_and_its_audio(tmp_path: Path) -> None:
     factory = _factory(tmp_path)
     audio_root = tmp_path / "audio"
     with factory() as db:
-        report = seed_daily_report(db)
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        parent = repository.archive(seed_daily_report(db).id)
+        report = repository.revise(parent.id)
         report_id = report.id
-        _trash(db, report_id, archived=False)
+        repository.move_to_trash(report_id)
+        replacement = repository.revise(parent.id)
+        parent_id = parent.id
+        replacement_id = replacement.id
         artifact = _audio(db, report_id, f"{report_id}/draft.mp3")
         audio_path = audio_root / artifact.relative_audio_path
         audio_path.parent.mkdir(parents=True)
@@ -274,12 +279,86 @@ def test_purge_rejects_trashed_draft_before_audio_side_effects(tmp_path: Path) -
     )
 
     with factory() as db:
-        assert result.status is OperationStatus.FAILED
-        assert result.result_summary["failures"] == [
-            {"report_id": report_id, "error_code": "daily_report_must_be_archived_for_purge"}
-        ]
-        assert db.get(DailyReportRecord, report_id) is not None
-    assert audio_path.read_bytes() == b"synthetic-draft-audio"
+        assert result.status is OperationStatus.SUCCEEDED
+        assert result.result_summary == {
+            "requested": 1,
+            "purged": 1,
+            "missing": 0,
+            "failed": 0,
+            "failures": [],
+        }
+        assert db.get(DailyReportRecord, report_id) is None
+        parent = db.get(DailyReportRecord, parent_id)
+        replacement = db.get(DailyReportRecord, replacement_id)
+        assert parent is not None
+        assert replacement is not None
+        assert replacement.supersedes_report_id == parent.id
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportAudioArtifactRecord).where(
+                DailyReportAudioArtifactRecord.daily_report_id == report_id
+            )
+        ) == 0
+    assert not audio_path.exists()
+
+
+def test_purge_rejects_draft_with_successor_before_audio_queue_insert(
+    tmp_path: Path,
+) -> None:
+    factory = _factory(tmp_path)
+    with factory() as db:
+        draft = seed_daily_report(db, operation_id=4101)
+        child = seed_daily_report(
+            db,
+            report_date=NOW.date() + timedelta(days=1),
+            operation_id=4102,
+        )
+        child.status = "archived"
+        child.archived_at = NOW
+        db.flush()
+        child.supersedes_report_id = draft.id
+        _trash(db, draft.id, archived=False)
+        draft_id = draft.id
+        child_id = child.id
+        _audio(db, draft_id, "draft-successor/target.mp3")
+
+    inserted_audio_paths: list[str] = []
+
+    def capture_audio_insert(_mapper, _connection, record) -> None:
+        inserted_audio_paths.append(record.relative_audio_path)
+
+    event.listen(
+        DailyReportAudioPurgeQueueRecord,
+        "after_insert",
+        capture_audio_insert,
+    )
+    try:
+        result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+            _lease(draft_id), lambda _boundary: None
+        )
+    finally:
+        event.remove(
+            DailyReportAudioPurgeQueueRecord,
+            "after_insert",
+            capture_audio_insert,
+        )
+
+    assert result.status is OperationStatus.FAILED
+    assert result.retryable is True
+    assert result.result_summary["failures"] == [
+        {
+            "report_id": draft_id,
+            "error_code": "daily_report_purge_persistence_failed",
+        }
+    ]
+    assert inserted_audio_paths == []
+    with factory() as db:
+        child = db.get(DailyReportRecord, child_id)
+        assert db.get(DailyReportRecord, draft_id) is not None
+        assert child is not None
+        assert child.supersedes_report_id == draft_id
+        assert db.scalar(
+            select(func.count()).select_from(DailyReportAudioPurgeQueueRecord)
+        ) == 0
 
 
 def test_multiple_audio_cleanup_failure_keeps_durable_retry_without_restoring_report(
@@ -739,6 +818,30 @@ def test_purging_abandoned_child_preserves_active_sibling_metadata(
         ) == 0
 
 
+def test_revision_number_is_not_reused_after_highest_revision_is_purged(
+    tmp_path: Path,
+) -> None:
+    factory = _migrated_factory(tmp_path)
+    with factory() as db:
+        repository = DailyReportRepository(db, utcnow=lambda: NOW)
+        parent = repository.archive(seed_daily_report(db).id)
+        highest = repository.archive(repository.revise(parent.id).id)
+        repository.move_to_trash(highest.id)
+        parent_id = parent.id
+        highest_id = highest.id
+        highest_revision = highest.revision
+
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(highest_id), lambda _boundary: None
+    )
+
+    with factory() as db:
+        assert result.status is OperationStatus.SUCCEEDED
+        assert db.get(DailyReportRecord, highest_id) is None
+        replacement = DailyReportRepository(db, utcnow=lambda: NOW).revise(parent_id)
+        assert replacement.revision == highest_revision + 1
+
+
 def test_temporary_parent_prefers_active_branch_and_leaves_deleted_branch_attached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1096,7 +1199,7 @@ def test_later_child_cycle_is_detected_before_any_transition_insert(
         ) == 0
 
 
-def test_later_draft_child_is_rejected_before_audio_or_transition_insert(
+def test_purging_archived_parent_reparents_active_draft_child(
     tmp_path: Path,
 ) -> None:
     factory = _migrated_factory(tmp_path)
@@ -1112,59 +1215,21 @@ def test_later_draft_child_is_rejected_before_audio_or_transition_insert(
         draft_child_id = draft_child.id
         _audio(db, parent_id, "draft-conflict/target.mp3")
 
-    inserted_audio_paths: list[str] = []
-    inserted_transition_children: list[int] = []
-
-    def capture_audio_insert(_mapper, _connection, record) -> None:
-        inserted_audio_paths.append(record.relative_audio_path)
-
-    def capture_transition_insert(_mapper, _connection, record) -> None:
-        inserted_transition_children.append(record.child_report_id)
-
-    event.listen(
-        DailyReportAudioPurgeQueueRecord,
-        "after_insert",
-        capture_audio_insert,
+    result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
+        _lease(parent_id), lambda _boundary: None
     )
-    event.listen(
-        DailyReportPurgeTransitionRecord,
-        "after_insert",
-        capture_transition_insert,
-    )
-    try:
-        result = DailyReportPurgeHandler(factory, audio_root=tmp_path / "audio")(
-            _lease(parent_id), lambda _boundary: None
-        )
-    finally:
-        event.remove(
-            DailyReportAudioPurgeQueueRecord,
-            "after_insert",
-            capture_audio_insert,
-        )
-        event.remove(
-            DailyReportPurgeTransitionRecord,
-            "after_insert",
-            capture_transition_insert,
-        )
 
-    assert result.status is OperationStatus.FAILED
-    assert result.retryable is True
-    assert result.result_summary["failures"] == [
-        {
-            "report_id": parent_id,
-            "error_code": "daily_report_purge_persistence_failed",
-        }
-    ]
-    assert inserted_audio_paths == []
-    assert inserted_transition_children == []
+    assert result.status is OperationStatus.SUCCEEDED
     with factory() as db:
         archived_child = db.get(DailyReportRecord, archived_child_id)
         draft_child = db.get(DailyReportRecord, draft_child_id)
-        assert db.get(DailyReportRecord, parent_id) is not None
+        assert db.get(DailyReportRecord, parent_id) is None
         assert archived_child is not None
-        assert archived_child.supersedes_report_id == parent_id
+        assert archived_child.supersedes_report_id is None
         assert draft_child is not None
-        assert draft_child.supersedes_report_id == parent_id
+        assert draft_child.status == "draft"
+        assert draft_child.deleted_at is None
+        assert draft_child.supersedes_report_id is None
         assert db.scalar(
             select(func.count()).select_from(DailyReportAudioPurgeQueueRecord)
         ) == 0

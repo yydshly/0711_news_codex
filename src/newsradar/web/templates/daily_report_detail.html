@@ -221,6 +221,9 @@
 {% block header %}<h1>{{ daily_report.report.report_date.isoformat() }} 中文日报</h1>{% endblock %}
 {% block content %}
 <div class="daily-report-page">
+{% if daily_report_notice %}
+<p class="retention-notice" role="status">{{ daily_report_notice }}</p>
+{% endif %}
 <nav class="daily-report-jump-nav" aria-label="日报内容定位">
   <a href="#decision-brief-heading">决策简报</a>
   <a href="#overview-heading">情报全览</a>

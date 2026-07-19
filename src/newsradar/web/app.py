@@ -177,6 +177,9 @@ _RETENTION_REASON_LABELS = {
         "该日报已有新的有效修订版，不能直接恢复。请打开当前有效版本继续处理。"
     )
 }
+_DAILY_REPORT_NOTICE_LABELS = {
+    "current_revision_draft": "已打开当前修订草稿。",
+}
 
 _PROVIDER_CATEGORIES = (
     ("social_community", "社交与社区"),
@@ -450,6 +453,9 @@ def create_app(
                 request.query_params.get("reason", "")
             ),
         }
+
+    def daily_report_notice(request: Request) -> str | None:
+        return _DAILY_REPORT_NOTICE_LABELS.get(request.query_params.get("notice", ""))
 
     def retention_redirect(
         destination: str,
@@ -883,6 +889,7 @@ def create_app(
             name="daily_report_detail.html",
             context={
                 "daily_report": detail,
+                "daily_report_notice": daily_report_notice(request),
                 "action_token": issue_action_token(request),
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
@@ -1166,6 +1173,10 @@ def create_app(
 
         try:
             with create_session() as session:
+                opened_current_draft = (
+                    DailyReportRepository(session).revision_target(report_id).status
+                    == "draft"
+                )
                 revision = DailyReportService(session).revise(report_id)
                 revision_id = revision.id
         except LookupError as error:
@@ -1176,7 +1187,12 @@ def create_app(
             raise _daily_report_revision_conflict(error) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
-        return RedirectResponse(url=f"/daily-reports/{revision_id}", status_code=303)
+        destination = f"/daily-reports/{revision_id}"
+        if opened_current_draft:
+            destination = (
+                f"{destination}?{urlencode({'notice': 'current_revision_draft'})}"
+            )
+        return RedirectResponse(url=destination, status_code=303)
 
     @app.get("/event-merge-candidates", response_class=HTMLResponse)
     def event_merge_candidates(

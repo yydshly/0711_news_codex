@@ -2084,7 +2084,18 @@ def test_revise_route_from_archived_ancestor_redirects_to_current_active_draft(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == f"/daily-reports/{active_id}"
+    assert response.headers["location"] == (
+        f"/daily-reports/{active_id}?notice=current_revision_draft"
+    )
+    opened = client.get(response.headers["location"])
+    assert "已打开当前修订草稿。" in opened.text
+
+    private_notice = "private notice must not render"
+    unallowlisted = client.get(
+        f"/daily-reports/{active_id}", params={"notice": private_notice}
+    )
+    assert private_notice not in unallowlisted.text
+    assert "已打开当前修订草稿。" not in unallowlisted.text
 
 
 def test_revise_route_never_redirects_to_trashed_child(
@@ -2108,7 +2119,9 @@ def test_revise_route_never_redirects_to_trashed_child(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == f"/daily-reports/{replacement_id}"
+    assert response.headers["location"] == (
+        f"/daily-reports/{replacement_id}?notice=current_revision_draft"
+    )
     assert response.headers["location"] != f"/daily-reports/{abandoned_id}"
 
 

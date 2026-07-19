@@ -47,6 +47,7 @@ from newsradar.db.models import (
     DailyReportOverviewEditorialReviewRecord,
     DailyReportOverviewItemRecord,
     DailyReportRecord,
+    DailyReportRevisionCounterRecord,
     ModelUsageRecord,
     OperationRunRecord,
 )
@@ -94,15 +95,7 @@ class DailyReportRepository:
                     self.session.commit()
                 return existing, False
 
-            revision = int(
-                self.session.scalar(
-                    select(func.max(DailyReportRecord.revision)).where(
-                        DailyReportRecord.report_date == draft.report_date,
-                        DailyReportRecord.window_hours == draft.window_hours,
-                    )
-                )
-                or 0
-            ) + 1
+            revision = self._next_revision(draft.report_date, draft.window_hours)
             report = DailyReportRecord(
                 report_date=draft.report_date,
                 timezone=REPORT_TIMEZONE,
@@ -119,6 +112,11 @@ class DailyReportRepository:
             try:
                 self.session.add(report)
                 self.session.flush()
+                self._record_revision_high_water(
+                    draft.report_date,
+                    draft.window_hours,
+                    revision,
+                )
                 decision_items = [
                     DailyReportItemRecord(
                         daily_report_id=report.id,
@@ -220,42 +218,32 @@ class DailyReportRepository:
         if identity is None:
             self.session.rollback()
             raise LookupError("daily_report_not_found")
-        self._lock_revision(identity.report_date, identity.window_hours)
+        report_date = identity.report_date
+        window_hours = identity.window_hours
+        self._lock_revision(report_date, window_hours)
         report = self._report_for_update(report_id)
         if report.deleted_at is None:
             self.session.commit()
             return RetentionActionResult(report_id, "unchanged", "日报不在回收站中。")
-        if report.supersedes_report_id is not None:
-            conflict = self.session.scalar(
-                select(DailyReportRecord.id).where(
-                    DailyReportRecord.id != report.id,
-                    DailyReportRecord.supersedes_report_id
-                    == report.supersedes_report_id,
-                    DailyReportRecord.deleted_at.is_(None),
-                )
-            )
-        else:
-            conflict = self.session.scalar(
-                select(DailyReportRecord.id).where(
-                    DailyReportRecord.id != report.id,
-                    DailyReportRecord.report_date == report.report_date,
-                    DailyReportRecord.window_hours == report.window_hours,
-                    DailyReportRecord.source_operation_id
-                    == report.source_operation_id,
-                    DailyReportRecord.supersedes_report_id.is_(None),
-                    DailyReportRecord.deleted_at.is_(None),
-                )
-            )
+        conflict = self._restore_conflict(report)
         if conflict is not None:
             self.session.commit()
-            return RetentionActionResult(
-                report_id,
-                "blocked",
-                "该日报已有新的有效修订版，不能直接恢复。",
-            )
+            return self._restore_blocked(report_id)
         report.deleted_at = None
         report.purge_after = None
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError as error:
+            self.session.rollback()
+            if not self._is_revision_conflict(error):
+                raise
+            self._lock_revision(report_date, window_hours)
+            report = self._report_for_update(report_id)
+            if self._restore_conflict(report) is None:
+                self.session.rollback()
+                raise
+            self.session.commit()
+            return self._restore_blocked(report_id)
         return RetentionActionResult(report_id, "restored", "日报已从回收站恢复。")
 
     def trash_candidates(self) -> tuple[DailyReportRecord, ...]:
@@ -688,15 +676,15 @@ class DailyReportRepository:
         selected = self._revision_source(report_id)
         self._lock_revision(selected.report_date, selected.window_hours)
         original = self.revision_target(report_id)
+        if original.status == ReportStatus.DRAFT.value:
+            self.session.commit()
+            return original
         if (
             expected_source_report_id is not None
             and original.id != expected_source_report_id
         ):
             self.session.rollback()
             raise RuntimeError("daily_report_revision_chain_changed")
-        if original.status == ReportStatus.DRAFT.value:
-            self.session.commit()
-            return original
         original_overview_items = self.overview_items(original.id)
         overview_items = (
             rebuilt_overview_items
@@ -865,6 +853,47 @@ class DailyReportRepository:
             {"key": f"newsradar:daily-report:{report_date.isoformat()}:{window_hours}"},
         )
 
+    def _next_revision(self, report_date: date, window_hours: int) -> int:
+        counter = self.session.get(
+            DailyReportRevisionCounterRecord,
+            (report_date, window_hours),
+            populate_existing=True,
+        )
+        stored_high_water = counter.highest_revision if counter is not None else 0
+        existing_high_water = int(
+            self.session.scalar(
+                select(func.max(DailyReportRecord.revision)).where(
+                    DailyReportRecord.report_date == report_date,
+                    DailyReportRecord.window_hours == window_hours,
+                )
+            )
+            or 0
+        )
+        return max(stored_high_water, existing_high_water) + 1
+
+    def _record_revision_high_water(
+        self,
+        report_date: date,
+        window_hours: int,
+        revision: int,
+    ) -> None:
+        counter = self.session.get(
+            DailyReportRevisionCounterRecord,
+            (report_date, window_hours),
+            populate_existing=True,
+        )
+        if counter is None:
+            self.session.add(
+                DailyReportRevisionCounterRecord(
+                    report_date=report_date,
+                    window_hours=window_hours,
+                    highest_revision=revision,
+                )
+            )
+        elif revision > counter.highest_revision:
+            counter.highest_revision = revision
+        self.session.flush()
+
     def _report_for_update(self, report_id: int) -> DailyReportRecord:
         report = self.session.scalar(
             select(DailyReportRecord)
@@ -876,6 +905,35 @@ class DailyReportRepository:
             self.session.rollback()
             raise LookupError("daily_report_not_found")
         return report
+
+    def _restore_conflict(self, report: DailyReportRecord) -> int | None:
+        if report.supersedes_report_id is not None:
+            return self.session.scalar(
+                select(DailyReportRecord.id).where(
+                    DailyReportRecord.id != report.id,
+                    DailyReportRecord.supersedes_report_id
+                    == report.supersedes_report_id,
+                    DailyReportRecord.deleted_at.is_(None),
+                )
+            )
+        return self.session.scalar(
+            select(DailyReportRecord.id).where(
+                DailyReportRecord.id != report.id,
+                DailyReportRecord.report_date == report.report_date,
+                DailyReportRecord.window_hours == report.window_hours,
+                DailyReportRecord.source_operation_id == report.source_operation_id,
+                DailyReportRecord.supersedes_report_id.is_(None),
+                DailyReportRecord.deleted_at.is_(None),
+            )
+        )
+
+    @staticmethod
+    def _restore_blocked(report_id: int) -> RetentionActionResult:
+        return RetentionActionResult(
+            report_id,
+            "blocked",
+            "该日报已有新的有效修订版，不能直接恢复。",
+        )
 
     def _trash_block_diagnostic(self, report_id: int) -> str | None:
         if self.session.scalar(

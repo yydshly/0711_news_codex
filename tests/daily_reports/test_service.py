@@ -795,6 +795,10 @@ def test_revise_legacy_manifest_copies_archived_overview_and_reviews(
     assert revision.generation_summary["revision_overview_source"] == (
         "archived_report_snapshot"
     )
+    assert revision.generation_summary["revision_overview_diagnostic_zh"] == (
+        "历史操作快照缺失，本修订版沿用归档版固定条目；"
+        "系统没有重新抓取或混入当前事件。"
+    )
 
 
 def test_revise_present_but_invalid_manifest_is_rejected_without_draft(
@@ -902,6 +906,38 @@ def test_revise_rejects_stale_materialization_when_revision_chain_advances(
             DailyReportRecord.supersedes_report_id == advanced_head_id
         )
     ) == 0
+
+
+def test_revise_reuses_active_draft_won_during_materialization(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_complete_snapshot(db_session)
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = service.generate(24, now=NOW)
+    repository.archive(original.id)
+    original_revise = service._reports.revise
+    winning_draft_id: int | None = None
+
+    def win_then_revise(*args, **kwargs):
+        nonlocal winning_draft_id
+        winner = repository.revise(original.id)
+        winning_draft_id = winner.id
+        return original_revise(*args, **kwargs)
+
+    monkeypatch.setattr(service._reports, "revise", win_then_revise)
+
+    revision = service.revise(original.id)
+
+    assert winning_draft_id is not None
+    assert revision.id == winning_draft_id
+    assert db_session.scalars(
+        select(DailyReportRecord.id).where(
+            DailyReportRecord.supersedes_report_id == original.id,
+            DailyReportRecord.deleted_at.is_(None),
+        )
+    ).all() == [winning_draft_id]
 
 
 def test_revise_reads_decisions_from_latest_archived_head(

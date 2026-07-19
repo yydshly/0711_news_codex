@@ -41,6 +41,10 @@ class _InvalidEventSnapshot(ValueError):
 
 
 _BROWSER_NUMERIC_HOST_PART = re.compile(r"(?:[0-9]+|0[xX][0-9a-fA-F]+)\Z")
+_LEGACY_REVISION_OVERVIEW_DIAGNOSTIC_ZH = (
+    "历史操作快照缺失，本修订版沿用归档版固定条目；"
+    "系统没有重新抓取或混入当前事件。"
+)
 
 
 def _browser_numeric_ipv4_host(hostname: str) -> bool:
@@ -364,6 +368,9 @@ class DailyReportService:
         generation_summary = {
             **original.generation_summary,
             "revision_overview_source": "archived_report_snapshot",
+            "revision_overview_diagnostic_zh": (
+                _LEGACY_REVISION_OVERVIEW_DIAGNOSTIC_ZH
+            ),
         }
         if "event_version_snapshots" not in operation.result_summary:
             return self._reports.revise(
@@ -379,6 +386,7 @@ class DailyReportService:
         if snapshot is None:
             raise ValueError("complete_event_snapshot_required")
         generation_summary["revision_overview_source"] = "event_snapshot"
+        generation_summary.pop("revision_overview_diagnostic_zh", None)
         materialized, _skipped = self._overview_drafts(
             snapshot,
             checked_at=original.generated_at,

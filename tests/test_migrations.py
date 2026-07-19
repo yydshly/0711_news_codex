@@ -222,6 +222,37 @@ def test_retention_migration_allows_archived_report_retention_lifecycle(
             text("SELECT count(*) FROM daily_reports WHERE id = 1")
         ).scalar_one() == 0
 
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO daily_reports (
+                    id, report_date, timezone, window_hours, window_start, window_end,
+                    source_operation_id, status, revision, generation_summary,
+                    generated_at
+                ) VALUES (
+                    2, '2026-07-18', 'Asia/Shanghai', 24,
+                    '2026-07-17T00:00:00Z', '2026-07-18T00:00:00Z',
+                    1, 'draft', 1, '{}', '2026-07-18T00:00:00Z'
+                )
+                """
+            )
+        )
+    with pytest.raises(IntegrityError, match="daily_report_archived_immutable"):
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM daily_reports WHERE id = 2"))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE daily_reports SET deleted_at = '2026-07-18T02:00:00Z', "
+                "purge_after = '2026-08-17T02:00:00Z' WHERE id = 2"
+            )
+        )
+        connection.execute(text("DELETE FROM daily_reports WHERE id = 2"))
+        assert connection.execute(
+            text("SELECT count(*) FROM daily_reports WHERE id = 2")
+        ).scalar_one() == 0
+
 
 def test_event_merge_candidate_migration_round_trips_with_matching_constraints(
     tmp_path: Path,

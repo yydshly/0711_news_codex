@@ -653,7 +653,7 @@ git commit -m "fix: explain repeatable daily report revisions"
 
 Run: `..\..\.venv\Scripts\python.exe -m alembic upgrade head`
 
-Expected: exit 0 with head `20260719_0031` in the disposable/test configuration. Do not point this command at the user's live database without first confirming the configured URL is disposable.
+Expected: exit 0 with head `20260719_0032` in the disposable/test configuration. Do not point this command at the user's live database without first confirming the configured URL is disposable.
 
 - [ ] **Step 2: Run the complete test suite**
 
@@ -671,7 +671,7 @@ Expected: `All checks passed!`
 
 Run: `..\..\.venv\Scripts\python.exe -m alembic heads; git diff --check; git status --short`
 
-Expected: one Alembic head `20260719_0031`, no whitespace errors, and only intentional branch changes.
+Expected: one Alembic head `20260719_0032`, no whitespace errors, and only intentional branch changes.
 
 - [ ] **Step 5: Perform local web acceptance without altering #17/#18 first**
 
