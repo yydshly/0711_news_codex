@@ -63,14 +63,21 @@ def _identity_for(process: psutil.Process) -> _ProcessIdentity | None:
         return None
 
 
-def _process_for_identity(identity: _ProcessIdentity) -> psutil.Process | None:
+def _process_for_identity(identity: _ProcessIdentity) -> tuple[psutil.Process | None, bool]:
     try:
         process = psutil.Process(identity.pid)
+    except psutil.NoSuchProcess:
+        return None, True
+    except (psutil.AccessDenied, psutil.ZombieProcess):
+        return None, False
+    try:
         if process.create_time() != identity.create_time:
-            return None
-        return process
-    except _PROCESS_ERRORS:
-        return None
+            return None, False
+    except psutil.NoSuchProcess:
+        return None, True
+    except (psutil.AccessDenied, psutil.ZombieProcess):
+        return None, False
+    return process, False
 
 
 def _is_branded_process(process: psutil.Process, executable: str) -> bool | None:
@@ -174,17 +181,29 @@ def _stop_selected_branded_tree(
     executable: str,
     timeout_seconds: float,
 ) -> ProcessCleanupResult:
-    root = _process_for_identity(identity)
+    root, vanished = _process_for_identity(identity)
+    if vanished:
+        return ProcessCleanupResult((identity.pid,), (identity.pid,))
     if root is None or _is_branded_process(root, executable) is not True:
         return ProcessCleanupResult((identity.pid,), (), (identity.pid,))
     try:
         snapshot = [*root.children(recursive=True), root]
     except _PROCESS_ERRORS:
         return ProcessCleanupResult((identity.pid,), (), (identity.pid,))
-    branded = [
-        process for process in snapshot if _is_branded_process(process, executable) is True
-    ]
-    return _stop_processes(branded, timeout_seconds)
+    branded: list[psutil.Process] = []
+    indeterminate: list[int] = []
+    for process in snapshot:
+        branded_status = _is_branded_process(process, executable)
+        if branded_status is True:
+            branded.append(process)
+        elif branded_status is None and _is_running(process) is not False:
+            indeterminate.append(process.pid)
+    result = _stop_processes(branded, timeout_seconds)
+    return ProcessCleanupResult(
+        result.matched_pids,
+        result.stopped_pids,
+        _ordered_unique([*result.failed_pids, *indeterminate]),
+    )
 
 
 def _ordered_unique(pids: list[int]) -> tuple[int, ...]:

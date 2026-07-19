@@ -21,6 +21,7 @@ class FakeProcess:
     survives_terminate: bool = False
     terminate_error: Exception | None = None
     parent_error: Exception | None = None
+    executable_error: Exception | None = None
     running: bool = True
     terminate_calls: int = 0
     kill_calls: int = 0
@@ -34,6 +35,8 @@ class FakeProcess:
         return self.created_at
 
     def exe(self) -> str:
+        if self.executable_error is not None:
+            raise self.executable_error
         return str(self.executable)
 
     def cmdline(self) -> list[str]:
@@ -208,6 +211,54 @@ def test_cleanup_fails_closed_when_a_selected_pid_has_been_reused(
     assert result.matched_pids == (201,)
     assert result.failed_pids == (201,)
     assert reused.terminate_calls == 0
+
+
+def test_cleanup_reports_an_inaccessible_snapshotted_descendant_as_failed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    orphan_web = FakeProcess(201, 999, executable, [str(executable), MARKER, "web"])
+    inaccessible_worker = FakeProcess(
+        202,
+        201,
+        executable,
+        [str(executable), MARKER, "worker"],
+        executable_error=psutil.AccessDenied(202),
+    )
+    orphan_web.child_processes = [inaccessible_worker]
+    install_fake_backend(
+        monkeypatch,
+        [orphan_web, inaccessible_worker],
+        iter_processes=[orphan_web],
+    )
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result.stopped_pids == (201,)
+    assert result.failed_pids == (202,)
+    assert inaccessible_worker.terminate_calls == 0
+
+
+def test_cleanup_treats_a_selected_process_that_vanishes_as_stopped(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    selected = FakeProcess(201, 999, executable, [str(executable), MARKER, "web"])
+    install_fake_backend(monkeypatch, [selected])
+
+    original_process = processes.psutil.Process
+
+    def process_after_exit(pid: int) -> FakeProcess:
+        if pid == selected.pid:
+            raise psutil.NoSuchProcess(pid)
+        return original_process(pid)
+
+    monkeypatch.setattr(processes.psutil, "Process", process_after_exit)
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result.stopped_pids == (201,)
+    assert result.failed_pids == ()
 
 
 def test_stop_owned_process_tree_kills_termination_survivors(monkeypatch, tmp_path: Path) -> None:
