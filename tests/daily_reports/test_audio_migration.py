@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from alembic import command
@@ -107,3 +108,17 @@ def test_audio_artifact_migration_creates_append_only_daily_report_table(
         for name in columns_by_name
         if getattr(columns_by_name[name]["type"], "length", None) is not None
     }.items()
+
+
+def test_audio_migration_preserves_existing_application_loggers(tmp_path: Path) -> None:
+    logger = logging.getLogger("newsradar.daily_reports.repository")
+    original_disabled = logger.disabled
+    logger.disabled = False
+    database_url = f"sqlite:///{(tmp_path / 'logger-isolation.db').as_posix()}"
+
+    try:
+        _upgrade(database_url, "20260717_0026")
+
+        assert logger.disabled is False
+    finally:
+        logger.disabled = original_disabled
