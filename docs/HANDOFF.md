@@ -92,8 +92,8 @@
 截至 2026-07-20，主工作区已恢复干净；九个旧 worktree 的未提交文件已完整归档到
 `.local/worktree-archives/2026-07-20-worktree-cleanup/`，该目录不进入 Git。
 
-只保留 `codex/expert-source-audit` 分支：它有 6 个尚未进入主干的独立提交，但不再保留 worktree。
-后续如需处理，应从当前 `main` 创建新的审查 worktree，再比较这些提交是否仍有价值。
+`codex/expert-source-audit` 的 6 个提交已在 2026-07-20 审查：其“保持人工状态”的结论已被主干后续的官方 RSS/Sitemap 验证取代，不能直接合并。
+完整历史已归档到 `.local/git-archives/2026-07-20-expert-source-audit.bundle`，本地分支和 worktree 均已移除；如需追溯，可从该 bundle 恢复审查。
 
 ## 4. 下一步做什么
 
@@ -102,8 +102,8 @@
 1. 连续运行 1–3 天，完成每日自动日报观察清单；
 2. 只修复观察中能复现、能定位、影响实际使用的问题；
 3. 稳定观察通过后，单独设计“分享/导出 MVP”；
-4. 单独审查 `codex/expert-source-audit` 的 6 个提交，判断哪些内容已被主干覆盖、哪些仍有价值；
-5. 日常诊断输出使用 `.local/reports/`；只有明确要版本化的验收快照才写入 `reports/`；
+4. 日常诊断输出使用 `.local/reports/`；只有明确要版本化的验收快照才写入 `reports/`；
+5. 若需要追溯专家来源旧审核结论，从 `.local/git-archives/2026-07-20-expert-source-audit.bundle` 创建临时审查分支，不直接恢复到主干；
 6. 每个大里程碑后更新本文档的日期、提交、当前限制和下一步。
 
 分享/导出 MVP 不应重新实现日报生成。它应消费现有日报快照，明确公开范围、脱敏规则、原文链接、音频是否包含以及撤销方式。
