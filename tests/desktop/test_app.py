@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from newsradar.desktop.app import DesktopApplication
+from newsradar.desktop.app import DesktopApplication, create_tray_icon_image
 from newsradar.desktop.controller import DesktopStatus
 
 
@@ -90,3 +90,12 @@ def test_run_starts_service_shows_daily_reports_and_enters_ui_loop() -> None:
     assert controller.start_calls == 1
     assert ui.shown_url == controller.url
     assert ui.ran is True
+
+
+def test_tray_icon_uses_shared_64_pixel_artwork() -> None:
+    from newsradar.desktop.icon import create_news_codex_icon
+
+    tray = create_tray_icon_image()
+
+    assert tray.size == (64, 64)
+    assert tray.tobytes() == create_news_codex_icon(64).tobytes()

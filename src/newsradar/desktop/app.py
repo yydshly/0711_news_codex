@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from PIL import Image
+
 from newsradar.desktop.controller import DesktopController
+from newsradar.desktop.icon import create_news_codex_icon
+
+
+def create_tray_icon_image() -> Image.Image:
+    return create_news_codex_icon(64)
 
 
 class DesktopUi(Protocol):
@@ -98,12 +105,8 @@ class PyWebviewTrayUi:
         self._webview.start(gui="edgechromium")
 
     def _start_tray(self) -> None:
-        from PIL import Image, ImageDraw
         from pystray import Icon, Menu, MenuItem
 
-        image = Image.new("RGBA", (64, 64), "#0f172a")
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((14, 14, 50, 50), fill="#38bdf8")
         menu = Menu(
             MenuItem(
                 "显示 News Codex",
@@ -116,7 +119,7 @@ class PyWebviewTrayUi:
             Menu.SEPARATOR,
             MenuItem("退出 News Codex", lambda _icon, _item: self._require_application().quit()),
         )
-        self._tray = Icon("news-codex", image, "News Codex", menu)
+        self._tray = Icon("news-codex", create_tray_icon_image(), "News Codex", menu)
         self._tray.run_detached()
 
     def _require_application(self) -> DesktopApplication:
