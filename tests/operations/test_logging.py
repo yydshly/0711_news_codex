@@ -3,11 +3,35 @@ from __future__ import annotations
 import json
 import logging
 
+import pytest
+
 from newsradar.operations.logging import configure_logging, redact, redact_value
 from newsradar.operations.repository import OperationRepository
 from newsradar.operations.schema import OperationType
 from newsradar.operations.worker import Worker
 from tests.operations.test_worker import session
+
+
+@pytest.fixture(autouse=True)
+def restore_newsradar_logger_state():
+    logger = logging.getLogger("newsradar")
+    original_handlers = tuple(logger.handlers)
+    original_disabled = logger.disabled
+    original_level = logger.level
+    original_propagate = logger.propagate
+
+    yield
+
+    for handler in tuple(logger.handlers):
+        if handler not in original_handlers:
+            logger.removeHandler(handler)
+            handler.close()
+    for handler in original_handlers:
+        if handler not in logger.handlers:
+            logger.addHandler(handler)
+    logger.disabled = original_disabled
+    logger.setLevel(original_level)
+    logger.propagate = original_propagate
 
 
 def test_redact_removes_secrets_from_common_operational_strings() -> None:
