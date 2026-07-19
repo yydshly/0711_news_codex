@@ -453,12 +453,13 @@ def test_revise_complete_snapshot_keeps_decisions_and_rebuilds_full_overview(
     assert repository.overview_items(original.id) == ()
     assert [row.snapshot for row in repository.items(revision.id)] == frozen_decisions
     copied = repository.overview_items(revision.id)
-    assert [row.event_id for row in copied] == [101, 102, 201, 202, 302]
+    assert [row.event_id for row in copied] == [101, 102, 201, 202, 301, 302]
     assert [row.snapshot["zh_title"] for row in copied] == [
         "事件 101",
         "事件 102",
         "事件 201",
         "事件 202",
+        "事件 301",
         "事件 302",
     ]
     assert revision.generation_summary["revision_overview_source"] == "event_snapshot"
