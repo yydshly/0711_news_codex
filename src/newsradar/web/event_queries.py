@@ -449,6 +449,98 @@ class EventQueryService:
             snapshot=_banner(snapshot),
         )
 
+    def operation_event_details(
+        self, snapshot: OperationSnapshotRef
+    ) -> tuple[tuple[EventRow, int, EventDetailView | None], ...]:
+        """Materialize one validated operation snapshot with batched evidence."""
+        refs = set(snapshot.event_versions)
+        if not refs:
+            return ()
+        event_ids = {ref.event_id for ref in refs}
+        records: dict[int, tuple[EventRecord, EventVersionRecord, EventScoreRecord]] = {}
+        for event, version, score in self.session.execute(
+            select(EventRecord, EventVersionRecord, EventScoreRecord)
+            .join(EventVersionRecord, EventVersionRecord.event_id == EventRecord.id)
+            .join(
+                EventScoreRecord,
+                and_(
+                    EventScoreRecord.event_id == EventVersionRecord.event_id,
+                    EventScoreRecord.version_number == EventVersionRecord.version_number,
+                ),
+            )
+            .where(EventVersionRecord.event_id.in_(event_ids))
+        ):
+            if EventVersionRef(event.id, version.version_number) in refs:
+                records[event.id] = (event, version, score)
+        evidence = self._operation_evidence(records)
+        details: list[tuple[EventRow, int, EventDetailView | None]] = []
+        for ref in snapshot.event_versions:
+            record = records.get(ref.event_id)
+            if record is None:
+                continue
+            event, version, score = record
+            display = _version_display(version)
+            if display is None:
+                continue
+            row = self._event_row(
+                event,
+                version,
+                score,
+                display=display,
+                detail_href=_operation_detail_href(
+                    event.id, snapshot.operation_id, ref.version_number
+                ),
+            )
+            details.append(
+                (
+                    row,
+                    ref.version_number,
+                    self._operation_detail_or_none(
+                        event,
+                        version,
+                        score,
+                        version_number=ref.version_number,
+                        row=row,
+                        snapshot=_banner(snapshot),
+                        raw_items=evidence.get(event.id, ()),
+                    ),
+                )
+            )
+        return tuple(
+            sorted(
+                details,
+                key=lambda item: (
+                    -item[0].rank_score,
+                    -(item[0].occurred_at or datetime(1970, 1, 1, tzinfo=UTC)).timestamp(),
+                    item[0].event_id,
+                ),
+            )
+        )
+
+    def _operation_detail_or_none(
+        self,
+        event: EventRecord,
+        version: EventVersionRecord,
+        score: EventScoreRecord,
+        *,
+        version_number: int,
+        row: EventRow,
+        snapshot: SnapshotBannerView,
+        raw_items: tuple[RawItemRecord, ...],
+    ) -> EventDetailView | None:
+        try:
+            return self._detail_from_snapshot(
+                event,
+                version,
+                score,
+                version_number=version_number,
+                row=row,
+                snapshot=snapshot,
+                raw_items=raw_items,
+            )
+        except ValueError:
+            return None
+
     def get_event(self, event_id: int) -> EventDetailView | None:
         snapshot = self._snapshot(event_id)
         if snapshot is None:
@@ -473,6 +565,7 @@ class EventQueryService:
         version_number: int,
         row: EventRow,
         snapshot: SnapshotBannerView | None = None,
+        raw_items: tuple[RawItemRecord, ...] | None = None,
     ) -> EventDetailView:
         payload = version.payload if isinstance(version.payload, dict) else {}
         evidence_payload = _as_sequence(payload.get("evidence"))
@@ -481,6 +574,25 @@ class EventQueryService:
             for item in evidence_payload
             if isinstance(item, dict) and isinstance(item.get("raw_item_id"), int)
         }
+        evidence_rows = (
+            raw_items
+            if raw_items is not None
+            else tuple(
+                self.session.scalars(
+                    select(RawItemRecord)
+                    .join(EventItemRecord, EventItemRecord.raw_item_id == RawItemRecord.id)
+                    .where(
+                        EventItemRecord.event_id == event.id,
+                        EventItemRecord.added_version_number <= version_number,
+                        or_(
+                            EventItemRecord.removed_version_number.is_(None),
+                            EventItemRecord.removed_version_number > version_number,
+                        ),
+                    )
+                    .order_by(RawItemRecord.published_at.desc(), RawItemRecord.id.desc())
+                )
+            )
+        )
         evidence = tuple(
             EvidenceRow(
                 title=_safe_display_text(item.title, "未命名原始证据", max_length=500),
@@ -497,19 +609,7 @@ class EventQueryService:
                     evidence_by_item.get(item.id, {}).get("limitations", ())
                 ),
             )
-            for item in self.session.scalars(
-                select(RawItemRecord)
-                .join(EventItemRecord, EventItemRecord.raw_item_id == RawItemRecord.id)
-                .where(
-                    EventItemRecord.event_id == event.id,
-                    EventItemRecord.added_version_number <= version_number,
-                    or_(
-                        EventItemRecord.removed_version_number.is_(None),
-                        EventItemRecord.removed_version_number > version_number,
-                    ),
-                )
-                .order_by(RawItemRecord.published_at.desc(), RawItemRecord.id.desc())
-            )
+            for item in evidence_rows
         )
         enrichment = payload.get("enrichment")
         enrichment = enrichment if isinstance(enrichment, dict) else {}
@@ -554,6 +654,41 @@ class EventQueryService:
             trend=_trend_view(trend_payload),
             snapshot=snapshot,
         )
+
+    def _operation_evidence(
+        self,
+        records: dict[int, tuple[EventRecord, EventVersionRecord, EventScoreRecord]],
+    ) -> dict[int, tuple[RawItemRecord, ...]]:
+        if not records:
+            return {}
+        rows: dict[int, list[RawItemRecord]] = {event_id: [] for event_id in records}
+        version_numbers = {
+            event_id: version.version_number
+            for event_id, (_event, version, _score) in records.items()
+        }
+        for link, raw_item in self.session.execute(
+            select(EventItemRecord, RawItemRecord)
+            .join(RawItemRecord, RawItemRecord.id == EventItemRecord.raw_item_id)
+            .where(EventItemRecord.event_id.in_(records))
+        ):
+            version_number = version_numbers[link.event_id]
+            if link.added_version_number > version_number or (
+                link.removed_version_number is not None
+                and link.removed_version_number <= version_number
+            ):
+                continue
+            rows[link.event_id].append(raw_item)
+        earliest = datetime(1970, 1, 1, tzinfo=UTC)
+        return {
+            event_id: tuple(
+                sorted(
+                    raw_items,
+                    key=lambda item: (item.published_at or earliest, item.id),
+                    reverse=True,
+                )
+            )
+            for event_id, raw_items in rows.items()
+        }
 
     def _list(self, filters: dict[str, object]) -> tuple[EventRow, ...]:
         return tuple(self._event_row(*snapshot) for snapshot in self._projections(filters))

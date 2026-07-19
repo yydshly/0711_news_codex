@@ -915,6 +915,21 @@ def test_applied_event_survivors_ignores_incomplete_summary(
     )
 
 
+def test_generate_materializes_snapshot_without_per_event_detail_lookup(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_complete_snapshot(db_session)
+
+    def fail_per_event_lookup(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("per_event_detail_lookup")
+
+    monkeypatch.setattr(EventQueryService, "get_operation_event", fail_per_event_lookup)
+
+    report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
+
+    assert report.generation_summary["skipped_invalid_overview_event"] == 0
+
+
 def test_generate_freezes_confirmed_and_emerging_in_separate_sections(
     db_session: Session,
 ) -> None:
@@ -1308,14 +1323,17 @@ def test_generate_keeps_invalid_overview_event_as_degraded_item(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed_complete_snapshot(db_session)
-    original = EventQueryService.get_operation_event
+    original = EventQueryService.operation_event_details
 
-    def missing_overview_detail(self, event_id, *args, **kwargs):
-        if event_id == 302:
-            return None
-        return original(self, event_id, *args, **kwargs)
+    def missing_overview_detail(self, snapshot):
+        return tuple(
+            (row, version, None if row.event_id == 302 else detail)
+            for row, version, detail in original(self, snapshot)
+        )
 
-    monkeypatch.setattr(EventQueryService, "get_operation_event", missing_overview_detail)
+    monkeypatch.setattr(
+        EventQueryService, "operation_event_details", missing_overview_detail
+    )
 
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
 
@@ -1506,13 +1524,19 @@ def test_generate_skips_malformed_detail_snapshot_and_keeps_later_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed_complete_snapshot(db_session)
-    original = EventQueryService.get_operation_event
+    original = EventQueryService.operation_event_details
 
-    def malformed_detail(self, event_id, *args, **kwargs):
-        detail = original(self, event_id, *args, **kwargs)
-        return replace(detail, limitations=None) if event_id == 101 else detail
+    def malformed_detail(self, snapshot):
+        return tuple(
+            (
+                row,
+                version,
+                replace(detail, limitations=None) if row.event_id == 101 else detail,
+            )
+            for row, version, detail in original(self, snapshot)
+        )
 
-    monkeypatch.setattr(EventQueryService, "get_operation_event", malformed_detail)
+    monkeypatch.setattr(EventQueryService, "operation_event_details", malformed_detail)
 
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
     rows = DailyReportRepository(db_session).items(report.id)
@@ -1596,14 +1620,13 @@ def test_generate_caps_each_section_and_keeps_stable_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed_ranked_snapshot(db_session, confirmed_count=25, emerging_count=25)
-    original = EventQueryService.get_operation_event
+    original = EventQueryService.operation_event_details
     monkeypatch.setattr(
         EventQueryService,
-        "get_operation_event",
-        lambda self, event_id, *args, **kwargs: (
-            None
-            if event_id == 1001
-            else original(self, event_id, *args, **kwargs)
+        "operation_event_details",
+        lambda self, snapshot: tuple(
+            (row, version, None if row.event_id == 1001 else detail)
+            for row, version, detail in original(self, snapshot)
         ),
     )
 
@@ -1626,14 +1649,13 @@ def test_generate_skips_invalid_detail_and_records_rule_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed_complete_snapshot(db_session)
-    original = EventQueryService.get_operation_event
+    original = EventQueryService.operation_event_details
     monkeypatch.setattr(
         EventQueryService,
-        "get_operation_event",
-        lambda self, event_id, *args, **kwargs: (
-            None
-            if event_id == BROKEN_EVENT_ID
-            else original(self, event_id, *args, **kwargs)
+        "operation_event_details",
+        lambda self, snapshot: tuple(
+            (row, version, None if row.event_id == BROKEN_EVENT_ID else detail)
+            for row, version, detail in original(self, snapshot)
         ),
     )
 

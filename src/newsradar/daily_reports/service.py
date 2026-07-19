@@ -575,20 +575,7 @@ class DailyReportService:
     ) -> tuple[tuple[DailyReportOverviewItemDraft, ...], int]:
         drafts: list[DailyReportOverviewItemDraft] = []
         skipped_invalid = 0
-        version_by_event = {
-            ref.event_id: ref.version_number for ref in snapshot.event_versions
-        }
-        for row in self._events._operation_rows(snapshot):
-            version_number = version_by_event[row.event_id]
-            try:
-                detail = self._events.get_operation_event(
-                    row.event_id,
-                    snapshot.operation_id,
-                    version_number,
-                    now=checked_at,
-                )
-            except ValueError:
-                detail = None
+        for row, version_number, detail in self._events.operation_event_details(snapshot):
             if detail is None:
                 skipped_invalid += 1
                 drafts.append(
