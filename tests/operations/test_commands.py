@@ -441,6 +441,63 @@ def test_enqueue_daily_autopilot_reuses_same_daily_wave() -> None:
         )
 
 
+def test_manual_daily_autopilot_enqueue_creates_a_new_run_after_success() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"),),
+            window_hours=24,
+            trend_days=7,
+        )
+        service = OperationCommandService(db, utcnow=lambda: now)
+        first_id = service.enqueue_daily_autopilot(plan=plan, trigger="schedule")
+        DailyAutopilotRepository(db, utcnow=lambda: now).transition(
+            first_id,
+            stage=DailyAutopilotStage.COMPLETED,
+            status="succeeded",
+        )
+        db.commit()
+
+        result = service.enqueue_daily_autopilot_result(
+            plan=plan,
+            trigger="web",
+            reuse_completed=False,
+        )
+
+        assert result.created is True
+        assert result.run_id != first_id
+        assert db.query(DailyAutopilotRunRecord).count() == 2
+
+
+def test_manual_daily_autopilot_enqueue_reuses_any_active_run() -> None:
+    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+    with session() as db:
+        active_plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("a"),),
+            window_hours=24,
+            trend_days=7,
+        )
+        different_plan = wave_plan_from_members(
+            profile_id="high-value",
+            members=(wave_member("b"),),
+            window_hours=48,
+            trend_days=7,
+        )
+        service = OperationCommandService(db, utcnow=lambda: now)
+        active_id = service.enqueue_daily_autopilot(plan=active_plan, trigger="web")
+
+        result = service.enqueue_daily_autopilot_result(
+            plan=different_plan,
+            trigger="web",
+            reuse_completed=False,
+        )
+
+        assert result == type(result)(run_id=active_id, created=False)
+        assert db.query(DailyAutopilotRunRecord).count() == 1
+
+
 def test_enqueue_daily_autopilot_result_reports_whether_the_run_was_created() -> None:
     now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
     with session() as db:

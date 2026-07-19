@@ -82,6 +82,13 @@ class DailyAutopilotRepository:
                 return row
         return None
 
+    def active_run(self) -> DailyAutopilotRunRecord | None:
+        return self.session.scalar(
+            select(DailyAutopilotRunRecord)
+            .where(DailyAutopilotRunRecord.status.in_(("queued", "running")))
+            .order_by(DailyAutopilotRunRecord.id.desc())
+        )
+
     def get(self, run_id: int) -> DailyAutopilotRunRecord:
         run = self.session.get(DailyAutopilotRunRecord, run_id)
         if run is None:

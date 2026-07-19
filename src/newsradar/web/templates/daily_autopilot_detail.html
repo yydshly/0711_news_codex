@@ -34,6 +34,7 @@
   }.get(autopilot.stage, autopilot.stage) }}</p>
   <p class="metric-note">时间窗口：最近 {{ autopilot.window_hours }} 小时 · 创建于 {{ autopilot.created_at|format_datetime_zh }} · 更新于 {{ autopilot.updated_at|format_datetime_zh }}</p>
   {% if autopilot.error_message %}<p class="diagnostic-warning"><strong>中文诊断：</strong>{{ autopilot.error_message }}</p>{% endif %}
+  {% if autopilot_notice %}<p class="metric-note"><strong>执行提示：</strong>{{ autopilot_notice }}</p>{% endif %}
   <p><strong>下一步：</strong>{{ autopilot.next_action_zh }}</p>
   {% if autopilot.status in ['queued', 'running'] %}
   <form method="post" action="/daily-autopilot/{{ autopilot.run_id }}/cancel">

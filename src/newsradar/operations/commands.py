@@ -465,26 +465,37 @@ class OperationCommandService:
         *,
         plan: WavePlan,
         trigger: str,
+        reuse_completed: bool = True,
     ) -> int:
-        return self.enqueue_daily_autopilot_result(plan=plan, trigger=trigger).run_id
+        return self.enqueue_daily_autopilot_result(
+            plan=plan,
+            trigger=trigger,
+            reuse_completed=reuse_completed,
+        ).run_id
 
     def enqueue_daily_autopilot_result(
         self,
         *,
         plan: WavePlan,
         trigger: str,
+        reuse_completed: bool = True,
     ) -> DailyAutopilotEnqueueResult:
         """Create one durable, resumable daily-report run and its first continuation."""
         if self.session.in_transaction():
             self.session.commit()
         with self.session.begin():
-            return self._enqueue_daily_autopilot_result_in_transaction(plan=plan, trigger=trigger)
+            return self._enqueue_daily_autopilot_result_in_transaction(
+                plan=plan,
+                trigger=trigger,
+                reuse_completed=reuse_completed,
+            )
 
     def _enqueue_daily_autopilot_result_in_transaction(
         self,
         *,
         plan: WavePlan,
         trigger: str,
+        reuse_completed: bool = True,
     ) -> DailyAutopilotEnqueueResult:
         """Enqueue while the caller owns the surrounding transaction."""
         from newsradar.daily_reports.autopilot import DailyAutopilotStage, serialize_wave_plan
@@ -492,6 +503,10 @@ class OperationCommandService:
 
         self._lock_daily_autopilot_enqueue()
         repository = DailyAutopilotRepository(self.session, utcnow=self._utcnow)
+        if not reuse_completed:
+            active = repository.active_run()
+            if active is not None:
+                return DailyAutopilotEnqueueResult(run_id=active.id, created=False)
         local_date = self._utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
         daily_key = f"{local_date.isoformat()}:{plan.window_hours}:{plan.digest}"
         reusable = repository.reusable_for_daily_wave(
@@ -500,7 +515,7 @@ class OperationCommandService:
             window_hours=plan.window_hours,
             wave_digest=plan.digest,
         )
-        if reusable is not None:
+        if reusable is not None and (reuse_completed or reusable.status in {"queued", "running"}):
             return DailyAutopilotEnqueueResult(run_id=reusable.id, created=False)
         run = repository.create_run(
             window_hours=plan.window_hours,

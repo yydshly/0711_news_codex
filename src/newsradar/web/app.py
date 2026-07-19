@@ -180,6 +180,10 @@ _RETENTION_REASON_LABELS = {
 _DAILY_REPORT_NOTICE_LABELS = {
     "current_revision_draft": "已打开当前修订草稿。",
 }
+_DAILY_AUTOPILOT_NOTICE_LABELS = {
+    "created": "已创建新的自动日报任务，后台将从真实内容抓取开始执行。",
+    "active": "已有自动日报正在执行，已打开当前任务。",
+}
 
 _PROVIDER_CATEGORIES = (
     ("social_community", "社交与社区"),
@@ -775,15 +779,19 @@ def create_app(
             if window_hours not in {24, 48, 72}:
                 raise ValueError("invalid_daily_report_window")
             with create_session() as session:
-                run_id = OperationCommandService(session).enqueue_daily_autopilot(
+                result = OperationCommandService(session).enqueue_daily_autopilot_result(
                     plan=build_local_wave_plan(session, window_hours=window_hours),
                     trigger="web",
+                    reuse_completed=False,
                 )
         except ValueError as error:
             raise _daily_report_http_error(error, default_status=422) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
-        return RedirectResponse(url=f"/daily-autopilot/{run_id}", status_code=303)
+        notice = "created" if result.created else "active"
+        return RedirectResponse(
+            url=f"/daily-autopilot/{result.run_id}?notice={notice}", status_code=303
+        )
 
     @app.post("/daily-reports")
     async def generate_daily_report(request: Request) -> RedirectResponse:
@@ -817,18 +825,24 @@ def create_app(
             except (TypeError, ValueError) as error:
                 raise ValueError("invalid_daily_report_window") from error
             with create_session() as session:
-                run_id = OperationCommandService(session).enqueue_daily_autopilot(
+                result = OperationCommandService(session).enqueue_daily_autopilot_result(
                     plan=build_local_wave_plan(session, window_hours=window_hours),
                     trigger="web",
+                    reuse_completed=False,
                 )
         except ValueError as error:
             raise _daily_report_http_error(error, default_status=409) from error
         except SQLAlchemyError as error:
             return database_error_response(request, error)  # type: ignore[return-value]
-        return RedirectResponse(url=f"/daily-autopilot/{run_id}", status_code=303)
+        notice = "created" if result.created else "active"
+        return RedirectResponse(
+            url=f"/daily-autopilot/{result.run_id}?notice={notice}", status_code=303
+        )
 
     @app.get("/daily-autopilot/{run_id}", response_class=HTMLResponse)
-    def daily_autopilot_detail(request: Request, run_id: int) -> HTMLResponse:
+    def daily_autopilot_detail(
+        request: Request, run_id: int, notice: str | None = None
+    ) -> HTMLResponse:
         try:
             with create_session() as session:
                 detail = DailyAutopilotQueryService(session).detail(run_id)
@@ -845,6 +859,7 @@ def create_app(
                 "database_status": "数据库已连接",
                 "database_status_tone": "healthy",
                 "latest_probe_at": detail.updated_at,
+                "autopilot_notice": _DAILY_AUTOPILOT_NOTICE_LABELS.get(notice),
             },
         )
 

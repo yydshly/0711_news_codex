@@ -11,6 +11,7 @@ from newsradar.daily_reports.automation_repository import DailyAutomationReposit
 from newsradar.daily_reports.autopilot import DailyAutopilotStage
 from newsradar.daily_reports.autopilot_repository import DailyAutopilotRepository
 from newsradar.db.models import OperationRunRecord, WorkerRecord
+from newsradar.operations.commands import OperationCommandService
 from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.waves.planning import WaveMemberSnapshot, wave_plan_from_members
 from newsradar.web.app import create_app
@@ -144,11 +145,68 @@ def test_run_now_uses_durable_autopilot_enqueue_and_redirects_to_detail(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/daily-autopilot/1"
+    assert response.headers["location"] == "/daily-autopilot/1?notice=created"
     run = DailyAutopilotRepository(db_session).get(1)
     assert run.window_hours == 48
     assert run.trigger == "web"
     assert run.requested_scope["wave_plan"]["window_hours"] == 48
+
+
+def test_run_now_creates_a_new_manual_run_after_today_succeeded(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_id = OperationCommandService(db_session, utcnow=lambda: NOW).enqueue_daily_autopilot(
+        plan=_wave_plan(24),
+        trigger="schedule",
+    )
+    DailyAutopilotRepository(db_session, utcnow=lambda: NOW).transition(
+        first_id,
+        stage=DailyAutopilotStage.COMPLETED,
+        status="succeeded",
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        "newsradar.web.app.build_local_wave_plan",
+        lambda _session, *, window_hours: _wave_plan(window_hours),
+    )
+    client = _client(db_session, monkeypatch)
+
+    response = client.post(
+        "/daily-automation/run-now",
+        data={"action_token": _action_token(client), "window_hours": "24"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/daily-autopilot/2?notice=created"
+    assert DailyAutopilotRepository(db_session).get(2).trigger == "web"
+
+
+def test_run_now_opens_any_active_autopilot_with_a_notice(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    active = DailyAutopilotRepository(db_session, utcnow=lambda: NOW).create_run(
+        window_hours=48,
+        trigger="schedule",
+        requested_scope={},
+    )
+    active_id = active.id
+    db_session.commit()
+    monkeypatch.setattr(
+        "newsradar.web.app.build_local_wave_plan",
+        lambda _session, *, window_hours: _wave_plan(window_hours),
+    )
+    client = _client(db_session, monkeypatch)
+
+    response = client.post(
+        "/daily-automation/run-now",
+        data={"action_token": _action_token(client), "window_hours": "24"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/daily-autopilot/{active_id}?notice=active"
+    assert db_session.query(OperationRunRecord).count() == 0
 
 
 def test_run_now_rejects_unsupported_window(

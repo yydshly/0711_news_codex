@@ -139,6 +139,26 @@ def test_automatic_task_page_shows_linked_report_enrichment_metrics(
     assert "整条规则回退 1" in response.text
 
 
+def test_automatic_task_page_shows_only_allowlisted_enqueue_notice(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = DailyAutopilotRepository(db_session).create_run(
+        window_hours=24,
+        trigger="web",
+        requested_scope={},
+    )
+    run_id = run.id
+    db_session.commit()
+    client, _token = _client_with_token(db_session, monkeypatch)
+
+    created = client.get(f"/daily-autopilot/{run_id}?notice=created")
+    unknown = client.get(f"/daily-autopilot/{run_id}?notice=unexpected-value")
+
+    assert "已创建新的自动日报任务" in created.text
+    assert "unexpected-value" not in unknown.text
+    assert "已创建新的自动日报任务" not in unknown.text
+
+
 def test_automatic_task_page_hides_inconsistent_enrichment_audit(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -280,7 +300,7 @@ def test_autopilot_post_queues_then_redirects_to_task_page(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/daily-autopilot/1"
+    assert response.headers["location"] == "/daily-autopilot/1?notice=created"
     run = DailyAutopilotRepository(db_session).get(1)
     assert run.window_hours == 72
     assert run.stage == DailyAutopilotStage.ENQUEUE_CONTENT_WAVE.value
