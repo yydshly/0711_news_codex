@@ -451,12 +451,11 @@ class DailyAutopilotHandler:
             raise ValueError("daily_report_not_found")
         checkpoint("daily_autopilot:archive_report")
         decision_id = run.decision_audio_operation_id
-        overview_id = run.overview_audio_operation_id
-        if decision_id is None or overview_id is None:
+        if decision_id is None:
             with self._create_session() as session:
-                decision_id, overview_id = OperationCommandService(
+                decision_id = OperationCommandService(
                     session, utcnow=self._utcnow
-                ).archive_and_enqueue_daily_report_audios(
+                ).archive_and_enqueue_daily_report_audio(
                     report_id=run.daily_report_id,
                     trigger="autopilot",
                 )
@@ -464,55 +463,42 @@ class DailyAutopilotHandler:
             run.id,
             DailyAutopilotStage.WAIT_AUDIO,
             decision_audio_operation_id=decision_id,
-            overview_audio_operation_id=overview_id,
             delayed=True,
         )
         return _succeeded(
             {
                 "run_id": run.id,
                 "decision_audio_operation_id": decision_id,
-                "overview_audio_operation_id": overview_id,
             }
         )
 
     def _wait_for_audio(self, run: DailyAutopilotRunRecord) -> OperationResult:
-        child_ids = (run.decision_audio_operation_id, run.overview_audio_operation_id)
-        if any(child_id is None for child_id in child_ids):
+        child_id = run.decision_audio_operation_id
+        if child_id is None:
             self._fail(run.id, "daily_autopilot_audio_missing", "日报音频任务未创建。")
             return _succeeded({"run_id": run.id, "failed": True})
-        children = [self._operation(child_id) for child_id in child_ids]
-        if any(child is None for child in children):
+        child = self._operation(child_id)
+        if child is None:
             self._fail(run.id, "daily_autopilot_audio_missing", "日报音频任务不存在。")
             return _succeeded({"run_id": run.id, "failed": True})
-        operations = [child for child in children if child is not None]
-        if any(child.status in _RUNNING_STATUSES for child in operations):
+        if child.status in _RUNNING_STATUSES:
             self._transition_and_continue(run.id, DailyAutopilotStage.WAIT_AUDIO, delayed=True)
             return _succeeded({"run_id": run.id, "waiting_for_audio": True})
-        failed_children = [
-            child for child in operations if child.status != OperationStatus.SUCCEEDED.value
-        ]
-        if failed_children and any(
-            child.status == OperationStatus.SUCCEEDED.value for child in operations
-        ):
-            self._finish(
-                run.id,
-                {
-                    "outcome": "audio_partial",
-                    "daily_report_id": run.daily_report_id,
-                    "decision_audio_status": operations[0].status,
-                    "overview_audio_status": operations[1].status,
-                },
-            )
-            return _succeeded({"run_id": run.id, "completed": True, "outcome": "audio_partial"})
-        if failed_children:
-            failed_child = failed_children[0]
+        if child.status != OperationStatus.SUCCEEDED.value:
             self._fail(
                 run.id,
-                failed_child.error_code or "daily_autopilot_audio_failed",
-                failed_child.error_message or "日报音频生成失败。",
+                child.error_code or "daily_autopilot_audio_failed",
+                child.error_message or "日报音频生成失败。",
             )
             return _succeeded({"run_id": run.id, "failed": True})
-        self._finish(run.id, {"daily_report_id": run.daily_report_id, "audio_count": 2})
+        self._finish(
+            run.id,
+            {
+                "daily_report_id": run.daily_report_id,
+                "audio_count": 1,
+                "overview_audio": "on_demand",
+            },
+        )
         return _succeeded({"run_id": run.id, "completed": True})
 
     def _run(self, run_id: int) -> DailyAutopilotRunRecord:

@@ -472,7 +472,7 @@ def test_generate_report_rejects_missing_content_operation() -> None:
         )
 
 
-def test_archive_stage_enqueues_both_audio_renditions_as_one_package(monkeypatch) -> None:
+def test_archive_stage_enqueues_only_decision_audio(monkeypatch) -> None:
     class SessionContext:
         def __enter__(self):
             return object()
@@ -486,11 +486,9 @@ def test_archive_stage_enqueues_both_audio_renditions_as_one_package(monkeypatch
         def __init__(self, _session, **_kwargs) -> None:
             pass
 
-        def archive_and_enqueue_daily_report_audios(
-            self, *, report_id: int, trigger: str
-        ) -> tuple[int, int]:
+        def archive_and_enqueue_daily_report_audio(self, *, report_id: int, trigger: str) -> int:
             calls.append((report_id, trigger))
-            return 51, 52
+            return 51
 
     handler = DailyAutopilotHandler(lambda: SessionContext())
     transitions: list[tuple[int, DailyAutopilotStage, dict[str, int | bool]]] = []
@@ -519,14 +517,13 @@ def test_archive_stage_enqueues_both_audio_renditions_as_one_package(monkeypatch
             DailyAutopilotStage.WAIT_AUDIO,
             {
                 "decision_audio_operation_id": 51,
-                "overview_audio_operation_id": 52,
                 "delayed": True,
             },
         )
     ]
 
 
-def test_archive_stage_is_idempotent_for_existing_audio_pair(monkeypatch) -> None:
+def test_archive_stage_keeps_legacy_overview_audio_unmodified(monkeypatch) -> None:
     handler = DailyAutopilotHandler(lambda: pytest.fail("must not open a session"))
     transitions: list[tuple[int, DailyAutopilotStage, dict[str, int | bool]]] = []
     monkeypatch.setattr(
@@ -545,12 +542,14 @@ def test_archive_stage_is_idempotent_for_existing_audio_pair(monkeypatch) -> Non
         lambda _boundary: None,
     )
 
-    assert transitions[0][2]["decision_audio_operation_id"] == 51
-    assert transitions[0][2]["overview_audio_operation_id"] == 52
+    assert transitions[0][2] == {
+        "decision_audio_operation_id": 51,
+        "delayed": True,
+    }
 
 
-def _run_waiting_for_audio(
-    factory, *, decision_status: OperationStatus, overview_status: OperationStatus
+def _run_waiting_for_decision_audio(
+    factory, *, decision_status: OperationStatus
 ) -> tuple[int, int]:
     run = _seed_autopilot_report(factory)
     with factory() as db:
@@ -561,38 +560,22 @@ def _run_waiting_for_audio(
             requested_scope={"daily_report_id": run.daily_report_id, "rendition": "decision"},
             result_summary={},
         )
-        overview = OperationRunRecord(
-            operation_type=OperationType.DAILY_REPORT_AUDIO.value,
-            trigger="autopilot",
-            status=overview_status.value,
-            requested_scope={"daily_report_id": run.daily_report_id, "rendition": "overview"},
-            result_summary={},
-            error_code=(
-                "overview_audio_failed" if overview_status is OperationStatus.FAILED else None
-            ),
-            error_message=(
-                "情报全览语音失败。" if overview_status is OperationStatus.FAILED else None
-            ),
-        )
-        db.add_all((decision, overview))
+        db.add(decision)
         db.flush()
         DailyAutopilotRepository(db).transition(
             run.id,
             stage=DailyAutopilotStage.WAIT_AUDIO,
             daily_report_id=run.daily_report_id,
             decision_audio_operation_id=decision.id,
-            overview_audio_operation_id=overview.id,
         )
         db.commit()
     return run.id, run.daily_report_id
 
 
-def test_audio_partial_finishes_after_one_audio_failed_and_preserves_report() -> None:
+def test_wait_audio_completes_after_decision_audio_succeeds_without_overview() -> None:
     factory = _session_factory()
-    run_id, report_id = _run_waiting_for_audio(
-        factory,
-        decision_status=OperationStatus.SUCCEEDED,
-        overview_status=OperationStatus.FAILED,
+    run_id, report_id = _run_waiting_for_decision_audio(
+        factory, decision_status=OperationStatus.SUCCEEDED
     )
 
     DailyAutopilotHandler(factory)(
@@ -602,22 +585,17 @@ def test_audio_partial_finishes_after_one_audio_failed_and_preserves_report() ->
     with factory() as db:
         saved = DailyAutopilotRepository(db).get(run_id)
         assert saved.status == "succeeded"
-        assert saved.stage == DailyAutopilotStage.COMPLETED.value
-        assert saved.daily_report_id == report_id
         assert saved.result_summary == {
-            "outcome": "audio_partial",
             "daily_report_id": report_id,
-            "decision_audio_status": "succeeded",
-            "overview_audio_status": "failed",
+            "audio_count": 1,
+            "overview_audio": "on_demand",
         }
 
 
-def test_failed_audio_still_fails_when_both_renditions_failed() -> None:
+def test_wait_audio_fails_when_decision_audio_failed() -> None:
     factory = _session_factory()
-    run_id, _report_id = _run_waiting_for_audio(
-        factory,
-        decision_status=OperationStatus.FAILED,
-        overview_status=OperationStatus.FAILED,
+    run_id, _report_id = _run_waiting_for_decision_audio(
+        factory, decision_status=OperationStatus.FAILED
     )
 
     DailyAutopilotHandler(factory)(
