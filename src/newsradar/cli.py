@@ -811,7 +811,9 @@ def show_event(event_id: int) -> None:
 @events_app.command("quality-report")
 def event_quality_report(
     window_hours: Annotated[int, typer.Option("--window-hours", min=1, max=720)] = 72,
-    output: Annotated[Path, typer.Option("--output")] = Path("reports/event-quality-v2-1.md"),
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        ".local/reports/event-quality-v2-1.md"
+    ),
 ) -> None:
     """Write a read-only, secret-free Event Intelligence v2.1 acceptance report."""
     try:
@@ -911,7 +913,7 @@ def report_providers(
     source_root: Annotated[
         Path, typer.Option("--source-root", exists=True, file_okay=False, resolve_path=True)
     ] = Path("sources"),
-    output: Annotated[Path, typer.Option("--output")] = Path("reports/source-coverage.md"),
+    output: Annotated[Path, typer.Option("--output")] = Path(".local/reports/source-coverage.md"),
     history: Annotated[bool, typer.Option("--history/--no-history")] = False,
 ) -> None:
     providers = load_provider_tree(root)
@@ -1247,7 +1249,9 @@ def probe_sources(
 @sources_app.command("report")
 def report_sources(
     root: RootOption = Path("sources"),
-    output: Annotated[Path, typer.Option("--output")] = Path("reports/source-intelligence.md"),
+    output: Annotated[Path, typer.Option("--output")] = Path(
+        ".local/reports/source-intelligence.md"
+    ),
 ) -> None:
     sources = load_source_tree(root)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1603,7 +1607,7 @@ def source_coverage(
     provider_root: Annotated[
         Path, typer.Option("--provider-root", exists=True, file_okay=False, resolve_path=True)
     ] = Path("providers"),
-    output: Annotated[Path, typer.Option("--output")] = Path("reports/source-coverage.md"),
+    output: Annotated[Path, typer.Option("--output")] = Path(".local/reports/source-coverage.md"),
     history: Annotated[bool, typer.Option("--history/--no-history")] = False,
 ) -> None:
     providers = load_provider_tree(provider_root)

@@ -87,21 +87,13 @@
 
 部分来源仍受平台凭据、官方审批、付费、人工查看或不可用状态约束。这些不是通过绕过登录或反爬就应该“修复”的代码问题。
 
-### 保留的历史状态
+### 已归档的历史状态
 
-以下九个 worktree 含真实未提交内容或尚未合并的提交，必须单独审查，不能直接删除：
+截至 2026-07-20，主工作区已恢复干净；九个旧 worktree 的未提交文件已完整归档到
+`.local/worktree-archives/2026-07-20-worktree-cleanup/`，该目录不进入 Git。
 
-- `daily-report-chinese-enrichment`
-- `event-intelligence-v1`
-- `event-quality-closure`
-- `expert-source-audit`
-- `local-postgresql-runtime`
-- `raw-item-ingestion`
-- `source-availability-closure`
-- `source-broad-activation`
-- `source-research-v3`
-
-主工作区中的报告修改也是用户保留内容，不得自动暂存、提交、覆盖或删除。
+只保留 `codex/expert-source-audit` 分支：它有 6 个尚未进入主干的独立提交，但不再保留 worktree。
+后续如需处理，应从当前 `main` 创建新的审查 worktree，再比较这些提交是否仍有价值。
 
 ## 4. 下一步做什么
 
@@ -110,8 +102,8 @@
 1. 连续运行 1–3 天，完成每日自动日报观察清单；
 2. 只修复观察中能复现、能定位、影响实际使用的问题；
 3. 稳定观察通过后，单独设计“分享/导出 MVP”；
-4. 分批审查九个保留 worktree，判断哪些内容已被主干覆盖、哪些仍有价值；
-5. 单独整理用户报告的保留、归档或提交策略，不与功能代码混合；
+4. 单独审查 `codex/expert-source-audit` 的 6 个提交，判断哪些内容已被主干覆盖、哪些仍有价值；
+5. 日常诊断输出使用 `.local/reports/`；只有明确要版本化的验收快照才写入 `reports/`；
 6. 每个大里程碑后更新本文档的日期、提交、当前限制和下一步。
 
 分享/导出 MVP 不应重新实现日报生成。它应消费现有日报快照，明确公开范围、脱敏规则、原文链接、音频是否包含以及撤销方式。

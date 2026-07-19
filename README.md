@@ -143,7 +143,7 @@ uv run newsradar sources validate --root sources
 uv run newsradar sources sync --root sources
 uv run newsradar sources probe --all --root sources
 uv run newsradar sources probe hackernews-top --root sources --no-persist
-uv run newsradar sources report --root sources --output reports/source-intelligence.md
+uv run newsradar sources report --root sources --output .local/reports/source-intelligence.md
 ```
 
 When database credentials are not configured, use `--no-persist`. A live report can still be
@@ -205,7 +205,7 @@ uv run newsradar providers validate --root providers
 uv run newsradar providers sync --root providers
 uv run newsradar providers probe --all --root providers
 uv run newsradar sources coverage --provider-root providers --root sources `
-  --history --output reports/source-coverage.md
+  --history --output .local/reports/source-coverage.md
 uv run newsradar sources coverage --provider x --provider-root providers --root sources
 ```
 
@@ -337,7 +337,7 @@ TikTok 等受限平台仍登记在来源地图中，但在获得官方授权前�
 uv run newsradar serve --host 127.0.0.1 --port 8766 --worker-id newsradar-local
 uv run newsradar fetch --no-wait
 uv run newsradar events build --hours 24
-uv run newsradar events quality-report --window-hours 72 --output reports/event-quality-v2-1.md
+uv run newsradar events quality-report --window-hours 72 --output .local/reports/event-quality-v2-1.md
 uv run newsradar operations list
 ```
 

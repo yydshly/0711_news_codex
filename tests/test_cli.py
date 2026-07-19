@@ -255,6 +255,17 @@ def test_validate_command_reports_source_count(tmp_path: Path) -> None:
     assert "Validated 1 source" in result.stdout
 
 
+def test_source_report_uses_local_default_output(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "sources"
+    write_source(root)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["sources", "report", "--root", str(root)])
+
+    assert result.exit_code == 0
+    assert (tmp_path / ".local" / "reports" / "source-intelligence.md").exists()
+
+
 def test_catalog_refresh_plan_only_prints_lanes_without_database_or_network(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -892,10 +903,9 @@ def test_provider_validate_command_reports_count(tmp_path: Path) -> None:
     assert "Validated 1 provider" in result.stdout
 
 
-def test_coverage_command_filters_provider_and_writes_report(tmp_path: Path) -> None:
+def test_coverage_command_uses_local_default_output(tmp_path: Path, monkeypatch) -> None:
     provider_root = tmp_path / "providers"
     source_root = tmp_path / "sources"
-    output = tmp_path / "coverage.md"
     provider_root.mkdir()
     source_root.mkdir()
     (provider_root / "bluesky.yaml").write_text(yaml.safe_dump(valid_provider()), encoding="utf-8")
@@ -908,6 +918,7 @@ def test_coverage_command_filters_provider_and_writes_report(tmp_path: Path) -> 
     )
     (source_root / "source.yaml").write_text(yaml.safe_dump(source), encoding="utf-8")
 
+    monkeypatch.chdir(tmp_path)
     result = runner.invoke(
         app,
         [
@@ -919,13 +930,45 @@ def test_coverage_command_filters_provider_and_writes_report(tmp_path: Path) -> 
             str(provider_root),
             "--root",
             str(source_root),
-            "--output",
-            str(output),
         ],
     )
 
     assert result.exit_code == 0
-    assert "Catalog targets | 1" in output.read_text(encoding="utf-8")
+    assert "Catalog targets | 1" in (
+        tmp_path / ".local" / "reports" / "source-coverage.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_provider_report_uses_local_default_output(tmp_path: Path, monkeypatch) -> None:
+    provider_root = tmp_path / "providers"
+    source_root = tmp_path / "sources"
+    provider_root.mkdir()
+    source_root.mkdir()
+    (provider_root / "bluesky.yaml").write_text(yaml.safe_dump(valid_provider()), encoding="utf-8")
+    source = valid_source()
+    source.update(
+        {
+            "provider_id": "bluesky",
+            "official_identity_url": "https://bsky.app/profile/anthropic.com",
+        }
+    )
+    (source_root / "source.yaml").write_text(yaml.safe_dump(source), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "providers",
+            "report",
+            "--root",
+            str(provider_root),
+            "--source-root",
+            str(source_root),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (tmp_path / ".local" / "reports" / "source-coverage.md").exists()
 
 
 def test_fetch_rejects_unapproved_sources_without_one_off(tmp_path: Path) -> None:
@@ -1073,7 +1116,7 @@ def test_events_quality_report_rejects_window_above_safe_limit(monkeypatch) -> N
     assert called is False
 
 
-def test_events_quality_report_uses_v2_1_default_output(monkeypatch, tmp_path: Path) -> None:
+def test_events_quality_report_uses_local_default_output(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("newsradar.cli.create_session", lambda: nullcontext(object()))
     monkeypatch.setattr(
@@ -1084,7 +1127,7 @@ def test_events_quality_report_uses_v2_1_default_output(monkeypatch, tmp_path: P
     result = runner.invoke(app, ["events", "quality-report"])
 
     assert result.exit_code == 0
-    assert (tmp_path / "reports" / "event-quality-v2-1.md").read_text(
+    assert (tmp_path / ".local" / "reports" / "event-quality-v2-1.md").read_text(
         encoding="utf-8"
     ) == "# v2.1\n"
 
