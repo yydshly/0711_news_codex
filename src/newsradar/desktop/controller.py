@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
 import httpx
+import psutil
 
 from newsradar.desktop.launcher import runtime_command
 from newsradar.desktop.processes import (
     ProcessCleanupResult,
+    ProcessIdentity,
     cleanup_current_packaged_orphans,
     stop_owned_process_tree,
 )
@@ -21,10 +22,12 @@ class ManagedProcess(Protocol):
 
     def poll(self) -> int | None: ...
 
+    def create_time(self) -> float: ...
+
 
 ProcessFactory = Callable[[tuple[str, ...]], ManagedProcess]
 HealthProbe = Callable[[str], bool]
-ProcessTreeStopper = Callable[[int], ProcessCleanupResult]
+ProcessTreeStopper = Callable[[ProcessIdentity], ProcessCleanupResult]
 OrphanCleaner = Callable[[], ProcessCleanupResult]
 _ORPHAN_CLEANUP_FAILED_MESSAGE = (
     "检测到无法清理的 News Codex 遗留进程，请退出旧实例后重试。"
@@ -61,6 +64,7 @@ class DesktopController:
         self._health_attempts = health_attempts
         self._health_interval_seconds = health_interval_seconds
         self._owned_process: ManagedProcess | None = None
+        self._owned_process_identity: ProcessIdentity | None = None
         self._initial_orphan_cleanup_done = False
 
     @property
@@ -76,14 +80,18 @@ class DesktopController:
 
     def start_service(self) -> DesktopStatus:
         if not self._initial_orphan_cleanup_done:
-            self._initial_orphan_cleanup_done = True
             cleanup = self._orphan_cleaner()
             if not cleanup.succeeded:
                 return DesktopStatus("failed", _ORPHAN_CLEANUP_FAILED_MESSAGE)
+            self._initial_orphan_cleanup_done = True
         current = self.status()
         if current.state in {"running", "external_running"}:
             return current
         self._owned_process = self._process_factory(self._service_command())
+        self._owned_process_identity = ProcessIdentity(
+            self._owned_process.pid,
+            self._owned_process.create_time(),
+        )
         for attempt in range(self._health_attempts):
             if self._probe(self.url):
                 return DesktopStatus("running", "News Codex 已启动。")
@@ -111,16 +119,20 @@ class DesktopController:
         process = self._owned_process
         if process is None:
             return True
-        tree_cleanup = self._tree_stopper(process.pid)
+        identity = self._owned_process_identity
+        if identity is None:
+            return False
+        tree_cleanup = self._tree_stopper(identity)
         orphan_cleanup = self._orphan_cleaner()
         if not tree_cleanup.succeeded or not orphan_cleanup.succeeded:
             return False
         self._owned_process = None
+        self._owned_process_identity = None
         return True
 
     @staticmethod
     def _spawn(command: tuple[str, ...]) -> ManagedProcess:
-        return subprocess.Popen(command)  # noqa: S603
+        return psutil.Popen(command)  # noqa: S603
 
     @staticmethod
     def _http_probe(url: str) -> bool:

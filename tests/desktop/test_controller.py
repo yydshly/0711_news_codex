@@ -10,9 +10,13 @@ from newsradar.desktop.processes import ProcessCleanupResult
 class FakeProcess:
     pid: int = 321
     exit_code: int | None = None
+    created_at: float = 1.0
 
     def poll(self) -> int | None:
         return self.exit_code
+
+    def create_time(self) -> float:
+        return self.created_at
 
 
 def test_controller_starts_missing_service_and_waits_for_health() -> None:
@@ -44,7 +48,8 @@ def test_controller_never_stops_an_unowned_running_service() -> None:
     controller = DesktopController(
         port=8767,
         probe=lambda _url: True,
-        tree_stopper=lambda pid: stopped.append(pid) or ProcessCleanupResult(),
+        tree_stopper=lambda identity: stopped.append(identity.pid)
+        or ProcessCleanupResult(),
     )
 
     status = controller.stop_service()
@@ -85,14 +90,42 @@ def test_controller_returns_failed_status_when_orphan_cleanup_fails() -> None:
     assert probe_called is False
 
 
+def test_controller_retries_failed_initial_cleanup_before_probe_or_spawn() -> None:
+    calls: list[str] = []
+    cleanup_results = iter(
+        [
+            ProcessCleanupResult(failed_pids=(123,)),
+            ProcessCleanupResult(failed_pids=(123,)),
+            ProcessCleanupResult(),
+        ]
+    )
+
+    def cleanup() -> ProcessCleanupResult:
+        calls.append("cleanup")
+        return next(cleanup_results)
+
+    controller = DesktopController(
+        process_factory=lambda _command: calls.append("spawn") or FakeProcess(),
+        probe=lambda _url: calls.append("probe") or True,
+        orphan_cleaner=cleanup,
+    )
+
+    assert controller.start_service().state == "failed"
+    assert controller.start_service().state == "failed"
+    assert calls == ["cleanup", "cleanup"]
+
+    assert controller.start_service().state == "external_running"
+    assert calls == ["cleanup", "cleanup", "cleanup", "probe"]
+
+
 def test_controller_cleans_exited_supervisor_before_reporting_startup_failure() -> None:
     process = FakeProcess(pid=321, exit_code=17)
     calls: list[str] = []
     controller = DesktopController(
         process_factory=lambda _command: process,
         probe=lambda _url: False,
-        tree_stopper=lambda pid: calls.append(f"tree:{pid}")
-        or ProcessCleanupResult((pid,), (pid,), ()),
+        tree_stopper=lambda identity: calls.append(f"tree:{identity.pid}")
+        or ProcessCleanupResult((identity.pid,), (identity.pid,), ()),
         orphan_cleaner=lambda: calls.append("orphans") or ProcessCleanupResult(),
     )
 
@@ -116,8 +149,8 @@ def test_controller_keeps_exited_supervisor_for_retry_when_cleanup_fails() -> No
     controller = DesktopController(
         process_factory=lambda _command: process,
         probe=lambda _url: False,
-        tree_stopper=lambda pid: calls.append(f"tree:{pid}")
-        or ProcessCleanupResult((pid,), (pid,), ()),
+        tree_stopper=lambda identity: calls.append(f"tree:{identity.pid}")
+        or ProcessCleanupResult((identity.pid,), (identity.pid,), ()),
         orphan_cleaner=lambda: calls.append("orphans") or next(orphan_cleanup_results),
     )
 
@@ -133,8 +166,8 @@ def test_controller_keeps_exited_supervisor_for_retry_when_cleanup_fails() -> No
 
 
 def test_controller_stops_the_complete_owned_tree() -> None:
-    process = FakeProcess(pid=321)
-    stopped: list[int] = []
+    process = FakeProcess(pid=321, created_at=12.5)
+    stopped: list[tuple[int, float]] = []
     probe_calls = 0
 
     def probe(_url: str) -> bool:
@@ -147,8 +180,10 @@ def test_controller_stops_the_complete_owned_tree() -> None:
         process_factory=lambda _command: process,
         probe=probe,
         sleeper=lambda _seconds: None,
-        tree_stopper=lambda pid: stopped.append(pid)
-        or ProcessCleanupResult((pid,), (pid,), ()),
+        tree_stopper=lambda identity: stopped.append(
+            (identity.pid, identity.create_time)
+        )
+        or ProcessCleanupResult((identity.pid,), (identity.pid,), ()),
         orphan_cleaner=lambda: ProcessCleanupResult(),
     )
     controller.start_service()
@@ -156,7 +191,7 @@ def test_controller_stops_the_complete_owned_tree() -> None:
     status = controller.stop_service()
 
     assert status.state == "stopped"
-    assert stopped == [321]
+    assert stopped == [(321, 12.5)]
 
 
 def test_controller_reports_bounded_startup_timeout() -> None:
@@ -166,7 +201,7 @@ def test_controller_reports_bounded_startup_timeout() -> None:
         probe=lambda _url: False,
         sleeper=lambda _seconds: None,
         health_attempts=2,
-        tree_stopper=lambda _pid: ProcessCleanupResult(),
+        tree_stopper=lambda _identity: ProcessCleanupResult(),
     )
 
     status = controller.start_service()
@@ -184,12 +219,21 @@ def test_controller_keeps_owned_process_after_failed_cleanup_for_retry() -> None
         ]
     )
     stopped: list[int] = []
+    probe_calls = 0
+
+    def probe(_url: str) -> bool:
+        nonlocal probe_calls
+        probe_calls += 1
+        return probe_calls >= 2
+
     controller = DesktopController(
-        probe=lambda _url: False,
-        tree_stopper=lambda pid: stopped.append(pid) or next(cleanup_results),
+        process_factory=lambda _command: process,
+        probe=probe,
+        tree_stopper=lambda identity: stopped.append(identity.pid)
+        or next(cleanup_results),
         orphan_cleaner=lambda: ProcessCleanupResult(),
     )
-    controller._owned_process = process
+    controller.start_service()
 
     first_status = controller.stop_service()
     assert controller._owned_process is process

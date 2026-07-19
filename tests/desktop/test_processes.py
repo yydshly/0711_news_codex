@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import psutil
+import pytest
 
 from newsradar.desktop import processes
 from newsradar.desktop.launcher import INTERNAL_COMMAND_MARKER as MARKER
@@ -21,10 +22,14 @@ class FakeProcess:
     survives_terminate: bool = False
     terminate_error: Exception | None = None
     parent_error: Exception | None = None
+    create_time_error: Exception | None = None
     executable_error: Exception | None = None
+    resolved_parent: FakeProcess | None = None
+    resolve_parent_from_backend: bool = True
     running: bool = True
     terminate_calls: int = 0
     kill_calls: int = 0
+    children_calls: int = 0
 
     def ppid(self) -> int:
         if self.parent_error is not None:
@@ -32,7 +37,14 @@ class FakeProcess:
         return self.parent_pid
 
     def create_time(self) -> float:
+        if self.create_time_error is not None:
+            raise self.create_time_error
         return self.created_at
+
+    def parent(self) -> FakeProcess | None:
+        if self.parent_error is not None:
+            raise self.parent_error
+        return self.resolved_parent
 
     def exe(self) -> str:
         if self.executable_error is not None:
@@ -43,6 +55,7 @@ class FakeProcess:
         return self.command
 
     def children(self, recursive: bool = False) -> list[FakeProcess]:
+        self.children_calls += 1
         if not recursive:
             return self.child_processes
         descendants = list(self.child_processes)
@@ -74,6 +87,9 @@ def install_fake_backend(
     iter_processes: list[FakeProcess] | None = None,
 ) -> None:
     by_pid = {process.pid: process for process in processes_by_pid}
+    for process in processes_by_pid:
+        if process.resolve_parent_from_backend and process.resolved_parent is None:
+            process.resolved_parent = by_pid.get(process.parent_pid)
 
     def fake_process(pid: int) -> FakeProcess:
         if pid not in by_pid:
@@ -156,6 +172,65 @@ def test_cleanup_keeps_an_uninspectable_parent_candidate_matched_and_untouched(
     assert result.matched_pids == (201,)
     assert result.failed_pids == (201,)
     assert candidate.terminate_calls == 0
+
+
+def test_cleanup_protects_internal_child_with_live_foreign_parent(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    python = FakeProcess(205, 1, tmp_path / "python.exe", ["python", "manual.py"])
+    child = FakeProcess(201, python.pid, executable, [str(executable), MARKER, "worker"])
+    install_fake_backend(monkeypatch, [child, python], iter_processes=[child])
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result == processes.ProcessCleanupResult()
+    assert child.terminate_calls == 0
+
+
+def test_cleanup_protects_internal_child_with_live_nonserve_branded_parent(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    parent = FakeProcess(205, 1, executable, [str(executable), MARKER, "worker"])
+    child = FakeProcess(201, parent.pid, executable, [str(executable), MARKER, "web"])
+    install_fake_backend(monkeypatch, [child, parent], iter_processes=[child])
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result == processes.ProcessCleanupResult()
+    assert child.terminate_calls == 0
+
+
+def test_cleanup_stops_true_orphan_when_parent_pid_has_been_reused(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "NewsCodex.exe"
+    replacement_parent = FakeProcess(
+        205,
+        1,
+        tmp_path / "python.exe",
+        ["python", "unrelated.py"],
+        created_at=9.0,
+    )
+    orphan = FakeProcess(
+        201,
+        replacement_parent.pid,
+        executable,
+        [str(executable), MARKER, "worker"],
+        resolve_parent_from_backend=False,
+    )
+    install_fake_backend(
+        monkeypatch,
+        [orphan, replacement_parent],
+        iter_processes=[orphan],
+    )
+
+    result = processes.cleanup_orphaned_internal_processes(executable, current_pid=300)
+
+    assert result.stopped_pids == (orphan.pid,)
+    assert orphan.terminate_calls == 1
+    assert replacement_parent.terminate_calls == 0
 
 
 def test_cleanup_leaves_foreign_descendants_of_an_orphaned_branded_process_running(
@@ -261,6 +336,58 @@ def test_cleanup_treats_a_selected_process_that_vanishes_as_stopped(
     assert result.failed_pids == ()
 
 
+@pytest.mark.parametrize("replacement_name", ["python.exe", "postgres.exe", "other.exe"])
+def test_stop_owned_process_tree_never_touches_reused_pid_or_its_descendants(
+    monkeypatch, tmp_path: Path, replacement_name: str
+) -> None:
+    replacement_child = FakeProcess(
+        11,
+        10,
+        tmp_path / replacement_name,
+        [replacement_name, "child"],
+        created_at=8.0,
+    )
+    replacement = FakeProcess(
+        10,
+        1,
+        tmp_path / replacement_name,
+        [replacement_name, "replacement"],
+        child_processes=[replacement_child],
+        created_at=8.0,
+    )
+    install_fake_backend(monkeypatch, [replacement, replacement_child])
+    owned_identity = processes.ProcessIdentity(replacement.pid, 1.0)
+
+    result = processes.stop_owned_process_tree(owned_identity, timeout_seconds=0.1)
+
+    assert result == processes.ProcessCleanupResult((10,), (10,), ())
+    assert replacement.children_calls == 0
+    assert replacement.terminate_calls == 0
+    assert replacement.kill_calls == 0
+    assert replacement_child.terminate_calls == 0
+    assert replacement_child.kill_calls == 0
+
+
+def test_stop_owned_process_tree_fails_closed_when_identity_is_inaccessible(
+    monkeypatch, tmp_path: Path
+) -> None:
+    root = FakeProcess(
+        10,
+        1,
+        tmp_path / "NewsCodex.exe",
+        ["NewsCodex.exe", MARKER, "serve"],
+        create_time_error=psutil.AccessDenied(10),
+    )
+    install_fake_backend(monkeypatch, [root])
+    owned_identity = processes.ProcessIdentity(root.pid, 1.0)
+
+    result = processes.stop_owned_process_tree(owned_identity, timeout_seconds=0.1)
+
+    assert result == processes.ProcessCleanupResult((10,), (), (10,))
+    assert root.children_calls == 0
+    assert root.terminate_calls == 0
+
+
 def test_stop_owned_process_tree_kills_termination_survivors(monkeypatch, tmp_path: Path) -> None:
     executable = tmp_path / "NewsCodex.exe"
     child = FakeProcess(11, 10, executable, [str(executable), MARKER, "worker"])
@@ -274,7 +401,9 @@ def test_stop_owned_process_tree_kills_termination_survivors(monkeypatch, tmp_pa
     )
     install_fake_backend(monkeypatch, [root, child])
 
-    result = processes.stop_owned_process_tree(root.pid, timeout_seconds=0.1)
+    owned_identity = processes.ProcessIdentity(root.pid, root.created_at)
+
+    result = processes.stop_owned_process_tree(owned_identity, timeout_seconds=0.1)
 
     assert result.matched_pids == (11, 10)
     assert result.stopped_pids == (11, 10)
@@ -295,7 +424,9 @@ def test_stop_owned_process_tree_treats_a_process_that_already_exited_as_stopped
     )
     install_fake_backend(monkeypatch, [root])
 
-    result = processes.stop_owned_process_tree(root.pid, timeout_seconds=0.1)
+    owned_identity = processes.ProcessIdentity(root.pid, root.created_at)
+
+    result = processes.stop_owned_process_tree(owned_identity, timeout_seconds=0.1)
 
     assert result.stopped_pids == (10,)
     assert result.failed_pids == ()

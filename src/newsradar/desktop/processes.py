@@ -6,6 +6,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import psutil
 
@@ -28,9 +29,12 @@ class ProcessCleanupResult:
 
 
 @dataclass(frozen=True, slots=True)
-class _ProcessIdentity:
+class ProcessIdentity:
     pid: int
     create_time: float
+
+
+_IdentityStatus = Literal["matched", "vanished", "reused", "inaccessible"]
 
 
 def _normalized_executable(path: str | Path) -> str:
@@ -56,28 +60,30 @@ def _is_running(process: psutil.Process) -> bool | None:
         return None
 
 
-def _identity_for(process: psutil.Process) -> _ProcessIdentity | None:
+def _identity_for(process: psutil.Process) -> ProcessIdentity | None:
     try:
-        return _ProcessIdentity(process.pid, process.create_time())
+        return ProcessIdentity(process.pid, process.create_time())
     except _PROCESS_ERRORS:
         return None
 
 
-def _process_for_identity(identity: _ProcessIdentity) -> tuple[psutil.Process | None, bool]:
+def _process_for_identity(
+    identity: ProcessIdentity,
+) -> tuple[psutil.Process | None, _IdentityStatus]:
     try:
         process = psutil.Process(identity.pid)
     except psutil.NoSuchProcess:
-        return None, True
+        return None, "vanished"
     except (psutil.AccessDenied, psutil.ZombieProcess):
-        return None, False
+        return None, "inaccessible"
     try:
         if process.create_time() != identity.create_time:
-            return None, False
+            return None, "reused"
     except psutil.NoSuchProcess:
-        return None, True
+        return None, "vanished"
     except (psutil.AccessDenied, psutil.ZombieProcess):
-        return None, False
-    return process, False
+        return None, "inaccessible"
+    return process, "matched"
 
 
 def _is_branded_process(process: psutil.Process, executable: str) -> bool | None:
@@ -135,54 +141,49 @@ def _stop_processes(
     return _result_for_processes(processes, failed)
 
 
-def stop_owned_process_tree(root_pid: int, timeout_seconds: float = 5.0) -> ProcessCleanupResult:
+def stop_owned_process_tree(
+    identity: ProcessIdentity, timeout_seconds: float = 5.0
+) -> ProcessCleanupResult:
     """Stop a root process and its snapshot descendants within the supplied timeout."""
+    root, status = _process_for_identity(identity)
+    if status in {"vanished", "reused"}:
+        return ProcessCleanupResult((identity.pid,), (identity.pid,))
+    if root is None:
+        return ProcessCleanupResult((identity.pid,), (), (identity.pid,))
     try:
-        root = psutil.Process(root_pid)
         processes = [*root.children(recursive=True), root]
     except psutil.NoSuchProcess:
-        return ProcessCleanupResult((root_pid,), (root_pid,))
+        return ProcessCleanupResult((identity.pid,), (identity.pid,))
     except (psutil.AccessDenied, psutil.ZombieProcess):
-        return ProcessCleanupResult((root_pid,), (), (root_pid,))
+        return ProcessCleanupResult((identity.pid,), (), (identity.pid,))
 
     return _stop_processes(processes, timeout_seconds)
 
 
-def _parent_protection_status(process: psutil.Process, executable: str) -> bool | None:
-    """Return whether a live branded serve parent protects a candidate.
+def _parent_protection_status(process: psutil.Process) -> bool | None:
+    """Return whether a confirmed live parent protects a candidate.
 
     ``None`` means the parent could not be inspected, so the candidate must not
     be stopped speculatively.
     """
     try:
-        parent_pid = process.ppid()
-        parent = psutil.Process(parent_pid)
+        parent = process.parent()
     except psutil.NoSuchProcess:
         return False
     except (psutil.AccessDenied, psutil.ZombieProcess):
         return None
-
-    parent_running = _is_running(parent)
-    if parent_running is None:
-        return None
-    if not parent_running:
+    if parent is None:
         return False
-    try:
-        return (
-            _normalized_executable(parent.exe()) == executable
-            and _internal_role(parent.cmdline()) == "serve"
-        )
-    except _PROCESS_ERRORS:
-        return None
+    return _is_running(parent)
 
 
 def _stop_selected_branded_tree(
-    identity: _ProcessIdentity,
+    identity: ProcessIdentity,
     executable: str,
     timeout_seconds: float,
 ) -> ProcessCleanupResult:
-    root, vanished = _process_for_identity(identity)
-    if vanished:
+    root, status = _process_for_identity(identity)
+    if status == "vanished":
         return ProcessCleanupResult((identity.pid,), (identity.pid,))
     if root is None or _is_branded_process(root, executable) is not True:
         return ProcessCleanupResult((identity.pid,), (), (identity.pid,))
@@ -218,7 +219,7 @@ def cleanup_orphaned_internal_processes(
     """Stop orphaned internal web and worker processes for one executable only."""
     executable = _normalized_executable(executable_path)
     current_pid = os.getpid() if current_pid is None else current_pid
-    targets: list[_ProcessIdentity] = []
+    targets: list[ProcessIdentity] = []
     matched: list[int] = []
     failed: list[int] = []
 
@@ -238,7 +239,7 @@ def cleanup_orphaned_internal_processes(
             matched.append(process.pid)
             failed.append(process.pid)
             continue
-        protection = _parent_protection_status(process, executable)
+        protection = _parent_protection_status(process)
         if protection is True:
             continue
         matched.append(process.pid)
