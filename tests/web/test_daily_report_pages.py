@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
@@ -797,6 +798,15 @@ def test_daily_report_index_shows_local_web_console_entry(
     assert 'href="http://127.0.0.1/daily-reports"' in response.text
     assert 'data-copy-web-console-url="http://127.0.0.1/daily-reports"' in response.text
     assert "仅本机可访问" in response.text
+
+
+def test_web_console_copy_handler_has_safe_chinese_feedback() -> None:
+    javascript = Path("src/newsradar/web/static/app.js").read_text(encoding="utf-8")
+
+    assert '[data-copy-web-console-url]' in javascript
+    assert "navigator.clipboard?.writeText" in javascript
+    assert "已复制本机网页地址" in javascript
+    assert "无法自动复制，请手动复制上方地址" in javascript
 
 
 def test_daily_report_list_orders_newest_first_and_counts_only_included(

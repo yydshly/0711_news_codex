@@ -19,6 +19,20 @@ if (activeDailyRun) {
   window.setTimeout(() => window.location.reload(), 10000);
 }
 
+for (const button of document.querySelectorAll("[data-copy-web-console-url]")) {
+  button.addEventListener("click", async () => {
+    const status = document.querySelector("[data-copy-web-console-status]");
+    const url = button.dataset.copyWebConsoleUrl;
+    try {
+      if (!url || !navigator.clipboard?.writeText) throw new Error("clipboard_unavailable");
+      await navigator.clipboard.writeText(url);
+      if (status) status.textContent = "已复制本机网页地址";
+    } catch {
+      if (status) status.textContent = "无法自动复制，请手动复制上方地址";
+    }
+  });
+}
+
 for (const form of document.querySelectorAll("[data-report-selection]")) {
   const selectors = Array.from(document.querySelectorAll("[data-report-selector]"));
   const selectAll = document.querySelector("[data-select-all-reports]");
