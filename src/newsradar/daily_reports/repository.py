@@ -937,6 +937,11 @@ class DailyReportRepository:
             (row.event_id, row.event_version_number): row
             for row in self.overview_items(revision.id)
         }
+        revision_overview_by_event_id: dict[
+            int, list[DailyReportOverviewItemRecord]
+        ] = {}
+        for row in revision_overview_by_event.values():
+            revision_overview_by_event_id.setdefault(row.event_id, []).append(row)
         for event_key, original_item in original_overview_by_event.items():
             revision_item = revision_overview_by_event.get(event_key)
             if revision_item is None:
@@ -959,7 +964,14 @@ class DailyReportRepository:
                     (original_target.event_id, original_target.event_version_number)
                 )
                 if revision_target is None:
-                    raise ValueError("invalid_daily_report_overview_duplicate_target")
+                    same_event_targets = revision_overview_by_event_id.get(
+                        original_target.event_id, []
+                    )
+                    if len(same_event_targets) != 1:
+                        raise ValueError(
+                            "invalid_daily_report_overview_duplicate_target"
+                        )
+                    revision_target = same_event_targets[0]
                 duplicate_target_id = revision_target.id
             self.session.add(
                 DailyReportOverviewEditorialReviewRecord(

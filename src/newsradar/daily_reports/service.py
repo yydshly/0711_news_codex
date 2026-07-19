@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
+from math import isfinite
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from newsradar.daily_reports.accumulation import accumulate_daily_overview
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
     MAX_ITEMS_PER_SECTION,
@@ -21,6 +24,7 @@ from newsradar.daily_reports.schema import (
     validate_window_hours,
 )
 from newsradar.db.models import (
+    DailyReportOverviewItemRecord,
     DailyReportRecord,
     EventVersionRecord,
     OperationRunRecord,
@@ -114,18 +118,135 @@ def _snapshot_limitations(value: object) -> list[str]:
     return list(value)
 
 
-def _selected_rows(
-    rows: tuple[EventRow, ...],
-    section: ReportSection,
-) -> tuple[EventRow, ...]:
-    return tuple(
-        row
-        for row in rows
-        if row.status == section.value
-        and (
-            section is ReportSection.CONFIRMED
-            or row.display_tier in {"hotspot", "signal"}
+def _overview_rank_key(
+    item: DailyReportOverviewItemDraft,
+) -> tuple[int, float, float, int]:
+    raw_score = item.snapshot.get("rank_score")
+    score_valid = (
+        isinstance(raw_score, (int, float))
+        and not isinstance(raw_score, bool)
+        and isfinite(float(raw_score))
+    )
+    raw_occurred_at = item.snapshot.get("occurred_at")
+    try:
+        occurred_at = (
+            raw_occurred_at
+            if isinstance(raw_occurred_at, datetime)
+            else datetime.fromisoformat(str(raw_occurred_at).replace("Z", "+00:00"))
         )
+        occurred_at_valid = occurred_at.tzinfo is not None
+        occurred_timestamp = occurred_at.timestamp() if occurred_at_valid else 0.0
+    except (OSError, OverflowError, TypeError, ValueError):
+        occurred_at_valid = False
+        occurred_timestamp = 0.0
+    if not score_valid or not occurred_at_valid:
+        return (1, 0.0, 0.0, item.event_id)
+    return (0, -float(raw_score), -occurred_timestamp, item.event_id)
+
+
+def _decision_drafts(
+    overview_items: tuple[DailyReportOverviewItemDraft, ...],
+) -> tuple[DailyReportItemDraft, ...]:
+    drafts: list[DailyReportItemDraft] = []
+    for section in (ReportSection.CONFIRMED, ReportSection.EMERGING):
+        candidates = [
+            item
+            for item in overview_items
+            if item.snapshot.get("status") == section.value
+            and (
+                section is ReportSection.CONFIRMED
+                or item.snapshot.get("display_tier") in {"hotspot", "signal"}
+            )
+            and "display_degradation_reason" not in item.snapshot
+            and item.snapshot.get("daily_disposition", {}).get("status")
+            not in {"excluded", "invalidated"}
+        ]
+        candidates.sort(key=_overview_rank_key)
+        for position, item in enumerate(candidates[:MAX_ITEMS_PER_SECTION], start=1):
+            drafts.append(
+                DailyReportItemDraft(
+                    event_id=item.event_id,
+                    event_version_number=item.event_version_number,
+                    section=section,
+                    position=position,
+                    snapshot=dict(item.snapshot),
+                )
+            )
+    return tuple(drafts)
+
+
+def _overview_with_dispositions(
+    overview_items: tuple[DailyReportOverviewItemDraft, ...],
+    decision_items: tuple[DailyReportItemDraft, ...],
+    *,
+    canonical_event_ids: dict[int, int],
+) -> tuple[DailyReportOverviewItemDraft, ...]:
+    selected = {
+        (item.event_id, item.event_version_number) for item in decision_items
+    }
+    drafts: list[DailyReportOverviewItemDraft] = []
+    for item in overview_items:
+        snapshot = dict(item.snapshot)
+        existing = snapshot.get("daily_disposition")
+        if isinstance(existing, dict) and existing.get("status") in {
+            "excluded",
+            "invalidated",
+        }:
+            disposition = dict(existing)
+        elif "display_degradation_reason" in snapshot:
+            disposition = {
+                "status": "omitted",
+                "reason_code": "display_data_degraded",
+                "reason_zh": "该条目的展示数据不完整，等待补齐后再评估决策优先级。",
+                "canonical_event_id": canonical_event_ids.get(
+                    item.event_id, item.event_id
+                ),
+            }
+        elif (item.event_id, item.event_version_number) in selected:
+            disposition = {
+                "status": "selected",
+                "reason_code": "selected_for_decision",
+                "reason_zh": "该条目已进入当前决策简报。",
+                "canonical_event_id": canonical_event_ids.get(
+                    item.event_id, item.event_id
+                ),
+            }
+        else:
+            disposition = {
+                "status": "omitted",
+                "reason_code": "low_decision_priority",
+                "reason_zh": "该条目信息有效，但当前决策优先级较低，保留在情报全览中。",
+                "canonical_event_id": canonical_event_ids.get(
+                    item.event_id, item.event_id
+                ),
+            }
+        snapshot["daily_disposition"] = disposition
+        drafts.append(
+            replace(
+                item,
+                snapshot=snapshot,
+                decision_event_id=(
+                    item.event_id
+                    if (item.event_id, item.event_version_number) in selected
+                    else None
+                ),
+            )
+        )
+    return tuple(drafts)
+
+
+def _overview_record_drafts(
+    rows: tuple[DailyReportOverviewItemRecord, ...],
+) -> tuple[DailyReportOverviewItemDraft, ...]:
+    return tuple(
+        DailyReportOverviewItemDraft(
+            event_id=row.event_id,
+            event_version_number=row.event_version_number,
+            position=row.position,
+            snapshot=dict(row.snapshot),
+            decision_event_id=(row.event_id if row.decision_item_id is not None else None),
+        )
+        for row in rows
     )
 
 
@@ -281,85 +402,92 @@ class DailyReportService:
         if len(snapshot_event_ids) != len(set(snapshot_event_ids)):
             raise ValueError("ambiguous_event_snapshot_versions")
         skipped_missing_time = _snapshot_missing_time_count(self.session, snapshot)
-        version_by_event = {
-            ref.event_id: ref.version_number for ref in snapshot.event_versions
-        }
         overview_drafts, skipped_invalid_overview = self._overview_drafts(
             snapshot,
             checked_at=checked_at,
         )
-        overview_by_event = {item.event_id: item for item in overview_drafts}
-        drafts: list[DailyReportItemDraft] = []
-        decision_event_ids: set[int] = set()
-        skipped_invalid = 0
-        for section in (ReportSection.CONFIRMED, ReportSection.EMERGING):
-            section_position = 0
-            for row in _selected_rows(page.events, section):
-                if section_position >= MAX_ITEMS_PER_SECTION:
-                    break
-                version_number = version_by_event.get(row.event_id)
-                overview_item = overview_by_event.get(row.event_id)
-                if (
-                    overview_item is None
-                    or version_number is None
-                    or "display_degradation_reason" in overview_item.snapshot
-                ):
-                    skipped_invalid += 1
-                    continue
-                section_position += 1
-                decision_event_ids.add(row.event_id)
-                drafts.append(
-                    DailyReportItemDraft(
-                        event_id=row.event_id,
-                        event_version_number=version_number,
-                        section=section,
-                        position=section_position,
-                        snapshot=dict(overview_item.snapshot),
-                    )
-                )
-
-        overview_drafts = tuple(
-            DailyReportOverviewItemDraft(
-                event_id=item.event_id,
-                event_version_number=item.event_version_number,
-                position=item.position,
-                snapshot=item.snapshot,
-                decision_event_id=(item.event_id if item.event_id in decision_event_ids else None),
+        window_end = page.snapshot.window_end
+        report_date = window_end.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
+        predecessor = self._reports.latest_archived_for_day(
+            report_date,
+            excluding_operation_id=page.snapshot.operation_id,
+        )
+        previous_overview = (
+            _overview_record_drafts(self._reports.overview_items(predecessor.id))
+            if predecessor is not None
+            else ()
+        )
+        previous_decisions = (
+            self._reports.overview_decisions(predecessor.id)
+            if predecessor is not None
+            else {}
+        )
+        involved_event_ids = {
+            item.event_id for item in (*previous_overview, *overview_drafts)
+        }
+        survivors = self._reports.applied_event_survivors(involved_event_ids)
+        accumulated = accumulate_daily_overview(
+            previous_overview,
+            overview_drafts,
+            canonical_event_ids=survivors,
+            previous_decisions=previous_decisions,
+        )
+        decision_drafts = _decision_drafts(accumulated.items)
+        overview_drafts = _overview_with_dispositions(
+            accumulated.items,
+            decision_drafts,
+            canonical_event_ids=survivors,
+        )
+        skipped_invalid = sum(
+            "display_degradation_reason" in item.snapshot
+            and item.snapshot.get("status") in {"confirmed", "emerging"}
+            and (
+                item.snapshot.get("status") == "confirmed"
+                or item.snapshot.get("display_tier") in {"hotspot", "signal"}
             )
             for item in overview_drafts
         )
-
-        window_end = page.snapshot.window_end
-        report_date = window_end.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
-        return self._reports.create_draft(
-            DailyReportDraft(
-                report_date=report_date,
-                window_hours=window_hours,
-                window_start=window_end - timedelta(hours=window_hours),
-                window_end=window_end,
-                source_operation_id=page.snapshot.operation_id,
-                generation_summary={
-                    "decision_count": len(drafts),
-                    "overview_count": len(overview_drafts),
-                    "omitted_from_decision_count": (
-                        len(overview_drafts) - len(decision_event_ids)
-                    ),
-                    "confirmed_count": sum(
-                        item.section is ReportSection.CONFIRMED for item in drafts
-                    ),
-                    "emerging_count": sum(
-                        item.section is ReportSection.EMERGING for item in drafts
-                    ),
-                    "skipped_invalid_event": skipped_invalid,
-                    "skipped_invalid_overview_event": skipped_invalid_overview,
-                    "skipped_missing_time": skipped_missing_time,
-                    "minimax_degraded": any(
-                        item.snapshot["enrichment_origin"] != "model" for item in drafts
-                    ),
-                },
-                items=tuple(drafts),
-                overview_items=overview_drafts,
-            )
+        draft = DailyReportDraft(
+            report_date=report_date,
+            window_hours=window_hours,
+            window_start=window_end - timedelta(hours=window_hours),
+            window_end=window_end,
+            source_operation_id=page.snapshot.operation_id,
+            generation_summary={
+                "decision_count": len(decision_drafts),
+                "overview_count": len(accumulated.items),
+                "omitted_from_decision_count": (
+                    len(accumulated.items) - len(decision_drafts)
+                ),
+                "inherited_count": accumulated.stats.inherited_count,
+                "new_count": accumulated.stats.new_count,
+                "updated_count": accumulated.stats.updated_count,
+                "deduplicated_count": accumulated.stats.deduplicated_count,
+                "invalidated_count": accumulated.stats.invalidated_count,
+                "cumulative_base_report_id": predecessor.id if predecessor else None,
+                "confirmed_count": sum(
+                    item.section is ReportSection.CONFIRMED
+                    for item in decision_drafts
+                ),
+                "emerging_count": sum(
+                    item.section is ReportSection.EMERGING for item in decision_drafts
+                ),
+                "skipped_invalid_event": skipped_invalid,
+                "skipped_invalid_overview_event": skipped_invalid_overview,
+                "skipped_missing_time": skipped_missing_time,
+                "minimax_degraded": any(
+                    item.snapshot.get("enrichment_origin") != "model"
+                    for item in decision_drafts
+                ),
+            },
+            items=decision_drafts,
+            overview_items=overview_drafts,
+            supersedes_report_id=predecessor.id if predecessor else None,
+        )
+        return (
+            self._reports.create_cumulative_draft(draft)
+            if predecessor is not None
+            else self._reports.create_draft(draft)
         )
 
     def revise(self, report_id: int) -> DailyReportRecord:
@@ -395,19 +523,36 @@ class DailyReportService:
             snapshot,
             checked_at=original.generated_at,
         )
-        decision_event_ids = {row.event_id for row in self._reports.items(original.id)}
-        rebuilt_overview_items = tuple(
-            DailyReportOverviewItemDraft(
-                event_id=item.event_id,
-                event_version_number=item.event_version_number,
-                position=item.position,
-                snapshot=item.snapshot,
-                decision_event_id=(
-                    item.event_id if item.event_id in decision_event_ids else None
-                ),
-            )
-            for item in materialized
+        original_overview_items = self._reports.overview_items(original.id)
+        archived_overview = _overview_record_drafts(original_overview_items)
+        involved_event_ids = {
+            item.event_id for item in (*archived_overview, *materialized)
+        }
+        survivors = self._reports.applied_event_survivors(involved_event_ids)
+        accumulated = accumulate_daily_overview(
+            archived_overview,
+            materialized,
+            canonical_event_ids=survivors,
+            previous_decisions=self._reports.overview_decisions(original.id),
         )
+        original_decisions = tuple(
+            DailyReportItemDraft(
+                event_id=row.event_id,
+                event_version_number=row.event_version_number,
+                section=ReportSection(row.section),
+                position=row.position,
+                snapshot=dict(row.snapshot),
+                included=row.included,
+            )
+            for row in self._reports.items(original.id)
+        )
+        rebuilt_overview_items = _overview_with_dispositions(
+            accumulated.items,
+            original_decisions,
+            canonical_event_ids=survivors,
+        )
+        if len(rebuilt_overview_items) < len(original_overview_items):
+            raise RuntimeError("daily_report_overview_would_shrink")
         return self._reports.revise(
             report_id,
             rebuilt_overview_items=rebuilt_overview_items,

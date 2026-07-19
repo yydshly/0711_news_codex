@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine, delete, func, select
@@ -12,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from newsradar.daily_reports import DailyReportService
 from newsradar.daily_reports.repository import DailyReportRepository
 from newsradar.daily_reports.schema import (
+    REPORT_TIMEZONE,
     DailyReportDraft,
     DailyReportEditorialReviewDraft,
     DailyReportItemDraft,
@@ -60,6 +62,7 @@ EXPECTED_SNAPSHOT_KEYS = {
     "limitations",
     "evidence",
 }
+EXPECTED_OVERVIEW_SNAPSHOT_KEYS = EXPECTED_SNAPSHOT_KEYS | {"daily_disposition"}
 EXPECTED_EVIDENCE_KEYS = {
     "title",
     "url",
@@ -218,6 +221,55 @@ def _seed_snapshot_event(
             ),
         )
     )
+
+
+def _seed_operation_with_ids(
+    session: Session,
+    operation_id: int,
+    event_ids: tuple[int, ...],
+    window_end: datetime,
+    *,
+    window_hours: int = 24,
+) -> int:
+    refs: list[tuple[int, int]] = []
+    for index, event_id in enumerate(event_ids):
+        event = session.get(EventRecord, event_id)
+        if event is None:
+            _seed_snapshot_event(
+                session,
+                event_id=event_id,
+                status="confirmed",
+                display_tier="hotspot",
+                rank_score=100 - index,
+                occurred_at=window_end - timedelta(minutes=index + 1),
+            )
+            version_number = 1
+        else:
+            version_number = event.current_version_number
+        refs.append((event_id, version_number))
+    session.add(
+        OperationRunRecord(
+            id=operation_id,
+            operation_type="event_pipeline",
+            trigger="test",
+            status="succeeded",
+            requested_scope={
+                "window_hours": window_hours,
+                "window_end": window_end.isoformat(),
+                "algorithm_versions": dict(EVENT_ALGORITHM_VERSIONS),
+            },
+            result_summary={
+                "event_version_snapshots": [
+                    {"event_id": event_id, "version_number": version_number}
+                    for event_id, version_number in refs
+                ]
+            },
+            created_at=window_end,
+            finished_at=window_end,
+        )
+    )
+    session.commit()
+    return operation_id
 
 
 def seed_complete_snapshot(
@@ -544,6 +596,50 @@ def test_create_cumulative_draft_does_not_copy_review_to_new_event_version(
     assert DailyReportRepository(db_session).overview_editorial_reviews(item.id) == ()
 
 
+def test_create_cumulative_draft_retargets_duplicate_review_to_newer_target_version(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    predecessor = repository.create_draft(
+        _daily_report_draft(
+            db_session,
+            source_operation_id=2401,
+            overview_event_versions=((101, 1), (102, 1)),
+        )
+    )
+    target, duplicate = repository.overview_items(predecessor.id)
+    source_review = repository.save_overview_editorial_review(
+        predecessor.id,
+        duplicate.id,
+        DailyReportOverviewEditorialReviewDraft.create(
+            decision="duplicate",
+            zh_title="Duplicate event",
+            zh_summary="This event duplicates the target.",
+            review_recommendation="Keep the target event.",
+            evidence_assessment="Both items describe the same event.",
+            duplicate_of_overview_item_id=target.id,
+        ),
+    )
+    repository.archive(predecessor.id)
+    successor_draft = _daily_report_draft(
+        db_session,
+        source_operation_id=2402,
+        supersedes_report_id=predecessor.id,
+        overview_event_versions=((101, 2), (102, 1)),
+    )
+
+    successor = repository.create_cumulative_draft(successor_draft)
+
+    successor_target, successor_duplicate = repository.overview_items(successor.id)
+    copied_review = repository.overview_editorial_reviews(successor_duplicate.id)[0]
+    assert copied_review.copied_from_editorial_review_id == source_review.id
+    assert copied_review.duplicate_of_overview_item_id == successor_target.id
+    assert (successor_target.event_id, successor_target.event_version_number) == (
+        101,
+        2,
+    )
+
+
 def test_create_cumulative_draft_copies_decision_review_by_event_version(
     db_session: Session,
 ) -> None:
@@ -839,6 +935,160 @@ def test_generate_keeps_all_eight_events_in_overview_but_only_two_in_decision(
     assert report.generation_summary["omitted_from_decision_count"] == 6
 
 
+def test_second_same_day_report_accumulates_eleven_and_reranks_decisions(
+    db_session: Session,
+) -> None:
+    first_operation = _seed_operation_with_ids(
+        db_session, 2401, tuple(range(1, 9)), NOW
+    )
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    first = service.generate_from_operation(first_operation, 24, now=NOW)
+    repository.archive(first.id)
+    second_operation = _seed_operation_with_ids(
+        db_session, 2402, (8, 9, 10, 11), NOW + timedelta(hours=1)
+    )
+
+    second = service.generate_from_operation(
+        second_operation, 24, now=NOW + timedelta(hours=1)
+    )
+
+    assert second.supersedes_report_id == first.id
+    assert [row.event_id for row in repository.overview_items(second.id)] == list(
+        range(1, 12)
+    )
+    assert [row.event_id for row in repository.items(second.id)] == [
+        1,
+        9,
+        2,
+        10,
+        3,
+        11,
+        4,
+        5,
+        6,
+        7,
+        8,
+    ]
+    assert second.generation_summary["overview_count"] == 11
+
+
+def test_second_same_day_report_with_only_old_events_does_not_shrink(
+    db_session: Session,
+) -> None:
+    first_operation = _seed_operation_with_ids(
+        db_session,
+        2401,
+        tuple(range(1, 12)),
+        NOW,
+        window_hours=72,
+    )
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    first = service.generate_from_operation(first_operation, 72, now=NOW)
+    repository.archive(first.id)
+    second_operation = _seed_operation_with_ids(
+        db_session, 2402, (10, 11), NOW + timedelta(hours=1)
+    )
+
+    second = service.generate_from_operation(
+        second_operation, 24, now=NOW + timedelta(hours=1)
+    )
+
+    assert [row.event_id for row in repository.overview_items(second.id)] == list(
+        range(1, 12)
+    )
+
+
+def test_second_same_day_generation_failure_leaves_archived_head_unchanged(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_operation = _seed_operation_with_ids(
+        db_session, 2401, tuple(range(1, 9)), NOW
+    )
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    first = service.generate_from_operation(first_operation, 24, now=NOW)
+    repository.archive(first.id)
+    second_operation = _seed_operation_with_ids(db_session, 2402, (9,), NOW)
+    monkeypatch.setattr(
+        service,
+        "_overview_drafts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("materialization failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="materialization failed"):
+        service.generate_from_operation(second_operation, 24, now=NOW)
+
+    archived_head = repository.latest_archived_for_day(
+        NOW.astimezone(ZoneInfo(REPORT_TIMEZONE)).date(),
+        excluding_operation_id=second_operation,
+    )
+    assert archived_head is not None
+    assert archived_head.id == first.id
+    assert db_session.scalar(
+        select(func.count(DailyReportRecord.id)).where(
+            DailyReportRecord.supersedes_report_id == first.id
+        )
+    ) == 0
+
+
+def test_second_same_day_malformed_snapshot_ranking_sorts_last_without_blocking(
+    db_session: Session,
+) -> None:
+    first_operation = _seed_operation_with_ids(
+        db_session, 2401, tuple(range(1, 9)), NOW
+    )
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    first = service.generate_from_operation(first_operation, 24, now=NOW)
+    malformed = repository.overview_items(first.id)[0]
+    malformed.snapshot = {
+        **malformed.snapshot,
+        "rank_score": "not-a-number",
+        "occurred_at": "not-a-datetime",
+    }
+    repository.archive(first.id)
+    second_operation = _seed_operation_with_ids(
+        db_session, 2402, (9,), NOW + timedelta(hours=1)
+    )
+
+    second = service.generate_from_operation(
+        second_operation, 24, now=NOW + timedelta(hours=1)
+    )
+
+    decision_event_ids = [row.event_id for row in repository.items(second.id)]
+    assert set(decision_event_ids) == set(range(1, 10))
+    assert decision_event_ids[-1] == 1
+
+
+def test_revision_unions_archived_overview_with_full_operation_snapshot(
+    db_session: Session,
+) -> None:
+    operation_id = _seed_operation_with_ids(
+        db_session, 2401, tuple(range(1, 9)), NOW
+    )
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    original = service.generate_from_operation(operation_id, 24, now=NOW)
+    db_session.execute(
+        delete(DailyReportOverviewItemRecord).where(
+            DailyReportOverviewItemRecord.daily_report_id == original.id,
+            DailyReportOverviewItemRecord.event_id > 4,
+        )
+    )
+    db_session.commit()
+    repository.archive(original.id)
+
+    revision = service.revise(original.id)
+
+    assert [row.event_id for row in repository.overview_items(revision.id)] == list(
+        range(1, 9)
+    )
+
+
 def test_generate_persists_every_displayable_operation_event_for_overview(
     db_session: Session,
 ) -> None:
@@ -849,10 +1099,10 @@ def test_generate_persists_every_displayable_operation_event_for_overview(
 
     assert [row.event_id for row in rows] == [101, 102, 201, 202, 301, 302]
     assert [row.position for row in rows] == list(range(1, 7))
-    assert all(set(row.snapshot) == EXPECTED_SNAPSHOT_KEYS for row in rows)
+    assert all(set(row.snapshot) == EXPECTED_OVERVIEW_SNAPSHOT_KEYS for row in rows)
     assert {
         row.event_id for row in rows if row.decision_item_id is not None
-    } == {101, 102, 201, 202}
+    } == {101, 102, 201, 202, 302}
     assert report.generation_summary["overview_count"] == 6
 
 
@@ -1137,7 +1387,7 @@ def test_generate_rejects_multiple_versions_of_same_event_without_writing(
 def test_generate_allows_empty_sections_without_lowering_threshold(
     db_session: Session,
 ) -> None:
-    seed_complete_snapshot(db_session, confirmed=(), emerging=())
+    seed_complete_snapshot(db_session, confirmed=(), emerging=(), audit_only=())
 
     report = DailyReportService(db_session, utcnow=lambda: NOW).generate(24, now=NOW)
 
