@@ -62,6 +62,47 @@ def test_accumulate_does_not_add_a_new_applied_duplicate() -> None:
     assert result.stats.deduplicated_count == 1
 
 
+def test_accumulate_prefers_later_canonical_survivor_over_higher_ranked_legacy() -> None:
+    legacy = _draft(
+        12,
+        evidence=[
+            {
+                "url": "https://example.com/legacy",
+                "title": "Legacy evidence",
+                "published_at": "2026-07-19T00:00:00+00:00",
+            }
+        ],
+    )
+    survivor = _draft(
+        1,
+        evidence=[
+            {
+                "url": "https://example.com/survivor",
+                "title": "Survivor evidence",
+                "published_at": "2026-07-19T01:00:00+00:00",
+            }
+        ],
+    )
+
+    result = accumulate_daily_overview(
+        (),
+        (legacy, survivor),
+        canonical_event_ids={12: 1, 1: 1},
+        previous_decisions={},
+    )
+
+    assert [item.event_id for item in result.items] == [1]
+    assert result.items[0].snapshot["label"] == "event-1-v1"
+    assert [
+        evidence["url"] for evidence in result.items[0].snapshot["evidence"]
+    ] == [
+        "https://example.com/survivor",
+        "https://example.com/legacy",
+    ]
+    assert result.stats.new_count == 1
+    assert result.stats.deduplicated_count == 1
+
+
 def test_accumulate_preserves_previously_visible_duplicate_as_audit_record() -> None:
     previous = (_draft(1), _draft(12))
 

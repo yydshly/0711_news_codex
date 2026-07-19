@@ -101,7 +101,16 @@ def accumulate_daily_overview(
 
         canonical_index = index_by_canonical.get(canonical_id)
         if canonical_index is not None:
-            rows[canonical_index] = _merge_item_evidence(rows[canonical_index], item)
+            representative = rows[canonical_index]
+            if (
+                item.event_id == canonical_id
+                and representative.event_id != canonical_id
+            ):
+                rows[canonical_index] = _merge_item_evidence(item, representative)
+                index_by_event.pop(representative.event_id, None)
+                index_by_event[item.event_id] = canonical_index
+            else:
+                rows[canonical_index] = _merge_item_evidence(representative, item)
             deduplicated_count += 1
             continue
 

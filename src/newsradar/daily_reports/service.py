@@ -122,11 +122,15 @@ def _overview_rank_key(
     item: DailyReportOverviewItemDraft,
 ) -> tuple[int, float, float, int]:
     raw_score = item.snapshot.get("rank_score")
-    score_valid = (
-        isinstance(raw_score, (int, float))
-        and not isinstance(raw_score, bool)
-        and isfinite(float(raw_score))
+    score_valid = isinstance(raw_score, (int, float)) and not isinstance(
+        raw_score, bool
     )
+    try:
+        rank_score = float(raw_score) if score_valid else 0.0
+        score_valid = score_valid and isfinite(rank_score)
+    except (OverflowError, TypeError, ValueError):
+        score_valid = False
+        rank_score = 0.0
     raw_occurred_at = item.snapshot.get("occurred_at")
     try:
         occurred_at = (
@@ -141,7 +145,7 @@ def _overview_rank_key(
         occurred_timestamp = 0.0
     if not score_valid or not occurred_at_valid:
         return (1, 0.0, 0.0, item.event_id)
-    return (0, -float(raw_score), -occurred_timestamp, item.event_id)
+    return (0, -rank_score, -occurred_timestamp, item.event_id)
 
 
 def _decision_drafts(

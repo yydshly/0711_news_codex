@@ -22,7 +22,7 @@ from newsradar.daily_reports.schema import (
     EditorialDecision,
     ReportSection,
 )
-from newsradar.daily_reports.service import _public_url
+from newsradar.daily_reports.service import _decision_drafts, _public_url
 from newsradar.db.models import (
     Base,
     DailyReportOverviewItemRecord,
@@ -1062,6 +1062,36 @@ def test_second_same_day_malformed_snapshot_ranking_sorts_last_without_blocking(
     decision_event_ids = [row.event_id for row in repository.items(second.id)]
     assert set(decision_event_ids) == set(range(1, 10))
     assert decision_event_ids[-1] == 1
+
+
+def test_decision_ranking_puts_huge_integer_score_last_without_blocking() -> None:
+    occurred_at = NOW.isoformat()
+    huge = DailyReportOverviewItemDraft(
+        event_id=1,
+        event_version_number=1,
+        position=1,
+        snapshot={
+            "status": "confirmed",
+            "display_tier": "hotspot",
+            "rank_score": 10**1000,
+            "occurred_at": occurred_at,
+        },
+    )
+    valid = DailyReportOverviewItemDraft(
+        event_id=2,
+        event_version_number=1,
+        position=2,
+        snapshot={
+            "status": "confirmed",
+            "display_tier": "hotspot",
+            "rank_score": 10,
+            "occurred_at": occurred_at,
+        },
+    )
+
+    decisions = _decision_drafts((huge, valid))
+
+    assert [item.event_id for item in decisions] == [2, 1]
 
 
 def test_revision_unions_archived_overview_with_full_operation_snapshot(
