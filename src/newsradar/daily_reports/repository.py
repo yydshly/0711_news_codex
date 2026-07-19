@@ -88,6 +88,44 @@ class DailyReportRepository:
         report, _ = self._create_draft(draft, commit=True)
         return report
 
+    def begin_publication(
+        self,
+        report_date: date,
+        *,
+        source_operation_id: int,
+    ) -> tuple[DailyReportRecord | None, DailyReportRecord | None]:
+        """Lock one report day and resolve its idempotent draft or archived head."""
+        self._lock_report_day(report_date)
+        active_drafts = tuple(
+            self.session.scalars(
+                select(DailyReportRecord)
+                .where(
+                    DailyReportRecord.report_date == report_date,
+                    DailyReportRecord.status == ReportStatus.DRAFT.value,
+                    DailyReportRecord.deleted_at.is_(None),
+                )
+                .order_by(DailyReportRecord.revision.desc(), DailyReportRecord.id.desc())
+            )
+        )
+        existing = next(
+            (
+                report
+                for report in active_drafts
+                if report.source_operation_id == source_operation_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing, None
+        if active_drafts:
+            self.session.rollback()
+            raise RuntimeError("daily_report_publication_in_progress")
+        predecessor = self.latest_archived_for_day(
+            report_date,
+            excluding_operation_id=source_operation_id,
+        )
+        return None, predecessor
+
     def create_cumulative_draft(self, draft: DailyReportDraft) -> DailyReportRecord:
         if draft.supersedes_report_id is None:
             raise ValueError("daily_report_cumulative_predecessor_required")

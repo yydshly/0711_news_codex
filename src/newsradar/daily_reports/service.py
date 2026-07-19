@@ -412,10 +412,13 @@ class DailyReportService:
         )
         window_end = page.snapshot.window_end
         report_date = window_end.astimezone(ZoneInfo(REPORT_TIMEZONE)).date()
-        predecessor = self._reports.latest_archived_for_day(
+        existing, predecessor = self._reports.begin_publication(
             report_date,
-            excluding_operation_id=page.snapshot.operation_id,
+            source_operation_id=page.snapshot.operation_id,
         )
+        if existing is not None:
+            self.session.commit()
+            return existing
         previous_overview = (
             _overview_record_drafts(self._reports.overview_items(predecessor.id))
             if predecessor is not None

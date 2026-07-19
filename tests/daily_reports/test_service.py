@@ -973,6 +973,105 @@ def test_second_same_day_report_accumulates_eleven_and_reranks_decisions(
     assert second.generation_summary["overview_count"] == 11
 
 
+def test_different_operation_cannot_publish_while_same_day_report_is_draft(
+    db_session: Session,
+) -> None:
+    first_operation = _seed_operation_with_ids(db_session, 2401, (1,), NOW)
+    second_operation = _seed_operation_with_ids(
+        db_session,
+        2402,
+        (2,),
+        NOW + timedelta(hours=1),
+        window_hours=48,
+    )
+    service = DailyReportService(db_session, utcnow=lambda: NOW)
+    first = service.generate_from_operation(first_operation, 24, now=NOW)
+
+    with pytest.raises(RuntimeError, match="daily_report_publication_in_progress"):
+        service.generate_from_operation(
+            second_operation,
+            48,
+            now=NOW + timedelta(hours=1),
+        )
+
+    reports = tuple(db_session.scalars(select(DailyReportRecord)))
+    assert [report.id for report in reports] == [first.id]
+    assert first.supersedes_report_id is None
+
+
+def test_same_operation_reuses_its_same_day_draft() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    operation_id = 2401
+    with Session(engine) as db:
+        _seed_operation_with_ids(db, operation_id, (1,), NOW)
+        first = DailyReportService(db, utcnow=lambda: NOW).generate_from_operation(
+            operation_id, 24, now=NOW
+        )
+        first_id = first.id
+
+    with Session(engine) as db:
+        second = DailyReportService(db, utcnow=lambda: NOW).generate_from_operation(
+            operation_id, 24, now=NOW
+        )
+        assert second.id == first_id
+        assert db.scalar(select(func.count()).select_from(DailyReportRecord)) == 1
+
+
+def test_archived_same_day_reports_accumulate_across_24_48_72_hour_windows(
+    db_session: Session,
+) -> None:
+    repository = DailyReportRepository(db_session, utcnow=lambda: NOW)
+    predecessor_id: int | None = None
+
+    for offset, (operation_id, window_hours, event_ids) in enumerate(
+        (
+            (2401, 24, (1,)),
+            (2402, 48, (2,)),
+            (2403, 72, (3,)),
+        )
+    ):
+        window_end = NOW + timedelta(hours=offset)
+        _seed_operation_with_ids(
+            db_session,
+            operation_id,
+            event_ids,
+            window_end,
+            window_hours=window_hours,
+        )
+        report = DailyReportService(
+            db_session, utcnow=lambda window_end=window_end: window_end
+        ).generate_from_operation(operation_id, window_hours, now=window_end)
+
+        assert report.supersedes_report_id == predecessor_id
+        assert [item.event_id for item in repository.overview_items(report.id)] == list(
+            range(1, offset + 2)
+        )
+        repository.archive(report.id)
+        predecessor_id = report.id
+
+
+def test_publication_lock_is_acquired_before_predecessor_selection(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = DailyReportRepository(db_session)
+    calls: list[str] = []
+    monkeypatch.setattr(repository, "_lock_report_day", lambda _date: calls.append("lock"))
+    monkeypatch.setattr(
+        repository,
+        "latest_archived_for_day",
+        lambda *_args, **_kwargs: calls.append("predecessor"),
+    )
+
+    repository.begin_publication(date(2026, 7, 19), source_operation_id=2401)
+
+    assert calls == ["lock", "predecessor"]
+
+
 def test_second_same_day_report_with_only_old_events_does_not_shrink(
     db_session: Session,
 ) -> None:

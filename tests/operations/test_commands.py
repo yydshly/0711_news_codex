@@ -33,7 +33,7 @@ from newsradar.db.models import (
     SourceCatalogRefreshMemberRecord,
 )
 from newsradar.operations.commands import OperationCommandService
-from newsradar.operations.schema import OperationType
+from newsradar.operations.schema import OperationStatus, OperationType
 from newsradar.settings import Settings
 from newsradar.sources.catalog_refresh import (
     CatalogMemberState,
@@ -199,6 +199,73 @@ def test_archive_and_enqueue_daily_report_audios_recovers_committed_pair() -> No
                 OperationRunRecord.operation_type == "daily_report_audio"
             )
         ) == 2
+
+
+def test_archive_and_enqueue_daily_report_audio_reuses_committed_operation() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db)
+        service = OperationCommandService(db)
+
+        first = service.archive_and_enqueue_daily_report_audio(
+            report_id=report_id, trigger="autopilot"
+        )
+        second = service.archive_and_enqueue_daily_report_audio(
+            report_id=report_id, trigger="autopilot"
+        )
+
+        assert second == first
+        assert db.scalar(
+            select(func.count()).select_from(OperationRunRecord).where(
+                OperationRunRecord.operation_type == "daily_report_audio"
+            )
+        ) == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        OperationStatus.QUEUED,
+        OperationStatus.RUNNING,
+        OperationStatus.SUCCEEDED,
+        OperationStatus.FAILED,
+        OperationStatus.CANCELLED,
+    ],
+)
+def test_archive_and_enqueue_daily_report_audio_recovers_existing_operation_in_any_state(
+    status: OperationStatus,
+) -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db)
+        service = OperationCommandService(db)
+        operation_id = service.archive_and_enqueue_daily_report_audio(
+            report_id=report_id, trigger="autopilot"
+        )
+        operation = db.get(OperationRunRecord, operation_id)
+        assert operation is not None
+        operation.status = status.value
+        db.commit()
+
+        recovered = service.archive_and_enqueue_daily_report_audio(
+            report_id=report_id, trigger="autopilot"
+        )
+
+        assert recovered == operation_id
+        assert db.scalar(
+            select(func.count()).select_from(OperationRunRecord).where(
+                OperationRunRecord.operation_type == "daily_report_audio"
+            )
+        ) == 1
+
+
+def test_archive_and_enqueue_daily_report_audio_rejects_archived_incomplete_state() -> None:
+    with session() as db:
+        report_id = reviewed_daily_report(db)
+        DailyReportRepository(db).archive(report_id)
+
+        with pytest.raises(ValueError, match="daily_report_decision_audio_incomplete"):
+            OperationCommandService(db).archive_and_enqueue_daily_report_audio(
+                report_id=report_id, trigger="autopilot"
+            )
 
 
 def test_enqueue_daily_report_audio_rejects_trashed_report_without_creating_operation() -> None:

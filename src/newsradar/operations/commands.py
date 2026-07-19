@@ -228,6 +228,20 @@ class OperationCommandService:
         if self.session.in_transaction():
             self.session.commit()
         with self.session.begin():
+            report = self.session.scalar(
+                select(DailyReportRecord)
+                .where(DailyReportRecord.id == report_id)
+                .with_for_update()
+            )
+            if report is None:
+                raise LookupError("daily_report_not_found")
+            if report.status == "archived":
+                existing = self._daily_report_audio_operation_id(
+                    report_id, "decision"
+                )
+                if existing is not None:
+                    return existing
+                raise ValueError("daily_report_decision_audio_incomplete")
             DailyReportRepository(self.session, utcnow=self._utcnow).archive(
                 report_id, commit=False
             )

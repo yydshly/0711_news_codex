@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -546,6 +546,62 @@ def test_archive_stage_keeps_legacy_overview_audio_unmodified(monkeypatch) -> No
         "decision_audio_operation_id": 51,
         "delayed": True,
     }
+
+
+def test_archive_stage_recovers_after_commit_before_transition_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = _session_factory()
+    run_view = _seed_autopilot_report(factory, event_count=1, completed_count=1)
+    with factory() as db:
+        DailyAutopilotRepository(db).transition(
+            run_view.id,
+            stage=DailyAutopilotStage.ARCHIVE_AND_ENQUEUE_AUDIO,
+        )
+        db.commit()
+
+    handler = DailyAutopilotHandler(factory)
+    with factory() as db:
+        run = DailyAutopilotRepository(db).get(run_view.id)
+
+    original_transition = handler._transition_and_continue
+    monkeypatch.setattr(
+        handler,
+        "_transition_and_continue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("simulated_transition_crash")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="simulated_transition_crash"):
+        handler._archive_and_enqueue_audio(run, lambda _boundary: None)
+
+    with factory() as db:
+        report = db.get(DailyReportRecord, run_view.daily_report_id)
+        assert report is not None and report.status == "archived"
+        committed_operation_id = db.scalar(
+            select(OperationRunRecord.id).where(
+                OperationRunRecord.operation_type
+                == OperationType.DAILY_REPORT_AUDIO.value
+            )
+        )
+        assert committed_operation_id is not None
+
+    monkeypatch.setattr(handler, "_transition_and_continue", original_transition)
+    with factory() as db:
+        retry_run = DailyAutopilotRepository(db).get(run_view.id)
+    result = handler._archive_and_enqueue_audio(retry_run, lambda _boundary: None)
+
+    assert result.status is OperationStatus.SUCCEEDED
+    with factory() as db:
+        saved = DailyAutopilotRepository(db).get(run_view.id)
+        assert saved.stage == DailyAutopilotStage.WAIT_AUDIO.value
+        assert saved.decision_audio_operation_id == committed_operation_id
+        assert db.scalar(
+            select(func.count()).select_from(OperationRunRecord).where(
+                OperationRunRecord.operation_type
+                == OperationType.DAILY_REPORT_AUDIO.value
+            )
+        ) == 1
 
 
 def _run_waiting_for_decision_audio(

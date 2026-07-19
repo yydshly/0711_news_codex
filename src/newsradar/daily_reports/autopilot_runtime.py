@@ -590,6 +590,9 @@ def _diagnostic_message(code: str) -> str:
         "daily_report_overview_has_no_items": "情报全览没有可审核条目，不能生成语音。",
         "daily_report_overview_review_incomplete": "情报全览尚未完成审核，不能生成音频。",
         "daily_report_overview_has_no_included_items": "情报全览没有可播报条目。",
+        "daily_report_decision_audio_incomplete": (
+            "日报已归档，但决策版语音任务缺失，请人工核对归档事务。"
+        ),
         "daily_report_audio_package_incomplete": (
             "日报双版本语音任务不完整，请使用单版本恢复入口处理。"
         ),
