@@ -32,6 +32,9 @@ OrphanCleaner = Callable[[], ProcessCleanupResult]
 _ORPHAN_CLEANUP_FAILED_MESSAGE = (
     "检测到无法清理的 News Codex 遗留进程，请退出旧实例后重试。"
 )
+_PROCESS_IDENTITY_FAILED_MESSAGE = (
+    "无法安全确认 News Codex 服务进程身份，请稍后重试。"
+)
 
 
 @dataclass(frozen=True)
@@ -88,10 +91,19 @@ class DesktopController:
         if current.state in {"running", "external_running"}:
             return current
         self._owned_process = self._process_factory(self._service_command())
-        self._owned_process_identity = ProcessIdentity(
-            self._owned_process.pid,
-            self._owned_process.create_time(),
-        )
+        try:
+            self._owned_process_identity = ProcessIdentity(
+                self._owned_process.pid,
+                self._owned_process.create_time(),
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            if self._owned_process.poll() is not None:
+                self._cleanup_owned_process()
+                return DesktopStatus(
+                    "failed",
+                    "News Codex 服务启动失败，请查看本地运行日志。",
+                )
+            return DesktopStatus("failed", _PROCESS_IDENTITY_FAILED_MESSAGE)
         for attempt in range(self._health_attempts):
             if self._probe(self.url):
                 return DesktopStatus("running", "News Codex 已启动。")
@@ -121,7 +133,11 @@ class DesktopController:
             return True
         identity = self._owned_process_identity
         if identity is None:
-            return False
+            orphan_cleanup = self._orphan_cleaner()
+            if not orphan_cleanup.succeeded or process.poll() is None:
+                return False
+            self._owned_process = None
+            return True
         tree_cleanup = self._tree_stopper(identity)
         orphan_cleanup = self._orphan_cleaner()
         if not tree_cleanup.succeeded or not orphan_cleanup.succeeded:

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import psutil
+import pytest
+
 from newsradar.desktop.controller import DesktopController
 from newsradar.desktop.processes import ProcessCleanupResult
 
@@ -11,11 +14,14 @@ class FakeProcess:
     pid: int = 321
     exit_code: int | None = None
     created_at: float = 1.0
+    create_time_error: Exception | None = None
 
     def poll(self) -> int | None:
         return self.exit_code
 
     def create_time(self) -> float:
+        if self.create_time_error is not None:
+            raise self.create_time_error
         return self.created_at
 
 
@@ -41,6 +47,101 @@ def test_controller_starts_missing_service_and_waits_for_health() -> None:
     assert status.state == "running"
     assert attempts == 2
     assert commands[0][-5:] == ("serve", "--host", "127.0.0.1", "--port", "8767")
+
+
+def test_controller_recovers_orphans_when_supervisor_exits_before_identity_capture() -> None:
+    process = FakeProcess(
+        pid=321,
+        exit_code=17,
+        create_time_error=psutil.NoSuchProcess(321),
+    )
+    calls: list[str] = []
+    controller = DesktopController(
+        process_factory=lambda _command: process,
+        probe=lambda _url: False,
+        tree_stopper=lambda identity: calls.append(f"tree:{identity.pid}")
+        or ProcessCleanupResult(),
+        orphan_cleaner=lambda: calls.append("orphans") or ProcessCleanupResult(),
+    )
+
+    status = controller.start_service()
+
+    assert status.state == "failed"
+    assert status.message_zh == "News Codex 服务启动失败，请查看本地运行日志。"
+    assert calls == ["orphans", "orphans"]
+    assert controller._owned_process is None
+
+
+def test_controller_retries_orphan_recovery_after_fast_exit_cleanup_failure() -> None:
+    process = FakeProcess(
+        pid=321,
+        exit_code=17,
+        create_time_error=psutil.NoSuchProcess(321),
+    )
+    cleanup_results = iter(
+        [
+            ProcessCleanupResult(),
+            ProcessCleanupResult(failed_pids=(401,)),
+            ProcessCleanupResult(),
+        ]
+    )
+    calls: list[str] = []
+    controller = DesktopController(
+        process_factory=lambda _command: process,
+        probe=lambda _url: False,
+        tree_stopper=lambda identity: calls.append(f"tree:{identity.pid}")
+        or ProcessCleanupResult(),
+        orphan_cleaner=lambda: calls.append("orphans") or next(cleanup_results),
+    )
+
+    startup_status = controller.start_service()
+    assert controller._owned_process is process
+
+    retry_status = controller.stop_service()
+
+    assert startup_status.state == "failed"
+    assert retry_status.state == "stopped"
+    assert calls == ["orphans", "orphans", "orphans"]
+    assert controller._owned_process is None
+
+
+@pytest.mark.parametrize(
+    "identity_error",
+    [psutil.AccessDenied(321), psutil.ZombieProcess(321)],
+)
+def test_controller_keeps_live_supervisor_when_identity_capture_is_inaccessible(
+    identity_error: Exception,
+) -> None:
+    process = FakeProcess(pid=321, create_time_error=identity_error)
+    calls: list[str] = []
+    controller = DesktopController(
+        process_factory=lambda _command: process,
+        probe=lambda _url: False,
+        tree_stopper=lambda identity: calls.append(f"tree:{identity.pid}")
+        or ProcessCleanupResult(),
+        orphan_cleaner=lambda: calls.append("orphans") or ProcessCleanupResult(),
+    )
+
+    startup_status = controller.start_service()
+
+    assert startup_status.state == "failed"
+    assert startup_status.message_zh == (
+        "无法安全确认 News Codex 服务进程身份，请稍后重试。"
+    )
+    assert calls == ["orphans"]
+    assert controller._owned_process is process
+
+    live_retry_status = controller.stop_service()
+    assert live_retry_status.state == "failed"
+    assert calls == ["orphans", "orphans"]
+    assert controller._owned_process is process
+
+    process.exit_code = 0
+    exited_retry_status = controller.stop_service()
+
+    assert exited_retry_status.state == "stopped"
+    assert calls == ["orphans", "orphans", "orphans"]
+    assert controller._owned_process is None
 
 
 def test_controller_never_stops_an_unowned_running_service() -> None:
