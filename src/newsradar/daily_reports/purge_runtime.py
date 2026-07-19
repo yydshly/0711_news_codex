@@ -37,6 +37,18 @@ class PurgeMemberError(Exception):
     retryable: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _RevisionTransitionPlan:
+    child_report_id: int
+    temporary_parent_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RevisionReparentPlan:
+    predecessor_id: int | None
+    transitions: tuple[_RevisionTransitionPlan, ...]
+
+
 class DailyReportPurgeHandler:
     """Purge only report-owned rows and audio beneath a trusted root."""
 
@@ -160,6 +172,7 @@ class DailyReportPurgeHandler:
                     ):
                         raise PurgeMemberError("daily_report_has_active_work", True)
 
+                    revision_plan = self._plan_revision_reparent(session, report)
                     artifacts = tuple(
                         session.scalars(
                             select(DailyReportAudioArtifactRecord).where(
@@ -175,21 +188,20 @@ class DailyReportPurgeHandler:
                     )
                     for relative_audio_path in audio_paths:
                         self._validate_audio_target(relative_audio_path)
-                        if relative_audio_path not in queued_audio_paths:
-                            session.add(
-                                DailyReportAudioPurgeQueueRecord(
-                                    daily_report_id=report_id,
-                                    relative_audio_path=relative_audio_path,
-                                )
-                            )
-                            queued_audio_paths.add(relative_audio_path)
-                    predecessor_id = report.supersedes_report_id
-                    reparent_report_ids = self._detach_external_references(session, report)
+                    self._enqueue_audio_cleanup(
+                        session,
+                        report_id,
+                        audio_paths,
+                        queued_audio_paths,
+                    )
+                    reparent_report_ids = self._detach_external_references(
+                        session, report, revision_plan
+                    )
                     self._delete_owned_rows(session, report_id)
                     self._finish_revision_reparent(
                         session,
                         reparent_report_ids,
-                        predecessor_id=predecessor_id,
+                        predecessor_id=revision_plan.predecessor_id,
                     )
                     session.flush()
                     if session.scalar(
@@ -333,8 +345,28 @@ class DailyReportPurgeHandler:
                 )
 
     @staticmethod
+    def _enqueue_audio_cleanup(
+        session: Session,
+        report_id: int,
+        audio_paths: tuple[str, ...],
+        queued_audio_paths: set[str],
+    ) -> None:
+        for relative_audio_path in audio_paths:
+            if relative_audio_path in queued_audio_paths:
+                continue
+            session.add(
+                DailyReportAudioPurgeQueueRecord(
+                    daily_report_id=report_id,
+                    relative_audio_path=relative_audio_path,
+                )
+            )
+            queued_audio_paths.add(relative_audio_path)
+
+    @staticmethod
     def _detach_external_references(
-        session: Session, report: DailyReportRecord
+        session: Session,
+        report: DailyReportRecord,
+        revision_plan: _RevisionReparentPlan,
     ) -> tuple[int, ...]:
         item_ids = tuple(
             session.scalars(
@@ -374,49 +406,47 @@ class DailyReportPurgeHandler:
             if overview_item_ids
             else ()
         )
-        reparent_reports = tuple(
-            session.scalars(
-                select(DailyReportRecord).where(
-                    DailyReportRecord.supersedes_report_id == report.id
-                ).order_by(DailyReportRecord.id)
-            )
+        reparent_report_ids = tuple(
+            transition.child_report_id for transition in revision_plan.transitions
         )
-        DailyReportPurgeHandler._raise_on_active_revision_conflict(
-            session, report, reparent_reports
-        )
-        reparent_report_ids = tuple(child.id for child in reparent_reports)
         if reparent_report_ids:
-            for child in reparent_reports:
-                temporary_parent_id = DailyReportPurgeHandler._temporary_parent_id(
-                    session, child.id
-                )
+            for planned_transition in revision_plan.transitions:
                 transition = DailyReportPurgeTransitionRecord(
-                    child_report_id=child.id,
+                    child_report_id=planned_transition.child_report_id,
                     deleted_parent_id=report.id,
-                    predecessor_report_id=report.supersedes_report_id,
-                    temporary_parent_id=temporary_parent_id,
+                    predecessor_report_id=revision_plan.predecessor_id,
+                    temporary_parent_id=planned_transition.temporary_parent_id,
                     barrier_id=1,
                 )
                 session.add(transition)
                 session.flush()
-                persisted = session.get(DailyReportPurgeTransitionRecord, child.id)
+                persisted = session.get(
+                    DailyReportPurgeTransitionRecord,
+                    planned_transition.child_report_id,
+                )
                 if (
                     persisted is None
                     or persisted.deleted_parent_id != report.id
-                    or persisted.predecessor_report_id != report.supersedes_report_id
-                    or persisted.temporary_parent_id != temporary_parent_id
+                    or persisted.predecessor_report_id
+                    != revision_plan.predecessor_id
+                    or persisted.temporary_parent_id
+                    != planned_transition.temporary_parent_id
                 ):
                     raise PurgeMemberError(
                         "daily_report_purge_persistence_failed", True
                     )
-            for child in reparent_reports:
-                transition = session.get(DailyReportPurgeTransitionRecord, child.id)
+            for planned_transition in revision_plan.transitions:
+                transition = session.get(
+                    DailyReportPurgeTransitionRecord,
+                    planned_transition.child_report_id,
+                )
                 if transition is None:
                     raise PurgeMemberError("daily_report_purge_persistence_failed", True)
                 updated = session.execute(
                     update(DailyReportRecord)
                     .where(
-                        DailyReportRecord.id == child.id,
+                        DailyReportRecord.id
+                        == planned_transition.child_report_id,
                         DailyReportRecord.supersedes_report_id == report.id,
                     )
                     .values(supersedes_report_id=transition.temporary_parent_id)
@@ -466,6 +496,38 @@ class DailyReportPurgeHandler:
             autopilot.daily_report_id = None
             autopilot.result_summary = {"daily_report_retention": "purged"}
         return reparent_report_ids
+
+    @staticmethod
+    def _plan_revision_reparent(
+        session: Session, report: DailyReportRecord
+    ) -> _RevisionReparentPlan:
+        reparent_reports = tuple(
+            session.scalars(
+                select(DailyReportRecord).where(
+                    DailyReportRecord.supersedes_report_id == report.id
+                ).order_by(DailyReportRecord.id)
+            )
+        )
+        if any(child.status != "archived" for child in reparent_reports):
+            raise PurgeMemberError(
+                "daily_report_purge_persistence_failed", True
+            )
+        DailyReportPurgeHandler._raise_on_active_revision_conflict(
+            session, report, reparent_reports
+        )
+        transitions = tuple(
+            _RevisionTransitionPlan(
+                child_report_id=child.id,
+                temporary_parent_id=DailyReportPurgeHandler._temporary_parent_id(
+                    session, child.id
+                ),
+            )
+            for child in reparent_reports
+        )
+        return _RevisionReparentPlan(
+            predecessor_id=report.supersedes_report_id,
+            transitions=transitions,
+        )
 
     @staticmethod
     def _raise_on_active_revision_conflict(
