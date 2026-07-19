@@ -12,6 +12,10 @@ def is_packaged() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def is_windows() -> bool:
+    return sys.platform == "win32"
+
+
 def runtime_command(*arguments: str) -> tuple[str, ...]:
     """Build a command that preserves the branded executable when packaged."""
     if is_packaged():
@@ -57,6 +61,11 @@ def main() -> None:
 
     from newsradar.desktop.app import run_desktop
 
+    if is_packaged() and is_windows():
+        from newsradar.desktop.single_instance import run_desktop_single_instance
+
+        run_desktop_single_instance(lambda: run_desktop(port=8767))
+        return
     run_desktop(port=8767)
 
 
