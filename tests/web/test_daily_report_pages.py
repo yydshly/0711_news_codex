@@ -1089,6 +1089,7 @@ def test_archived_daily_report_renders_audio_actions_and_latest_player(
     assert page.status_code == 200
     assert f'action="/daily-reports/{report_id}/audio/decision"' in page.text
     assert f'action="/daily-reports/{report_id}/audio/overview"' in page.text
+    assert "将播报全部 2 条已纳入全览的情报；排除和重复项不会播报。" in page.text
     assert f'src="/daily-reports/{report_id}/audio-artifacts/{artifact_id}"' in page.text
     assert "生成失败" not in page.text
 

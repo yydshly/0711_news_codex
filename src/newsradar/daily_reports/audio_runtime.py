@@ -76,6 +76,7 @@ class DailyReportAudioHandler:
                     "仅已归档的日报可以生成语音。",
                     retryable=False,
                 )
+            readiness = None
             if request.rendition == "overview":
                 readiness = DailyReportRepository(session).overview_audio_readiness(
                     report.id
@@ -98,6 +99,24 @@ class DailyReportAudioHandler:
             detail = DailyReportQueryService(session).detail(report.id)
             if detail is None:
                 return self._result("daily_report_not_found", "日报不存在。", retryable=False)
+            if request.rendition == "overview" and readiness is not None:
+                grouped_count = sum(
+                    len(group)
+                    for group in (
+                        detail.overview.included_confirmed,
+                        detail.overview.included_hotspots,
+                        detail.overview.included_signals,
+                    )
+                )
+                if (
+                    len(detail.overview.included) != readiness.included_count
+                    or grouped_count != readiness.included_count
+                ):
+                    return self._result(
+                        "daily_report_overview_projection_mismatch",
+                        "情报全览统计与播报稿不一致，请先修复日报投影。",
+                        retryable=False,
+                    )
             script = (
                 detail.decision_script
                 if request.rendition == "decision"

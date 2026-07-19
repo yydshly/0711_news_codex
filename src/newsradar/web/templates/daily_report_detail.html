@@ -294,6 +294,7 @@
   <p class="eyebrow">Intelligence Overview</p>
   <h2 id="overview-heading">情报全览</h2>
   <p>全部候选来自本日报固定快照；只有人工结论为“保留”或“需补证”的内容进入以下正文和语音。</p>
+  <p class="metric-note"><strong>将播报全部 {{ daily_report.overview.summary.included_count }} 条已纳入全览的情报；排除和重复项不会播报。</strong></p>
   <dl class="overview-review-metrics" aria-label="情报全览审核统计">
     <div><dt>候选总数</dt><dd>{{ daily_report.overview.summary.total_count }}</dd></div>
     <div><dt>进入全览</dt><dd>{{ daily_report.overview.summary.included_count }}</dd></div>

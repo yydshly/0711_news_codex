@@ -19,6 +19,7 @@ from newsradar.db.models import (
 from newsradar.operations.repository import OperationLease
 from newsradar.operations.schema import OperationStatus
 from newsradar.operations.worker import OperationCancelled
+from newsradar.web.daily_report_queries import DailyReportQueryService
 from tests.web.test_daily_report_pages import (
     NOW,
     review_overview_for_audio,
@@ -83,8 +84,13 @@ def test_audio_handler_uses_overview_script_for_overview_rendition(
     db_session, tmp_path: Path
 ) -> None:
     report = seed_daily_report(db_session)
+    repository = DailyReportRepository(db_session)
+    _first, fallback = repository.overview_items(report.id)
+    fallback.snapshot = {**fallback.snapshot, "display_tier": "audit_only"}
+    db_session.commit()
     review_overview_for_audio(db_session, report.id)
-    DailyReportRepository(db_session).archive(report.id)
+    repository.archive(report.id)
+    report_id = report.id
     scripts: list[str] = []
 
     result = DailyReportAudioHandler(
@@ -93,13 +99,19 @@ def test_audio_handler_uses_overview_script_for_overview_rendition(
         synthesize=lambda script: (
             scripts.append(script) or SpeechSynthesisResult(b"ID3", None, None, len(script))
         ),
-    )(_lease(report.id, "overview"), lambda _boundary: None)
+    )(_lease(report_id, "overview"), lambda _boundary: None)
 
     assert result.status is OperationStatus.SUCCEEDED
     assert scripts and "News Codex 情报全览" in scripts[0]
     assert "News Codex 决策日报" not in scripts[0]
     assert "已审核全览标题 1" in scripts[0]
     assert "已审核全览标题 2" in scripts[0]
+    detail = DailyReportQueryService(db_session).detail(report_id)
+    artifact = db_session.scalar(select(DailyReportAudioArtifactRecord))
+    assert detail is not None
+    assert artifact is not None
+    assert artifact.script == detail.overview.script
+    assert len(detail.overview.included) == 2
 
 
 def test_overview_audio_omits_stale_model_unavailable_snapshot_copy(
