@@ -866,7 +866,7 @@ def _seed_event_history(database_url: str) -> dict[str, int]:
 
 def test_full_offline_migration_creates_provider_tables_once() -> None:
     result = subprocess.run(
-        ["uv", "run", "alembic", "upgrade", "head", "--sql"],
+        ["uv", "run", "--no-sync", "alembic", "upgrade", "head", "--sql"],
         check=True,
         capture_output=True,
         text=True,
