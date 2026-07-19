@@ -133,8 +133,10 @@ class DesktopController:
             return True
         identity = self._owned_process_identity
         if identity is None:
+            if process.poll() is None:
+                return False
             orphan_cleanup = self._orphan_cleaner()
-            if not orphan_cleanup.succeeded or process.poll() is None:
+            if not orphan_cleanup.succeeded:
                 return False
             self._owned_process = None
             return True

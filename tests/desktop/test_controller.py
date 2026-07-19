@@ -15,8 +15,11 @@ class FakeProcess:
     exit_code: int | None = None
     created_at: float = 1.0
     create_time_error: Exception | None = None
+    poll_results: list[int | None] | None = None
 
     def poll(self) -> int | None:
+        if self.poll_results:
+            return self.poll_results.pop(0)
         return self.exit_code
 
     def create_time(self) -> float:
@@ -133,14 +136,44 @@ def test_controller_keeps_live_supervisor_when_identity_capture_is_inaccessible(
 
     live_retry_status = controller.stop_service()
     assert live_retry_status.state == "failed"
-    assert calls == ["orphans", "orphans"]
+    assert calls == ["orphans"]
     assert controller._owned_process is process
 
     process.exit_code = 0
     exited_retry_status = controller.stop_service()
 
     assert exited_retry_status.state == "stopped"
-    assert calls == ["orphans", "orphans", "orphans"]
+    assert calls == ["orphans", "orphans"]
+    assert controller._owned_process is None
+
+
+def test_identityless_cleanup_retries_if_root_exits_after_live_poll() -> None:
+    process = FakeProcess(
+        pid=321,
+        create_time_error=psutil.AccessDenied(321),
+        poll_results=[None, None, 0],
+    )
+    calls: list[str] = []
+    controller = DesktopController(
+        process_factory=lambda _command: process,
+        probe=lambda _url: False,
+        tree_stopper=lambda identity: calls.append(f"tree:{identity.pid}")
+        or ProcessCleanupResult(),
+        orphan_cleaner=lambda: calls.append("orphans") or ProcessCleanupResult(),
+    )
+
+    assert controller.start_service().state == "failed"
+
+    first_retry_status = controller.stop_service()
+
+    assert first_retry_status.state == "failed"
+    assert calls == ["orphans"]
+    assert controller._owned_process is process
+
+    second_retry_status = controller.stop_service()
+
+    assert second_retry_status.state == "stopped"
+    assert calls == ["orphans", "orphans"]
     assert controller._owned_process is None
 
 
